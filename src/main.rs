@@ -4,17 +4,21 @@ use gpui_component::*;
 
 struct PackageListing {
     name: String,
+    description: String,
+    version: String,
 }
 
 impl Render for PackageListing {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .v_flex()
+            .bg(rgb(0xcccccc))
             .gap_2()
+            .p_4()
             .size_full()
-            .items_center()
-            .justify_center()
             .child(self.name.clone())
+            .child(self.description.clone())
+            .child(self.version.clone())
     }
 }
 
@@ -29,12 +33,16 @@ impl Render for PakajoRoot {
 
         div()
             .v_flex()
+            .gap_4()
+            .p_4()
             .size_full()
             .items_center()
             .justify_center()
             .children(packages.into_iter().map(|pkg| {
                 let package_listing = PackageListing {
                     name: pkg.name().to_string(),
+                    description: pkg.desc().unwrap_or("").to_string(),
+                    version: pkg.version().to_string(),
                 };
                 cx.new(|_| package_listing)
             }))
