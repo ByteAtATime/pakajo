@@ -1,0 +1,10 @@
+[package]
+name = "pakajo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "wayland"], rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "ba681dfc8892475c9bf51775fe8dd157b8f31aeb" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "ba681dfc8892475c9bf51775fe8dd157b8f31aeb" }
