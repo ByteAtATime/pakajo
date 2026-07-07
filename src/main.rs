@@ -1,11 +1,13 @@
+mod package;
+
 use alpm::Alpm;
 use gpui::*;
 use gpui_component::*;
 
+use crate::package::Package;
+
 struct PackageListing {
-    name: String,
-    description: String,
-    version: String,
+    pkg: Package,
 }
 
 impl Render for PackageListing {
@@ -16,9 +18,9 @@ impl Render for PackageListing {
             .gap_2()
             .p_4()
             .size_full()
-            .child(self.name.clone())
-            .child(self.description.clone())
-            .child(self.version.clone())
+            .child(self.pkg.name.clone())
+            .child(self.pkg.description.clone().unwrap_or_default())
+            .child(self.pkg.version.clone())
     }
 }
 
@@ -39,11 +41,7 @@ impl Render for PakajoRoot {
             .items_center()
             .justify_center()
             .children(packages.into_iter().map(|pkg| {
-                let package_listing = PackageListing {
-                    name: pkg.name().to_string(),
-                    description: pkg.desc().unwrap_or("").to_string(),
-                    version: pkg.version().to_string(),
-                };
+                let package_listing = PackageListing { pkg: pkg.into() };
                 cx.new(|_| package_listing)
             }))
     }
