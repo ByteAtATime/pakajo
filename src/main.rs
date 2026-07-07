@@ -30,8 +30,13 @@ struct PakajoRoot {
 
 impl Render for PakajoRoot {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let db = self.alpm_handle.localdb();
-        let packages = db.pkgs();
+        let mut package: Option<&alpm::Package> = None;
+        for database in self.alpm_handle.syncdbs() {
+            if let Ok(pkg) = database.pkg("ripgrep") {
+                package = Some(pkg);
+                break;
+            }
+        }
 
         div()
             .v_flex()
@@ -40,15 +45,21 @@ impl Render for PakajoRoot {
             .size_full()
             .items_center()
             .justify_center()
-            .children(packages.into_iter().map(|pkg| {
+            .children(package.map_or(vec![], |pkg| {
                 let package_listing = PackageListing { pkg: pkg.into() };
-                cx.new(|_| package_listing)
+                vec![cx.new(|_| package_listing)]
             }))
     }
 }
 
 fn main() {
     let handle = Alpm::new("/", "/var/lib/pacman").expect("Couldn't initialize alpm");
+    let repos = ["core", "extra", "multilib"];
+    for repo in repos {
+        handle
+            .register_syncdb(repo, alpm::SigLevel::USE_DEFAULT)
+            .unwrap();
+    }
 
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
 
