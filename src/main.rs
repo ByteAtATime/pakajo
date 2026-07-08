@@ -11,12 +11,14 @@ use crate::package::Package;
 #[derive(IntoElement)]
 enum PakajoIcon {
     History,
+    Scale,
 }
 
 impl IconNamed for PakajoIcon {
     fn path(self) -> SharedString {
         match self {
             PakajoIcon::History => "icons/history.svg",
+            PakajoIcon::Scale => "icons/scale.svg",
         }
         .into()
     }
@@ -73,6 +75,7 @@ impl PackageListing {
             .h_flex()
             .gap_4()
             .child(info_item(PakajoIcon::History, self.pkg.version.clone()))
+            .child(info_item(PakajoIcon::Scale, self.pkg.licenses.join(", ")))
     }
 
     fn header(&self) -> impl IntoElement {
