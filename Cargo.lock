@@ -4422,11 +4422,13 @@ name = "pakajo"
 version = "0.1.0"
 dependencies = [
  "alpm",
+ "anyhow",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
  "pacmanconf",
+ "rust-embed",
 ]
 
 [[package]]
