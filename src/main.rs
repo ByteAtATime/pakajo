@@ -49,6 +49,45 @@ impl PackageListing {
                     .map(|desc| div().text_color(rgb(0x444444)).child(desc)),
             )
     }
+
+    fn details(&self) -> impl IntoElement {
+        fn row(label: String, bg: Fill, elements: &[String]) -> impl IntoElement {
+            div()
+                .h_flex()
+                .child(div().child(label).whitespace_nowrap().w_24())
+                .child(
+                    div()
+                        .children(elements.iter().map(|x| {
+                            div()
+                                .child(x.to_string())
+                                .bg(bg.clone())
+                                .line_height(relative(1.0))
+                                .px_2()
+                                .py_1()
+                        }))
+                        .h_flex()
+                        .w_full()
+                        .gap_2(),
+                )
+        }
+
+        div().h_flex().gap_4().child(
+            div()
+                .v_flex()
+                .w_full()
+                .gap_2()
+                .child(row(
+                    "Provides".to_string(),
+                    rgb(0xadd8e6).into(),
+                    &self.pkg.provides,
+                ))
+                .child(row(
+                    "Conflicts".to_string(),
+                    rgb(0xe6adad).into(),
+                    &self.pkg.conflicts,
+                )),
+        )
+    }
 }
 
 impl Render for PackageListing {
@@ -59,6 +98,7 @@ impl Render for PackageListing {
             .p_4()
             .size_full()
             .child(self.header())
+            .child(self.details())
     }
 }
 
@@ -70,7 +110,7 @@ impl Render for PakajoRoot {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut package: Option<&alpm::Package> = None;
         for database in self.alpm_handle.syncdbs() {
-            if let Ok(pkg) = database.pkg("code") {
+            if let Ok(pkg) = database.pkg("mariadb") {
                 package = Some(pkg);
                 break;
             }
