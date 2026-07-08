@@ -30,6 +30,11 @@ impl PackageListing {
             .gap_4()
             .child(info_item(PakajoIcon::History, self.pkg.version.clone()))
             .child(info_item(PakajoIcon::Scale, self.pkg.licenses.join(", ")))
+            .children(
+                self.pkg
+                    .maintainer_name()
+                    .map(|name| info_item(PakajoIcon::User, name)),
+            )
     }
 
     fn header(&self) -> impl IntoElement {

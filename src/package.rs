@@ -1,3 +1,5 @@
+use regex::Regex;
+
 pub struct Package {
     pub name: String,
     pub repo: Option<String>,
@@ -7,6 +9,18 @@ pub struct Package {
     pub licenses: Vec<String>,
     pub provides: Vec<String>,
     pub conflicts: Vec<String>,
+}
+
+impl Package {
+    pub fn maintainer_name(&self) -> Option<String> {
+        let re = Regex::new(r"(.+) <.+>").expect("Failed to parse maintainer name regex");
+
+        if let Some(groups) = re.captures(&self.maintainer.clone()?) {
+            Some(groups[1].to_string())
+        } else {
+            self.maintainer.clone()
+        }
+    }
 }
 
 impl From<&alpm::Package> for Package {

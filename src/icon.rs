@@ -7,6 +7,7 @@ use rust_embed::RustEmbed;
 pub enum PakajoIcon {
     History,
     Scale,
+    User,
 }
 
 impl IconNamed for PakajoIcon {
@@ -14,6 +15,7 @@ impl IconNamed for PakajoIcon {
         match self {
             PakajoIcon::History => "icons/history.svg",
             PakajoIcon::Scale => "icons/scale.svg",
+            PakajoIcon::User => "icons/user.svg",
         }
         .into()
     }
