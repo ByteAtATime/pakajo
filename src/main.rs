@@ -65,13 +65,14 @@ impl PackageListing {
     }
 
     fn info_bar(&self) -> impl IntoElement {
-        div().h_flex().gap_4().child(
-            div()
-                .h_flex()
-                .gap_2()
-                .child(PakajoIcon::History)
-                .child(self.pkg.version.clone()),
-        )
+        fn info_item(icon: impl IntoElement, label: String) -> impl IntoElement {
+            div().h_flex().gap_2().child(icon).child(label)
+        }
+
+        div()
+            .h_flex()
+            .gap_4()
+            .child(info_item(PakajoIcon::History, self.pkg.version.clone()))
     }
 
     fn header(&self) -> impl IntoElement {
