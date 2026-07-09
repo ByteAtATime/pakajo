@@ -40,7 +40,7 @@ impl PackageListing {
             )
     }
 
-    fn header(&self) -> impl IntoElement {
+    fn header(&self, cx: &App) -> impl IntoElement {
         div()
             .v_flex()
             .child(div().text_2xl().child(self.format_name()))
@@ -49,11 +49,11 @@ impl PackageListing {
                 self.pkg
                     .description
                     .clone()
-                    .map(|desc| div().text_color(rgb(0x444444)).child(desc)),
+                    .map(|desc| div().text_color(cx.theme().muted_foreground).child(desc)),
             )
     }
 
-    fn details(&self) -> impl IntoElement {
+    fn details(&self, cx: &App) -> impl IntoElement {
         fn row(label: String, bg: Fill, elements: &[String]) -> impl IntoElement {
             div()
                 .h_flex()
@@ -81,24 +81,24 @@ impl PackageListing {
                 .gap_2()
                 .child(row(
                     "Provides".to_string(),
-                    rgb(0xadd8e6).into(),
+                    cx.theme().button_info.into(),
                     &self.pkg.provides,
                 ))
                 .child(row(
                     "Conflicts".to_string(),
-                    rgb(0xe6adad).into(),
+                    cx.theme().button_danger.into(),
                     &self.pkg.conflicts,
                 )),
         )
     }
 
-    fn dependencies(&self) -> impl IntoElement {
+    fn dependencies(&self, cx: &App) -> impl IntoElement {
         div()
             .h_flex()
             .children(self.pkg.dependencies.iter().map(|x| {
                 div()
                     .child(x.clone())
-                    .bg(rgb(0xcccccc))
+                    .bg(cx.theme().secondary)
                     .line_height(relative(1.0))
                     .px_2()
                     .py_1()
@@ -121,15 +121,15 @@ impl PackageListing {
 }
 
 impl Render for PackageListing {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .v_flex()
             .gap_2()
             .p_4()
             .size_full()
-            .child(self.header())
-            .child(self.details())
-            .child(self.dependencies())
+            .child(self.header(cx))
+            .child(self.details(cx))
+            .child(self.dependencies(cx))
             .child(self.opt_dependencies())
     }
 }
