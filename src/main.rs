@@ -3,9 +3,12 @@ mod package;
 
 use alpm::{Alpm, SigLevel};
 use gpui::*;
-use gpui_component::*;
+use gpui_component::{label::Label, *};
 
-use crate::{icon::PakajoIcon, package::Package};
+use crate::{
+    icon::PakajoIcon,
+    package::{OptDependency, Package},
+};
 
 struct PackageListing {
     pkg: Package,
@@ -103,6 +106,18 @@ impl PackageListing {
             .flex_wrap()
             .gap_2()
     }
+
+    fn opt_dependencies(&self) -> impl IntoElement {
+        fn dependency(dep: &OptDependency) -> impl IntoElement {
+            div()
+                .h_flex()
+                .justify_between()
+                .child(Label::new(dep.name.clone()).font_bold())
+                .children(dep.reason.clone().map(|x| div().child(x)))
+        }
+
+        div().children(self.pkg.opt_dependencies.iter().map(|x| dependency(x)))
+    }
 }
 
 impl Render for PackageListing {
@@ -115,6 +130,7 @@ impl Render for PackageListing {
             .child(self.header())
             .child(self.details())
             .child(self.dependencies())
+            .child(self.opt_dependencies())
     }
 }
 
