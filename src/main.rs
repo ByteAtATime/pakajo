@@ -59,7 +59,7 @@ impl PackageListing {
                 .v_flex()
                 .w_full()
                 .child(div().font_semibold().child(title))
-                .child(div().h_0p5().w_full().mt_0p5().mb_3().bg(cx.theme().muted))
+                .child(div().h_px().w_full().mt_1().mb_3().bg(cx.theme().border))
                 .child(if items.len() > 0 {
                     div()
                         .h_flex()
