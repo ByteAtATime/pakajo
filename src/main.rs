@@ -216,6 +216,18 @@ fn main() {
     app.run(move |cx| {
         gpui_component::init(cx);
 
+        ThemeRegistry::global_mut(cx)
+            .load_themes_from_str(include_str!("tokyonight.json"))
+            .expect("Failed to load theme");
+
+        if let Some(theme_config) = ThemeRegistry::global(cx)
+            .themes()
+            .get(&SharedString::new("Tokyo Night"))
+            .cloned()
+        {
+            Theme::global_mut(cx).apply_config(&theme_config);
+        }
+
         cx.spawn(async move |cx| {
             cx.open_window(WindowOptions::default(), |window, cx| {
                 let view = cx.new(|_| PakajoRoot {
