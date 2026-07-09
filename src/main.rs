@@ -88,6 +88,21 @@ impl PackageListing {
                 )),
         )
     }
+
+    fn dependencies(&self) -> impl IntoElement {
+        div()
+            .h_flex()
+            .children(self.pkg.dependencies.iter().map(|x| {
+                div()
+                    .child(x.clone())
+                    .bg(rgb(0xcccccc))
+                    .line_height(relative(1.0))
+                    .px_2()
+                    .py_1()
+            }))
+            .flex_wrap()
+            .gap_2()
+    }
 }
 
 impl Render for PackageListing {
@@ -99,6 +114,7 @@ impl Render for PackageListing {
             .size_full()
             .child(self.header())
             .child(self.details())
+            .child(self.dependencies())
     }
 }
 

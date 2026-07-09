@@ -9,6 +9,7 @@ pub struct Package {
     pub licenses: Vec<String>,
     pub provides: Vec<String>,
     pub conflicts: Vec<String>,
+    pub dependencies: Vec<String>,
 }
 
 impl Package {
@@ -34,6 +35,7 @@ impl From<&alpm::Package> for Package {
             licenses: pkg.licenses().iter().map(|x| x.to_string()).collect(),
             provides: pkg.provides().iter().map(|x| x.to_string()).collect(),
             conflicts: pkg.conflicts().iter().map(|x| x.to_string()).collect(),
+            dependencies: pkg.depends().iter().map(|x| x.to_string()).collect(),
         }
     }
 }
