@@ -104,17 +104,26 @@ impl PackageListing {
 
     fn dependencies(&self, cx: &App) -> impl IntoElement {
         div()
-            .h_flex()
-            .children(self.pkg.dependencies.iter().map(|x| {
+            .child(
                 div()
-                    .child(x.clone())
-                    .bg(cx.theme().secondary)
-                    .line_height(relative(1.0))
-                    .px_2()
-                    .py_1()
-            }))
-            .flex_wrap()
-            .gap_2()
+                    .font_semibold()
+                    .child(format!("Dependencies ({})", self.pkg.dependencies.len())),
+            )
+            .child(div().h_px().w_full().mt_1().mb_3().bg(cx.theme().border))
+            .child(
+                div()
+                    .h_flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .children(self.pkg.dependencies.iter().map(|x| {
+                        div()
+                            .child(x.clone())
+                            .bg(cx.theme().secondary)
+                            .line_height(relative(1.2))
+                            .px_4()
+                            .py_2()
+                    })),
+            )
     }
 
     fn opt_dependencies(&self) -> impl IntoElement {
