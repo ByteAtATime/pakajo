@@ -126,16 +126,30 @@ impl PackageListing {
             )
     }
 
-    fn opt_dependencies(&self) -> impl IntoElement {
-        fn dependency(dep: &OptDependency) -> impl IntoElement {
-            div()
-                .h_flex()
-                .justify_between()
-                .child(Label::new(dep.name.clone()).font_bold())
-                .children(dep.reason.clone().map(|x| div().child(x)))
-        }
-
-        div().children(self.pkg.opt_dependencies.iter().map(|x| dependency(x)))
+    fn opt_dependencies(&self, cx: &App) -> impl IntoElement {
+        div()
+            .child(div().font_semibold().child(format!(
+                "Optional Dependencies ({})",
+                self.pkg.opt_dependencies.len()
+            )))
+            .child(div().h_px().w_full().mt_1().mb_3().bg(cx.theme().border))
+            .child(
+                div()
+                    .v_flex()
+                    .gap_2()
+                    .children(self.pkg.opt_dependencies.iter().map(|dep| {
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .justify_between()
+                            .w_full()
+                            .px_4()
+                            .py_3()
+                            .bg(cx.theme().secondary)
+                            .child(div().font_bold().child(dep.name.clone()))
+                            .children(dep.reason.clone().map(|r| div().child(r)))
+                    })),
+            )
     }
 }
 
@@ -149,7 +163,7 @@ impl Render for PackageListing {
             .child(self.header(cx))
             .child(self.details(cx))
             .child(self.dependencies(cx))
-            .child(self.opt_dependencies())
+            .child(self.opt_dependencies(cx))
     }
 }
 
