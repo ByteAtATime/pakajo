@@ -3,12 +3,9 @@ mod package;
 
 use alpm::{Alpm, SigLevel};
 use gpui::*;
-use gpui_component::{label::Label, *};
+use gpui_component::*;
 
-use crate::{
-    icon::PakajoIcon,
-    package::{OptDependency, Package},
-};
+use crate::{icon::PakajoIcon, package::Package};
 
 struct PackageListing {
     pkg: Package,
