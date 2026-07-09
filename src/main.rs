@@ -157,7 +157,7 @@ impl Render for PackageListing {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .v_flex()
-            .gap_2()
+            .gap_8()
             .p_4()
             .size_full()
             .child(self.header(cx))
