@@ -54,42 +54,52 @@ impl PackageListing {
     }
 
     fn details(&self, cx: &App) -> impl IntoElement {
-        fn row(label: String, bg: Fill, elements: &[String]) -> impl IntoElement {
-            div()
-                .h_flex()
-                .child(div().child(label).whitespace_nowrap().w_24())
-                .child(
-                    div()
-                        .children(elements.iter().map(|x| {
-                            div()
-                                .child(x.to_string())
-                                .bg(bg.clone())
-                                .line_height(relative(1.0))
-                                .px_2()
-                                .py_1()
-                        }))
-                        .h_flex()
-                        .w_full()
-                        .gap_2(),
-                )
-        }
-
-        div().h_flex().gap_4().child(
+        fn section(cx: &App, title: String, items: &[String], color: Hsla) -> impl IntoElement {
             div()
                 .v_flex()
                 .w_full()
-                .gap_2()
-                .child(row(
-                    "Provides".to_string(),
-                    cx.theme().button_info.into(),
-                    &self.pkg.provides,
-                ))
-                .child(row(
-                    "Conflicts".to_string(),
-                    cx.theme().button_danger.into(),
-                    &self.pkg.conflicts,
-                )),
-        )
+                .child(div().font_semibold().child(title))
+                .child(div().h_0p5().w_full().mt_0p5().mb_3().bg(cx.theme().muted))
+                .child(if items.len() > 0 {
+                    div()
+                        .h_flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .children(items.iter().map(|x| {
+                            div()
+                                .child(x.clone())
+                                // TODO: is this a good idea?
+                                .text_color(color.saturation(0.6))
+                                .bg(color.opacity(0.1))
+                                .line_height(relative(1.2))
+                                .px_4()
+                                .py_2()
+                        }))
+                } else {
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .italic()
+                        .child("None")
+                })
+        }
+
+        div()
+            .h_flex()
+            .items_start()
+            .gap_6()
+            .w_full()
+            .child(section(
+                cx,
+                format!("Provides ({})", self.pkg.provides.len()),
+                &self.pkg.provides,
+                cx.theme().blue,
+            ))
+            .child(section(
+                cx,
+                format!("Conflicts ({})", self.pkg.conflicts.len()),
+                &self.pkg.conflicts,
+                cx.theme().red,
+            ))
     }
 
     fn dependencies(&self, cx: &App) -> impl IntoElement {
