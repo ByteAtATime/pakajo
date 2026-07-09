@@ -139,6 +139,7 @@ impl Render for PakajoRoot {
             .size_full()
             .items_center()
             .justify_center()
+            .font_family("Inter")
             .children(package.map_or(vec![], |pkg| {
                 let package_listing = PackageListing { pkg: pkg.into() };
                 vec![cx.new(|_| package_listing)]
