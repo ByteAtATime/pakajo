@@ -21,25 +21,48 @@ impl PackageListing {
     }
 
     fn info_bar(&self, cx: &App) -> impl IntoElement {
-        fn info_item(icon: impl IntoElement, label: String) -> impl IntoElement {
-            div().h_flex().gap_2().child(icon).child(label)
+        fn info_item(cx: &App, icon: PakajoIcon, label: String) -> impl IntoElement {
+            div()
+                .h_flex()
+                .gap_2()
+                .child(Icon::new(icon).text_color(cx.theme().muted_foreground))
+                .child(label)
         }
+
+        let sizes = div()
+            .h_flex()
+            .gap_2()
+            .child(Icon::new(PakajoIcon::HardDrive).text_color(cx.theme().muted_foreground))
+            .child(format_size(self.pkg.installed_size))
+            .child(div().text_color(cx.theme().muted_foreground).child("/"))
+            .child(format_size(self.pkg.download_size));
 
         div()
             .h_flex()
-            .gap_4()
+            .gap_6()
             .mt_4()
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().muted)
             .py_3()
             .px_4()
-            .child(info_item(PakajoIcon::Scale, self.pkg.licenses.join(", ")))
+            .child(info_item(
+                cx,
+                PakajoIcon::Scale,
+                self.pkg.licenses.join(", "),
+            ))
             .children(
                 self.pkg
                     .maintainer_name()
-                    .map(|name| info_item(PakajoIcon::User, name)),
+                    .map(|name| info_item(cx, PakajoIcon::User, name)),
             )
+            .children(
+                self.pkg
+                    .architecture
+                    .as_ref()
+                    .map(|arch| info_item(cx, PakajoIcon::Cpu, arch.clone())),
+            )
+            .child(sizes)
     }
 
     fn header(&self, window: &Window, cx: &App) -> impl IntoElement {
@@ -234,6 +257,23 @@ impl Render for PakajoRoot {
                 vec![cx.new(|_| package_listing)]
             }))
     }
+}
+
+fn format_size(bytes: i64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+
+    if bytes < 1024 {
+        return format!("{} {}", bytes, UNITS[0]);
+    }
+
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+
+    format!("{:.1} {}", value, UNITS[unit])
 }
 
 fn parse_siglevel(sig_strings: &[String]) -> SigLevel {

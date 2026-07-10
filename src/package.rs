@@ -17,6 +17,9 @@ pub struct Package {
     pub conflicts: Vec<String>,
     pub dependencies: Vec<String>,
     pub opt_dependencies: Vec<OptDependency>,
+    pub architecture: Option<String>,
+    pub installed_size: i64,
+    pub download_size: i64,
 }
 
 impl Package {
@@ -62,6 +65,9 @@ impl From<&alpm::Package> for Package {
                 .iter()
                 .filter_map(|x| parse_opt_dependency(&x.to_string()))
                 .collect(),
+            architecture: pkg.arch().map(|x| x.to_string()),
+            installed_size: pkg.isize(),
+            download_size: pkg.size(),
         }
     }
 }
