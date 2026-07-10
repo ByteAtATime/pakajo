@@ -50,7 +50,7 @@ impl PackageListing {
             (line_height - layout.ascent - layout.descent) / 2. + layout.ascent
         }
 
-        fn title(name: String, version: String, window: &Window) -> impl IntoElement {
+        fn title(cx: &App, name: String, version: String, window: &Window) -> impl IntoElement {
             let name_size = 2.0;
             let version_size = 1.5;
             let pad = baseline_from_top(window, &name, name_size)
@@ -62,12 +62,23 @@ impl PackageListing {
                 .line_height(relative(1.0))
                 .items_start()
                 .child(div().text_size(rems(name_size)).child(name))
-                .child(div().text_size(rems(version_size)).mt(pad).child(version))
+                .child(
+                    div()
+                        .text_size(rems(version_size))
+                        .text_color(cx.theme().muted_foreground)
+                        .mt(pad)
+                        .child(version),
+                )
         }
 
         div()
             .v_flex()
-            .child(title(self.format_name(), self.pkg.version.clone(), window))
+            .child(title(
+                cx,
+                self.format_name(),
+                self.pkg.version.clone(),
+                window,
+            ))
             .child(self.info_bar())
             .children(
                 self.pkg
