@@ -20,7 +20,7 @@ impl PackageListing {
         }
     }
 
-    fn info_bar(&self) -> impl IntoElement {
+    fn info_bar(&self, cx: &App) -> impl IntoElement {
         fn info_item(icon: impl IntoElement, label: String) -> impl IntoElement {
             div().h_flex().gap_2().child(icon).child(label)
         }
@@ -28,7 +28,12 @@ impl PackageListing {
         div()
             .h_flex()
             .gap_4()
-            .child(info_item(PakajoIcon::History, self.pkg.version.clone()))
+            .mt_4()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().muted)
+            .py_3()
+            .px_4()
             .child(info_item(PakajoIcon::Scale, self.pkg.licenses.join(", ")))
             .children(
                 self.pkg
@@ -79,13 +84,13 @@ impl PackageListing {
                 self.pkg.version.clone(),
                 window,
             ))
-            .child(self.info_bar())
             .children(
                 self.pkg
                     .description
                     .clone()
                     .map(|desc| div().text_color(cx.theme().muted_foreground).child(desc)),
             )
+            .child(self.info_bar(cx))
     }
 
     fn details(&self, cx: &App) -> impl IntoElement {
