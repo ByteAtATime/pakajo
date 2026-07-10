@@ -37,10 +37,37 @@ impl PackageListing {
             )
     }
 
-    fn header(&self, cx: &App) -> impl IntoElement {
+    fn header(&self, window: &Window, cx: &App) -> impl IntoElement {
+        fn baseline_from_top(window: &Window, text: &str, rems: f32) -> Pixels {
+            let font_size = gpui::rems(rems).to_pixels(window.rem_size());
+            let line_height = window.pixel_snap(font_size);
+            let layout = window.text_system().layout_line(
+                text,
+                font_size,
+                &[window.text_style().to_run(text.len())],
+                None,
+            );
+            (line_height - layout.ascent - layout.descent) / 2. + layout.ascent
+        }
+
+        fn title(name: String, version: String, window: &Window) -> impl IntoElement {
+            let name_size = 2.0;
+            let version_size = 1.5;
+            let pad = baseline_from_top(window, &name, name_size)
+                - baseline_from_top(window, &version, version_size);
+
+            div()
+                .h_flex()
+                .gap_4()
+                .line_height(relative(1.0))
+                .items_start()
+                .child(div().text_size(rems(name_size)).child(name))
+                .child(div().text_size(rems(version_size)).mt(pad).child(version))
+        }
+
         div()
             .v_flex()
-            .child(div().text_2xl().child(self.format_name()))
+            .child(title(self.format_name(), self.pkg.version.clone(), window))
             .child(self.info_bar())
             .children(
                 self.pkg
@@ -151,13 +178,13 @@ impl PackageListing {
 }
 
 impl Render for PackageListing {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .v_flex()
             .gap_8()
             .p_4()
             .size_full()
-            .child(self.header(cx))
+            .child(self.header(window, cx))
             .child(self.details(cx))
             .child(self.dependencies(cx))
             .child(self.opt_dependencies(cx))
