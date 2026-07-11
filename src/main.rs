@@ -98,7 +98,11 @@ impl PackageListing {
             .child(Icon::new(PakajoIcon::HardDrive).text_color(cx.theme().muted_foreground))
             .child(self.sized_value(&entity, SizeTooltipTarget::Download, self.pkg.download_size))
             .child(div().text_color(cx.theme().muted_foreground).child("/"))
-            .child(self.sized_value(&entity, SizeTooltipTarget::Installed, self.pkg.installed_size));
+            .child(self.sized_value(
+                &entity,
+                SizeTooltipTarget::Installed,
+                self.pkg.installed_size,
+            ));
 
         div()
             .h_flex()
