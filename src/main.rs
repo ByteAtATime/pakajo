@@ -1,9 +1,11 @@
 mod icon;
+mod install;
 mod package;
 
 use std::rc::Rc;
 
 use alpm::{Alpm, SigLevel};
+use anyhow::Context as _;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -223,7 +225,7 @@ impl PackageListing {
                 .w_full()
                 .child(div().font_semibold().child(title))
                 .child(div().h_px().w_full().mt_1().mb_3().bg(cx.theme().border))
-                .child(if items.len() > 0 {
+                .child(if !items.is_empty() {
                     div()
                         .h_flex()
                         .flex_wrap()
@@ -340,14 +342,7 @@ struct PakajoRoot {
 impl Render for PakajoRoot {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.package_listing.is_none() {
-            let mut package: Option<&alpm::Package> = None;
-            for database in self.alpm_handle.syncdbs() {
-                if let Ok(pkg) = database.pkg(self.target_package.as_str()) {
-                    package = Some(pkg);
-                    break;
-                }
-            }
-            self.package_listing = package.map(|pkg| {
+            self.package_listing = find_pkg(&self.alpm_handle, &self.target_package).map(|pkg| {
                 let package: Package = pkg.into();
                 let installed = is_installed(&self.alpm_handle, &package.name);
                 cx.new(|_| PackageListing {
@@ -425,15 +420,50 @@ fn parse_siglevel(sig_strings: &[String]) -> SigLevel {
     }
 }
 
-fn main() {
-    let config = pacmanconf::Config::new().expect("Couldn't parse pacman.conf");
-
-    let handle = Alpm::new(config.root_dir, config.db_path).expect("Couldn't initialize alpm");
+fn init_alpm(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
+    let mut handle = Alpm::new(config.root_dir.clone(), config.db_path.clone())?;
+    handle.set_architectures(config.architecture.iter())?;
     for repo in &config.repos {
-        handle
-            .register_syncdb(repo.name.clone(), parse_siglevel(&repo.sig_level))
-            .unwrap();
+        let db = handle.register_syncdb_mut(repo.name.clone(), parse_siglevel(&repo.sig_level))?;
+        db.set_servers(repo.servers.iter())?;
     }
+    Ok(handle)
+}
+
+fn find_pkg<'a>(handle: &'a Alpm, name: &str) -> Option<&'a alpm::Package> {
+    handle.syncdbs().iter().find_map(|db| db.pkg(name).ok())
+}
+
+fn main() -> anyhow::Result<()> {
+    let mut args = std::env::args().skip(1);
+    if let Some("install") = args.next().as_deref() {
+        let name = match args.next() {
+            Some(name) => name,
+            None => {
+                eprintln!("usage: pakajo install <package>");
+                std::process::exit(2);
+            }
+        };
+
+        if unsafe { libc::geteuid() } != 0 {
+            let exe = std::env::current_exe().context("failed to determine executable path")?;
+            let status = std::process::Command::new("sudo")
+                .arg(&exe)
+                .arg("install")
+                .arg(&name)
+                .status()
+                .context("failed to run sudo")?;
+            std::process::exit(status.code().unwrap_or(1));
+        }
+
+        if let Err(e) = install::run_install(&name) {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
+    let handle = init_alpm(&config)?;
 
     let app = gpui_platform::application().with_assets(icon::Assets);
 
@@ -465,4 +495,6 @@ fn main() {
         })
         .detach();
     });
+
+    Ok(())
 }

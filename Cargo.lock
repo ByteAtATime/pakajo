@@ -4427,6 +4427,7 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
+ "libc",
  "pacmanconf",
  "regex",
  "rust-embed",
