@@ -5,9 +5,16 @@ use std::rc::Rc;
 
 use alpm::{Alpm, SigLevel};
 use gpui::*;
-use gpui_component::{tooltip::Tooltip, *};
+use gpui_component::{
+    button::{Button, ButtonVariants as _},
+    tooltip::Tooltip,
+    *,
+};
 
-use crate::{icon::PakajoIcon, package::Package};
+use crate::{
+    icon::PakajoIcon,
+    package::{Package, is_installed},
+};
 
 #[derive(Clone, Copy, PartialEq)]
 enum SizeTooltipTarget {
@@ -26,6 +33,7 @@ impl SizeTooltipTarget {
 
 struct PackageListing {
     pkg: Package,
+    installed: bool,
     active_tooltip: Option<SizeTooltipTarget>,
 }
 
@@ -150,11 +158,29 @@ impl PackageListing {
             (line_height - layout.ascent - layout.descent) / 2. + layout.ascent
         }
 
-        fn title(cx: &App, name: String, version: String, window: &Window) -> impl IntoElement {
+        fn title(
+            cx: &App,
+            name: String,
+            version: String,
+            installed: bool,
+            window: &Window,
+        ) -> impl IntoElement {
             let name_size = 2.0;
             let version_size = 1.5;
             let pad = baseline_from_top(window, &name, name_size)
                 - baseline_from_top(window, &version, version_size);
+
+            let install_button = Button::new("install-button")
+                .label(if installed { "Installed" } else { "Install" })
+                .disabled(installed)
+                .rounded_none()
+                .large()
+                .on_click(|_, _, _| {});
+            let install_button = if installed {
+                install_button
+            } else {
+                install_button.primary()
+            };
 
             div()
                 .h_flex()
@@ -169,6 +195,7 @@ impl PackageListing {
                         .mt(pad)
                         .child(version),
                 )
+                .child(install_button.ml_auto())
         }
 
         div()
@@ -177,6 +204,7 @@ impl PackageListing {
                 cx,
                 self.format_name(),
                 self.pkg.version.clone(),
+                self.installed,
                 window,
             ))
             .children(
@@ -305,6 +333,7 @@ impl Render for PackageListing {
 
 struct PakajoRoot {
     alpm_handle: Alpm,
+    target_package: String,
     package_listing: Option<Entity<PackageListing>>,
 }
 
@@ -313,14 +342,17 @@ impl Render for PakajoRoot {
         if self.package_listing.is_none() {
             let mut package: Option<&alpm::Package> = None;
             for database in self.alpm_handle.syncdbs() {
-                if let Ok(pkg) = database.pkg("mariadb") {
+                if let Ok(pkg) = database.pkg(self.target_package.as_str()) {
                     package = Some(pkg);
                     break;
                 }
             }
             self.package_listing = package.map(|pkg| {
+                let package: Package = pkg.into();
+                let installed = is_installed(&self.alpm_handle, &package.name);
                 cx.new(|_| PackageListing {
-                    pkg: pkg.into(),
+                    pkg: package,
+                    installed,
                     active_tooltip: None,
                 })
             });
@@ -424,6 +456,7 @@ fn main() {
             cx.open_window(WindowOptions::default(), |window, cx| {
                 let view = cx.new(|_| PakajoRoot {
                     alpm_handle: handle,
+                    target_package: "ripgrep".to_string(),
                     package_listing: None,
                 });
                 cx.new(|cx| Root::new(view, window, cx))

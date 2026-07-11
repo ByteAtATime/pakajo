@@ -71,3 +71,7 @@ impl From<&alpm::Package> for Package {
         }
     }
 }
+
+pub fn is_installed(handle: &alpm::Alpm, name: &str) -> bool {
+    handle.localdb().pkg(name).is_ok()
+}
