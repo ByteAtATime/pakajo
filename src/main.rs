@@ -1,14 +1,32 @@
 mod icon;
 mod package;
 
+use std::rc::Rc;
+
 use alpm::{Alpm, SigLevel};
 use gpui::*;
-use gpui_component::*;
+use gpui_component::{tooltip::Tooltip, *};
 
 use crate::{icon::PakajoIcon, package::Package};
 
+#[derive(Clone, Copy, PartialEq)]
+enum SizeTooltipTarget {
+    Download,
+    Installed,
+}
+
+impl SizeTooltipTarget {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Download => "Download size",
+            Self::Installed => "Installed size",
+        }
+    }
+}
+
 struct PackageListing {
     pkg: Package,
+    active_tooltip: Option<SizeTooltipTarget>,
 }
 
 impl PackageListing {
@@ -20,7 +38,52 @@ impl PackageListing {
         }
     }
 
-    fn info_bar(&self, cx: &App) -> impl IntoElement {
+    fn sized_value(
+        &self,
+        entity: &Entity<PackageListing>,
+        target: SizeTooltipTarget,
+        value: i64,
+    ) -> Stateful<Div> {
+        let active_tooltip = self.active_tooltip;
+        let tooltip_text = format!("{}: {}", target.label(), format_size(value));
+
+        div()
+            .child(format_size(value))
+            .id(target.label())
+            .on_hover({
+                let entity = entity.clone();
+                move |is_hovered, _window, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.active_tooltip = (*is_hovered).then_some(target);
+                        cx.notify();
+                    });
+                }
+            })
+            .on_prepaint({
+                let entity = entity.clone();
+                move |bounds, window, cx| {
+                    if active_tooltip != Some(target) {
+                        return;
+                    }
+                    let view = Tooltip::new(tooltip_text.clone()).build(window, cx);
+                    let mut measure = view.clone().into_any();
+                    let size = measure.layout_as_root(AvailableSpace::min_size(), window, cx);
+                    window.set_tooltip(AnyTooltip {
+                        view,
+                        mouse_position: point(
+                            bounds.center().x - size.width / 2.,
+                            bounds.origin.y - rems(0.75).to_pixels(window.rem_size()),
+                        ),
+                        check_visible_and_update: Rc::new(
+                            |_: Bounds<Pixels>, _: &mut Window, _: &mut App| true,
+                        ),
+                    });
+                    entity.update(cx, |_, cx| cx.notify());
+                }
+            })
+    }
+
+    fn info_bar(&self, cx: &App, entity: Entity<PackageListing>) -> impl IntoElement {
         fn info_item(cx: &App, icon: PakajoIcon, label: String) -> impl IntoElement {
             div()
                 .h_flex()
@@ -33,9 +96,9 @@ impl PackageListing {
             .h_flex()
             .gap_2()
             .child(Icon::new(PakajoIcon::HardDrive).text_color(cx.theme().muted_foreground))
-            .child(format_size(self.pkg.installed_size))
+            .child(self.sized_value(&entity, SizeTooltipTarget::Download, self.pkg.download_size))
             .child(div().text_color(cx.theme().muted_foreground).child("/"))
-            .child(format_size(self.pkg.download_size));
+            .child(self.sized_value(&entity, SizeTooltipTarget::Installed, self.pkg.installed_size));
 
         div()
             .h_flex()
@@ -65,7 +128,12 @@ impl PackageListing {
             .child(sizes)
     }
 
-    fn header(&self, window: &Window, cx: &App) -> impl IntoElement {
+    fn header(
+        &self,
+        window: &Window,
+        cx: &App,
+        entity: Entity<PackageListing>,
+    ) -> impl IntoElement {
         fn baseline_from_top(window: &Window, text: &str, rems: f32) -> Pixels {
             let font_size = gpui::rems(rems).to_pixels(window.rem_size());
             let line_height = window.pixel_snap(font_size);
@@ -113,7 +181,7 @@ impl PackageListing {
                     .clone()
                     .map(|desc| div().text_color(cx.theme().muted_foreground).child(desc)),
             )
-            .child(self.info_bar(cx))
+            .child(self.info_bar(cx, entity))
     }
 
     fn details(&self, cx: &App) -> impl IntoElement {
@@ -218,12 +286,13 @@ impl PackageListing {
 
 impl Render for PackageListing {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
         div()
             .v_flex()
             .gap_8()
             .p_4()
             .size_full()
-            .child(self.header(window, cx))
+            .child(self.header(window, cx, entity))
             .child(self.details(cx))
             .child(self.dependencies(cx))
             .child(self.opt_dependencies(cx))
@@ -232,16 +301,25 @@ impl Render for PackageListing {
 
 struct PakajoRoot {
     alpm_handle: Alpm,
+    package_listing: Option<Entity<PackageListing>>,
 }
 
 impl Render for PakajoRoot {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut package: Option<&alpm::Package> = None;
-        for database in self.alpm_handle.syncdbs() {
-            if let Ok(pkg) = database.pkg("mariadb") {
-                package = Some(pkg);
-                break;
+        if self.package_listing.is_none() {
+            let mut package: Option<&alpm::Package> = None;
+            for database in self.alpm_handle.syncdbs() {
+                if let Ok(pkg) = database.pkg("mariadb") {
+                    package = Some(pkg);
+                    break;
+                }
             }
+            self.package_listing = package.map(|pkg| {
+                cx.new(|_| PackageListing {
+                    pkg: pkg.into(),
+                    active_tooltip: None,
+                })
+            });
         }
 
         div()
@@ -252,10 +330,7 @@ impl Render for PakajoRoot {
             .items_center()
             .justify_center()
             .font_family("Inter")
-            .children(package.map_or(vec![], |pkg| {
-                let package_listing = PackageListing { pkg: pkg.into() };
-                vec![cx.new(|_| package_listing)]
-            }))
+            .children(self.package_listing.clone())
     }
 }
 
@@ -345,6 +420,7 @@ fn main() {
             cx.open_window(WindowOptions::default(), |window, cx| {
                 let view = cx.new(|_| PakajoRoot {
                     alpm_handle: handle,
+                    package_listing: None,
                 });
                 cx.new(|cx| Root::new(view, window, cx))
             })
