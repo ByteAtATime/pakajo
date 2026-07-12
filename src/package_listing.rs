@@ -47,17 +47,10 @@ impl PackageListing {
 
     fn sized_value(
         &self,
-        cx: &App,
         entity: &Entity<PackageListing>,
         target: SizeTooltipTarget,
-        value: Option<i64>,
+        value: i64,
     ) -> AnyElement {
-        let Some(value) = value else {
-            return div()
-                .text_color(cx.theme().muted_foreground)
-                .child("—")
-                .into_any_element();
-        };
         let active_tooltip = self.active_tooltip;
         let tooltip_text = format!("{}: {}", target.label(), format_bytes(value));
 
@@ -107,23 +100,22 @@ impl PackageListing {
                 .child(label)
         }
 
-        let sizes = div()
-            .h_flex()
-            .gap_2()
-            .child(Icon::new(PakajoIcon::HardDrive).text_color(cx.theme().muted_foreground))
-            .child(self.sized_value(
-                cx,
-                &entity,
-                SizeTooltipTarget::Download,
-                self.pkg.download_size,
-            ))
-            .child(div().text_color(cx.theme().muted_foreground).child("/"))
-            .child(self.sized_value(
-                cx,
-                &entity,
-                SizeTooltipTarget::Installed,
-                self.pkg.installed_size,
-            ));
+        let sizes =
+            self.pkg
+                .download_size
+                .zip(self.pkg.installed_size)
+                .map(|(download, installed)| {
+                    div()
+                        .h_flex()
+                        .gap_2()
+                        .child(
+                            Icon::new(PakajoIcon::HardDrive)
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .child(self.sized_value(&entity, SizeTooltipTarget::Download, download))
+                        .child(div().text_color(cx.theme().muted_foreground).child("/"))
+                        .child(self.sized_value(&entity, SizeTooltipTarget::Installed, installed))
+                });
 
         div()
             .h_flex()
@@ -162,7 +154,7 @@ impl PackageListing {
                         )
                     }),
             )
-            .child(sizes)
+            .children(sizes)
     }
 
     fn header(
