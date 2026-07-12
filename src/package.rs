@@ -1,3 +1,4 @@
+use crate::aur::AurInfo;
 use regex::Regex;
 
 #[derive(Debug)]
@@ -48,22 +49,22 @@ impl Package {
     }
 }
 
+fn parse_opt_dependency(dependency: &str) -> Option<OptDependency> {
+    // TODO: write a proper regex for package names + comparisons
+    let re = Regex::new(r"([^:]+)(: (.+))?").expect("Failed to parse opt dependency regex");
+
+    if let Some(groups) = re.captures(dependency) {
+        Some(OptDependency {
+            name: groups[1].to_string(),
+            reason: groups.get(3).map(|x| x.as_str().to_string()), // TODO: better way to do this?
+        })
+    } else {
+        None
+    }
+}
+
 impl From<&alpm::Package> for Package {
     fn from(pkg: &alpm::Package) -> Self {
-        fn parse_opt_dependency(dependency: &str) -> Option<OptDependency> {
-            // TODO: write a proper regex for package names + comparisons
-            let re = Regex::new(r"([^:]+)(: (.+))?").expect("Failed to parse opt dependency regex");
-
-            if let Some(groups) = re.captures(dependency) {
-                Some(OptDependency {
-                    name: groups[1].to_string(),
-                    reason: groups.get(3).map(|x| x.as_str().to_string()), // TODO: better way to do this?
-                })
-            } else {
-                None
-            }
-        }
-
         Self {
             source: PackageSource::Repo,
             name: pkg.name().to_string(),
@@ -90,6 +91,38 @@ impl From<&alpm::Package> for Package {
             out_of_date: None,
             upstream_url: None,
             package_base: None,
+        }
+    }
+}
+
+impl From<AurInfo> for Package {
+    fn from(info: AurInfo) -> Self {
+        Self {
+            source: PackageSource::Aur,
+            name: info.name,
+            repo: Some("aur".to_string()),
+            description: info.description,
+            version: info.version,
+            maintainer: info.maintainer,
+            licenses: info.license,
+            provides: info.provides,
+            conflicts: info.conflicts,
+            dependencies: info.depends,
+            make_dependencies: info.make_depends,
+            check_dependencies: info.check_depends,
+            opt_dependencies: info
+                .opt_depends
+                .iter()
+                .filter_map(|x| parse_opt_dependency(&x.to_string()))
+                .collect(),
+            architecture: None,
+            installed_size: None,
+            download_size: None,
+            num_votes: Some(info.num_votes),
+            popularity: Some(info.popularity),
+            out_of_date: info.out_of_date,
+            upstream_url: info.url,
+            package_base: Some(info.package_base),
         }
     }
 }
