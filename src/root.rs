@@ -2,8 +2,8 @@ use std::{io::{self, BufRead}, process::{Command, ExitStatus, Stdio}};
 use alpm::Alpm;
 use futures::StreamExt as _;
 use gpui::*;
-use gpui_component::StyledExt as _;
-use crate::{pacman::{init_alpm, find_pkg}, package::{Package, is_installed}, package_listing::PackageListing};
+use gpui_component::{ActiveTheme as _, StyledExt as _};
+use crate::{aur::AurClient, lookup::lookup, pacman::init_alpm, package::is_installed, package_listing::PackageListing};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum InstallProgress {
@@ -27,8 +27,10 @@ enum StreamItem {
 
 pub struct PakajoRoot {
     pub alpm_handle: Alpm,
+    pub aur_client: AurClient,
     pub target_package: String,
     pub package_listing: Option<Entity<PackageListing>>,
+    pub lookup_attempted: bool,
     pub install_progress: InstallProgress,
 }
 
@@ -170,10 +172,10 @@ impl PakajoRoot {
 
 impl Render for PakajoRoot {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.package_listing.is_none() {
+        if !self.lookup_attempted {
+            self.lookup_attempted = true;
             let weak_root = cx.weak_entity();
-            self.package_listing = find_pkg(&self.alpm_handle, &self.target_package).map(|pkg| {
-                let package: Package = pkg.into();
+            self.package_listing = lookup(&self.alpm_handle, &self.aur_client, &self.target_package).map(|package| {
                 let installed = is_installed(&self.alpm_handle, &package.name);
                 cx.new(|_| PackageListing {
                     pkg: package,
@@ -185,6 +187,12 @@ impl Render for PakajoRoot {
             });
         }
 
+        let not_found = (self.lookup_attempted && self.package_listing.is_none()).then(|| {
+            div()
+                .text_color(cx.theme().muted_foreground)
+                .child(format!("Package '{}' not found", self.target_package))
+        });
+
         div()
             .v_flex()
             .gap_4()
@@ -194,6 +202,7 @@ impl Render for PakajoRoot {
             .justify_center()
             .font_family("Inter")
             .children(self.package_listing.clone())
+            .children(not_found)
     }
 }
 

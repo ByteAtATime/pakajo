@@ -3,6 +3,7 @@ mod cli;
 mod events;
 mod icon;
 mod install;
+mod lookup;
 mod package;
 mod package_listing;
 mod pacman;
@@ -16,11 +17,14 @@ use crate::{pacman::init_alpm, root::{PakajoRoot, InstallProgress}};
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("install") {
-        cli::install_subcommand(args);
-    }
+    let target_package = match args.next().as_deref() {
+        Some("install") => cli::install_subcommand(args),
+        Some(name) => name.to_string(),
+        None => "sl".to_string(),
+    };
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let handle = init_alpm(&config)?;
+    let aur_client = crate::aur::AurClient::new();
 
     let app = gpui_platform::application().with_assets(icon::Assets);
 
@@ -43,8 +47,10 @@ fn main() -> anyhow::Result<()> {
             cx.open_window(WindowOptions::default(), |window, cx| {
                 let view = cx.new(|_| PakajoRoot {
                     alpm_handle: handle,
-                    target_package: "sl".to_string(),
+                    aur_client,
+                    target_package,
                     package_listing: None,
+                    lookup_attempted: false,
                     install_progress: InstallProgress::Idle,
                 });
                 cx.new(|cx| Root::new(view, window, cx))

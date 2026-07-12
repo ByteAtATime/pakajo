@@ -10,9 +10,11 @@ pub struct OptDependency {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageSource {
     Repo,
+    #[allow(dead_code)]
     Aur,
 }
 
+#[allow(dead_code)]
 pub struct Package {
     pub source: PackageSource,
     pub name: String,
@@ -129,4 +131,65 @@ impl From<AurInfo> for Package {
 
 pub fn is_installed(handle: &alpm::Alpm, name: &str) -> bool {
     handle.localdb().pkg(name).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aur::AurInfo;
+
+    #[test]
+    fn from_aur_info() {
+        let info = AurInfo {
+            id: 1,
+            name: "foo".into(),
+            package_base_id: 2,
+            package_base: "foo".into(),
+            version: "1.0-1".into(),
+            description: Some("a pkg".into()),
+            url: Some("https://example.com".into()),
+            num_votes: 10,
+            popularity: 5.0,
+            out_of_date: None,
+            maintainer: Some("maint".into()),
+            first_submitted: 0,
+            last_modified: 0,
+            url_path: None,
+            submitter: None,
+            depends: vec!["libc".into()],
+            make_depends: vec!["gcc".into()],
+            check_depends: vec!["bash".into()],
+            opt_depends: vec!["foo-utils: extra tools".into()],
+            conflicts: vec![],
+            provides: vec![],
+            replaces: vec![],
+            groups: vec![],
+            license: vec!["MIT".into()],
+            keywords: vec![],
+            co_maintainers: vec![],
+        };
+
+        let pkg = Package::from(info);
+
+        assert_eq!(pkg.source, PackageSource::Aur);
+        assert_eq!(pkg.repo.as_deref(), Some("aur"));
+        assert_eq!(pkg.name, "foo");
+        assert_eq!(pkg.version, "1.0-1");
+        assert_eq!(pkg.installed_size, None);
+        assert_eq!(pkg.download_size, None);
+        assert_eq!(pkg.num_votes, Some(10));
+        assert_eq!(pkg.popularity, Some(5.0));
+        assert_eq!(pkg.package_base.as_deref(), Some("foo"));
+        assert_eq!(pkg.upstream_url.as_deref(), Some("https://example.com"));
+        assert_eq!(pkg.dependencies, vec!["libc"]);
+        assert_eq!(pkg.make_dependencies, vec!["gcc"]);
+        assert_eq!(pkg.check_dependencies, vec!["bash"]);
+        assert_eq!(pkg.licenses, vec!["MIT"]);
+        assert_eq!(pkg.opt_dependencies.len(), 1);
+        assert_eq!(pkg.opt_dependencies[0].name, "foo-utils");
+        assert_eq!(
+            pkg.opt_dependencies[0].reason.as_deref(),
+            Some("extra tools")
+        );
+    }
 }
