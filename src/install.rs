@@ -275,10 +275,8 @@ mod tests {
     use crate::cli::ConsoleSink;
     use std::fs;
 
-    #[test]
-    #[ignore]
-    fn test_install() {
-        let base = std::env::temp_dir().join("pakajo_fake_root");
+    fn setup_fake_root(suffix: &str) -> alpm::Alpm {
+        let base = std::env::temp_dir().join(format!("pakajo_fake_root_{suffix}"));
         let _ = fs::remove_dir_all(&base);
         let root = base.join("root");
         let db = base.join("db");
@@ -286,16 +284,22 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&db).unwrap();
         fs::create_dir_all(&cache).unwrap();
-        let cache_str = cache.to_string_lossy().into_owned();
         let config = pacmanconf::Config::new().unwrap();
         let mut handle = crate::init_alpm_at(
             &config,
             &root.to_string_lossy(),
             &db.to_string_lossy(),
-            &[cache_str],
+            &[cache.to_string_lossy().into_owned()],
         )
         .unwrap();
         handle.syncdbs_mut().update(false).unwrap();
+        handle
+    }
+
+    #[test]
+    #[ignore]
+    fn test_install() {
+        let mut handle = setup_fake_root("install");
         let result = install_into(&mut handle, "sl", ConsoleSink::new(), || true);
         let _ = handle.trans_release();
         result.expect("install should succeed");
@@ -308,24 +312,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_install_aborted() {
-        let base = std::env::temp_dir().join("pakajo_fake_root_abort");
-        let _ = fs::remove_dir_all(&base);
-        let root = base.join("root");
-        let db = base.join("db");
-        let cache = base.join("cache");
-        fs::create_dir_all(&root).unwrap();
-        fs::create_dir_all(&db).unwrap();
-        fs::create_dir_all(&cache).unwrap();
-        let cache_str = cache.to_string_lossy().into_owned();
-        let config = pacmanconf::Config::new().unwrap();
-        let mut handle = crate::init_alpm_at(
-            &config,
-            &root.to_string_lossy(),
-            &db.to_string_lossy(),
-            &[cache_str],
-        )
-        .unwrap();
-        handle.syncdbs_mut().update(false).unwrap();
+        let mut handle = setup_fake_root("abort");
         let result = install_into(&mut handle, "sl", ConsoleSink::new(), || false);
         let _ = handle.trans_release();
         result.expect("aborted install should not error");

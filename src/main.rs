@@ -3,6 +3,7 @@ mod events;
 mod icon;
 mod install;
 mod package;
+mod utils;
 
 use std::rc::Rc;
 
@@ -15,6 +16,7 @@ use gpui_component::{
     *,
 };
 
+use crate::utils::format_bytes;
 use crate::{
     icon::PakajoIcon,
     package::{Package, is_installed},
@@ -57,10 +59,10 @@ impl PackageListing {
         value: i64,
     ) -> Stateful<Div> {
         let active_tooltip = self.active_tooltip;
-        let tooltip_text = format!("{}: {}", target.label(), format_size(value));
+        let tooltip_text = format!("{}: {}", target.label(), format_bytes(value));
 
         div()
-            .child(format_size(value))
+            .child(format_bytes(value))
             .id(target.label())
             .on_hover({
                 let entity = entity.clone();
@@ -365,23 +367,6 @@ impl Render for PakajoRoot {
             .font_family("Inter")
             .children(self.package_listing.clone())
     }
-}
-
-fn format_size(bytes: i64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-
-    if bytes < 1024 {
-        return format!("{} {}", bytes, UNITS[0]);
-    }
-
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-
-    format!("{:.1} {}", value, UNITS[unit])
 }
 
 fn parse_siglevel(sig_strings: &[String]) -> SigLevel {
