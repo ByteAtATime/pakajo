@@ -9,11 +9,26 @@ use crate::events::{
 use crate::install;
 use crate::utils::format_bytes;
 
-pub(crate) fn install_subcommand(mut args: impl Iterator<Item = String>) -> ! {
-    let name = match args.next() {
+pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
+    let mut json = false;
+    let mut name: Option<String> = None;
+    for s in args {
+        if s == "--json" {
+            json = true;
+        } else if s.starts_with('-') {
+            eprintln!("unknown flag: {s}");
+            std::process::exit(2);
+        } else if name.is_none() {
+            name = Some(s);
+        } else {
+            eprintln!("usage: pakajo install [--json] <package>");
+            std::process::exit(2);
+        }
+    }
+    let name = match name {
         Some(name) => name,
         None => {
-            eprintln!("usage: pakajo install <package>");
+            eprintln!("usage: pakajo install [--json] <package>");
             std::process::exit(2);
         }
     };
@@ -26,13 +41,13 @@ pub(crate) fn install_subcommand(mut args: impl Iterator<Item = String>) -> ! {
                 std::process::exit(1);
             }
         };
-        let status = match std::process::Command::new("sudo")
-            .arg(&exe)
-            .arg("install")
-            .arg(&name)
-            .status()
-            .context("failed to run sudo")
-        {
+        let mut command = std::process::Command::new("sudo");
+        command.arg(&exe).arg("install");
+        if json {
+            command.arg("--json");
+        }
+        command.arg(&name);
+        let status = match command.status().context("failed to run sudo") {
             Ok(status) => status,
             Err(e) => {
                 eprintln!("{e:#}");
@@ -42,7 +57,12 @@ pub(crate) fn install_subcommand(mut args: impl Iterator<Item = String>) -> ! {
         std::process::exit(status.code().unwrap_or(1));
     }
 
-    match install::run_install(&name, ConsoleSink::new(), confirm_install) {
+    let result = if json {
+        install::run_install(&name, JsonSink::new(), || true)
+    } else {
+        install::run_install(&name, ConsoleSink::new(), confirm_install)
+    };
+    match result {
         Ok(()) => std::process::exit(0),
         Err(e) => {
             eprintln!("{e:#}");
@@ -62,6 +82,22 @@ impl ConsoleSink {
 impl InstallSink for ConsoleSink {
     fn event(&mut self, event: InstallEvent) {
         print_event(&event);
+    }
+}
+
+struct JsonSink;
+
+impl JsonSink {
+    fn new() -> Self {
+        JsonSink
+    }
+}
+
+impl InstallSink for JsonSink {
+    fn event(&mut self, event: InstallEvent) {
+        if let Ok(line) = serde_json::to_string(&event) {
+            println!("{line}");
+        }
     }
 }
 

@@ -4432,6 +4432,8 @@ dependencies = [
  "pacmanconf",
  "regex",
  "rust-embed",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

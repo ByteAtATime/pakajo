@@ -5,7 +5,7 @@ mod install;
 mod package;
 mod utils;
 
-use std::io;
+use std::io::{self, BufRead};
 use std::process::{Command, ExitStatus, Stdio};
 use std::rc::Rc;
 
@@ -438,20 +438,50 @@ impl PakajoRoot {
         let (mut tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
 
         std::thread::spawn(move || {
+            let mut send_event = |mut item: StreamItem| loop {
+                match tx.try_send(item) {
+                    Ok(()) => return,
+                    Err(err) => {
+                        if err.is_disconnected() {
+                            return;
+                        }
+                        item = err.into_inner();
+                        std::thread::yield_now();
+                    }
+                }
+            };
+
             let outcome = match Command::new("pkexec")
                 .arg(&exe)
                 .arg("install")
+                .arg("--json")
                 .arg(&name)
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
+                .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
                 .spawn()
             {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => ChildOutcome::NotFound,
                 Err(error) => ChildOutcome::Failed(error.to_string()),
-                Ok(mut child) => map_outcome(child.wait()),
+                Ok(mut child) => {
+                    let stdout = child.stdout.take().expect("piped");
+                    let reader = std::io::BufReader::new(stdout);
+                    for line in reader.lines() {
+                        match line {
+                            Ok(l) => {
+                                if let Ok(ev) =
+                                    serde_json::from_str::<crate::events::InstallEvent>(&l)
+                                {
+                                    send_event(StreamItem::Event(ev));
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    map_outcome(child.wait())
+                }
             };
-            let _ = tx.try_send(StreamItem::Done(outcome));
+            send_event(StreamItem::Done(outcome));
         });
 
         cx.spawn(async move |this, cx| {
@@ -464,7 +494,9 @@ impl PakajoRoot {
 
     fn handle_stream_item(&mut self, item: StreamItem, cx: &mut Context<Self>) {
         match item {
-            StreamItem::Event(_) => {}
+            StreamItem::Event(ev) => {
+                eprintln!("{ev:?}");
+            }
             StreamItem::Done(ChildOutcome::Success) => {
                 self.refresh_after_install(cx);
                 self.set_progress(InstallProgress::Idle, cx);

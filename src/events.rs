@@ -1,4 +1,6 @@
-#[derive(Debug, Clone)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InstallEvent {
     ResolvingDependencies,
     CheckingConflicts,
@@ -59,14 +61,14 @@ pub enum InstallEvent {
     TransactionSummary(TransactionSummary),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionSummary {
     pub packages: Vec<SummaryPackage>,
     pub total_download_size: i64,
     pub total_installed_size: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SummaryPackage {
     pub name: String,
     pub repository: Option<String>,
@@ -76,7 +78,7 @@ pub struct SummaryPackage {
     pub installed_size: i64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum PackageOp {
     Install,
     Upgrade,
@@ -85,14 +87,14 @@ pub enum PackageOp {
     Remove,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum DownloadResult {
     Success,
     UpToDate,
     Failed,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ProgressPhase {
     Add,
     Upgrade,
@@ -106,7 +108,7 @@ pub enum ProgressPhase {
     Keyring,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum LogLevel {
     Error,
     Warning,
