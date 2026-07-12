@@ -18,7 +18,7 @@ pub fn run_install<S: InstallSink + 'static, F: FnOnce() -> bool>(
     confirm: F,
 ) -> anyhow::Result<()> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let mut handle = crate::init_alpm(&config)?;
+    let mut handle = crate::pacman::init_alpm(&config)?;
     install_into(&mut handle, name, sink, confirm)
 }
 
@@ -81,7 +81,7 @@ fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
     handle
         .trans_init(alpm::TransFlag::NONE)
         .context("failed to initialize transaction")?;
-    let pkg = crate::find_pkg(handle, name)
+    let pkg = crate::pacman::find_pkg(handle, name)
         .ok_or_else(|| anyhow!("package '{name}' not found in any repository"))?;
     handle
         .trans_add_pkg(pkg)
@@ -285,7 +285,7 @@ mod tests {
         fs::create_dir_all(&db).unwrap();
         fs::create_dir_all(&cache).unwrap();
         let config = pacmanconf::Config::new().unwrap();
-        let mut handle = crate::init_alpm_at(
+        let mut handle = crate::pacman::init_alpm_at(
             &config,
             &root.to_string_lossy(),
             &db.to_string_lossy(),
