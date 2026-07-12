@@ -1,3 +1,4 @@
+mod events;
 mod icon;
 mod install;
 mod package;
@@ -420,9 +421,21 @@ fn parse_siglevel(sig_strings: &[String]) -> SigLevel {
     }
 }
 
-fn init_alpm(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
-    let mut handle = Alpm::new(config.root_dir.clone(), config.db_path.clone())?;
+pub(crate) fn init_alpm(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
+    init_alpm_at(config, &config.root_dir, &config.db_path, &config.cache_dir)
+}
+
+pub(crate) fn init_alpm_at(
+    config: &pacmanconf::Config,
+    root: &str,
+    db_path: &str,
+    cache_dirs: &[String],
+) -> anyhow::Result<Alpm> {
+    let mut handle = Alpm::new(root, db_path)?;
     handle.set_architectures(config.architecture.iter())?;
+    for dir in cache_dirs {
+        handle.add_cachedir(dir.as_str())?;
+    }
     for repo in &config.repos {
         let db = handle.register_syncdb_mut(repo.name.clone(), parse_siglevel(&repo.sig_level))?;
         db.set_servers(repo.servers.iter())?;
@@ -456,7 +469,7 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(status.code().unwrap_or(1));
         }
 
-        if let Err(e) = install::run_install(&name) {
+        if let Err(e) = install::run_install(&name, install::ConsoleSink::new()) {
             eprintln!("{e:#}");
             std::process::exit(1);
         }
