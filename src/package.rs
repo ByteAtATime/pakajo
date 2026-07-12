@@ -6,7 +6,14 @@ pub struct OptDependency {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageSource {
+    Repo,
+    Aur,
+}
+
 pub struct Package {
+    pub source: PackageSource,
     pub name: String,
     pub repo: Option<String>,
     pub description: Option<String>,
@@ -16,10 +23,17 @@ pub struct Package {
     pub provides: Vec<String>,
     pub conflicts: Vec<String>,
     pub dependencies: Vec<String>,
+    pub make_dependencies: Vec<String>,
+    pub check_dependencies: Vec<String>,
     pub opt_dependencies: Vec<OptDependency>,
     pub architecture: Option<String>,
-    pub installed_size: i64,
-    pub download_size: i64,
+    pub installed_size: Option<i64>,
+    pub download_size: Option<i64>,
+    pub num_votes: Option<u64>,
+    pub popularity: Option<f64>,
+    pub out_of_date: Option<i64>,
+    pub upstream_url: Option<String>,
+    pub package_base: Option<String>,
 }
 
 impl Package {
@@ -51,6 +65,7 @@ impl From<&alpm::Package> for Package {
         }
 
         Self {
+            source: PackageSource::Repo,
             name: pkg.name().to_string(),
             repo: pkg.db().map(|x| x.name().to_string()),
             description: pkg.desc().map(|x| x.to_string()),
@@ -60,14 +75,21 @@ impl From<&alpm::Package> for Package {
             provides: pkg.provides().iter().map(|x| x.to_string()).collect(),
             conflicts: pkg.conflicts().iter().map(|x| x.to_string()).collect(),
             dependencies: pkg.depends().iter().map(|x| x.to_string()).collect(),
+            make_dependencies: Vec::new(),
+            check_dependencies: Vec::new(),
             opt_dependencies: pkg
                 .optdepends()
                 .iter()
                 .filter_map(|x| parse_opt_dependency(&x.to_string()))
                 .collect(),
             architecture: pkg.arch().map(|x| x.to_string()),
-            installed_size: pkg.isize(),
-            download_size: pkg.size(),
+            installed_size: Some(pkg.isize()),
+            download_size: Some(pkg.size()),
+            num_votes: None,
+            popularity: None,
+            out_of_date: None,
+            upstream_url: None,
+            package_base: None,
         }
     }
 }

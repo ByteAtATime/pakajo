@@ -47,10 +47,17 @@ impl PackageListing {
 
     fn sized_value(
         &self,
+        cx: &App,
         entity: &Entity<PackageListing>,
         target: SizeTooltipTarget,
-        value: i64,
-    ) -> Stateful<Div> {
+        value: Option<i64>,
+    ) -> AnyElement {
+        let Some(value) = value else {
+            return div()
+                .text_color(cx.theme().muted_foreground)
+                .child("—")
+                .into_any_element();
+        };
         let active_tooltip = self.active_tooltip;
         let tooltip_text = format!("{}: {}", target.label(), format_bytes(value));
 
@@ -88,6 +95,7 @@ impl PackageListing {
                     entity.update(cx, |_, cx| cx.notify());
                 }
             })
+            .into_any_element()
     }
 
     fn info_bar(&self, cx: &App, entity: Entity<PackageListing>) -> impl IntoElement {
@@ -103,9 +111,15 @@ impl PackageListing {
             .h_flex()
             .gap_2()
             .child(Icon::new(PakajoIcon::HardDrive).text_color(cx.theme().muted_foreground))
-            .child(self.sized_value(&entity, SizeTooltipTarget::Download, self.pkg.download_size))
+            .child(self.sized_value(
+                cx,
+                &entity,
+                SizeTooltipTarget::Download,
+                self.pkg.download_size,
+            ))
             .child(div().text_color(cx.theme().muted_foreground).child("/"))
             .child(self.sized_value(
+                cx,
                 &entity,
                 SizeTooltipTarget::Installed,
                 self.pkg.installed_size,
