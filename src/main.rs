@@ -469,7 +469,9 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(status.code().unwrap_or(1));
         }
 
-        if let Err(e) = install::run_install(&name, install::ConsoleSink::new()) {
+        if let Err(e) =
+            install::run_install(&name, install::ConsoleSink::new(), install::confirm_install)
+        {
             eprintln!("{e:#}");
             std::process::exit(1);
         }

@@ -56,6 +56,24 @@ pub enum InstallEvent {
         message: String,
     },
     TransactionDone,
+    TransactionSummary(TransactionSummary),
+}
+
+#[derive(Debug, Clone)]
+pub struct TransactionSummary {
+    pub packages: Vec<SummaryPackage>,
+    pub total_download_size: i64,
+    pub total_installed_size: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SummaryPackage {
+    pub name: String,
+    pub repository: Option<String>,
+    pub new_version: String,
+    pub old_version: Option<String>,
+    pub download_size: i64,
+    pub installed_size: i64,
 }
 
 #[derive(Debug, Clone, Copy)]

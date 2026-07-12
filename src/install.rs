@@ -9,23 +9,29 @@ use alpm::LogLevel as AlpmLogLevel;
 use alpm::Progress as AlpmProgress;
 
 use crate::events::{
-    DownloadResult, InstallEvent, InstallSink, LogLevel, PackageOp, ProgressPhase,
+    DownloadResult, InstallEvent, InstallSink, LogLevel, PackageOp, ProgressPhase, SummaryPackage,
+    TransactionSummary,
 };
 
-pub fn run_install<S: InstallSink + 'static>(name: &str, sink: S) -> anyhow::Result<()> {
+pub fn run_install<S: InstallSink + 'static, F: Fn() -> bool>(
+    name: &str,
+    sink: S,
+    confirm: F,
+) -> anyhow::Result<()> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let mut handle = crate::init_alpm(&config)?;
-    install_into(&mut handle, name, sink)
+    install_into(&mut handle, name, sink, confirm)
 }
 
-fn install_into<S: InstallSink + 'static>(
+fn install_into<S: InstallSink + 'static, F: Fn() -> bool>(
     handle: &mut alpm::Alpm,
     name: &str,
     sink: S,
+    confirm: F,
 ) -> anyhow::Result<()> {
     let sink = Rc::new(RefCell::new(sink));
-    register_callbacks(handle, sink);
-    let result = run_transaction(handle, name);
+    register_callbacks(handle, sink.clone());
+    let result = run_transaction(handle, name, &sink, confirm);
     let _ = handle.trans_release();
     result
 }
@@ -67,7 +73,12 @@ fn register_callbacks<S: InstallSink + 'static>(handle: &alpm::Alpm, sink: Rc<Re
     });
 }
 
-fn run_transaction(handle: &mut alpm::Alpm, name: &str) -> anyhow::Result<()> {
+fn run_transaction<S: InstallSink, F: Fn() -> bool>(
+    handle: &mut alpm::Alpm,
+    name: &str,
+    sink: &Rc<RefCell<S>>,
+    confirm: F,
+) -> anyhow::Result<()> {
     handle
         .trans_init(alpm::TransFlag::NONE)
         .context("failed to initialize transaction")?;
@@ -81,10 +92,50 @@ fn run_transaction(handle: &mut alpm::Alpm, name: &str) -> anyhow::Result<()> {
         .trans_prepare()
         .map_err(alpm::Error::from)
         .context("failed to prepare transaction")?;
+
+    let summary = build_summary(handle);
+    sink.borrow_mut()
+        .event(InstallEvent::TransactionSummary(summary));
+
+    if !confirm() {
+        return Ok(());
+    }
+
     handle
         .trans_commit()
         .context("failed to commit transaction")?;
     Ok(())
+}
+
+fn build_summary(handle: &alpm::Alpm) -> TransactionSummary {
+    let mut packages = Vec::new();
+    let mut total_download_size = 0;
+    let mut total_installed_size = 0;
+    for pkg in handle.trans_add().iter() {
+        let name = pkg.name().to_string();
+        let old_version = handle
+            .localdb()
+            .pkg(name.as_str())
+            .ok()
+            .map(|p| p.version().to_string());
+        let download_size = pkg.download_size();
+        let installed_size = pkg.isize();
+        total_download_size += download_size;
+        total_installed_size += installed_size;
+        packages.push(SummaryPackage {
+            repository: pkg.db().map(|d| d.name().to_string()),
+            new_version: pkg.version().to_string(),
+            name,
+            old_version,
+            download_size,
+            installed_size,
+        });
+    }
+    TransactionSummary {
+        packages,
+        total_download_size,
+        total_installed_size,
+    }
 }
 
 fn convert_event(any_event: alpm::AnyEvent) -> Option<InstallEvent> {
@@ -317,7 +368,114 @@ fn print_event(event: &InstallEvent) {
             LogLevel::Debug => {}
         },
         InstallEvent::TransactionDone => {}
+        InstallEvent::TransactionSummary(s) => print_summary(s),
     }
+}
+
+fn print_summary(summary: &TransactionSummary) {
+    if summary.packages.is_empty() {
+        println!(" nothing to do");
+        return;
+    }
+
+    let count = summary.packages.len();
+    let rows: Vec<(String, String, String, String)> = summary
+        .packages
+        .iter()
+        .map(|p| {
+            (
+                formatted_name(p),
+                version_label(p),
+                format_bytes(p.installed_size),
+                format_bytes(p.download_size),
+            )
+        })
+        .collect();
+
+    let name_width = rows
+        .iter()
+        .map(|(name, _, _, _)| name.len())
+        .max()
+        .unwrap_or(0)
+        .max(format!("Package ({count})").len());
+    let version_width = rows
+        .iter()
+        .map(|(_, version, _, _)| version.len())
+        .max()
+        .unwrap_or(0)
+        .max("Version".len());
+    let installed_width = rows
+        .iter()
+        .map(|(_, _, installed, _)| installed.len())
+        .max()
+        .unwrap_or(0)
+        .max("Installed Size".len());
+    let download_width = rows
+        .iter()
+        .map(|(_, _, _, download)| download.len())
+        .max()
+        .unwrap_or(0)
+        .max("Download Size".len());
+
+    println!();
+    println!(
+        " {:<nw$}  {:<vw$}  {:>iw$}  {:>dw$}",
+        format!("Package ({count})"),
+        "Version",
+        "Installed Size",
+        "Download Size",
+        nw = name_width,
+        vw = version_width,
+        iw = installed_width,
+        dw = download_width,
+    );
+    println!();
+    for (name, version, installed, download) in &rows {
+        println!(
+            " {:<nw$}  {:<vw$}  {:>iw$}  {:>dw$}",
+            name,
+            version,
+            installed,
+            download,
+            nw = name_width,
+            vw = version_width,
+            iw = installed_width,
+            dw = download_width,
+        );
+    }
+    println!();
+    println!(
+        "Total Download Size:   {}",
+        format_bytes(summary.total_download_size)
+    );
+    println!(
+        "Total Installed Size:  {}",
+        format_bytes(summary.total_installed_size)
+    );
+    println!();
+}
+
+fn formatted_name(pkg: &SummaryPackage) -> String {
+    match &pkg.repository {
+        Some(repo) => format!("{repo}/{}", pkg.name),
+        None => pkg.name.clone(),
+    }
+}
+
+fn version_label(pkg: &SummaryPackage) -> String {
+    match &pkg.old_version {
+        Some(old) => format!("{old} -> {}", pkg.new_version),
+        None => pkg.new_version.clone(),
+    }
+}
+
+pub fn confirm_install() -> bool {
+    use std::io::Write as _;
+    print!("\n:: Proceed with installation? [Y/n] ");
+    let _ = std::io::stdout().flush();
+    let mut input = String::new();
+    let _ = std::io::stdin().read_line(&mut input);
+    matches!(input.trim().to_lowercase().as_str(), "" | "y" | "yes")
 }
 
 fn format_package_operation(
@@ -405,12 +563,42 @@ mod tests {
         )
         .unwrap();
         handle.syncdbs_mut().update(false).unwrap();
-        let result = install_into(&mut handle, "sl", ConsoleSink::new());
+        let result = install_into(&mut handle, "sl", ConsoleSink::new(), || true);
         let _ = handle.trans_release();
         result.expect("install should succeed");
         assert!(
             handle.localdb().pkg("sl").is_ok(),
             "sl should be installed in the local db"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn test_install_aborted() {
+        let base = std::env::temp_dir().join("pakajo_fake_root_abort");
+        let _ = fs::remove_dir_all(&base);
+        let root = base.join("root");
+        let db = base.join("db");
+        let cache = base.join("cache");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&db).unwrap();
+        fs::create_dir_all(&cache).unwrap();
+        let cache_str = cache.to_string_lossy().into_owned();
+        let config = pacmanconf::Config::new().unwrap();
+        let mut handle = crate::init_alpm_at(
+            &config,
+            &root.to_string_lossy(),
+            &db.to_string_lossy(),
+            &[cache_str],
+        )
+        .unwrap();
+        handle.syncdbs_mut().update(false).unwrap();
+        let result = install_into(&mut handle, "sl", ConsoleSink::new(), || false);
+        let _ = handle.trans_release();
+        result.expect("aborted install should not error");
+        assert!(
+            handle.localdb().pkg("sl").is_err(),
+            "sl must NOT be installed after an aborted confirm"
         );
     }
 }
