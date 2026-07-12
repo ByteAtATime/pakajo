@@ -1,7 +1,17 @@
+use crate::{
+    icon::PakajoIcon,
+    package::Package,
+    root::{InstallProgress, PakajoRoot},
+    utils::format_bytes,
+};
 use gpui::*;
-use gpui_component::{button::{Button, ButtonVariants as _}, spinner::Spinner, tooltip::Tooltip, *};
+use gpui_component::{
+    button::{Button, ButtonVariants as _},
+    spinner::Spinner,
+    tooltip::Tooltip,
+    *,
+};
 use std::rc::Rc;
-use crate::{package::Package, icon::PakajoIcon, utils::format_bytes, root::{PakajoRoot, InstallProgress}};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum SizeTooltipTarget {
@@ -349,6 +359,10 @@ impl Render for PackageListing {
             .child(self.header(window, cx, entity))
             .child(self.details(cx))
             .child(self.dependencies(cx))
-            .child(self.opt_dependencies(cx))
+            .children(if self.pkg.opt_dependencies.is_empty() {
+                None
+            } else {
+                Some(self.opt_dependencies(cx))
+            })
     }
 }
