@@ -4423,6 +4423,7 @@ version = "0.1.0"
 dependencies = [
  "alpm",
  "anyhow",
+ "futures",
  "gpui",
  "gpui-component",
  "gpui-component-assets",

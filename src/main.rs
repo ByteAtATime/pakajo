@@ -5,13 +5,17 @@ mod install;
 mod package;
 mod utils;
 
+use std::io;
+use std::process::{Command, ExitStatus, Stdio};
 use std::rc::Rc;
 
 use alpm::{Alpm, SigLevel};
 use anyhow::Context as _;
+use futures::StreamExt as _;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
+    spinner::Spinner,
     tooltip::Tooltip,
     *,
 };
@@ -37,10 +41,32 @@ impl SizeTooltipTarget {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+enum InstallProgress {
+    Idle,
+    Running,
+    Failed(String),
+}
+
+#[derive(Clone, Debug)]
+enum ChildOutcome {
+    Success,
+    Dismissed,
+    NotFound,
+    Failed(String),
+}
+
+enum StreamItem {
+    Event(crate::events::InstallEvent),
+    Done(ChildOutcome),
+}
+
 struct PackageListing {
     pkg: Package,
     installed: bool,
     active_tooltip: Option<SizeTooltipTarget>,
+    root: WeakEntity<PakajoRoot>,
+    install_progress: InstallProgress,
 }
 
 impl PackageListing {
@@ -169,6 +195,8 @@ impl PackageListing {
             name: String,
             version: String,
             installed: bool,
+            install_progress: InstallProgress,
+            root: WeakEntity<PakajoRoot>,
             window: &Window,
         ) -> impl IntoElement {
             let name_size = 2.0;
@@ -176,16 +204,37 @@ impl PackageListing {
             let pad = baseline_from_top(window, &name, name_size)
                 - baseline_from_top(window, &version, version_size);
 
-            let install_button = Button::new("install-button")
-                .label(if installed { "Installed" } else { "Install" })
-                .disabled(installed)
+            let (label, disabled) = match &install_progress {
+                InstallProgress::Idle if installed => ("Installed", true),
+                InstallProgress::Running => ("Installing…", true),
+                InstallProgress::Idle | InstallProgress::Failed(_) => ("Install", false),
+            };
+
+            let root_for_click = root.clone();
+            let mut install_button = Button::new("install-button")
+                .label(label)
+                .disabled(disabled)
                 .rounded_none()
                 .large()
-                .on_click(|_, _, _| {});
-            let install_button = if installed {
-                install_button
-            } else {
-                install_button.primary()
+                .on_click(move |_, _, cx| {
+                    if let Some(root) = root_for_click.upgrade() {
+                        root.update(cx, |root, cx| root.start_install(cx));
+                    }
+                });
+            if !installed && !matches!(install_progress, InstallProgress::Running) {
+                install_button = install_button.primary();
+            }
+
+            let aside: Option<AnyElement> = match &install_progress {
+                InstallProgress::Running => Some(Spinner::new().into_any_element()),
+                InstallProgress::Failed(message) => Some(
+                    div()
+                        .text_color(cx.theme().danger)
+                        .text_size(rems(0.875))
+                        .child(message.clone())
+                        .into_any_element(),
+                ),
+                InstallProgress::Idle => None,
             };
 
             div()
@@ -201,7 +250,15 @@ impl PackageListing {
                         .mt(pad)
                         .child(version),
                 )
-                .child(install_button.ml_auto())
+                .child(
+                    div()
+                        .h_flex()
+                        .gap_2()
+                        .items_center()
+                        .ml_auto()
+                        .child(install_button)
+                        .children(aside),
+                )
         }
 
         div()
@@ -211,6 +268,8 @@ impl PackageListing {
                 self.format_name(),
                 self.pkg.version.clone(),
                 self.installed,
+                self.install_progress.clone(),
+                self.root.clone(),
                 window,
             ))
             .children(
@@ -341,11 +400,117 @@ struct PakajoRoot {
     alpm_handle: Alpm,
     target_package: String,
     package_listing: Option<Entity<PackageListing>>,
+    install_progress: InstallProgress,
+}
+
+impl PakajoRoot {
+    fn set_progress(&mut self, progress: InstallProgress, cx: &mut Context<Self>) {
+        if let Some(listing) = &self.package_listing {
+            listing.update(cx, |listing, cx| {
+                listing.install_progress = progress.clone();
+                cx.notify();
+            });
+        }
+        self.install_progress = progress;
+        cx.notify();
+    }
+
+    fn start_install(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.install_progress, InstallProgress::Running) {
+            return;
+        }
+        self.set_progress(InstallProgress::Running, cx);
+
+        let name = self.target_package.clone();
+        let exe = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                self.set_progress(
+                    InstallProgress::Failed(format!(
+                        "failed to determine executable path: {error}"
+                    )),
+                    cx,
+                );
+                return;
+            }
+        };
+
+        let (mut tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
+
+        std::thread::spawn(move || {
+            let outcome = match Command::new("pkexec")
+                .arg(&exe)
+                .arg("install")
+                .arg(&name)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .spawn()
+            {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => ChildOutcome::NotFound,
+                Err(error) => ChildOutcome::Failed(error.to_string()),
+                Ok(mut child) => map_outcome(child.wait()),
+            };
+            let _ = tx.try_send(StreamItem::Done(outcome));
+        });
+
+        cx.spawn(async move |this, cx| {
+            while let Some(item) = rx.next().await {
+                let _ = this.update(cx, |this, cx| this.handle_stream_item(item, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn handle_stream_item(&mut self, item: StreamItem, cx: &mut Context<Self>) {
+        match item {
+            StreamItem::Event(_) => {}
+            StreamItem::Done(ChildOutcome::Success) => {
+                self.refresh_after_install(cx);
+                self.set_progress(InstallProgress::Idle, cx);
+            }
+            StreamItem::Done(ChildOutcome::Dismissed) => {
+                self.set_progress(InstallProgress::Idle, cx);
+            }
+            StreamItem::Done(ChildOutcome::NotFound) => {
+                self.set_progress(
+                    InstallProgress::Failed("pkexec not found / polkit missing".into()),
+                    cx,
+                );
+            }
+            StreamItem::Done(ChildOutcome::Failed(message)) => {
+                self.set_progress(InstallProgress::Failed(message), cx);
+            }
+        }
+    }
+
+    fn refresh_after_install(&mut self, cx: &mut Context<Self>) {
+        if let Ok(config) = pacmanconf::Config::new()
+            && let Ok(handle) = init_alpm(&config)
+        {
+            self.alpm_handle = handle;
+        }
+
+        let installed = if let Some(listing) = &self.package_listing {
+            let pkg_name = listing.read(cx).pkg.name.clone();
+            is_installed(&self.alpm_handle, &pkg_name)
+        } else {
+            false
+        };
+
+        if let Some(listing) = &self.package_listing {
+            listing.update(cx, |listing, cx| {
+                listing.installed = installed;
+                cx.notify();
+            });
+        }
+    }
 }
 
 impl Render for PakajoRoot {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.package_listing.is_none() {
+            let weak_root = cx.weak_entity();
             self.package_listing = find_pkg(&self.alpm_handle, &self.target_package).map(|pkg| {
                 let package: Package = pkg.into();
                 let installed = is_installed(&self.alpm_handle, &package.name);
@@ -353,6 +518,8 @@ impl Render for PakajoRoot {
                     pkg: package,
                     installed,
                     active_tooltip: None,
+                    root: weak_root,
+                    install_progress: self.install_progress.clone(),
                 })
             });
         }
@@ -433,6 +600,20 @@ fn find_pkg<'a>(handle: &'a Alpm, name: &str) -> Option<&'a alpm::Package> {
     handle.syncdbs().iter().find_map(|db| db.pkg(name).ok())
 }
 
+fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
+    let code = match status {
+        Err(error) => return ChildOutcome::Failed(error.to_string()),
+        Ok(status) => status.code(),
+    };
+    match code {
+        Some(0) => ChildOutcome::Success,
+        Some(126) => ChildOutcome::Dismissed,
+        Some(127) => ChildOutcome::NotFound,
+        Some(exit) => ChildOutcome::Failed(format!("install failed (exit {exit})")),
+        None => ChildOutcome::Failed("install killed by signal".to_string()),
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() == Some("install") {
@@ -462,8 +643,9 @@ fn main() -> anyhow::Result<()> {
             cx.open_window(WindowOptions::default(), |window, cx| {
                 let view = cx.new(|_| PakajoRoot {
                     alpm_handle: handle,
-                    target_package: "ripgrep".to_string(),
+                    target_package: "sl".to_string(),
                     package_listing: None,
+                    install_progress: InstallProgress::Idle,
                 });
                 cx.new(|cx| Root::new(view, window, cx))
             })
