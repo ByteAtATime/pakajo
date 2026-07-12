@@ -150,6 +150,18 @@ impl PackageListing {
                     .as_ref()
                     .map(|arch| info_item(cx, PakajoIcon::Cpu, arch.clone())),
             )
+            .children(
+                self.pkg
+                    .num_votes
+                    .zip(self.pkg.popularity)
+                    .map(|(votes, popularity)| {
+                        info_item(
+                            cx,
+                            PakajoIcon::Star,
+                            format!("+{} ({:.2})", votes, popularity),
+                        )
+                    }),
+            )
             .child(sizes)
     }
 

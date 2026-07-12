@@ -10,6 +10,7 @@ pub enum PakajoIcon {
     User,
     Cpu,
     HardDrive,
+    Star,
 }
 
 impl IconNamed for PakajoIcon {
@@ -20,6 +21,7 @@ impl IconNamed for PakajoIcon {
             PakajoIcon::User => "icons/user.svg",
             PakajoIcon::Cpu => "icons/cpu.svg",
             PakajoIcon::HardDrive => "icons/hard-drive.svg",
+            PakajoIcon::Star => "icons/star.svg",
         }
         .into()
     }
