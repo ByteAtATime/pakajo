@@ -1,3 +1,4 @@
+mod cli;
 mod events;
 mod icon;
 mod install;
@@ -449,33 +450,8 @@ fn find_pkg<'a>(handle: &'a Alpm, name: &str) -> Option<&'a alpm::Package> {
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    if let Some("install") = args.next().as_deref() {
-        let name = match args.next() {
-            Some(name) => name,
-            None => {
-                eprintln!("usage: pakajo install <package>");
-                std::process::exit(2);
-            }
-        };
-
-        if unsafe { libc::geteuid() } != 0 {
-            let exe = std::env::current_exe().context("failed to determine executable path")?;
-            let status = std::process::Command::new("sudo")
-                .arg(&exe)
-                .arg("install")
-                .arg(&name)
-                .status()
-                .context("failed to run sudo")?;
-            std::process::exit(status.code().unwrap_or(1));
-        }
-
-        if let Err(e) =
-            install::run_install(&name, install::ConsoleSink::new(), install::confirm_install)
-        {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-        return Ok(());
+    if args.next().as_deref() == Some("install") {
+        cli::install_subcommand(args);
     }
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let handle = init_alpm(&config)?;
