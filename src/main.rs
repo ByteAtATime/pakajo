@@ -7,6 +7,7 @@ mod lookup;
 mod package;
 mod package_listing;
 mod pacman;
+mod resolve;
 mod root;
 mod utils;
 
