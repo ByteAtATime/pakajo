@@ -5,6 +5,7 @@ use rust_embed::RustEmbed;
 
 #[derive(IntoElement)]
 pub enum PakajoIcon {
+    #[allow(dead_code)]
     History,
     Scale,
     User,

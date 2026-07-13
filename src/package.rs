@@ -55,14 +55,10 @@ fn parse_opt_dependency(dependency: &str) -> Option<OptDependency> {
     // TODO: write a proper regex for package names + comparisons
     let re = Regex::new(r"([^:]+)(: (.+))?").expect("Failed to parse opt dependency regex");
 
-    if let Some(groups) = re.captures(dependency) {
-        Some(OptDependency {
-            name: groups[1].to_string(),
-            reason: groups.get(3).map(|x| x.as_str().to_string()), // TODO: better way to do this?
-        })
-    } else {
-        None
-    }
+    re.captures(dependency).map(|groups| OptDependency {
+        name: groups[1].to_string(),
+        reason: groups.get(3).map(|x| x.as_str().to_string()),
+    })
 }
 
 impl From<&alpm::Package> for Package {

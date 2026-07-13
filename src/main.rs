@@ -1,4 +1,5 @@
 mod aur;
+mod build;
 mod cli;
 mod events;
 mod icon;

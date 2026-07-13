@@ -31,7 +31,6 @@ pub(super) struct InstallNode {
     pub(super) source: Source,
     pub(super) reason: Reason,
     pub(super) version: String,
-    pub(super) repo: Option<String>,
     pub(super) aur_info: Option<AurInfo>,
 }
 
@@ -51,5 +50,4 @@ pub struct BuildPlan {
 pub struct RepoPackage {
     pub name: String,
     pub version: String,
-    pub db: String,
 }

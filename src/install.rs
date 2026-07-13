@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use anyhow::{Context, anyhow};
@@ -12,25 +13,32 @@ use crate::events::{
     TransactionSummary,
 };
 
+pub enum InstallTarget {
+    Repo(String),
+    File(PathBuf),
+}
+
 pub fn run_install<S: InstallSink + 'static, F: FnOnce() -> bool>(
-    name: &str,
+    targets: &[InstallTarget],
+    as_deps: bool,
     sink: S,
     confirm: F,
 ) -> anyhow::Result<()> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let mut handle = crate::pacman::init_alpm(&config)?;
-    install_into(&mut handle, name, sink, confirm)
+    install_into(&mut handle, targets, as_deps, sink, confirm)
 }
 
 fn install_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
     handle: &mut alpm::Alpm,
-    name: &str,
+    targets: &[InstallTarget],
+    as_deps: bool,
     sink: S,
     confirm: F,
 ) -> anyhow::Result<()> {
     let sink = Rc::new(RefCell::new(sink));
     register_callbacks(handle, sink.clone());
-    let result = run_transaction(handle, name, &sink, confirm);
+    let result = run_transaction(handle, targets, as_deps, &sink, confirm);
     let _ = handle.trans_release();
     result
 }
@@ -74,19 +82,40 @@ fn register_callbacks<S: InstallSink + 'static>(handle: &alpm::Alpm, sink: Rc<Re
 
 fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
     handle: &mut alpm::Alpm,
-    name: &str,
+    targets: &[InstallTarget],
+    as_deps: bool,
     sink: &Rc<RefCell<S>>,
     confirm: F,
 ) -> anyhow::Result<()> {
     handle
         .trans_init(alpm::TransFlag::NONE)
         .context("failed to initialize transaction")?;
-    let pkg = crate::pacman::find_pkg(handle, name)
-        .ok_or_else(|| anyhow!("package '{name}' not found in any repository"))?;
-    handle
-        .trans_add_pkg(pkg)
-        .map_err(alpm::Error::from)
-        .context("failed to queue package for installation")?;
+
+    let mut added_names: Vec<String> = Vec::with_capacity(targets.len());
+    for target in targets {
+        match target {
+            InstallTarget::Repo(name) => {
+                let pkg = crate::pacman::find_pkg(handle, name)
+                    .ok_or_else(|| anyhow!("package '{name}' not found in any repository"))?;
+                added_names.push(name.clone());
+                handle
+                    .trans_add_pkg(pkg)
+                    .map_err(alpm::Error::from)
+                    .context("failed to queue package for installation")?;
+            }
+            InstallTarget::File(path) => {
+                let loaded = handle
+                    .pkg_load(path.to_string_lossy().as_ref(), true, alpm::SigLevel::NONE)
+                    .context("failed to load package file")?;
+                added_names.push(loaded.name().to_string());
+                handle
+                    .trans_add_pkg(loaded)
+                    .map_err(alpm::Error::from)
+                    .context("failed to queue package file for installation")?;
+            }
+        }
+    }
+
     handle
         .trans_prepare()
         .map_err(alpm::Error::from)
@@ -103,6 +132,16 @@ fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
     handle
         .trans_commit()
         .context("failed to commit transaction")?;
+
+    if as_deps {
+        for name in &added_names {
+            if let Ok(pkg) = handle.localdb().pkg(name.as_str()) {
+                pkg.set_reason(alpm::PackageReason::Depend)
+                    .context("failed to mark package as dependency")?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -138,12 +177,6 @@ fn build_summary(handle: &alpm::Alpm) -> TransactionSummary {
 }
 
 fn convert_event(any_event: alpm::AnyEvent) -> Option<InstallEvent> {
-    // libalpm emits type-only events (e.g. TransactionStart) as a 4-byte-aligned
-    // alpm_event_any_t, but AnyEvent::event() derefs it as an 8-byte-aligned
-    // alpm_event_t, tripping Rust's debug alignment check (non-unwinding abort).
-    // Release builds tolerate the unaligned read of `type_`, so this skip is
-    // debug-only; the skipped events carry no payload.
-    // TODO: i think this is a bug in alpm, but I'm not really sure
     #[cfg(debug_assertions)]
     {
         let event_ptr: *const () = unsafe { std::mem::transmute_copy(&any_event) };
@@ -262,8 +295,6 @@ fn convert_log_level(level: AlpmLogLevel) -> Option<LogLevel> {
         Some(LogLevel::Error)
     } else if level.contains(AlpmLogLevel::WARNING) {
         Some(LogLevel::Warning)
-    } else if level.contains(AlpmLogLevel::DEBUG) {
-        Some(LogLevel::Debug)
     } else {
         None
     }
@@ -300,8 +331,13 @@ mod tests {
     #[ignore]
     fn test_install() {
         let mut handle = setup_fake_root("install");
-        let result = install_into(&mut handle, "sl", ConsoleSink::new(), || true);
-        let _ = handle.trans_release();
+        let result = install_into(
+            &mut handle,
+            &[InstallTarget::Repo("sl".to_string())],
+            false,
+            ConsoleSink::new(),
+            || true,
+        );
         result.expect("install should succeed");
         assert!(
             handle.localdb().pkg("sl").is_ok(),
@@ -313,8 +349,13 @@ mod tests {
     #[ignore]
     fn test_install_aborted() {
         let mut handle = setup_fake_root("abort");
-        let result = install_into(&mut handle, "sl", ConsoleSink::new(), || false);
-        let _ = handle.trans_release();
+        let result = install_into(
+            &mut handle,
+            &[InstallTarget::Repo("sl".to_string())],
+            false,
+            ConsoleSink::new(),
+            || false,
+        );
         result.expect("aborted install should not error");
         assert!(
             handle.localdb().pkg("sl").is_err(),

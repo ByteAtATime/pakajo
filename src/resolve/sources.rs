@@ -21,7 +21,6 @@ impl<'a> PackageDb for AlpmDb<'a> {
         Some(RepoPackage {
             name: pkg.name().to_string(),
             version: pkg.version().to_string(),
-            db: pkg.db().map(|d| d.name().to_string()).unwrap_or_default(),
         })
     }
 }

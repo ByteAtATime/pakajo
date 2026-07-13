@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AurDepSource {
+    Repo,
+    Aur,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InstallEvent {
     ResolvingDependencies,
@@ -59,6 +65,36 @@ pub enum InstallEvent {
     },
     TransactionDone,
     TransactionSummary(TransactionSummary),
+    ResolvingAurDependencies {
+        target: String,
+    },
+    AurDepResolved {
+        package: String,
+        source: AurDepSource,
+    },
+    ResolutionComplete {
+        layers: usize,
+        aur_packages: usize,
+        repo_deps: usize,
+    },
+    CloningRepo {
+        package: String,
+    },
+    BuildStarted {
+        package: String,
+    },
+    BuildOutput {
+        package: String,
+        line: String,
+    },
+    BuildCompleted {
+        package: String,
+        artifacts: Vec<String>,
+    },
+    LayerBoundary {
+        layer: usize,
+        total: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,4 +153,20 @@ pub enum LogLevel {
 
 pub trait InstallSink {
     fn event(&mut self, event: InstallEvent);
+}
+
+pub fn read_event_stream<R: std::io::BufRead, S: InstallSink + ?Sized>(
+    reader: R,
+    sink: &mut S,
+) {
+    for line in reader.lines() {
+        match line {
+            Ok(text) => {
+                if let Ok(event) = serde_json::from_str::<InstallEvent>(&text) {
+                    sink.event(event);
+                }
+            }
+            Err(_) => break,
+        }
+    }
 }

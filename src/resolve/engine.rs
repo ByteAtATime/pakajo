@@ -27,7 +27,6 @@ fn upsert_repo(nodes: &mut HashMap<String, InstallNode>, r: &RepoPackage, reason
                     source: Source::Repo,
                     reason,
                     version: r.version.clone(),
-                    repo: Some(r.db.clone()),
                     aur_info: None,
                 },
             );
@@ -46,7 +45,6 @@ fn upsert_aur(nodes: &mut HashMap<String, InstallNode>, pkg: AurInfo, reason: Re
                     source: Source::Aur,
                     reason,
                     version: pkg.version.clone(),
-                    repo: None,
                     aur_info: Some(pkg),
                 },
             );
@@ -89,7 +87,6 @@ pub fn resolve(
                 source: Source::Aur,
                 reason: Reason::Explicit,
                 version: pkg.version.clone(),
-                repo: None,
                 aur_info: Some(pkg.clone()),
             },
         );
@@ -273,7 +270,9 @@ mod tests {
     use super::resolve;
     use crate::aur::{AurClient, AurInfo};
     use crate::resolve::satisfies::{satisfies_pkg, split_dep};
-    use crate::resolve::{AlpmDb, AurQuery, BuildPlan, PackageDb, RepoPackage};
+    use crate::resolve::sources::{AurQuery, PackageDb};
+    use crate::resolve::types::RepoPackage;
+    use crate::resolve::{AlpmDb, BuildPlan};
     use std::collections::HashMap;
 
     #[derive(Clone)]
@@ -324,7 +323,6 @@ mod tests {
                 .map(|p| RepoPackage {
                     name: p.name.clone(),
                     version: p.version.clone(),
-                    db: "core".into(),
                 })
         }
     }
