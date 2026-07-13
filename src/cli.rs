@@ -1,4 +1,5 @@
 use std::io::Write as _;
+use std::sync::Arc;
 
 use anyhow::Context as _;
 
@@ -7,6 +8,9 @@ use crate::events::{
     TransactionSummary,
 };
 use crate::install::{self, InstallTarget};
+use crate::search::{
+    RepoSearchIndex, RepoSearchProvider, SearchProvider, SearchQuery, SearchResult, merge_and_rank,
+};
 use crate::utils::format_bytes;
 
 pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
@@ -78,6 +82,49 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
         usage_error();
     }
     escalate(&positionals, true, json);
+}
+
+pub(crate) fn search_subcommand(args: impl Iterator<Item = String>) -> ! {
+    let positionals: Vec<String> = args.filter(|s| !s.starts_with('-')).collect();
+    if positionals.is_empty() {
+        eprintln!("usage: pakajo search <query>");
+        std::process::exit(2);
+    }
+    let query = positionals.join(" ");
+    exit_with_result(run_search(&query));
+}
+
+fn run_search(query: &str) -> anyhow::Result<()> {
+    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
+    let handle = crate::pacman::init_alpm(&config)?;
+    let index = RepoSearchIndex::from_alpm(&handle);
+    let provider = RepoSearchProvider::new(Arc::new(index));
+    let q = SearchQuery::new(query);
+    let rows = provider.search(&q)?;
+    let ranked = merge_and_rank(vec![rows], &q);
+    print_search_results(&ranked);
+    Ok(())
+}
+
+fn print_search_results(rows: &[SearchResult]) {
+    if rows.is_empty() {
+        return;
+    }
+    let name_width = rows.iter().map(|r| r.name.len()).max().unwrap_or(0);
+    let version_width = rows.iter().map(|r| r.version.len()).max().unwrap_or(0);
+    for row in rows {
+        let repo = row.repo.as_deref().unwrap_or("-");
+        let desc = row.description.as_deref().unwrap_or("-");
+        println!(
+            "  {:<nw$}  {:<vw$}  [{}]  {}",
+            row.name,
+            row.version,
+            repo,
+            desc,
+            nw = name_width,
+            vw = version_width,
+        );
+    }
 }
 
 fn root_install(positionals: &[String], as_deps: bool, json: bool) -> anyhow::Result<()> {

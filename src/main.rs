@@ -10,6 +10,7 @@ mod package_listing;
 mod pacman;
 mod resolve;
 mod root;
+mod search;
 mod utils;
 
 use crate::{
@@ -24,6 +25,7 @@ fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let target_package = match args.next().as_deref() {
         Some("install") => cli::install_subcommand(args),
+        Some("search") => cli::search_subcommand(args),
         Some(name) => name.to_string(),
         None => "sl".to_string(),
     };
