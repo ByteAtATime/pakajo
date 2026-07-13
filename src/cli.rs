@@ -169,11 +169,15 @@ fn exit_with_result(result: anyhow::Result<()>) -> ! {
 
 pub(crate) struct ConsoleSink {
     to_build: usize,
+    last_progress: Option<(ProgressPhase, String, i32)>,
 }
 
 impl ConsoleSink {
     pub(crate) fn new() -> Self {
-        Self { to_build: 0 }
+        Self {
+            to_build: 0,
+            last_progress: None,
+        }
     }
 
     fn print_event(&mut self, event: &InstallEvent) {
@@ -242,6 +246,11 @@ impl ConsoleSink {
                 current,
                 total,
             } => {
+                let key = (*phase, package.clone(), *percent);
+                if self.last_progress.as_ref() == Some(&key) {
+                    return;
+                }
+                self.last_progress = Some(key);
                 print_progress(*phase, package, *percent, *current, *total);
             }
             InstallEvent::HookRun {

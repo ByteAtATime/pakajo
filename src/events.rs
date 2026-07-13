@@ -130,7 +130,7 @@ pub enum DownloadResult {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProgressPhase {
     Add,
     Upgrade,
