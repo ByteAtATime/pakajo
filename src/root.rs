@@ -82,8 +82,7 @@ impl PakajoRoot {
                 }
             };
 
-            let outcome = match Command::new("pkexec")
-                .arg(&exe)
+            let outcome = match Command::new(&exe)
                 .arg("install")
                 .arg("--json")
                 .arg(&name)
@@ -137,7 +136,7 @@ impl PakajoRoot {
             }
             StreamItem::Done(ChildOutcome::NotFound) => {
                 self.set_progress(
-                    InstallProgress::Failed("pkexec not found / polkit missing".into()),
+                    InstallProgress::Failed("install child not found".into()),
                     cx,
                 );
             }
