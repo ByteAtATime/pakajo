@@ -13,11 +13,7 @@ pub fn lookup(alpm: &Alpm, aur: &AurClient, name: &str) -> Option<Package> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        aur::AurClient,
-        package::PackageSource,
-        pacman::init_alpm,
-    };
+    use crate::{aur::AurClient, package::PackageSource, pacman::init_alpm};
 
     #[test]
     #[ignore]
@@ -29,8 +25,8 @@ mod tests {
         let sl = lookup(&alpm, &aur, "sl").expect("sl should resolve from repo");
         assert_eq!(sl.source, PackageSource::Repo);
 
-        let chrome = lookup(&alpm, &aur, "google-chrome")
-            .expect("google-chrome should resolve via AUR");
+        let chrome =
+            lookup(&alpm, &aur, "google-chrome").expect("google-chrome should resolve via AUR");
         assert_eq!(chrome.source, PackageSource::Aur);
         assert_eq!(chrome.repo.as_deref(), Some("aur"));
 

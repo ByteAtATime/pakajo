@@ -1,9 +1,15 @@
-use std::{io::{self, BufRead}, process::{Command, ExitStatus, Stdio}};
+use crate::{
+    aur::AurClient, lookup::lookup, package::is_installed, package_listing::PackageListing,
+    pacman::init_alpm,
+};
 use alpm::Alpm;
 use futures::StreamExt as _;
 use gpui::*;
 use gpui_component::{ActiveTheme as _, StyledExt as _};
-use crate::{aur::AurClient, lookup::lookup, pacman::init_alpm, package::is_installed, package_listing::PackageListing};
+use std::{
+    io::{self, BufRead},
+    process::{Command, ExitStatus, Stdio},
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum InstallProgress {
@@ -174,16 +180,17 @@ impl Render for PakajoRoot {
         if !self.lookup_attempted {
             self.lookup_attempted = true;
             let weak_root = cx.weak_entity();
-            self.package_listing = lookup(&self.alpm_handle, &self.aur_client, &self.target_package).map(|package| {
-                let installed = is_installed(&self.alpm_handle, &package.name);
-                cx.new(|_| PackageListing {
-                    pkg: package,
-                    installed,
-                    active_tooltip: None,
-                    root: weak_root,
-                    install_progress: self.install_progress.clone(),
-                })
-            });
+            self.package_listing =
+                lookup(&self.alpm_handle, &self.aur_client, &self.target_package).map(|package| {
+                    let installed = is_installed(&self.alpm_handle, &package.name);
+                    cx.new(|_| PackageListing {
+                        pkg: package,
+                        installed,
+                        active_tooltip: None,
+                        root: weak_root,
+                        install_progress: self.install_progress.clone(),
+                    })
+                });
         }
 
         let not_found = (self.lookup_attempted && self.package_listing.is_none()).then(|| {

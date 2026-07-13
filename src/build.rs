@@ -1,6 +1,6 @@
 use std::io::BufRead as _;
 use std::path::{Path, PathBuf};
-use std::process::{Stdio, Child};
+use std::process::{Child, Stdio};
 
 use anyhow::Context as _;
 
@@ -128,8 +128,8 @@ fn clone_dir(pkgbase: &str) -> anyhow::Result<PathBuf> {
     let cache = match std::env::var("XDG_CACHE_HOME") {
         Ok(xdg) => PathBuf::from(xdg),
         Err(_) => {
-            let home = std::env::var("HOME")
-                .context("no cache directory: set XDG_CACHE_HOME or HOME")?;
+            let home =
+                std::env::var("HOME").context("no cache directory: set XDG_CACHE_HOME or HOME")?;
             PathBuf::from(home).join(".cache")
         }
     };
@@ -228,10 +228,7 @@ fn run_makepkg_streaming<S: InstallSink + ?Sized>(
     Ok(())
 }
 
-pub(crate) fn spawn_install_child(
-    targets: &[String],
-    as_deps: bool,
-) -> anyhow::Result<Child> {
+pub(crate) fn spawn_install_child(targets: &[String], as_deps: bool) -> anyhow::Result<Child> {
     let exe = std::env::current_exe().context("failed to determine executable path")?;
     let mut cmd = crate::cli::escalation_command(&exe.to_string_lossy());
     cmd.arg("install").arg("--json");
@@ -273,21 +270,18 @@ mod tests {
     #[test]
     fn is_valid_pkgbase_table() {
         let valid = ["google-chrome", "a.b+c-d", "1", "A", "abc-def_ghi+jkl.mno"];
-        let invalid = [
-            "",
-            "../x",
-            "-r",
-            "a/b",
-            "a b",
-            "--global",
-            ".hidden",
-            "a:b",
-        ];
+        let invalid = ["", "../x", "-r", "a/b", "a b", "--global", ".hidden", "a:b"];
         for input in valid {
-            assert!(is_valid_pkgbase(input).is_some(), "is_valid_pkgbase({input:?})");
+            assert!(
+                is_valid_pkgbase(input).is_some(),
+                "is_valid_pkgbase({input:?})"
+            );
         }
         for input in invalid {
-            assert!(is_valid_pkgbase(input).is_none(), "is_valid_pkgbase({input:?})");
+            assert!(
+                is_valid_pkgbase(input).is_none(),
+                "is_valid_pkgbase({input:?})"
+            );
         }
     }
 }

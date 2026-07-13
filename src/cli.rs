@@ -3,8 +3,8 @@ use std::io::Write as _;
 use anyhow::Context as _;
 
 use crate::events::{
-    DownloadResult, InstallEvent, InstallSink, LogLevel, PackageOp, ProgressPhase,
-    SummaryPackage, TransactionSummary,
+    DownloadResult, InstallEvent, InstallSink, LogLevel, PackageOp, ProgressPhase, SummaryPackage,
+    TransactionSummary,
 };
 use crate::install::{self, InstallTarget};
 use crate::utils::format_bytes;
@@ -81,7 +81,10 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
 }
 
 fn root_install(positionals: &[String], as_deps: bool, json: bool) -> anyhow::Result<()> {
-    let targets = positionals.iter().map(|s| classify_target(s)).collect::<Vec<_>>();
+    let targets = positionals
+        .iter()
+        .map(|s| classify_target(s))
+        .collect::<Vec<_>>();
     let needs_lookup = targets.iter().any(|t| matches!(t, InstallTarget::Repo(_)));
     if needs_lookup {
         let config = pacmanconf::Config::new().context("failed to read pacman config")?;
@@ -90,9 +93,7 @@ fn root_install(positionals: &[String], as_deps: bool, json: bool) -> anyhow::Re
             if let InstallTarget::Repo(name) = target
                 && crate::pacman::find_pkg(&handle, name).is_none()
             {
-                anyhow::bail!(
-                    "cannot build packages as root; re-run without privilege escalation"
-                );
+                anyhow::bail!("cannot build packages as root; re-run without privilege escalation");
             }
         }
     }
@@ -339,7 +340,11 @@ fn confirm_build(plan: &crate::resolve::BuildPlan) -> bool {
         })
         .collect();
 
-    let name_width = rows.iter().map(|(name, _, _)| name.len()).max().unwrap_or(0);
+    let name_width = rows
+        .iter()
+        .map(|(name, _, _)| name.len())
+        .max()
+        .unwrap_or(0);
     let version_width = rows
         .iter()
         .map(|(_, version, _)| version.len())
@@ -369,11 +374,13 @@ fn confirm_build(plan: &crate::resolve::BuildPlan) -> bool {
 
     let aur_count = rows.len();
     let repo_dep_count: usize = plan.layers.iter().map(|l| l.repo_deps.len()).sum();
-    let aur_word = if aur_count == 1 { "package" } else { "packages" };
+    let aur_word = if aur_count == 1 {
+        "package"
+    } else {
+        "packages"
+    };
     if repo_dep_count > 0 {
-        println!(
-            ":: {aur_count} {aur_word} to build, {repo_dep_count} to install"
-        );
+        println!(":: {aur_count} {aur_word} to build, {repo_dep_count} to install");
     } else {
         println!(":: {aur_count} {aur_word} to build");
     }

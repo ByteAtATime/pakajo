@@ -114,9 +114,9 @@ pub fn resolve(
             let dep_name = split_dep(&dep_string).name.to_string();
 
             if graph.exists(&dep_name) {
-                let matched = nodes.get(&dep_name).is_some_and(|n| {
-                    pkg_satisfies(&n.name, &n.version, &dep_string)
-                });
+                let matched = nodes
+                    .get(&dep_name)
+                    .is_some_and(|n| pkg_satisfies(&n.name, &n.version, &dep_string));
                 if matched {
                     graph.depend_on(&parent, &dep_name);
                     if let Some(node) = nodes.get_mut(&dep_name) {
@@ -216,7 +216,10 @@ pub fn resolve(
                 }
                 graph.depend_on(&parent, &chosen.name);
                 upsert_aur(&mut nodes, chosen.clone(), reason);
-                provider_cache.entry(dep_name).or_default().push(chosen.clone());
+                provider_cache
+                    .entry(dep_name)
+                    .or_default()
+                    .push(chosen.clone());
                 if seen_for_expansion.insert(chosen.name.clone()) {
                     worklist.push_back(chosen);
                 }
@@ -283,7 +286,11 @@ mod tests {
     }
 
     fn pkg(name: &str, version: &str) -> MockPkg {
-        MockPkg { name: name.into(), version: version.into(), provides: vec![] }
+        MockPkg {
+            name: name.into(),
+            version: version.into(),
+            provides: vec![],
+        }
     }
 
     fn pkg_p(name: &str, version: &str, provides: &[&str]) -> MockPkg {
@@ -301,19 +308,30 @@ mod tests {
 
     impl MockDb {
         fn empty() -> Self {
-            Self { local: vec![], repo: vec![] }
+            Self {
+                local: vec![],
+                repo: vec![],
+            }
         }
         fn local(local: Vec<MockPkg>) -> Self {
-            Self { local, repo: vec![] }
+            Self {
+                local,
+                repo: vec![],
+            }
         }
         fn repo(repo: Vec<MockPkg>) -> Self {
-            Self { local: vec![], repo }
+            Self {
+                local: vec![],
+                repo,
+            }
         }
     }
 
     impl PackageDb for MockDb {
         fn local_satisfier_exists(&self, dep: &str) -> bool {
-            self.local.iter().any(|p| satisfies_pkg(&p.name, &p.version, &p.provides, dep))
+            self.local
+                .iter()
+                .any(|p| satisfies_pkg(&p.name, &p.version, &p.provides, dep))
         }
 
         fn sync_satisfier(&self, dep: &str) -> Option<RepoPackage> {
@@ -335,7 +353,10 @@ mod tests {
 
     impl AurQuery for MockAur {
         fn info_many(&self, names: &[String]) -> anyhow::Result<Vec<AurInfo>> {
-            Ok(names.iter().filter_map(|n| self.0.get(n).cloned()).collect())
+            Ok(names
+                .iter()
+                .filter_map(|n| self.0.get(n).cloned())
+                .collect())
         }
 
         fn search_by_provides(&self, dep: &str) -> anyhow::Result<Vec<AurInfo>> {
@@ -343,13 +364,22 @@ mod tests {
             Ok(self
                 .0
                 .values()
-                .filter(|p| p.name == target || p.provides.iter().any(|pr| split_dep(pr).name == target))
+                .filter(|p| {
+                    p.name == target || p.provides.iter().any(|pr| split_dep(pr).name == target)
+                })
                 .cloned()
                 .collect())
         }
     }
 
-    fn aur(name: &str, version: &str, deps: &[&str], makedeps: &[&str], checkdeps: &[&str], provides: &[&str]) -> AurInfo {
+    fn aur(
+        name: &str,
+        version: &str,
+        deps: &[&str],
+        makedeps: &[&str],
+        checkdeps: &[&str],
+        provides: &[&str],
+    ) -> AurInfo {
         AurInfo {
             id: 0,
             name: name.into(),
@@ -443,7 +473,10 @@ mod tests {
         let plan = resolve(&db, &aur, &["t".to_string()], false).unwrap();
         assert_eq!(plan.layers.len(), 2);
         assert_eq!(plan.layers[0].aur[0].name, "libfoo-provider");
-        assert_eq!(aur_names(&plan), vec!["libfoo-provider".to_string(), "t".to_string()]);
+        assert_eq!(
+            aur_names(&plan),
+            vec!["libfoo-provider".to_string(), "t".to_string()]
+        );
     }
 
     #[test]
@@ -531,11 +564,7 @@ mod tests {
         lib_a.popularity = 5.0;
         let mut lib_b = aur("lib-b", "1.0", &[], &[], &[], &["lib"]);
         lib_b.popularity = 10.0;
-        let aur = mock_aur(vec![
-            aur("t", "1.0", &["lib"], &[], &[], &[]),
-            lib_a,
-            lib_b,
-        ]);
+        let aur = mock_aur(vec![aur("t", "1.0", &["lib"], &[], &[], &[]), lib_a, lib_b]);
         let plan1 = resolve(&db, &aur, &["t".to_string()], false).unwrap();
         let plan2 = resolve(&db, &aur, &["t".to_string()], false).unwrap();
         assert_eq!(format!("{plan1:?}"), format!("{plan2:?}"));

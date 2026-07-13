@@ -12,10 +12,13 @@ mod resolve;
 mod root;
 mod utils;
 
+use crate::{
+    pacman::init_alpm,
+    root::{InstallProgress, PakajoRoot},
+};
 use anyhow::Context as _;
 use gpui::*;
 use gpui_component::*;
-use crate::{pacman::init_alpm, root::{PakajoRoot, InstallProgress}};
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
