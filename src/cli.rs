@@ -9,10 +9,7 @@ use crate::events::{
     TransactionSummary,
 };
 use crate::install::{self, InstallTarget};
-use crate::search::{
-    AurSearchProvider, RepoSearchIndex, RepoSearchProvider, SearchProvider, SearchQuery,
-    SearchResult, merge_and_rank,
-};
+use crate::search::{AurSearchProvider, RepoSearchIndex, RepoSearchProvider, SearchResult};
 use crate::utils::format_bytes;
 
 pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
@@ -102,37 +99,12 @@ fn run_search(query: &str) -> anyhow::Result<()> {
     let index = RepoSearchIndex::from_alpm(&handle);
     let repo_provider = RepoSearchProvider::new(Arc::new(index));
     let aur_provider = AurSearchProvider::new(Arc::new(AurClient::new()));
-    let q = SearchQuery::new(query);
-
-    let repo_result = repo_provider.search(&q);
-    let aur_result = aur_provider.search(&q);
-
-    let mut ok_rows: Vec<Vec<SearchResult>> = Vec::new();
-    let mut failures: Vec<(&str, anyhow::Error)> = Vec::new();
-    match repo_result {
-        Ok(rows) => ok_rows.push(rows),
-        Err(e) => failures.push(("repo", e)),
-    }
-    match aur_result {
-        Ok(rows) => ok_rows.push(rows),
-        Err(e) => failures.push(("aur", e)),
-    }
-
-    let ranked = merge_and_rank(ok_rows, &q);
-    print_search_results(&ranked);
-    for (name, err) in &failures {
-        eprintln!("  {name}: {}", friendly_search_error(err));
+    let outcome = crate::search::execute_search(&repo_provider, &aur_provider, query);
+    print_search_results(&outcome.results);
+    if let Some(err) = &outcome.aur_error {
+        eprintln!("  aur: {err}");
     }
     Ok(())
-}
-
-fn friendly_search_error(err: &anyhow::Error) -> String {
-    let msg = format!("{err:#}");
-    if msg.contains("Too many package results") {
-        "too many results — narrow your search".to_string()
-    } else {
-        msg.strip_prefix("AUR RPC error: ").unwrap_or(&msg).to_string()
-    }
 }
 
 fn print_search_results(rows: &[SearchResult]) {

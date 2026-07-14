@@ -1,14 +1,23 @@
 use crate::{
-    aur::AurClient, lookup::lookup, package::is_installed, package_detail::PackageDetail,
+    aur::AurClient,
+    package::is_installed,
+    package_detail::PackageDetail,
     pacman::init_alpm,
+    search::{self, AurSearchProvider, RepoSearchIndex, RepoSearchProvider, SearchResult},
 };
 use alpm::Alpm;
 use futures::StreamExt as _;
 use gpui::*;
-use gpui_component::{ActiveTheme as _, StyledExt as _};
+use gpui_component::{
+    input::{Input, InputEvent, InputState},
+    ActiveTheme as _,
+    StyledExt as _,
+};
 use std::{
     io::{self, BufRead},
     process::{Command, ExitStatus, Stdio},
+    sync::Arc,
+    time::Duration,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,16 +40,127 @@ enum StreamItem {
     Done(ChildOutcome),
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum SearchState {
+    Idle,
+    Searching,
+    Done,
+}
+
 pub struct PakajoRoot {
     pub alpm_handle: Alpm,
-    pub aur_client: AurClient,
+    pub aur_client: Arc<AurClient>,
     pub target_package: String,
     pub package_detail: Option<Entity<PackageDetail>>,
-    pub lookup_attempted: bool,
     pub install_progress: InstallProgress,
+    search_input: Entity<InputState>,
+    repo_index: Arc<RepoSearchIndex>,
+    _subscriptions: Vec<Subscription>,
+    search_seq: u64,
+    results: Vec<SearchResult>,
+    search_state: SearchState,
+    aur_error: Option<String>,
 }
 
 impl PakajoRoot {
+    pub fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        alpm_handle: Alpm,
+        aur_client: AurClient,
+    ) -> Self {
+        let repo_index = Arc::new(RepoSearchIndex::from_alpm(&alpm_handle));
+        let aur_client = Arc::new(aur_client);
+        let input_window = &mut *window;
+        let search_input = cx.new(|cx| {
+            InputState::new(input_window, cx).placeholder("Search packages…")
+        });
+        let sub_window = &mut *window;
+        let subscription = cx.subscribe_in(
+            &search_input,
+            sub_window,
+            |this, _state, ev: &InputEvent, _window, cx| match ev {
+                InputEvent::Change => this.on_search_change(cx),
+                _ => {}
+            },
+        );
+        Self {
+            alpm_handle,
+            aur_client,
+            target_package: String::new(),
+            package_detail: None,
+            install_progress: InstallProgress::Idle,
+            search_input,
+            repo_index,
+            _subscriptions: vec![subscription],
+            search_seq: 0,
+            results: Vec::new(),
+            search_state: SearchState::Idle,
+            aur_error: None,
+        }
+    }
+
+    fn on_search_change(&mut self, cx: &mut Context<Self>) {
+        self.search_seq = self.search_seq.wrapping_add(1);
+        let seq = self.search_seq;
+        let text = self.search_input.read(cx).value().to_string();
+
+        if text.trim().is_empty() {
+            self.results.clear();
+            self.aur_error = None;
+            self.search_state = SearchState::Idle;
+            cx.notify();
+            return;
+        }
+
+        self.search_state = SearchState::Searching;
+        self.aur_error = None;
+        cx.notify();
+
+        let repo_index = self.repo_index.clone();
+        let aur_client = self.aur_client.clone();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(300))
+                .await;
+
+            let still_valid = this
+                .update(cx, |this, _cx| this.search_seq == seq)
+                .unwrap_or(false);
+            if !still_valid {
+                return;
+            }
+
+            let outcome = cx
+                .background_executor()
+                .spawn(async move { execute_search_for(&repo_index, &aur_client, &text) })
+                .await;
+
+            let _ = this.update(cx, |this, cx| {
+                if this.search_seq != seq {
+                    return;
+                }
+                this.results = outcome.results;
+                this.aur_error = outcome.aur_error;
+                this.search_state = SearchState::Done;
+                for result in &this.results {
+                    eprintln!(
+                        "  {} {} [{}] {}",
+                        result.name,
+                        result.version,
+                        result.repo.as_deref().unwrap_or("-"),
+                        result.description.as_deref().unwrap_or("-"),
+                    );
+                }
+                if let Some(err) = &this.aur_error {
+                    eprintln!("  aur: {err}");
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn set_progress(&mut self, progress: InstallProgress, cx: &mut Context<Self>) {
         if let Some(detail) = &self.package_detail {
             detail.update(cx, |detail, cx| {
@@ -176,39 +296,35 @@ impl PakajoRoot {
 }
 
 impl Render for PakajoRoot {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.lookup_attempted {
-            self.lookup_attempted = true;
-            let weak_root = cx.weak_entity();
-            self.package_detail =
-                lookup(&self.alpm_handle, &self.aur_client, &self.target_package).map(|package| {
-                    let installed = is_installed(&self.alpm_handle, &package.name);
-                    cx.new(|_| PackageDetail {
-                        pkg: package,
-                        installed,
-                        active_tooltip: None,
-                        root: weak_root,
-                        install_progress: self.install_progress.clone(),
-                    })
-                });
-        }
-
-        let not_found = (self.lookup_attempted && self.package_detail.is_none()).then(|| {
-            div()
-                .text_color(cx.theme().muted_foreground)
-                .child(format!("Package '{}' not found", self.target_package))
-        });
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let status = match self.search_state {
+            SearchState::Idle => "Search for packages to get started".to_string(),
+            SearchState::Searching => "Searching…".to_string(),
+            SearchState::Done => {
+                if self.results.is_empty() {
+                    "No packages found".to_string()
+                } else {
+                    format!("{} result(s)", self.results.len())
+                }
+            }
+        };
 
         div()
             .v_flex()
             .gap_4()
             .p_4()
             .size_full()
-            .items_center()
-            .justify_center()
             .font_family("Inter")
-            .children(self.package_detail.clone())
-            .children(not_found)
+            .child(Input::new(&self.search_input))
+            .child(
+                div()
+                    .flex_1()
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(status),
+            )
     }
 }
 
@@ -224,4 +340,14 @@ fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
         Some(exit) => ChildOutcome::Failed(format!("install failed (exit {exit})")),
         None => ChildOutcome::Failed("install killed by signal".to_string()),
     }
+}
+
+fn execute_search_for(
+    repo_index: &Arc<RepoSearchIndex>,
+    aur_client: &Arc<AurClient>,
+    text: &str,
+) -> search::SearchOutcome {
+    let repo_provider = RepoSearchProvider::new(repo_index.clone());
+    let aur_provider = AurSearchProvider::new(aur_client.clone());
+    search::execute_search(&repo_provider, &aur_provider, text)
 }

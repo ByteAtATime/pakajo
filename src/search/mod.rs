@@ -51,6 +51,41 @@ pub trait SearchProvider: Send + Sync {
     fn name(&self) -> &'static str;
 }
 
+pub(crate) struct SearchOutcome {
+    pub results: Vec<SearchResult>,
+    pub aur_error: Option<String>,
+}
+
+pub(crate) fn execute_search(
+    repo: &RepoSearchProvider,
+    aur: &AurSearchProvider,
+    text: &str,
+) -> SearchOutcome {
+    let q = SearchQuery::new(text);
+    let repo_rows = repo.search(&q).expect("something went very wrong");
+    let mut ok_rows: Vec<Vec<SearchResult>> = vec![repo_rows];
+    let aur_error = match aur.search(&q) {
+        Ok(rows) => {
+            ok_rows.push(rows);
+            None
+        }
+        Err(err) => Some(friendly_search_error(&err)),
+    };
+    let results = merge_and_rank(ok_rows, &q);
+    SearchOutcome { results, aur_error }
+}
+
+pub(crate) fn friendly_search_error(err: &anyhow::Error) -> String {
+    let msg = format!("{err:#}");
+    if msg.contains("Too many package results") {
+        "Too many results! Please narrow your search".to_string()
+    } else {
+        msg.strip_prefix("AUR RPC error: ")
+            .unwrap_or(&msg)
+            .to_string()
+    }
+}
+
 pub fn merge_and_rank(per_provider: Vec<Vec<SearchResult>>, q: &SearchQuery) -> Vec<SearchResult> {
     if q.text.is_empty() {
         return Vec::new();
