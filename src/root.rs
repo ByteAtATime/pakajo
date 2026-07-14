@@ -1,17 +1,18 @@
 use crate::{
     aur::AurClient,
-    package::is_installed,
+    package::{Package, PackageSource, is_installed},
     package_detail::PackageDetail,
-    pacman::init_alpm,
+    pacman::{find_pkg, init_alpm},
     search::{self, AurSearchProvider, RepoSearchIndex, RepoSearchProvider, SearchResult},
 };
 use alpm::Alpm;
 use futures::StreamExt as _;
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
+    ActiveTheme as _, StyledExt as _,
     input::{Input, InputEvent, InputState},
-    ActiveTheme as _,
-    StyledExt as _,
+    spinner::Spinner,
 };
 use std::{
     io::{self, BufRead},
@@ -47,11 +48,16 @@ enum SearchState {
     Done,
 }
 
+enum DetailPane {
+    None,
+    Loading,
+    Ready(Entity<PackageDetail>),
+    Error(String),
+}
+
 pub struct PakajoRoot {
     pub alpm_handle: Alpm,
     pub aur_client: Arc<AurClient>,
-    pub target_package: String,
-    pub package_detail: Option<Entity<PackageDetail>>,
     pub install_progress: InstallProgress,
     search_input: Entity<InputState>,
     repo_index: Arc<RepoSearchIndex>,
@@ -60,6 +66,9 @@ pub struct PakajoRoot {
     results: Vec<SearchResult>,
     search_state: SearchState,
     aur_error: Option<String>,
+    detail: DetailPane,
+    selected: Option<String>,
+    detail_seq: u64,
 }
 
 impl PakajoRoot {
@@ -72,9 +81,8 @@ impl PakajoRoot {
         let repo_index = Arc::new(RepoSearchIndex::from_alpm(&alpm_handle));
         let aur_client = Arc::new(aur_client);
         let input_window = &mut *window;
-        let search_input = cx.new(|cx| {
-            InputState::new(input_window, cx).placeholder("Search packages…")
-        });
+        let search_input =
+            cx.new(|cx| InputState::new(input_window, cx).placeholder("Search packages…"));
         let sub_window = &mut *window;
         let subscription = cx.subscribe_in(
             &search_input,
@@ -87,8 +95,6 @@ impl PakajoRoot {
         Self {
             alpm_handle,
             aur_client,
-            target_package: String::new(),
-            package_detail: None,
             install_progress: InstallProgress::Idle,
             search_input,
             repo_index,
@@ -97,6 +103,9 @@ impl PakajoRoot {
             results: Vec::new(),
             search_state: SearchState::Idle,
             aur_error: None,
+            detail: DetailPane::None,
+            selected: None,
+            detail_seq: 0,
         }
     }
 
@@ -143,17 +152,16 @@ impl PakajoRoot {
                 this.results = outcome.results;
                 this.aur_error = outcome.aur_error;
                 this.search_state = SearchState::Done;
-                for result in &this.results {
-                    eprintln!(
-                        "  {} {} [{}] {}",
-                        result.name,
-                        result.version,
-                        result.repo.as_deref().unwrap_or("-"),
-                        result.description.as_deref().unwrap_or("-"),
-                    );
-                }
                 if let Some(err) = &this.aur_error {
                     eprintln!("  aur: {err}");
+                }
+                let first = this.results.first().map(|r| (r.name.clone(), r.source));
+                if let Some((name, source)) = first {
+                    let unchanged = matches!(this.detail, DetailPane::Ready(_) | DetailPane::Loading)
+                        && this.selected.as_deref() == Some(name.as_str());
+                    if !unchanged {
+                        this.select(name, source, cx);
+                    }
                 }
                 cx.notify();
             });
@@ -161,9 +169,70 @@ impl PakajoRoot {
         .detach();
     }
 
+    fn select(&mut self, name: String, source: PackageSource, cx: &mut Context<Self>) {
+        self.detail_seq = self.detail_seq.wrapping_add(1);
+        let seq = self.detail_seq;
+        self.selected = Some(name.clone());
+        self.detail = DetailPane::Loading;
+        cx.notify();
+
+        match source {
+            PackageSource::Repo => {
+                if let Some(pkg) = find_pkg(&self.alpm_handle, &name) {
+                    self.set_detail(Package::from(pkg), cx);
+                } else {
+                    self.detail = DetailPane::Error(format!("package not found: {name}"));
+                    cx.notify();
+                }
+            }
+            PackageSource::Aur => {
+                let aur = self.aur_client.clone();
+                cx.spawn(async move |this, cx| {
+                    let name_for_info = name.clone();
+                    let info = cx
+                        .background_executor()
+                        .spawn(async move { aur.info(&name_for_info) })
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.detail_seq != seq {
+                            return;
+                        }
+                        match info {
+                            Ok(Some(a)) => this.set_detail(Package::from(a), cx),
+                            Ok(None) => {
+                                this.detail = DetailPane::Error(format!("package not found: {name}"));
+                                cx.notify();
+                            }
+                            Err(e) => {
+                                this.detail = DetailPane::Error(search::friendly_search_error(&e));
+                                cx.notify();
+                            }
+                        }
+                    });
+                })
+                .detach();
+            }
+        }
+    }
+
+    fn set_detail(&mut self, pkg: Package, cx: &mut Context<Self>) {
+        let installed = is_installed(&self.alpm_handle, &pkg.name);
+        let root = cx.weak_entity();
+        let install_progress = self.install_progress.clone();
+        let entity = cx.new(|_| PackageDetail {
+            pkg,
+            installed,
+            active_tooltip: None,
+            root,
+            install_progress,
+        });
+        self.detail = DetailPane::Ready(entity);
+        cx.notify();
+    }
+
     fn set_progress(&mut self, progress: InstallProgress, cx: &mut Context<Self>) {
-        if let Some(detail) = &self.package_detail {
-            detail.update(cx, |detail, cx| {
+        if let DetailPane::Ready(entity) = &self.detail {
+            entity.update(cx, |detail, cx| {
                 detail.install_progress = progress.clone();
                 cx.notify();
             });
@@ -176,9 +245,12 @@ impl PakajoRoot {
         if matches!(self.install_progress, InstallProgress::Running) {
             return;
         }
+        let name = match &self.detail {
+            DetailPane::Ready(entity) => entity.read(cx).pkg.name.clone(),
+            _ => return,
+        };
         self.set_progress(InstallProgress::Running, cx);
 
-        let name = self.target_package.clone();
         let exe = match std::env::current_exe() {
             Ok(path) => path,
             Err(error) => {
@@ -279,15 +351,10 @@ impl PakajoRoot {
             self.alpm_handle = handle;
         }
 
-        let installed = if let Some(detail) = &self.package_detail {
-            let pkg_name = detail.read(cx).pkg.name.clone();
-            is_installed(&self.alpm_handle, &pkg_name)
-        } else {
-            false
-        };
-
-        if let Some(detail) = &self.package_detail {
-            detail.update(cx, |detail, cx| {
+        if let DetailPane::Ready(entity) = &self.detail {
+            let pkg_name = entity.read(cx).pkg.name.clone();
+            let installed = is_installed(&self.alpm_handle, &pkg_name);
+            entity.update(cx, |detail, cx| {
                 detail.installed = installed;
                 cx.notify();
             });
@@ -295,18 +362,157 @@ impl PakajoRoot {
     }
 }
 
+impl PakajoRoot {
+    fn result_row(
+        &self,
+        result: &SearchResult,
+        entity: Entity<PakajoRoot>,
+        cx: &App,
+    ) -> impl IntoElement {
+        let is_selected = self.selected.as_deref() == Some(result.name.as_str());
+        let badge = result.repo.as_deref().unwrap_or("aur");
+        let entity_for_click = entity.clone();
+        let name_for_click = result.name.clone();
+        let source_for_click = result.source;
+        let accent = cx.theme().accent;
+        let muted = cx.theme().muted_foreground;
+        div()
+            .id(result.name.clone())
+            .v_flex()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .when(is_selected, |row| row.bg(accent.opacity(0.12)))
+            .hover(|s| s.bg(accent.opacity(0.06)))
+            .on_click(move |_, _, cx| {
+                entity_for_click.update(cx, |this, cx| {
+                    this.select(name_for_click.clone(), source_for_click, cx)
+                });
+            })
+            .child(
+                div()
+                    .h_flex()
+                    .items_baseline()
+                    .gap_2()
+                    .child(div().font_semibold().child(result.name.clone()))
+                    .child(
+                        div()
+                            .text_color(muted)
+                            .text_size(rems(0.75))
+                            .child(badge.to_string()),
+                    )
+                    .child(
+                        div()
+                            .ml_auto()
+                            .text_color(muted)
+                            .text_size(rems(0.75))
+                            .child(result.version.clone()),
+                    ),
+            )
+            .children(result.description.clone().map(|d| {
+                div()
+                    .w_full()
+                    .truncate()
+                    .text_color(muted)
+                    .text_size(rems(0.8))
+                    .child(d)
+            }))
+    }
+}
+
 impl Render for PakajoRoot {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let status = match self.search_state {
-            SearchState::Idle => "Search for packages to get started".to_string(),
-            SearchState::Searching => "Searching…".to_string(),
-            SearchState::Done => {
-                if self.results.is_empty() {
-                    "No packages found".to_string()
-                } else {
-                    format!("{} result(s)", self.results.len())
-                }
+        let entity = cx.entity();
+
+        let body = if self.results.is_empty() {
+            let status = match self.search_state {
+                SearchState::Idle => "Search for packages to get started".to_string(),
+                SearchState::Searching => "Searching…".to_string(),
+                SearchState::Done => "No packages found".to_string(),
+            };
+            div()
+                .flex_1()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .text_color(cx.theme().muted_foreground)
+                .child(status)
+                .into_any_element()
+        } else {
+            let header = if matches!(self.search_state, SearchState::Searching) {
+                "Searching…".to_string()
+            } else {
+                format!("{} result(s)", self.results.len())
+            };
+
+            let mut rows: Vec<AnyElement> = Vec::with_capacity(self.results.len());
+            for result in &self.results {
+                rows.push(
+                    self.result_row(result, entity.clone(), cx)
+                        .into_any_element(),
+                );
             }
+
+            let list_pane = div()
+                .w(rems(24.))
+                .flex_grow_0()
+                .h_full()
+                .v_flex()
+                .child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(header),
+                )
+                .child(
+                    div()
+                        .id("results")
+                        .flex_1()
+                        .overflow_y_scroll()
+                        .v_flex()
+                        .children(rows),
+                );
+
+            let detail_pane = match &self.detail {
+                DetailPane::None => div()
+                    .flex_1()
+                    .h_full()
+                    .items_center()
+                    .justify_center()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Select a package")
+                    .into_any_element(),
+                DetailPane::Loading => div()
+                    .flex_1()
+                    .h_full()
+                    .items_center()
+                    .justify_center()
+                    .child(Spinner::new())
+                    .into_any_element(),
+                DetailPane::Error(message) => div()
+                    .flex_1()
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(message.clone())
+                    .into_any_element(),
+                DetailPane::Ready(detail_entity) => div()
+                    .flex_1()
+                    .h_full()
+                    .child(detail_entity.clone())
+                    .into_any_element(),
+            };
+
+            div()
+                .flex_1()
+                .size_full()
+                .h_flex()
+                .gap_4()
+                .child(list_pane)
+                .child(detail_pane)
+                .into_any_element()
         };
 
         div()
@@ -316,15 +522,7 @@ impl Render for PakajoRoot {
             .size_full()
             .font_family("Inter")
             .child(Input::new(&self.search_input))
-            .child(
-                div()
-                    .flex_1()
-                    .size_full()
-                    .items_center()
-                    .justify_center()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(status),
-            )
+            .child(body)
     }
 }
 
