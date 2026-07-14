@@ -40,6 +40,7 @@ pub struct AurInfo {
     pub last_modified: i64,
     #[serde(rename = "URLPath")]
     pub url_path: Option<String>,
+    #[serde(default)]
     pub submitter: Option<String>,
     #[serde(default)]
     pub depends: Vec<String>,
@@ -67,6 +68,7 @@ pub struct AurInfo {
 
 pub struct AurClient {
     agent: ureq::Agent,
+    search_agent: ureq::Agent,
 }
 
 impl AurClient {
@@ -75,7 +77,11 @@ impl AurClient {
             .timeout_global(Some(Duration::from_secs(30)))
             .build()
             .into();
-        Self { agent }
+        let search_agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(8)))
+            .build()
+            .into();
+        Self { agent, search_agent }
     }
 
     pub fn info(&self, name: &str) -> anyhow::Result<Option<AurInfo>> {
@@ -103,12 +109,16 @@ impl AurClient {
         Ok(all)
     }
 
-    pub fn search_by_provides(&self, name: &str) -> anyhow::Result<Vec<AurInfo>> {
-        let mut response = self
-            .agent
+    fn rpc_search(
+        &self,
+        agent: &ureq::Agent,
+        arg: &str,
+        by: &str,
+    ) -> anyhow::Result<Vec<AurInfo>> {
+        let mut response = agent
             .get(&format!("{AUR_RPC_URL}/search"))
-            .query("arg", name)
-            .query("by", "provides")
+            .query("arg", arg)
+            .query("by", by)
             .call()
             .context("AUR RPC request failed")?;
         let parsed: RpcResponse<AurInfo> = response
@@ -119,6 +129,14 @@ impl AurClient {
             anyhow::bail!("AUR RPC error: {}", parsed.error.unwrap_or_default());
         }
         Ok(parsed.results)
+    }
+
+    pub fn search(&self, arg: &str, by: &str) -> anyhow::Result<Vec<AurInfo>> {
+        self.rpc_search(&self.search_agent, arg, by)
+    }
+
+    pub fn search_by_provides(&self, name: &str) -> anyhow::Result<Vec<AurInfo>> {
+        self.rpc_search(&self.agent, name, "provides")
     }
 }
 
@@ -182,5 +200,48 @@ mod tests {
             .expect("AUR info should succeed");
         assert!(pkg.is_some());
         assert_eq!(pkg.unwrap().name, "google-chrome");
+    }
+
+    #[test]
+    fn parses_search_response_without_submitter() {
+        let sample = r#"{
+            "version": 5,
+            "type": "search",
+            "resultcount": 1,
+            "results": [
+                {
+                    "ID": 65262,
+                    "Name": "google-chrome",
+                    "PackageBaseID": 52825,
+                    "PackageBase": "google-chrome",
+                    "Version": "131.0.6778.87-1",
+                    "Description": "The popular web trusted web browser by Google",
+                    "URL": "https://www.google.com/chrome",
+                    "NumVotes": 3500,
+                    "Popularity": 12.34,
+                    "OutOfDate": null,
+                    "Maintainer": "someone",
+                    "FirstSubmitted": 1318000000,
+                    "LastModified": 1732000000,
+                    "URLPath": "/cgit/aur.git/snapshot/google-chrome.tar.gz"
+                }
+            ]
+        }"#;
+
+        let parsed: RpcResponse<AurInfo> = serde_json::from_str(sample).unwrap();
+        assert_eq!(parsed.results.len(), 1);
+        let pkg = &parsed.results[0];
+        assert_eq!(pkg.name, "google-chrome");
+        assert_eq!(pkg.submitter, None);
+    }
+
+    #[test]
+    #[ignore]
+    fn live_search() {
+        let client = AurClient::new();
+        let results = client
+            .search("google", "name-desc")
+            .expect("AUR search should succeed");
+        assert!(!results.is_empty());
     }
 }

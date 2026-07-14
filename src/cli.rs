@@ -3,13 +3,15 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 
+use crate::aur::AurClient;
 use crate::events::{
     DownloadResult, InstallEvent, InstallSink, LogLevel, PackageOp, ProgressPhase, SummaryPackage,
     TransactionSummary,
 };
 use crate::install::{self, InstallTarget};
 use crate::search::{
-    RepoSearchIndex, RepoSearchProvider, SearchProvider, SearchQuery, SearchResult, merge_and_rank,
+    AurSearchProvider, RepoSearchIndex, RepoSearchProvider, SearchProvider, SearchQuery,
+    SearchResult, merge_and_rank,
 };
 use crate::utils::format_bytes;
 
@@ -98,12 +100,39 @@ fn run_search(query: &str) -> anyhow::Result<()> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let handle = crate::pacman::init_alpm(&config)?;
     let index = RepoSearchIndex::from_alpm(&handle);
-    let provider = RepoSearchProvider::new(Arc::new(index));
+    let repo_provider = RepoSearchProvider::new(Arc::new(index));
+    let aur_provider = AurSearchProvider::new(Arc::new(AurClient::new()));
     let q = SearchQuery::new(query);
-    let rows = provider.search(&q)?;
-    let ranked = merge_and_rank(vec![rows], &q);
+
+    let repo_result = repo_provider.search(&q);
+    let aur_result = aur_provider.search(&q);
+
+    let mut ok_rows: Vec<Vec<SearchResult>> = Vec::new();
+    let mut failures: Vec<(&str, anyhow::Error)> = Vec::new();
+    match repo_result {
+        Ok(rows) => ok_rows.push(rows),
+        Err(e) => failures.push(("repo", e)),
+    }
+    match aur_result {
+        Ok(rows) => ok_rows.push(rows),
+        Err(e) => failures.push(("aur", e)),
+    }
+
+    let ranked = merge_and_rank(ok_rows, &q);
     print_search_results(&ranked);
+    for (name, err) in &failures {
+        eprintln!("  {name}: {}", friendly_search_error(err));
+    }
     Ok(())
+}
+
+fn friendly_search_error(err: &anyhow::Error) -> String {
+    let msg = format!("{err:#}");
+    if msg.contains("Too many package results") {
+        "too many results — narrow your search".to_string()
+    } else {
+        msg.strip_prefix("AUR RPC error: ").unwrap_or(&msg).to_string()
+    }
 }
 
 fn print_search_results(rows: &[SearchResult]) {

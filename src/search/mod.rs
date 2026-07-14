@@ -2,8 +2,10 @@ use std::collections::HashMap;
 
 use crate::package::PackageSource;
 
+pub mod aur;
 pub mod repo;
 
+pub use aur::AurSearchProvider;
 pub use repo::{RepoSearchIndex, RepoSearchProvider};
 
 pub struct SearchQuery {
