@@ -1,7 +1,5 @@
 use crate::{
-    icon::PakajoIcon,
-    package::Package,
-    root::{InstallProgress, PakajoRoot},
+    icon::PakajoIcon, install::InstallProgress, package::Package, root::PakajoRoot,
     utils::format_bytes,
 };
 use gpui::*;
@@ -157,12 +155,7 @@ impl PackageDetail {
             .children(sizes)
     }
 
-    fn header(
-        &self,
-        window: &Window,
-        cx: &App,
-        entity: Entity<PackageDetail>,
-    ) -> impl IntoElement {
+    fn header(&self, window: &Window, cx: &App, entity: Entity<PackageDetail>) -> impl IntoElement {
         fn baseline_from_top(window: &Window, text: &str, rems: f32) -> Pixels {
             let font_size = gpui::rems(rems).to_pixels(window.rem_size());
             let line_height = window.pixel_snap(font_size);

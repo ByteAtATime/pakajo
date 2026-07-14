@@ -1,5 +1,6 @@
 use crate::{
     aur::AurClient,
+    install::{ChildOutcome, InstallProgress, StreamItem},
     package::{Package, PackageSource, is_installed},
     package_detail::PackageDetail,
     pacman::{find_pkg, init_alpm},
@@ -14,32 +15,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     spinner::Spinner,
 };
-use std::{
-    io::{self, BufRead},
-    process::{Command, ExitStatus, Stdio},
-    sync::Arc,
-    time::Duration,
-};
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum InstallProgress {
-    Idle,
-    Running,
-    Failed(String),
-}
-
-#[derive(Clone, Debug)]
-enum ChildOutcome {
-    Success,
-    Dismissed,
-    NotFound,
-    Failed(String),
-}
-
-enum StreamItem {
-    Event(crate::events::InstallEvent),
-    Done(ChildOutcome),
-}
+use std::{sync::Arc, time::Duration};
 
 #[derive(Clone, Copy, PartialEq)]
 enum SearchState {
@@ -157,8 +133,9 @@ impl PakajoRoot {
                 }
                 let first = this.results.first().map(|r| (r.name.clone(), r.source));
                 if let Some((name, source)) = first {
-                    let unchanged = matches!(this.detail, DetailPane::Ready(_) | DetailPane::Loading)
-                        && this.selected.as_deref() == Some(name.as_str());
+                    let unchanged =
+                        matches!(this.detail, DetailPane::Ready(_) | DetailPane::Loading)
+                            && this.selected.as_deref() == Some(name.as_str());
                     if !unchanged {
                         this.select(name, source, cx);
                     }
@@ -200,7 +177,8 @@ impl PakajoRoot {
                         match info {
                             Ok(Some(a)) => this.set_detail(Package::from(a), cx),
                             Ok(None) => {
-                                this.detail = DetailPane::Error(format!("package not found: {name}"));
+                                this.detail =
+                                    DetailPane::Error(format!("package not found: {name}"));
                                 cx.notify();
                             }
                             Err(e) => {
@@ -264,53 +242,9 @@ impl PakajoRoot {
             }
         };
 
-        let (mut tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
+        let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
 
-        std::thread::spawn(move || {
-            let mut send_event = |mut item: StreamItem| loop {
-                match tx.try_send(item) {
-                    Ok(()) => return,
-                    Err(err) => {
-                        if err.is_disconnected() {
-                            return;
-                        }
-                        item = err.into_inner();
-                        std::thread::yield_now();
-                    }
-                }
-            };
-
-            let outcome = match Command::new(&exe)
-                .arg("install")
-                .arg("--json")
-                .arg(&name)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn()
-            {
-                Err(error) if error.kind() == io::ErrorKind::NotFound => ChildOutcome::NotFound,
-                Err(error) => ChildOutcome::Failed(error.to_string()),
-                Ok(mut child) => {
-                    let stdout = child.stdout.take().expect("piped");
-                    let reader = std::io::BufReader::new(stdout);
-                    for line in reader.lines() {
-                        match line {
-                            Ok(l) => {
-                                if let Ok(ev) =
-                                    serde_json::from_str::<crate::events::InstallEvent>(&l)
-                                {
-                                    send_event(StreamItem::Event(ev));
-                                }
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                    map_outcome(child.wait())
-                }
-            };
-            send_event(StreamItem::Done(outcome));
-        });
+        std::thread::spawn(move || crate::install::run_install_process(exe, name, tx));
 
         cx.spawn(async move |this, cx| {
             while let Some(item) = rx.next().await {
@@ -523,20 +457,6 @@ impl Render for PakajoRoot {
             .font_family("Inter")
             .child(Input::new(&self.search_input))
             .child(body)
-    }
-}
-
-fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
-    let code = match status {
-        Err(error) => return ChildOutcome::Failed(error.to_string()),
-        Ok(status) => status.code(),
-    };
-    match code {
-        Some(0) => ChildOutcome::Success,
-        Some(126) => ChildOutcome::Dismissed,
-        Some(127) => ChildOutcome::NotFound,
-        Some(exit) => ChildOutcome::Failed(format!("install failed (exit {exit})")),
-        None => ChildOutcome::Failed("install killed by signal".to_string()),
     }
 }
 

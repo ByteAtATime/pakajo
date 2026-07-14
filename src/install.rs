@@ -1,8 +1,11 @@
 use std::cell::RefCell;
+use std::io::{self, BufRead};
 use std::path::PathBuf;
+use std::process::{Command, ExitStatus, Stdio};
 use std::rc::Rc;
 
 use anyhow::{Context, anyhow};
+use futures::channel::mpsc;
 
 use alpm::DownloadResult as AlpmDownloadResult;
 use alpm::LogLevel as AlpmLogLevel;
@@ -12,6 +15,26 @@ use crate::events::{
     DownloadResult, InstallEvent, InstallSink, LogLevel, PackageOp, ProgressPhase, SummaryPackage,
     TransactionSummary,
 };
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum InstallProgress {
+    Idle,
+    Running,
+    Failed(String),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ChildOutcome {
+    Success,
+    Dismissed,
+    NotFound,
+    Failed(String),
+}
+
+pub(crate) enum StreamItem {
+    Event(InstallEvent),
+    Done(ChildOutcome),
+}
 
 pub enum InstallTarget {
     Repo(String),
@@ -297,6 +320,64 @@ fn convert_log_level(level: AlpmLogLevel) -> Option<LogLevel> {
         Some(LogLevel::Warning)
     } else {
         None
+    }
+}
+
+pub(crate) fn run_install_process(exe: PathBuf, name: String, mut tx: mpsc::Sender<StreamItem>) {
+    let mut send_event = |mut item: StreamItem| loop {
+        match tx.try_send(item) {
+            Ok(()) => return,
+            Err(err) => {
+                if err.is_disconnected() {
+                    return;
+                }
+                item = err.into_inner();
+                std::thread::yield_now();
+            }
+        }
+    };
+
+    let outcome = match Command::new(&exe)
+        .arg("install")
+        .arg("--json")
+        .arg(&name)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+    {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => ChildOutcome::NotFound,
+        Err(error) => ChildOutcome::Failed(error.to_string()),
+        Ok(mut child) => {
+            let stdout = child.stdout.take().expect("piped");
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines() {
+                match line {
+                    Ok(l) => {
+                        if let Ok(ev) = serde_json::from_str::<InstallEvent>(&l) {
+                            send_event(StreamItem::Event(ev));
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            map_outcome(child.wait())
+        }
+    };
+    send_event(StreamItem::Done(outcome));
+}
+
+pub(crate) fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
+    let code = match status {
+        Err(error) => return ChildOutcome::Failed(error.to_string()),
+        Ok(status) => status.code(),
+    };
+    match code {
+        Some(0) => ChildOutcome::Success,
+        Some(126) => ChildOutcome::Dismissed,
+        Some(127) => ChildOutcome::NotFound,
+        Some(exit) => ChildOutcome::Failed(format!("install failed (exit {exit})")),
+        None => ChildOutcome::Failed("install killed by signal".to_string()),
     }
 }
 

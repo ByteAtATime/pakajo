@@ -49,8 +49,7 @@ fn main() -> anyhow::Result<()> {
 
         cx.spawn(async move |cx| {
             cx.open_window(WindowOptions::default(), |window, cx| {
-                let view =
-                    cx.new(|cx| PakajoRoot::new(&mut *window, cx, handle, aur_client));
+                let view = cx.new(|cx| PakajoRoot::new(&mut *window, cx, handle, aur_client));
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("Failed to open window");

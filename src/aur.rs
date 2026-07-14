@@ -81,7 +81,10 @@ impl AurClient {
             .timeout_global(Some(Duration::from_secs(8)))
             .build()
             .into();
-        Self { agent, search_agent }
+        Self {
+            agent,
+            search_agent,
+        }
     }
 
     pub fn info(&self, name: &str) -> anyhow::Result<Option<AurInfo>> {
@@ -109,12 +112,7 @@ impl AurClient {
         Ok(all)
     }
 
-    fn rpc_search(
-        &self,
-        agent: &ureq::Agent,
-        arg: &str,
-        by: &str,
-    ) -> anyhow::Result<Vec<AurInfo>> {
+    fn rpc_search(&self, agent: &ureq::Agent, arg: &str, by: &str) -> anyhow::Result<Vec<AurInfo>> {
         let mut response = agent
             .get(&format!("{AUR_RPC_URL}/search"))
             .query("arg", arg)
