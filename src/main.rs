@@ -6,7 +6,7 @@ mod icon;
 mod install;
 mod lookup;
 mod package;
-mod package_listing;
+mod package_detail;
 mod pacman;
 mod resolve;
 mod root;
@@ -56,7 +56,7 @@ fn main() -> anyhow::Result<()> {
                     alpm_handle: handle,
                     aur_client,
                     target_package,
-                    package_listing: None,
+                    package_detail: None,
                     lookup_attempted: false,
                     install_progress: InstallProgress::Idle,
                 });

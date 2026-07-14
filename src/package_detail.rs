@@ -28,7 +28,7 @@ impl SizeTooltipTarget {
     }
 }
 
-pub struct PackageListing {
+pub struct PackageDetail {
     pub pkg: Package,
     pub installed: bool,
     pub active_tooltip: Option<SizeTooltipTarget>,
@@ -36,7 +36,7 @@ pub struct PackageListing {
     pub install_progress: InstallProgress,
 }
 
-impl PackageListing {
+impl PackageDetail {
     fn format_name(&self) -> String {
         if let Some(repo) = self.pkg.repo.as_ref() {
             format!("{}/{}", repo, self.pkg.name)
@@ -47,7 +47,7 @@ impl PackageListing {
 
     fn sized_value(
         &self,
-        entity: &Entity<PackageListing>,
+        entity: &Entity<PackageDetail>,
         target: SizeTooltipTarget,
         value: i64,
     ) -> AnyElement {
@@ -91,7 +91,7 @@ impl PackageListing {
             .into_any_element()
     }
 
-    fn info_bar(&self, cx: &App, entity: Entity<PackageListing>) -> impl IntoElement {
+    fn info_bar(&self, cx: &App, entity: Entity<PackageDetail>) -> impl IntoElement {
         fn info_item(cx: &App, icon: PakajoIcon, label: String) -> impl IntoElement {
             div()
                 .h_flex()
@@ -161,7 +161,7 @@ impl PackageListing {
         &self,
         window: &Window,
         cx: &App,
-        entity: Entity<PackageListing>,
+        entity: Entity<PackageDetail>,
     ) -> impl IntoElement {
         fn baseline_from_top(window: &Window, text: &str, rems: f32) -> Pixels {
             let font_size = gpui::rems(rems).to_pixels(window.rem_size());
@@ -366,7 +366,7 @@ impl PackageListing {
     }
 }
 
-impl Render for PackageListing {
+impl Render for PackageDetail {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         div()

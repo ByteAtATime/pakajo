@@ -1,5 +1,5 @@
 use crate::{
-    aur::AurClient, lookup::lookup, package::is_installed, package_listing::PackageListing,
+    aur::AurClient, lookup::lookup, package::is_installed, package_detail::PackageDetail,
     pacman::init_alpm,
 };
 use alpm::Alpm;
@@ -35,16 +35,16 @@ pub struct PakajoRoot {
     pub alpm_handle: Alpm,
     pub aur_client: AurClient,
     pub target_package: String,
-    pub package_listing: Option<Entity<PackageListing>>,
+    pub package_detail: Option<Entity<PackageDetail>>,
     pub lookup_attempted: bool,
     pub install_progress: InstallProgress,
 }
 
 impl PakajoRoot {
     fn set_progress(&mut self, progress: InstallProgress, cx: &mut Context<Self>) {
-        if let Some(listing) = &self.package_listing {
-            listing.update(cx, |listing, cx| {
-                listing.install_progress = progress.clone();
+        if let Some(detail) = &self.package_detail {
+            detail.update(cx, |detail, cx| {
+                detail.install_progress = progress.clone();
                 cx.notify();
             });
         }
@@ -159,16 +159,16 @@ impl PakajoRoot {
             self.alpm_handle = handle;
         }
 
-        let installed = if let Some(listing) = &self.package_listing {
-            let pkg_name = listing.read(cx).pkg.name.clone();
+        let installed = if let Some(detail) = &self.package_detail {
+            let pkg_name = detail.read(cx).pkg.name.clone();
             is_installed(&self.alpm_handle, &pkg_name)
         } else {
             false
         };
 
-        if let Some(listing) = &self.package_listing {
-            listing.update(cx, |listing, cx| {
-                listing.installed = installed;
+        if let Some(detail) = &self.package_detail {
+            detail.update(cx, |detail, cx| {
+                detail.installed = installed;
                 cx.notify();
             });
         }
@@ -180,10 +180,10 @@ impl Render for PakajoRoot {
         if !self.lookup_attempted {
             self.lookup_attempted = true;
             let weak_root = cx.weak_entity();
-            self.package_listing =
+            self.package_detail =
                 lookup(&self.alpm_handle, &self.aur_client, &self.target_package).map(|package| {
                     let installed = is_installed(&self.alpm_handle, &package.name);
-                    cx.new(|_| PackageListing {
+                    cx.new(|_| PackageDetail {
                         pkg: package,
                         installed,
                         active_tooltip: None,
@@ -193,7 +193,7 @@ impl Render for PakajoRoot {
                 });
         }
 
-        let not_found = (self.lookup_attempted && self.package_listing.is_none()).then(|| {
+        let not_found = (self.lookup_attempted && self.package_detail.is_none()).then(|| {
             div()
                 .text_color(cx.theme().muted_foreground)
                 .child(format!("Package '{}' not found", self.target_package))
@@ -207,7 +207,7 @@ impl Render for PakajoRoot {
             .items_center()
             .justify_center()
             .font_family("Inter")
-            .children(self.package_listing.clone())
+            .children(self.package_detail.clone())
             .children(not_found)
     }
 }
