@@ -365,7 +365,7 @@ impl Render for PakajoRoot {
             .key_context("PakajoSearch")
             .on_action(cx.listener(Self::on_select_up))
             .on_action(cx.listener(Self::on_select_down))
-            .child(Input::new(&self.search_input))
+            .child(Input::new(&self.search_input).rounded_none())
             .child(body)
     }
 }
