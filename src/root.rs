@@ -348,6 +348,7 @@ impl Render for PakajoRoot {
                 .flex_1()
                 .size_full()
                 .h_flex()
+                .min_h_0()
                 .gap_4()
                 .child(self.search_view.render(self.search_state, on_select, cx))
                 .child(detail_pane)

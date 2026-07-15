@@ -99,8 +99,8 @@ impl SearchView {
         div()
             .w(rems(24.))
             .flex_shrink_0()
-            .h_full()
             .v_flex()
+            .h_full()
             .child(
                 div()
                     .px_3()
