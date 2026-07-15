@@ -116,22 +116,20 @@ impl PakajoRoot {
                 if this.search_seq != seq {
                     return;
                 }
+                let prev_selected = this.search_view.selected_name().map(str::to_string);
                 this.search_view.set_results(outcome.results);
                 this.aur_error = outcome.aur_error;
                 this.search_state = SearchState::Done;
                 if let Some(err) = &this.aur_error {
                     eprintln!("  aur: {err}");
                 }
-                let first = this
-                    .search_view
-                    .first_result()
-                    .map(|r| (r.name.clone(), r.source));
-                if let Some((name, source)) = first {
+                let first_name = this.search_view.first_result().map(|r| r.name.clone());
+                if let Some(name) = first_name {
                     let unchanged =
                         matches!(this.detail, DetailPane::Ready(_) | DetailPane::Loading)
-                            && this.search_view.selected_name() == Some(name.as_str());
+                            && prev_selected.as_deref() == Some(name.as_str());
                     if !unchanged {
-                        this.select(name, source, cx);
+                        this.select_by_index(0, cx);
                     }
                 }
                 cx.notify();
@@ -140,10 +138,15 @@ impl PakajoRoot {
         .detach();
     }
 
-    fn select(&mut self, name: String, source: PackageSource, cx: &mut Context<Self>) {
+    fn select_by_index(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(result) = self.search_view.result_at(index) else {
+            return;
+        };
+        let name = result.name.clone();
+        let source = result.source;
         self.detail_seq = self.detail_seq.wrapping_add(1);
         let seq = self.detail_seq;
-        self.search_view.set_selected(name.clone());
+        self.search_view.set_selected_index(index);
         self.detail = DetailPane::Loading;
         cx.notify();
 
@@ -293,9 +296,9 @@ impl PakajoRoot {
 impl Render for PakajoRoot {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
-        let on_select: Arc<dyn Fn(String, PackageSource, &mut App)> =
-            Arc::new(move |name, source, cx| {
-                entity.update(cx, |root, cx| root.select(name, source, cx));
+        let on_select: Arc<dyn Fn(usize, &mut App)> =
+            Arc::new(move |index, cx| {
+                entity.update(cx, |root, cx| root.select_by_index(index, cx));
             });
 
         let body = if self.search_view.is_empty() {

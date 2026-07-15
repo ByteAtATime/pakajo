@@ -1,4 +1,3 @@
-use crate::package::PackageSource;
 use crate::search::SearchResult;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
@@ -14,27 +13,43 @@ pub(crate) enum SearchState {
 
 pub(crate) struct SearchView {
     results: Vec<SearchResult>,
-    selected: Option<String>,
+    selected_index: Option<usize>,
 }
 
 impl SearchView {
     pub(crate) fn new() -> Self {
         Self {
             results: Vec::new(),
-            selected: None,
+            selected_index: None,
         }
     }
 
     pub(crate) fn set_results(&mut self, results: Vec<SearchResult>) {
         self.results = results;
+        self.selected_index = if self.results.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
     }
 
-    pub(crate) fn set_selected(&mut self, name: String) {
-        self.selected = Some(name);
+    pub(crate) fn set_selected_index(&mut self, index: usize) {
+        self.selected_index = Some(index);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn selected_index(&self) -> Option<usize> {
+        self.selected_index
+    }
+
+    pub(crate) fn result_at(&self, index: usize) -> Option<&SearchResult> {
+        self.results.get(index)
     }
 
     pub(crate) fn selected_name(&self) -> Option<&str> {
-        self.selected.as_deref()
+        self.selected_index
+            .and_then(|i| self.results.get(i))
+            .map(|r| r.name.as_str())
     }
 
     pub(crate) fn first_result(&self) -> Option<&SearchResult> {
@@ -47,13 +62,13 @@ impl SearchView {
 
     pub(crate) fn clear(&mut self) {
         self.results.clear();
-        self.selected = None;
+        self.selected_index = None;
     }
 
     pub(crate) fn render(
         &self,
         search_state: SearchState,
-        on_select: Arc<dyn Fn(String, PackageSource, &mut App)>,
+        on_select: Arc<dyn Fn(usize, &mut App)>,
         cx: &App,
     ) -> AnyElement {
         let header = if matches!(search_state, SearchState::Searching) {
@@ -63,9 +78,9 @@ impl SearchView {
         };
 
         let mut rows: Vec<AnyElement> = Vec::with_capacity(self.results.len());
-        for result in &self.results {
+        for (index, result) in self.results.iter().enumerate() {
             rows.push(
-                self.result_row(result, on_select.clone(), cx)
+                self.result_row(index, result, on_select.clone(), cx)
                     .into_any_element(),
             );
         }
@@ -95,14 +110,13 @@ impl SearchView {
 
     fn result_row(
         &self,
+        index: usize,
         result: &SearchResult,
-        on_select: Arc<dyn Fn(String, PackageSource, &mut App)>,
+        on_select: Arc<dyn Fn(usize, &mut App)>,
         cx: &App,
     ) -> impl IntoElement {
-        let is_selected = self.selected.as_deref() == Some(result.name.as_str());
+        let is_selected = self.selected_index == Some(index);
         let badge = result.repo.as_deref().unwrap_or("aur");
-        let name_for_click = result.name.clone();
-        let source_for_click = result.source;
         let accent = cx.theme().accent;
         let muted = cx.theme().muted_foreground;
         div()
@@ -113,7 +127,7 @@ impl SearchView {
             .py_2()
             .when(is_selected, |row| row.bg(accent.opacity(0.12)))
             .hover(|s| s.bg(accent.opacity(0.06)))
-            .on_click(move |_, _, cx| on_select(name_for_click.clone(), source_for_click, cx))
+            .on_click(move |_, _, cx| on_select(index, cx))
             .child(
                 div()
                     .h_flex()
