@@ -77,10 +77,10 @@ pub fn run_build<S: InstallSink + ?Sized>(
             sink.event(InstallEvent::BuildStarted {
                 package: info.name.clone(),
             });
-            let expected = expected_artifacts(&dir)
-                .with_context(|| format!("failed to enumerate artifacts for {}", info.name))?;
             run_makepkg_streaming(&dir, no_check, &info.name, sink)?;
 
+            let expected = expected_artifacts(&dir)
+                .with_context(|| format!("failed to enumerate artifacts for {}", info.name))?;
             let artifacts = collect_artifacts(&dir, &expected)?;
             sink.event(InstallEvent::BuildCompleted {
                 package: info.name.clone(),
