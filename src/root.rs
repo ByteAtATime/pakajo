@@ -17,6 +17,8 @@ use gpui_component::{
 };
 use std::{sync::Arc, time::Duration};
 
+actions!(pakajo, [SelectUp, SelectDown]);
+
 enum DetailPane {
     None,
     Loading,
@@ -190,6 +192,20 @@ impl PakajoRoot {
         }
     }
 
+    fn on_select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        if let Some(ix) = self.search_view.move_cursor(-1) {
+            self.select_by_index(ix, cx);
+        }
+    }
+
+    fn on_select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        if let Some(ix) = self.search_view.move_cursor(1) {
+            self.select_by_index(ix, cx);
+        }
+    }
+
     fn set_detail(&mut self, pkg: Package, cx: &mut Context<Self>) {
         let installed = is_installed(&self.alpm_handle, &pkg.name);
         let root = cx.weak_entity();
@@ -345,6 +361,10 @@ impl Render for PakajoRoot {
             .p_4()
             .size_full()
             .font_family("Inter")
+            .id("pakajo-root")
+            .key_context("PakajoSearch")
+            .on_action(cx.listener(Self::on_select_up))
+            .on_action(cx.listener(Self::on_select_down))
             .child(Input::new(&self.search_input))
             .child(body)
     }
@@ -358,4 +378,11 @@ fn execute_search_for(
     let repo_provider = RepoSearchProvider::new(repo_index.clone());
     let aur_provider = AurSearchProvider::new(aur_client.clone());
     search::execute_search(&repo_provider, &aur_provider, text)
+}
+
+pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("up", SelectUp, Some("PakajoSearch")),
+        KeyBinding::new("down", SelectDown, Some("PakajoSearch")),
+    ]);
 }

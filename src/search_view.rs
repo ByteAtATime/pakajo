@@ -37,6 +37,17 @@ impl SearchView {
         self.selected_index = Some(index);
     }
 
+    pub(crate) fn move_cursor(&mut self, delta: i32) -> Option<usize> {
+        let max = self.results.len().checked_sub(1)?;
+        let current = self.selected_index.unwrap_or(0);
+        let next = (current as i32 + delta).clamp(0, max as i32) as usize;
+        if self.selected_index == Some(next) {
+            return None;
+        }
+        self.selected_index = Some(next);
+        Some(next)
+    }
+
     #[allow(dead_code)]
     pub(crate) fn selected_index(&self) -> Option<usize> {
         self.selected_index

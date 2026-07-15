@@ -35,6 +35,7 @@ fn main() -> anyhow::Result<()> {
 
     app.run(move |cx| {
         gpui_component::init(cx);
+        root::init(cx);
 
         ThemeRegistry::global_mut(cx)
             .load_themes_from_str(include_str!("tokyonight.json"))
