@@ -312,10 +312,9 @@ impl PakajoRoot {
 impl Render for PakajoRoot {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
-        let on_select: Arc<dyn Fn(usize, &mut App)> =
-            Arc::new(move |index, cx| {
-                entity.update(cx, |root, cx| root.select_by_index(index, cx));
-            });
+        let on_select: Arc<dyn Fn(usize, &mut App)> = Arc::new(move |index, cx| {
+            entity.update(cx, |root, cx| root.select_by_index(index, cx));
+        });
 
         let body = if self.search_view.is_empty() {
             let status = match self.search_state {
