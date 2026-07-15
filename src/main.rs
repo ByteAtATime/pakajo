@@ -11,6 +11,7 @@ mod pacman;
 mod resolve;
 mod root;
 mod search;
+mod search_view;
 mod utils;
 
 use crate::{pacman::init_alpm, root::PakajoRoot};

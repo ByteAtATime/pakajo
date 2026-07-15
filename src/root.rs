@@ -4,11 +4,11 @@ use crate::{
     package::{Package, PackageSource, is_installed},
     package_detail::PackageDetail,
     pacman::{find_pkg, init_alpm},
-    search::{self, AurSearchProvider, RepoSearchIndex, RepoSearchProvider, SearchResult},
+    search::{self, AurSearchProvider, RepoSearchIndex, RepoSearchProvider},
+    search_view::{SearchState, SearchView, centered},
 };
 use alpm::Alpm;
 use futures::StreamExt as _;
-use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme as _, StyledExt as _,
@@ -16,13 +16,6 @@ use gpui_component::{
     spinner::Spinner,
 };
 use std::{sync::Arc, time::Duration};
-
-#[derive(Clone, Copy, PartialEq)]
-enum SearchState {
-    Idle,
-    Searching,
-    Done,
-}
 
 enum DetailPane {
     None,
@@ -39,12 +32,11 @@ pub struct PakajoRoot {
     repo_index: Arc<RepoSearchIndex>,
     _subscriptions: Vec<Subscription>,
     search_seq: u64,
-    results: Vec<SearchResult>,
     search_state: SearchState,
     aur_error: Option<String>,
     detail: DetailPane,
-    selected: Option<String>,
     detail_seq: u64,
+    search_view: SearchView,
 }
 
 impl PakajoRoot {
@@ -76,12 +68,11 @@ impl PakajoRoot {
             repo_index,
             _subscriptions: vec![subscription],
             search_seq: 0,
-            results: Vec::new(),
             search_state: SearchState::Idle,
             aur_error: None,
             detail: DetailPane::None,
-            selected: None,
             detail_seq: 0,
+            search_view: SearchView::new(),
         }
     }
 
@@ -91,7 +82,7 @@ impl PakajoRoot {
         let text = self.search_input.read(cx).value().to_string();
 
         if text.trim().is_empty() {
-            self.results.clear();
+            self.search_view.clear();
             self.aur_error = None;
             self.search_state = SearchState::Idle;
             cx.notify();
@@ -125,17 +116,20 @@ impl PakajoRoot {
                 if this.search_seq != seq {
                     return;
                 }
-                this.results = outcome.results;
+                this.search_view.set_results(outcome.results);
                 this.aur_error = outcome.aur_error;
                 this.search_state = SearchState::Done;
                 if let Some(err) = &this.aur_error {
                     eprintln!("  aur: {err}");
                 }
-                let first = this.results.first().map(|r| (r.name.clone(), r.source));
+                let first = this
+                    .search_view
+                    .first_result()
+                    .map(|r| (r.name.clone(), r.source));
                 if let Some((name, source)) = first {
                     let unchanged =
                         matches!(this.detail, DetailPane::Ready(_) | DetailPane::Loading)
-                            && this.selected.as_deref() == Some(name.as_str());
+                            && this.search_view.selected_name() == Some(name.as_str());
                     if !unchanged {
                         this.select(name, source, cx);
                     }
@@ -149,7 +143,7 @@ impl PakajoRoot {
     fn select(&mut self, name: String, source: PackageSource, cx: &mut Context<Self>) {
         self.detail_seq = self.detail_seq.wrapping_add(1);
         let seq = self.detail_seq;
-        self.selected = Some(name.clone());
+        self.search_view.set_selected(name.clone());
         self.detail = DetailPane::Loading;
         cx.notify();
 
@@ -296,145 +290,38 @@ impl PakajoRoot {
     }
 }
 
-impl PakajoRoot {
-    fn result_row(
-        &self,
-        result: &SearchResult,
-        entity: Entity<PakajoRoot>,
-        cx: &App,
-    ) -> impl IntoElement {
-        let is_selected = self.selected.as_deref() == Some(result.name.as_str());
-        let badge = result.repo.as_deref().unwrap_or("aur");
-        let entity_for_click = entity.clone();
-        let name_for_click = result.name.clone();
-        let source_for_click = result.source;
-        let accent = cx.theme().accent;
-        let muted = cx.theme().muted_foreground;
-        div()
-            .id(result.name.clone())
-            .v_flex()
-            .gap_1()
-            .px_3()
-            .py_2()
-            .when(is_selected, |row| row.bg(accent.opacity(0.12)))
-            .hover(|s| s.bg(accent.opacity(0.06)))
-            .on_click(move |_, _, cx| {
-                entity_for_click.update(cx, |this, cx| {
-                    this.select(name_for_click.clone(), source_for_click, cx)
-                });
-            })
-            .child(
-                div()
-                    .h_flex()
-                    .items_baseline()
-                    .gap_2()
-                    .child(div().font_semibold().child(result.name.clone()))
-                    .child(
-                        div()
-                            .text_color(muted)
-                            .text_size(rems(0.75))
-                            .child(badge.to_string()),
-                    )
-                    .child(
-                        div()
-                            .ml_auto()
-                            .text_color(muted)
-                            .text_size(rems(0.75))
-                            .child(result.version.clone()),
-                    ),
-            )
-            .children(result.description.clone().map(|d| {
-                div()
-                    .w_full()
-                    .truncate()
-                    .text_color(muted)
-                    .text_size(rems(0.8))
-                    .child(d)
-            }))
-    }
-}
-
 impl Render for PakajoRoot {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
+        let on_select: Arc<dyn Fn(String, PackageSource, &mut App)> =
+            Arc::new(move |name, source, cx| {
+                entity.update(cx, |root, cx| root.select(name, source, cx));
+            });
 
-        let body = if self.results.is_empty() {
+        let body = if self.search_view.is_empty() {
             let status = match self.search_state {
                 SearchState::Idle => "Search for packages to get started".to_string(),
                 SearchState::Searching => "Searching…".to_string(),
                 SearchState::Done => "No packages found".to_string(),
             };
-            div()
-                .flex_1()
-                .size_full()
-                .items_center()
-                .justify_center()
+            centered()
                 .text_color(cx.theme().muted_foreground)
                 .child(status)
                 .into_any_element()
         } else {
-            let header = if matches!(self.search_state, SearchState::Searching) {
-                "Searching…".to_string()
-            } else {
-                format!("{} result(s)", self.results.len())
-            };
-
-            let mut rows: Vec<AnyElement> = Vec::with_capacity(self.results.len());
-            for result in &self.results {
-                rows.push(
-                    self.result_row(result, entity.clone(), cx)
-                        .into_any_element(),
-                );
-            }
-
-            let list_pane = div()
-                .w(rems(24.))
-                .flex_grow_0()
-                .h_full()
-                .v_flex()
-                .child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(header),
-                )
-                .child(
-                    div()
-                        .id("results")
-                        .flex_1()
-                        .overflow_y_scroll()
-                        .v_flex()
-                        .children(rows),
-                );
-
             let detail_pane = match &self.detail {
-                DetailPane::None => div()
-                    .flex_1()
-                    .h_full()
-                    .items_center()
-                    .justify_center()
+                DetailPane::None => centered()
                     .text_color(cx.theme().muted_foreground)
                     .child("Select a package")
                     .into_any_element(),
-                DetailPane::Loading => div()
-                    .flex_1()
-                    .h_full()
-                    .items_center()
-                    .justify_center()
-                    .child(Spinner::new())
-                    .into_any_element(),
-                DetailPane::Error(message) => div()
-                    .flex_1()
-                    .size_full()
-                    .items_center()
-                    .justify_center()
+                DetailPane::Loading => centered().child(Spinner::new()).into_any_element(),
+                DetailPane::Error(message) => centered()
                     .text_color(cx.theme().danger_foreground)
                     .child(message.clone())
                     .into_any_element(),
                 DetailPane::Ready(detail_entity) => div()
                     .flex_1()
-                    .h_full()
+                    .size_full()
                     .child(detail_entity.clone())
                     .into_any_element(),
             };
@@ -444,7 +331,7 @@ impl Render for PakajoRoot {
                 .size_full()
                 .h_flex()
                 .gap_4()
-                .child(list_pane)
+                .child(self.search_view.render(self.search_state, on_select, cx))
                 .child(detail_pane)
                 .into_any_element()
         };
