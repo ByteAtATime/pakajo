@@ -14,6 +14,7 @@ pub(crate) enum SearchState {
 pub(crate) struct SearchView {
     results: Vec<SearchResult>,
     selected_index: Option<usize>,
+    scroll_handle: ScrollHandle,
 }
 
 impl SearchView {
@@ -21,6 +22,7 @@ impl SearchView {
         Self {
             results: Vec::new(),
             selected_index: None,
+            scroll_handle: ScrollHandle::default(),
         }
     }
 
@@ -31,6 +33,9 @@ impl SearchView {
         } else {
             Some(0)
         };
+        if !self.results.is_empty() {
+            self.scroll_handle.scroll_to_item(0);
+        }
     }
 
     pub(crate) fn set_selected_index(&mut self, index: usize) {
@@ -45,6 +50,7 @@ impl SearchView {
             return None;
         }
         self.selected_index = Some(next);
+        self.scroll_handle.scroll_to_item(next);
         Some(next)
     }
 
@@ -113,6 +119,7 @@ impl SearchView {
                     .id("results")
                     .flex_1()
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll_handle)
                     .v_flex()
                     .children(rows),
             )
