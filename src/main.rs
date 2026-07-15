@@ -4,6 +4,7 @@ mod cli;
 mod events;
 mod icon;
 mod install;
+mod install_log_overlay;
 mod lookup;
 mod package;
 mod package_detail;

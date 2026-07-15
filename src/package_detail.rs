@@ -194,9 +194,9 @@ impl PackageDetail {
                 .disabled(disabled)
                 .rounded_none()
                 .large()
-                .on_click(move |_, _, cx| {
+                .on_click(move |_, window, cx| {
                     if let Some(root) = root_for_click.upgrade() {
-                        root.update(cx, |root, cx| root.start_install(cx));
+                        root.update(cx, |root, cx| root.start_install(window, cx));
                     }
                 });
             if !installed && !matches!(install_progress, InstallProgress::Running) {

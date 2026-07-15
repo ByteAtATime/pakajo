@@ -1,6 +1,7 @@
 use crate::{
     aur::AurClient,
     install::{ChildOutcome, InstallProgress, StreamItem},
+    install_log_overlay::InstallLogOverlay,
     package::{Package, PackageSource, is_installed},
     package_detail::PackageDetail,
     pacman::{find_pkg, init_alpm},
@@ -11,7 +12,7 @@ use alpm::Alpm;
 use futures::StreamExt as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _, Root, StyledExt as _,
+    ActiveTheme as _, Root, StyledExt as _, WindowExt as _,
     input::{Input, InputEvent, InputState},
     spinner::Spinner,
 };
@@ -39,6 +40,7 @@ pub struct PakajoRoot {
     detail: DetailPane,
     detail_seq: u64,
     search_view: SearchView,
+    install_log_view: Option<Entity<InstallLogOverlay>>,
 }
 
 impl PakajoRoot {
@@ -75,6 +77,7 @@ impl PakajoRoot {
             detail: DetailPane::None,
             detail_seq: 0,
             search_view: SearchView::new(),
+            install_log_view: None,
         }
     }
 
@@ -232,7 +235,7 @@ impl PakajoRoot {
         cx.notify();
     }
 
-    pub fn start_install(&mut self, cx: &mut Context<Self>) {
+    pub fn start_install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.install_progress, InstallProgress::Running) {
             return;
         }
@@ -255,6 +258,16 @@ impl PakajoRoot {
             }
         };
 
+        let log_view = cx.new(|_| InstallLogOverlay { logs: Vec::new() });
+        self.install_log_view = Some(log_view.clone());
+        window.close_all_dialogs(cx);
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title("Install logs")
+                .w(px(720.))
+                .child(log_view.clone())
+        });
+
         let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
 
         std::thread::spawn(move || crate::install::run_install_process(exe, name, tx));
@@ -271,6 +284,12 @@ impl PakajoRoot {
         match item {
             StreamItem::Event(ev) => {
                 eprintln!("{ev:?}");
+                if let Some(view) = &self.install_log_view {
+                    view.update(cx, |overlay, cx| {
+                        overlay.logs.push(format!("{ev:?}"));
+                        cx.notify();
+                    });
+                }
             }
             StreamItem::Done(ChildOutcome::Success) => {
                 self.refresh_after_install(cx);
