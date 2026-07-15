@@ -11,7 +11,7 @@ use alpm::Alpm;
 use futures::StreamExt as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _, StyledExt as _,
+    ActiveTheme as _, Root, StyledExt as _,
     input::{Input, InputEvent, InputState},
     spinner::Spinner,
 };
@@ -310,7 +310,7 @@ impl PakajoRoot {
 }
 
 impl Render for PakajoRoot {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let on_select: Arc<dyn Fn(usize, &mut App)> = Arc::new(move |index, cx| {
             entity.update(cx, |root, cx| root.select_by_index(index, cx));
@@ -367,6 +367,7 @@ impl Render for PakajoRoot {
             .on_action(cx.listener(Self::on_select_down))
             .child(Input::new(&self.search_input).rounded_none())
             .child(body)
+            .children(Root::render_dialog_layer(window, cx))
     }
 }
 
