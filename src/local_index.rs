@@ -145,6 +145,23 @@ impl LocalIndex {
             .map_err(anyhow::Error::from)
     }
 
+    #[allow(dead_code)]
+    pub fn detail(&self, name: &str) -> anyhow::Result<Option<crate::aur::AurInfo>> {
+        use rusqlite::OptionalExtension;
+        let conn = self.read.lock().expect("read connection poisoned");
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT detail_json FROM packages WHERE name = ?1 AND detail_json IS NOT NULL",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match json {
+            Some(s) => Ok(Some(serde_json::from_str(&s)?)),
+            None => Ok(None),
+        }
+    }
+
     pub fn refresh(&self, handle: &alpm::Alpm) -> anyhow::Result<RefreshOutcome> {
         let mut conn = self.write.lock().expect("write connection poisoned");
 
@@ -506,9 +523,11 @@ mod tests {
         );
 
         let alpha_detail: String = check
-            .query_row("SELECT detail_json FROM packages WHERE name = 'alpha'", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT detail_json FROM packages WHERE name = 'alpha'",
+                [],
+                |row| row.get(0),
+            )
             .expect("alpha detail_json");
         assert_eq!(alpha_detail, aur_json(1, "alpha"));
     }
@@ -573,6 +592,82 @@ mod tests {
             last_error.as_deref(),
             Some("too many malformed AUR rows: 3 of 4"),
             "meta.last_error should be recorded on gate trip",
+        );
+    }
+
+    #[test]
+    fn detail_correctly_queried_and_omitted_keys_are_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("aur-meta.sqlite");
+        let index = LocalIndex::open(&path).expect("open");
+        let conn = rusqlite::Connection::open(&path).expect("seed");
+
+        let chrome = r#"{"ID":2154588,"Name":"google-chrome","PackageBaseID":37469,"PackageBase":"google-chrome","Version":"150.0.7871.114-1","Description":"The popular web browser by Google","URL":"https://www.google.com/chrome","NumVotes":2358,"Popularity":11.783191,"OutOfDate":null,"Maintainer":"gromit","Submitter":null,"FirstSubmitted":1274819156,"LastModified":1783555607,"URLPath":"/cgit/aur.git/snapshot/google-chrome.tar.gz","Depends":["alsa-lib","gtk3","libcups","libxss","libxtst","nss","ttf-liberation","xdg-utils"],"OptDepends":["pipewire","kdialog","gnome-keyring","kwallet"],"License":["custom:chrome"],"Keywords":["chromium"]}"#;
+        let yay = r#"{"Depends":["pacman>6.1","git"],"Description":"Yet another yogurt.","FirstSubmitted":1475688004,"ID":2131240,"Keywords":["arm"],"LastModified":1781905288,"License":["GPL-3.0-or-later"],"Maintainer":"jguer","MakeDepends":["go>=1.24"],"Name":"yay","NumVotes":2617,"OptDepends":["sudo","doas"],"OutOfDate":null,"PackageBase":"yay","PackageBaseID":115973,"Popularity":40.475635,"Submitter":"jguer","URL":"https://github.com/Jguer/yay","URLPath":"/cgit/aur.git/snapshot/yay.tar.gz","Version":"13.0.1-1"}"#;
+        let brave = r#"{"Conflicts":["brave"],"Depends":["alsa-lib","gtk3"],"Description":"Web browser","FirstSubmitted":1459948564,"ID":2163403,"Keywords":["brave"],"LastModified":1784135902,"License":["BSD"],"Maintainer":"brave","Name":"brave-bin","NumVotes":1021,"OptDepends":["cups"],"OutOfDate":null,"PackageBase":"brave-bin","PackageBaseID":109775,"Popularity":25.129281,"Provides":["brave=1.92.140","brave-browser"],"Submitter":"toropisco","URL":"https://www.brave.com","URLPath":"/cgit/aur.git/snapshot/brave-bin.tar.gz","Version":"1:1.92.140-1"}"#;
+
+        for (name, blob) in [
+            ("google-chrome", chrome),
+            ("yay", yay),
+            ("brave-bin", brave),
+        ] {
+            conn.execute(
+                "INSERT INTO packages (name, detail_json) VALUES (?, ?)",
+                rusqlite::params![name, blob],
+            )
+            .expect("seed");
+        }
+        conn.execute("INSERT INTO packages (name) VALUES ('repo-pkg')", [])
+            .expect("seed null blob");
+        drop(conn);
+
+        let chrome_info = index
+            .detail("google-chrome")
+            .expect("chrome query")
+            .expect("chrome present");
+        assert_eq!(chrome_info.name, "google-chrome");
+        assert_eq!(chrome_info.version, "150.0.7871.114-1");
+        assert_eq!(chrome_info.depends.len(), 8);
+        assert_eq!(chrome_info.opt_depends.len(), 4);
+        assert_eq!(chrome_info.license, vec!["custom:chrome".to_string()]);
+        assert_eq!(chrome_info.maintainer.as_deref(), Some("gromit"));
+        assert!(
+            chrome_info.make_depends.is_empty(),
+            "omitted MakeDepends must deserialize empty"
+        );
+        assert!(
+            chrome_info.provides.is_empty(),
+            "omitted Provides must deserialize empty"
+        );
+        assert!(
+            chrome_info.conflicts.is_empty(),
+            "omitted Conflicts must deserialize empty"
+        );
+
+        let yay_info = index
+            .detail("yay")
+            .expect("yay query")
+            .expect("yay present");
+        assert_eq!(yay_info.make_depends, vec!["go>=1.24".to_string()]);
+        assert!(yay_info.depends.contains(&"git".to_string()));
+
+        let brave_info = index
+            .detail("brave-bin")
+            .expect("brave query")
+            .expect("brave present");
+        assert_eq!(brave_info.conflicts, vec!["brave".to_string()]);
+        assert_eq!(
+            brave_info.provides,
+            vec!["brave=1.92.140".to_string(), "brave-browser".to_string()]
+        );
+
+        assert!(
+            index.detail("missing").expect("missing query").is_none(),
+            "unknown package must map to None"
+        );
+        assert!(
+            index.detail("repo-pkg").expect("repo query").is_none(),
+            "NULL detail_json must map to None"
         );
     }
 }
