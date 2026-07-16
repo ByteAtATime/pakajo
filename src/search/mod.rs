@@ -4,6 +4,7 @@ use crate::package::PackageSource;
 
 pub mod aur;
 pub mod local;
+pub mod ranking;
 pub mod repo;
 
 pub use aur::AurSearchProvider;

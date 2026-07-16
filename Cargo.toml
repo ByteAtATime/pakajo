@@ -20,6 +20,7 @@ serde_json = "1"
 ureq = { version = "3", features = ["json"] }
 flate2 = "1.0"
 rusqlite = { version = "0.40", features = ["bundled"] }
+nucleo-matcher = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
