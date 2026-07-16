@@ -126,10 +126,16 @@ fn run_aur_sync() -> anyhow::Result<()> {
 
 fn run_search(query: &str) -> anyhow::Result<()> {
     let handle = alpm_handle()?;
+    let installed = crate::package::installed_names(&handle);
+    let local_index = crate::local_index::LocalIndex::db_path()
+        .ok()
+        .and_then(|p| crate::local_index::LocalIndex::open(&p).ok())
+        .map(Arc::new);
     let index = RepoSearchIndex::from_alpm(&handle);
     let repo_provider = RepoSearchProvider::new(Arc::new(index));
     let aur_provider = AurSearchProvider::new(Arc::new(AurClient::new()));
-    let outcome = crate::search::execute_search(&repo_provider, &aur_provider, query);
+    let outcome =
+        crate::search::dispatch_search(local_index, &repo_provider, &aur_provider, &installed, query);
     print_search_results(&outcome.results);
     if let Some(err) = &outcome.aur_error {
         eprintln!("  aur: {err}");

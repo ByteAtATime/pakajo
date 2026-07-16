@@ -129,6 +129,15 @@ pub fn is_installed(handle: &alpm::Alpm, name: &str) -> bool {
     handle.localdb().pkg(name).is_ok()
 }
 
+pub fn installed_names(handle: &alpm::Alpm) -> std::collections::HashSet<String> {
+    handle
+        .localdb()
+        .pkgs()
+        .iter()
+        .map(|p| p.name().to_string())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

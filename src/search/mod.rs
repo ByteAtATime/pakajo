@@ -1,5 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use crate::local_index::LocalIndex;
 use crate::package::PackageSource;
 
 pub mod aur;
@@ -79,6 +81,29 @@ pub(crate) fn execute_search(
     };
     let results = merge_and_rank(ok_rows, &q);
     SearchOutcome { results, aur_error }
+}
+
+pub(crate) fn dispatch_search(
+    local: Option<Arc<LocalIndex>>,
+    repo: &RepoSearchProvider,
+    aur: &AurSearchProvider,
+    installed: &HashSet<String>,
+    text: &str,
+) -> SearchOutcome {
+    let q = SearchQuery::new(text);
+    if let Some(index) = local
+        && index.is_populated()
+    {
+        let provider = LocalSearchProvider::new(index);
+        if let Ok(candidates) = provider.search(&q) {
+            let results = ranking::score(candidates, &q, installed);
+            return SearchOutcome {
+                results,
+                aur_error: None,
+            };
+        }
+    }
+    execute_search(repo, aur, text)
 }
 
 pub(crate) fn friendly_search_error(err: &anyhow::Error) -> String {
@@ -284,5 +309,73 @@ mod tests {
     #[test]
     fn default_limit_is_fifty() {
         assert_eq!(SearchQuery::default().limit, 50);
+    }
+
+    #[test]
+    fn dispatch_uses_local_when_populated() {
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("aur-meta.sqlite");
+        let index = Arc::new(crate::local_index::LocalIndex::open(&path).expect("open"));
+        let conn = rusqlite::Connection::open(&path).expect("seed");
+        conn.execute(
+            "INSERT INTO packages \
+             (name,source,repo,version,description,num_votes,popularity,last_update,package_base) \
+             VALUES (?,?,?,?,?,?,?,?,?)",
+            rusqlite::params![
+                "google-chrome",
+                "aur",
+                "aur",
+                "1.0-1",
+                "browser",
+                0i64,
+                0.0f64,
+                0i64,
+                "google-chrome"
+            ],
+        )
+        .expect("seed packages");
+        conn.execute(
+            "INSERT INTO packages_fts \
+             (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
+             VALUES (?,?,?,?,?,?,?,?,?)",
+            rusqlite::params![
+                "google-chrome",
+                "browser",
+                "aur",
+                "aur",
+                "1.0-1",
+                0i64,
+                0.0f64,
+                0i64,
+                "google-chrome"
+            ],
+        )
+        .expect("seed packages_fts");
+
+        let empty_installed: HashSet<String> = HashSet::new();
+        let repo_provider =
+            RepoSearchProvider::new(Arc::new(RepoSearchIndex::from_entries(Vec::new())));
+        let aur_provider = AurSearchProvider::new(Arc::new(crate::aur::AurClient::new()));
+
+        let outcome = dispatch_search(
+            Some(index.clone()),
+            &repo_provider,
+            &aur_provider,
+            &empty_installed,
+            "google-chrome",
+        );
+
+        let names: Vec<&str> = outcome.results.iter().map(|r| r.name.as_str()).collect();
+        assert!(
+            names.contains(&"google-chrome"),
+            "local branch should surface seeded package; got {names:?}"
+        );
+        assert!(
+            outcome.aur_error.is_none(),
+            "local branch must not record an aur error"
+        );
+        assert!(index.is_populated(), "seeded index reports populated");
     }
 }

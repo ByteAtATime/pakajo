@@ -2,7 +2,8 @@ use crate::{
     aur::AurClient,
     install::{ChildOutcome, InstallProgress, StreamItem},
     install_log_overlay::InstallLogOverlay,
-    package::{Package, PackageSource, is_installed},
+    local_index::LocalIndex,
+    package::{Package, PackageSource, installed_names, is_installed},
     package_detail::PackageDetail,
     pacman::{find_pkg, init_alpm},
     search::{self, AurSearchProvider, RepoSearchIndex, RepoSearchProvider},
@@ -33,6 +34,8 @@ pub struct PakajoRoot {
     pub install_progress: InstallProgress,
     search_input: Entity<InputState>,
     repo_index: Arc<RepoSearchIndex>,
+    local_index: Option<Arc<LocalIndex>>,
+    installed_names: Arc<std::collections::HashSet<String>>,
     _subscriptions: Vec<Subscription>,
     search_seq: u64,
     search_state: SearchState,
@@ -51,6 +54,15 @@ impl PakajoRoot {
         aur_client: AurClient,
     ) -> Self {
         let repo_index = Arc::new(RepoSearchIndex::from_alpm(&alpm_handle));
+        let local_index = LocalIndex::db_path()
+            .ok()
+            .and_then(|p| {
+                LocalIndex::open(&p)
+                    .map_err(|e| eprintln!("local index unavailable, falling back to live search: {e:#}"))
+                    .ok()
+            })
+            .map(Arc::new);
+        let installed_names = Arc::new(installed_names(&alpm_handle));
         let aur_client = Arc::new(aur_client);
         let input_window = &mut *window;
         let search_input =
@@ -70,6 +82,8 @@ impl PakajoRoot {
             install_progress: InstallProgress::Idle,
             search_input,
             repo_index,
+            local_index,
+            installed_names,
             _subscriptions: vec![subscription],
             search_seq: 0,
             search_state: SearchState::Idle,
@@ -100,6 +114,8 @@ impl PakajoRoot {
 
         let repo_index = self.repo_index.clone();
         let aur_client = self.aur_client.clone();
+        let local_index = self.local_index.clone();
+        let installed = self.installed_names.clone();
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(300))
@@ -114,7 +130,9 @@ impl PakajoRoot {
 
             let outcome = cx
                 .background_executor()
-                .spawn(async move { execute_search_for(&repo_index, &aur_client, &text) })
+                .spawn(async move {
+                    execute_search_for(local_index, &repo_index, &aur_client, installed, &text)
+                })
                 .await;
 
             let _ = this.update(cx, |this, cx| {
@@ -316,6 +334,7 @@ impl PakajoRoot {
         {
             self.alpm_handle = handle;
         }
+        self.installed_names = Arc::new(installed_names(&self.alpm_handle));
 
         if let DetailPane::Ready(entity) = &self.detail {
             let pkg_name = entity.read(cx).pkg.name.clone();
@@ -391,13 +410,15 @@ impl Render for PakajoRoot {
 }
 
 fn execute_search_for(
+    local_index: Option<Arc<LocalIndex>>,
     repo_index: &Arc<RepoSearchIndex>,
     aur_client: &Arc<AurClient>,
+    installed: Arc<std::collections::HashSet<String>>,
     text: &str,
 ) -> search::SearchOutcome {
     let repo_provider = RepoSearchProvider::new(repo_index.clone());
     let aur_provider = AurSearchProvider::new(aur_client.clone());
-    search::execute_search(&repo_provider, &aur_provider, text)
+    search::dispatch_search(local_index, &repo_provider, &aur_provider, &installed, text)
 }
 
 pub fn init(cx: &mut App) {
