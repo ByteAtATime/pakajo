@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Context as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const AUR_RPC_URL: &str = "https://aur.archlinux.org/rpc/v5";
 const MAX_BATCH: usize = 200;
@@ -18,7 +18,7 @@ pub struct RpcResponse<T> {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 #[allow(dead_code)]
 pub struct AurInfo {

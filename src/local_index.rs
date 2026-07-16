@@ -162,6 +162,30 @@ impl LocalIndex {
         }
     }
 
+    #[allow(dead_code)]
+    pub fn put_detail(&self, info: &crate::aur::AurInfo) -> anyhow::Result<()> {
+        let conn = self.write.lock().expect("write connection poisoned");
+        let json = serde_json::to_string(info)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO packages \
+             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json) \
+             VALUES (?,?,?,?,?,?,?,?,?,?)",
+            rusqlite::params![
+                &info.name,
+                "aur",
+                "aur",
+                &info.version,
+                &info.description,
+                info.num_votes as i64,
+                info.popularity,
+                info.last_modified,
+                &info.package_base,
+                &json,
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn refresh(&self, handle: &alpm::Alpm) -> anyhow::Result<RefreshOutcome> {
         let mut conn = self.write.lock().expect("write connection poisoned");
 
@@ -376,6 +400,7 @@ fn meta_set(conn: &rusqlite::Connection, key: &str, value: &str) -> anyhow::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aur::AurInfo;
 
     #[test]
     #[ignore]
@@ -669,5 +694,28 @@ mod tests {
             index.detail("repo-pkg").expect("repo query").is_none(),
             "NULL detail_json must map to None"
         );
+    }
+
+    #[test]
+    fn put_detail_writes_then_overwrites() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+
+        let blob = r#"{"Depends":["pacman>6.1","git"],"Description":"Yet another yogurt.","FirstSubmitted":1475688004,"ID":2131240,"Keywords":["arm"],"LastModified":1781905288,"License":["GPL-3.0-or-later"],"Maintainer":"jguer","MakeDepends":["go>=1.24"],"Name":"yay","NumVotes":2617,"OptDepends":["sudo","doas"],"OutOfDate":null,"PackageBase":"yay","PackageBaseID":115973,"Popularity":40.475635,"Submitter":"jguer","URL":"https://github.com/Jguer/yay","URLPath":"/cgit/aur.git/snapshot/yay.tar.gz","Version":"13.0.1-1"}"#;
+        let info: AurInfo = serde_json::from_str(blob).expect("parse yay");
+
+        index.put_detail(&info).expect("first put_detail");
+        let got = index.detail("yay").expect("query").expect("present after write");
+        assert_eq!(got.name, "yay");
+        assert_eq!(got.version, "13.0.1-1");
+        assert_eq!(got.make_depends, vec!["go>=1.24".to_string()]);
+
+        let mut updated = info.clone();
+        updated.version = "14.0.0-1".to_string();
+        index.put_detail(&updated).expect("overwrite put_detail");
+        let got2 = index.detail("yay").expect("query").expect("present after overwrite");
+        assert_eq!(got2.version, "14.0.0-1", "put_detail must overwrite an existing row");
+        assert_eq!(got2.name, "yay");
+        assert_eq!(got2.make_depends, vec!["go>=1.24".to_string()]);
     }
 }
