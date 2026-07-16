@@ -159,8 +159,8 @@ impl LocalIndex {
 
         let mut pkg_stmt = tx.prepare(
             "INSERT OR REPLACE INTO packages \
-             (name,source,repo,version,description,num_votes,popularity,last_update,package_base) \
-             VALUES (?,?,?,?,?,?,?,?,?)",
+             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json) \
+             VALUES (?,?,?,?,?,?,?,?,?,?)",
         )?;
         let mut fts_stmt = tx.prepare(
             "INSERT INTO packages_fts \
@@ -183,6 +183,7 @@ impl LocalIndex {
         let null_votes: Option<i64> = None;
         let null_popularity: Option<f64> = None;
         let null_base: Option<&str> = None;
+        let null_detail: Option<&str> = None;
         let mut repo_count: usize = 0;
         for db in handle.syncdbs().iter() {
             let repo = db.name();
@@ -197,6 +198,7 @@ impl LocalIndex {
                     &null_popularity,
                     pkg.build_date(),
                     &null_base,
+                    &null_detail,
                 ])?;
                 fts_stmt.execute(rusqlite::params![
                     pkg.name(),
@@ -295,6 +297,7 @@ fn index_aur_rows(
                     info.popularity,
                     info.last_modified,
                     &info.package_base,
+                    payload,
                 ])?;
                 fts_stmt.execute(rusqlite::params![
                     &info.name,
@@ -323,7 +326,8 @@ fn apply_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS packages (\
            name TEXT PRIMARY KEY, source TEXT, repo TEXT, version TEXT, description TEXT,\
-           num_votes INTEGER, popularity REAL, last_update INTEGER, package_base TEXT);\
+           num_votes INTEGER, popularity REAL, last_update INTEGER, package_base TEXT,\
+           detail_json TEXT);\
          CREATE VIRTUAL TABLE IF NOT EXISTS packages_fts USING fts5(\
            name, description,\
            source UNINDEXED, repo UNINDEXED, version UNINDEXED, num_votes UNINDEXED,\
@@ -438,8 +442,8 @@ mod tests {
     }
 
     const PKG_INSERT_SQL: &str = "INSERT OR REPLACE INTO packages \
-         (name,source,repo,version,description,num_votes,popularity,last_update,package_base) \
-         VALUES (?,?,?,?,?,?,?,?,?)";
+         (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json) \
+         VALUES (?,?,?,?,?,?,?,?,?,?)";
     const FTS_INSERT_SQL: &str = "INSERT INTO packages_fts \
          (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
          VALUES (?,?,?,?,?,?,?,?,?)";
@@ -500,6 +504,13 @@ mod tests {
             vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
             "valid rows should land in packages",
         );
+
+        let alpha_detail: String = check
+            .query_row("SELECT detail_json FROM packages WHERE name = 'alpha'", [], |row| {
+                row.get(0)
+            })
+            .expect("alpha detail_json");
+        assert_eq!(alpha_detail, aur_json(1, "alpha"));
     }
 
     #[test]
