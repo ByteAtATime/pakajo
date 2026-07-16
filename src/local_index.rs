@@ -104,11 +104,9 @@ impl LocalIndex {
     #[allow(dead_code)]
     pub fn is_populated(&self) -> bool {
         let conn = self.read.lock().expect("read connection poisoned");
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM packages LIMIT 1)",
-            [],
-            |row| row.get::<_, bool>(0),
-        )
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM packages LIMIT 1)", [], |row| {
+            row.get::<_, bool>(0)
+        })
         .unwrap_or(false)
     }
 
@@ -339,11 +337,9 @@ fn apply_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
 fn meta_get(conn: &rusqlite::Connection, key: &str) -> anyhow::Result<Option<String>> {
     use rusqlite::OptionalExtension;
     Ok(conn
-        .query_row(
-            "SELECT value FROM meta WHERE key = ?",
-            [key],
-            |row| row.get::<_, String>(0),
-        )
+        .query_row("SELECT value FROM meta WHERE key = ?", [key], |row| {
+            row.get::<_, String>(0)
+        })
         .optional()?)
 }
 
@@ -392,7 +388,10 @@ mod tests {
             .unwrap()
             .map(Result::unwrap)
             .collect();
-        assert!(names.contains(&"packages".to_string()), "packages table missing");
+        assert!(
+            names.contains(&"packages".to_string()),
+            "packages table missing"
+        );
         assert!(
             names.contains(&"packages_fts".to_string()),
             "packages_fts table missing"
@@ -477,7 +476,8 @@ mod tests {
         let mut pkg_stmt = tx.prepare(PKG_INSERT_SQL).expect("prepare pkg");
         let mut fts_stmt = tx.prepare(FTS_INSERT_SQL).expect("prepare fts");
 
-        let (aur_count, skipped) = index_aur_rows(&mut pkg_stmt, &mut fts_stmt, reader).expect("index");
+        let (aur_count, skipped) =
+            index_aur_rows(&mut pkg_stmt, &mut fts_stmt, reader).expect("index");
 
         drop(pkg_stmt);
         drop(fts_stmt);
@@ -528,9 +528,13 @@ mod tests {
         let mut pkg_stmt = tx.prepare(PKG_INSERT_SQL).expect("prepare pkg");
         let mut fts_stmt = tx.prepare(FTS_INSERT_SQL).expect("prepare fts");
 
-        let (aur_count, skipped) = index_aur_rows(&mut pkg_stmt, &mut fts_stmt, reader).expect("index");
+        let (aur_count, skipped) =
+            index_aur_rows(&mut pkg_stmt, &mut fts_stmt, reader).expect("index");
         let tripped = fail_loud(aur_count, skipped);
-        let msg = format!("too many malformed AUR rows: {skipped} of {}", aur_count + skipped);
+        let msg = format!(
+            "too many malformed AUR rows: {skipped} of {}",
+            aur_count + skipped
+        );
 
         drop(pkg_stmt);
         drop(fts_stmt);
