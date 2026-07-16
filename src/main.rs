@@ -5,6 +5,7 @@ mod events;
 mod icon;
 mod install;
 mod install_log_overlay;
+mod local_index;
 mod lookup;
 mod package;
 mod package_detail;

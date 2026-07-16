@@ -4464,6 +4464,7 @@ version = "0.1.0"
 dependencies = [
  "alpm",
  "anyhow",
+ "flate2",
  "futures",
  "gpui",
  "gpui-component",
