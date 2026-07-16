@@ -103,9 +103,13 @@ pub(crate) fn aur_sync_subcommand(args: impl Iterator<Item = String>) -> ! {
     exit_with_result(run_aur_sync());
 }
 
-fn run_aur_sync() -> anyhow::Result<()> {
+fn alpm_handle() -> anyhow::Result<alpm::Alpm> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let handle = crate::pacman::init_alpm(&config)?;
+    crate::pacman::init_alpm(&config)
+}
+
+fn run_aur_sync() -> anyhow::Result<()> {
+    let handle = alpm_handle()?;
     let index = crate::local_index::LocalIndex::open(&crate::local_index::LocalIndex::db_path()?)?;
     match index.refresh(&handle)? {
         crate::local_index::RefreshOutcome::NotModified => println!("index up to date"),
@@ -121,8 +125,7 @@ fn run_aur_sync() -> anyhow::Result<()> {
 }
 
 fn run_search(query: &str) -> anyhow::Result<()> {
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let handle = crate::pacman::init_alpm(&config)?;
+    let handle = alpm_handle()?;
     let index = RepoSearchIndex::from_alpm(&handle);
     let repo_provider = RepoSearchProvider::new(Arc::new(index));
     let aur_provider = AurSearchProvider::new(Arc::new(AurClient::new()));
@@ -162,8 +165,7 @@ fn root_install(positionals: &[String], as_deps: bool, json: bool) -> anyhow::Re
         .collect::<Vec<_>>();
     let needs_lookup = targets.iter().any(|t| matches!(t, InstallTarget::Repo(_)));
     if needs_lookup {
-        let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-        let handle = crate::pacman::init_alpm(&config)?;
+        let handle = alpm_handle()?;
         for target in &targets {
             if let InstallTarget::Repo(name) = target
                 && crate::pacman::find_pkg(&handle, name).is_none()
@@ -204,8 +206,7 @@ fn escalate_result(targets: &[String], as_deps: bool, json: bool) -> anyhow::Res
 }
 
 fn repo_target_exists(name: &str) -> anyhow::Result<bool> {
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let handle = crate::pacman::init_alpm(&config)?;
+    let handle = alpm_handle()?;
     Ok(crate::pacman::find_pkg(&handle, name).is_some())
 }
 
