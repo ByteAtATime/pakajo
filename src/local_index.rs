@@ -1,4 +1,3 @@
-use std::io::BufRead as _;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -156,52 +155,9 @@ impl LocalIndex {
              VALUES (?,?,?,?,?,?,?,?,?)",
         )?;
 
-        let mut aur_count: usize = 0;
-        let mut skipped: usize = 0;
-        for line in dump.reader().lines() {
-            let line = line?;
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let payload = trimmed
-                .trim_start_matches('[')
-                .trim_end_matches([',', ']'])
-                .trim();
-            if payload.is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<crate::aur::AurInfo>(payload) {
-                Ok(info) => {
-                    pkg_stmt.execute(rusqlite::params![
-                        &info.name,
-                        "aur",
-                        "aur",
-                        &info.version,
-                        &info.description,
-                        info.num_votes as i64,
-                        info.popularity,
-                        info.last_modified,
-                        &info.package_base,
-                    ])?;
-                    fts_stmt.execute(rusqlite::params![
-                        &info.name,
-                        &info.description,
-                        "aur",
-                        "aur",
-                        &info.version,
-                        info.num_votes as i64,
-                        info.popularity,
-                        info.last_modified,
-                        &info.package_base,
-                    ])?;
-                    aur_count += 1;
-                }
-                Err(_) => skipped += 1,
-            }
-        }
+        let (aur_count, skipped) = index_aur_rows(&mut pkg_stmt, &mut fts_stmt, dump.reader())?;
 
-        if skipped > (aur_count + skipped) / 100 {
+        if fail_loud(aur_count, skipped) {
             let total = aur_count + skipped;
             let msg = format!("too many malformed AUR rows: {skipped} of {total}");
             drop(pkg_stmt);
@@ -265,6 +221,62 @@ impl LocalIndex {
             skipped,
         })
     }
+}
+
+fn index_aur_rows(
+    pkg_stmt: &mut rusqlite::Statement,
+    fts_stmt: &mut rusqlite::Statement,
+    reader: impl std::io::BufRead,
+) -> anyhow::Result<(usize, usize)> {
+    let mut aur_count: usize = 0;
+    let mut skipped: usize = 0;
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let payload = trimmed
+            .trim_start_matches('[')
+            .trim_end_matches([',', ']'])
+            .trim();
+        if payload.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<crate::aur::AurInfo>(payload) {
+            Ok(info) => {
+                pkg_stmt.execute(rusqlite::params![
+                    &info.name,
+                    "aur",
+                    "aur",
+                    &info.version,
+                    &info.description,
+                    info.num_votes as i64,
+                    info.popularity,
+                    info.last_modified,
+                    &info.package_base,
+                ])?;
+                fts_stmt.execute(rusqlite::params![
+                    &info.name,
+                    &info.description,
+                    "aur",
+                    "aur",
+                    &info.version,
+                    info.num_votes as i64,
+                    info.popularity,
+                    info.last_modified,
+                    &info.package_base,
+                ])?;
+                aur_count += 1;
+            }
+            Err(_) => skipped += 1,
+        }
+    }
+    Ok((aur_count, skipped))
+}
+
+fn fail_loud(aur: usize, skipped: usize) -> bool {
+    skipped > (aur + skipped) / 100
 }
 
 fn apply_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -382,5 +394,128 @@ mod tests {
         };
         assert!(aur_count > 80_000, "aur_count too low: {aur_count}");
         assert!(index.is_populated());
+    }
+
+    const PKG_INSERT_SQL: &str = "INSERT OR REPLACE INTO packages \
+         (name,source,repo,version,description,num_votes,popularity,last_update,package_base) \
+         VALUES (?,?,?,?,?,?,?,?,?)";
+    const FTS_INSERT_SQL: &str = "INSERT INTO packages_fts \
+         (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
+         VALUES (?,?,?,?,?,?,?,?,?)";
+
+    fn aur_json(id: u64, name: &str) -> String {
+        format!(
+            r#"{{"ID":{id},"Name":"{name}","PackageBaseID":{id},"PackageBase":"{name}","Version":"1.0-1","NumVotes":0,"Popularity":0.0,"FirstSubmitted":0,"LastModified":0}}"#
+        )
+    }
+
+    #[test]
+    fn index_aur_rows_tolerates_delimiters_and_skips_malformed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+
+        let input = format!(
+            "[\n\
+             \n\
+             [{},\n\
+             {},\n\
+             {}]\n\
+             {{ garbage }}\n\
+             ]",
+            aur_json(1, "alpha"),
+            aur_json(2, "beta"),
+            aur_json(3, "gamma"),
+        );
+        let reader = std::io::Cursor::new(input.into_bytes());
+
+        let mut conn = index.write.lock().expect("write connection poisoned");
+        let tx = conn.transaction().expect("transaction");
+        tx.execute_batch("DELETE FROM packages; DELETE FROM packages_fts;")
+            .expect("delete");
+        let mut pkg_stmt = tx.prepare(PKG_INSERT_SQL).expect("prepare pkg");
+        let mut fts_stmt = tx.prepare(FTS_INSERT_SQL).expect("prepare fts");
+
+        let (aur_count, skipped) = index_aur_rows(&mut pkg_stmt, &mut fts_stmt, reader).expect("index");
+
+        drop(pkg_stmt);
+        drop(fts_stmt);
+        tx.commit().expect("commit");
+        drop(conn);
+
+        assert_eq!(aur_count, 3, "three valid rows should be indexed");
+        assert_eq!(skipped, 1, "only the malformed object counts as skipped");
+
+        let check = rusqlite::Connection::open(dir.path().join("aur-meta.sqlite")).expect("reopen");
+        let names: Vec<String> = check
+            .prepare("SELECT name FROM packages ORDER BY name")
+            .expect("select names")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query_map")
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
+            "valid rows should land in packages",
+        );
+    }
+
+    #[test]
+    fn fail_loud_boundary_at_one_percent() {
+        assert!(!fail_loud(99, 1), "exactly 1% bad should pass the gate");
+        assert!(fail_loud(98, 2), "above 1% bad should trip the gate");
+        assert!(fail_loud(99, 2), "above 1% bad should trip the gate");
+        assert!(!fail_loud(0, 0), "an empty dump should pass the gate");
+    }
+
+    #[test]
+    fn gate_trip_rolls_back_and_records_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+
+        let input = format!(
+            "[\n{}\nbroken-one\nbroken-two\nbroken-three\n]",
+            aur_json(1, "good"),
+        );
+        let reader = std::io::Cursor::new(input.into_bytes());
+
+        let mut conn = index.write.lock().expect("write connection poisoned");
+        let tx = conn.transaction().expect("transaction");
+        tx.execute_batch("DELETE FROM packages; DELETE FROM packages_fts;")
+            .expect("delete");
+        let mut pkg_stmt = tx.prepare(PKG_INSERT_SQL).expect("prepare pkg");
+        let mut fts_stmt = tx.prepare(FTS_INSERT_SQL).expect("prepare fts");
+
+        let (aur_count, skipped) = index_aur_rows(&mut pkg_stmt, &mut fts_stmt, reader).expect("index");
+        let tripped = fail_loud(aur_count, skipped);
+        let msg = format!("too many malformed AUR rows: {skipped} of {}", aur_count + skipped);
+
+        drop(pkg_stmt);
+        drop(fts_stmt);
+        drop(tx);
+        meta_set(&conn, "last_error", &msg).expect("record last_error");
+        drop(conn);
+
+        assert!(tripped, "gate should trip when malformed rows exceed 1%");
+        assert_eq!((aur_count, skipped), (1, 3));
+        assert_eq!(msg, "too many malformed AUR rows: 3 of 4");
+
+        let check = rusqlite::Connection::open(dir.path().join("aur-meta.sqlite")).expect("reopen");
+        let pkg_count: i64 = check
+            .query_row("SELECT COUNT(*) FROM packages", [], |row| row.get(0))
+            .expect("count packages");
+        assert_eq!(pkg_count, 0, "rolled-back transaction must leave no rows");
+        let last_error: Option<String> = check
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'last_error'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(
+            last_error.as_deref(),
+            Some("too many malformed AUR rows: 3 of 4"),
+            "meta.last_error should be recorded on gate trip",
+        );
     }
 }
