@@ -145,7 +145,6 @@ impl LocalIndex {
             .map_err(anyhow::Error::from)
     }
 
-    #[allow(dead_code)]
     pub fn detail(&self, name: &str) -> anyhow::Result<Option<crate::aur::AurInfo>> {
         use rusqlite::OptionalExtension;
         let conn = self.read.lock().expect("read connection poisoned");
@@ -162,7 +161,6 @@ impl LocalIndex {
         }
     }
 
-    #[allow(dead_code)]
     pub fn put_detail(&self, info: &crate::aur::AurInfo) -> anyhow::Result<()> {
         let conn = self.write.lock().expect("write connection poisoned");
         let json = serde_json::to_string(info)?;

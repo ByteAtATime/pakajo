@@ -60,7 +60,9 @@ impl PakajoRoot {
             .ok()
             .and_then(|p| {
                 LocalIndex::open(&p)
-                    .map_err(|e| eprintln!("local index unavailable, falling back to live search: {e:#}"))
+                    .map_err(|e| {
+                        eprintln!("local index unavailable, falling back to live search: {e:#}")
+                    })
                     .ok()
             })
             .map(Arc::new);
@@ -118,11 +120,7 @@ impl PakajoRoot {
         let aur_client = self.aur_client.clone();
         let local_index = self.local_index.clone();
         let installed = self.installed_names.clone();
-        let debounce = if self
-            .local_index
-            .as_ref()
-            .is_some_and(|i| i.is_populated())
-        {
+        let debounce = if self.local_index.as_ref().is_some_and(|i| i.is_populated()) {
             Duration::ZERO
         } else {
             LIVE_DEBOUNCE
@@ -195,31 +193,62 @@ impl PakajoRoot {
             }
             PackageSource::Aur => {
                 let aur = self.aur_client.clone();
+                let local_index = self.local_index.clone();
+
+                let name_for_info = name.clone();
+                let name_for_error = name.clone();
+                let local_index_for_refresh = local_index.clone();
                 cx.spawn(async move |this, cx| {
-                    let name_for_info = name.clone();
                     let info = cx
                         .background_executor()
                         .spawn(async move { aur.info(&name_for_info) })
                         .await;
+                    if let Ok(Some(ref a)) = info
+                        && let Some(index) = local_index_for_refresh.as_ref()
+                    {
+                        let _ = index
+                            .put_detail(a)
+                            .map_err(|e| eprintln!("[pakajo] detail put_detail failed: {e:#}"));
+                    }
                     let _ = this.update(cx, |this, cx| {
                         if this.detail_seq != seq {
                             return;
                         }
                         match info {
                             Ok(Some(a)) => this.set_detail(Package::from(a), cx),
-                            Ok(None) => {
+                            Ok(None) if matches!(this.detail, DetailPane::Loading) => {
                                 this.detail =
-                                    DetailPane::Error(format!("package not found: {name}"));
+                                    DetailPane::Error(format!("package not found: {name_for_error}"));
                                 cx.notify();
                             }
-                            Err(e) => {
+                            Ok(None) => {}
+                            Err(e) if matches!(this.detail, DetailPane::Loading) => {
                                 this.detail = DetailPane::Error(search::friendly_search_error(&e));
                                 cx.notify();
                             }
+                            Err(_) => {}
                         }
                     });
                 })
                 .detach();
+
+                if let Some(index) = local_index {
+                    let name_for_cache = name.clone();
+                    cx.spawn(async move |this, cx| {
+                        let cached = cx
+                            .background_executor()
+                            .spawn(async move { index.detail(&name_for_cache) })
+                            .await;
+                        if let Ok(Some(info)) = cached {
+                            let _ = this.update(cx, |this, cx| {
+                                if this.detail_seq == seq {
+                                    this.set_detail(Package::from(info), cx);
+                                }
+                            });
+                        }
+                    })
+                    .detach();
+                }
             }
         }
     }
@@ -312,7 +341,6 @@ impl PakajoRoot {
     fn handle_stream_item(&mut self, item: StreamItem, cx: &mut Context<Self>) {
         match item {
             StreamItem::Event(ev) => {
-                eprintln!("{ev:?}");
                 if let Some(view) = &self.install_log_view {
                     view.update(cx, |overlay, cx| {
                         overlay.logs.push(format!("{ev:?}"));
