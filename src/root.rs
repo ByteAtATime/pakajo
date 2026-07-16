@@ -21,6 +21,8 @@ use std::{sync::Arc, time::Duration};
 
 actions!(pakajo, [SelectUp, SelectDown]);
 
+const LIVE_DEBOUNCE: Duration = Duration::from_millis(300);
+
 enum DetailPane {
     None,
     Loading,
@@ -116,10 +118,19 @@ impl PakajoRoot {
         let aur_client = self.aur_client.clone();
         let local_index = self.local_index.clone();
         let installed = self.installed_names.clone();
+        let debounce = if self
+            .local_index
+            .as_ref()
+            .is_some_and(|i| i.is_populated())
+        {
+            Duration::ZERO
+        } else {
+            LIVE_DEBOUNCE
+        };
         cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(300))
-                .await;
+            if !debounce.is_zero() {
+                cx.background_executor().timer(debounce).await;
+            }
 
             let still_valid = this
                 .update(cx, |this, _cx| this.search_seq == seq)
