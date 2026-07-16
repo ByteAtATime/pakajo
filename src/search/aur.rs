@@ -40,6 +40,7 @@ impl From<AurInfo> for SearchResult {
             num_votes: Some(info.num_votes),
             popularity: Some(info.popularity),
             installed: false,
+            last_update: None,
         }
     }
 }

@@ -79,6 +79,7 @@ impl SearchProvider for RepoSearchProvider {
                 num_votes: None,
                 popularity: None,
                 installed: false,
+                last_update: None,
             });
         }
         Ok(out)

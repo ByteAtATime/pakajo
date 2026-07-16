@@ -3,9 +3,12 @@ use std::collections::HashMap;
 use crate::package::PackageSource;
 
 pub mod aur;
+pub mod local;
 pub mod repo;
 
 pub use aur::AurSearchProvider;
+#[allow(unused_imports)]
+pub use local::LocalSearchProvider;
 pub use repo::{RepoSearchIndex, RepoSearchProvider};
 
 pub struct SearchQuery {
@@ -43,6 +46,8 @@ pub struct SearchResult {
     pub popularity: Option<f64>,
     #[allow(dead_code)]
     pub installed: bool,
+    #[allow(dead_code)]
+    pub last_update: Option<i64>,
 }
 
 pub trait SearchProvider: Send + Sync {
@@ -183,6 +188,7 @@ mod tests {
             num_votes: votes,
             popularity,
             installed: false,
+            last_update: None,
         }
     }
 

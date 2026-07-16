@@ -132,6 +132,21 @@ impl LocalIndex {
         meta_set(&conn, key, value)
     }
 
+    pub fn search(&self, pattern: &str, limit: i64) -> anyhow::Result<Vec<PackageRow>> {
+        if pattern.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.read.lock().expect("read connection poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT name, description, source, repo, version, num_votes, popularity, \
+             last_update, package_base \
+             FROM packages_fts WHERE packages_fts MATCH ?1 LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![pattern, limit], row_to_package)?;
+        rows.collect::<rusqlite::Result<Vec<PackageRow>>>()
+            .map_err(anyhow::Error::from)
+    }
+
     pub fn refresh(&self, handle: &alpm::Alpm) -> anyhow::Result<RefreshOutcome> {
         let mut conn = self.write.lock().expect("write connection poisoned");
 
@@ -221,6 +236,33 @@ impl LocalIndex {
             skipped,
         })
     }
+}
+
+pub struct PackageRow {
+    pub name: String,
+    pub description: Option<String>,
+    pub source: String,
+    pub repo: Option<String>,
+    pub version: String,
+    pub num_votes: Option<i64>,
+    pub popularity: Option<f64>,
+    pub last_update: Option<i64>,
+    #[allow(dead_code)]
+    pub package_base: Option<String>,
+}
+
+fn row_to_package(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackageRow> {
+    Ok(PackageRow {
+        name: row.get(0)?,
+        description: row.get(1)?,
+        source: row.get(2)?,
+        repo: row.get(3)?,
+        version: row.get(4)?,
+        num_votes: row.get(5)?,
+        popularity: row.get(6)?,
+        last_update: row.get(7)?,
+        package_base: row.get(8)?,
+    })
 }
 
 fn index_aur_rows(
