@@ -26,6 +26,7 @@ fn main() -> anyhow::Result<()> {
     match args.next().as_deref() {
         Some("install") => cli::install_subcommand(args),
         Some("search") => cli::search_subcommand(args),
+        Some("aur-sync") => cli::aur_sync_subcommand(args),
         _ => {}
     }
 

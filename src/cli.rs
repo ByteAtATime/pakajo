@@ -93,6 +93,33 @@ pub(crate) fn search_subcommand(args: impl Iterator<Item = String>) -> ! {
     exit_with_result(run_search(&query));
 }
 
+pub(crate) fn aur_sync_subcommand(args: impl Iterator<Item = String>) -> ! {
+    for s in args {
+        if s.starts_with('-') {
+            eprintln!("usage: pakajo aur-sync");
+            std::process::exit(2);
+        }
+    }
+    exit_with_result(run_aur_sync());
+}
+
+fn run_aur_sync() -> anyhow::Result<()> {
+    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
+    let handle = crate::pacman::init_alpm(&config)?;
+    let index = crate::local_index::LocalIndex::open(&crate::local_index::LocalIndex::db_path()?)?;
+    match index.refresh(&handle)? {
+        crate::local_index::RefreshOutcome::NotModified => println!("index up to date"),
+        crate::local_index::RefreshOutcome::Updated {
+            aur_count,
+            repo_count,
+            skipped,
+        } => {
+            println!("indexed {aur_count} aur + {repo_count} repo packages (skipped {skipped})");
+        }
+    }
+    Ok(())
+}
+
 fn run_search(query: &str) -> anyhow::Result<()> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let handle = crate::pacman::init_alpm(&config)?;
