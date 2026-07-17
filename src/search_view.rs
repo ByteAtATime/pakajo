@@ -135,16 +135,16 @@ impl SearchView {
     ) -> impl IntoElement {
         let is_selected = self.selected_index == Some(index);
         let badge = result.repo.as_deref().unwrap_or("aur");
-        let accent = cx.theme().accent;
-        let muted = cx.theme().muted_foreground;
+        let muted_fg = cx.theme().muted_foreground;
+        let muted_bg = cx.theme().muted;
         div()
             .id(result.name.clone())
             .v_flex()
             .gap_1()
             .px_3()
             .py_2()
-            .when(is_selected, |row| row.bg(accent.opacity(0.12)))
-            .hover(|s| s.bg(accent.opacity(0.06)))
+            .when(is_selected, |row| row.bg(muted_bg))
+            .hover(|s| s.bg(muted_bg.opacity(0.5)))
             .on_click(move |_, _, cx| on_select(index, cx))
             .child(
                 div()
@@ -154,14 +154,14 @@ impl SearchView {
                     .child(div().font_semibold().child(result.name.clone()))
                     .child(
                         div()
-                            .text_color(muted)
+                            .text_color(muted_fg)
                             .text_size(rems(0.75))
                             .child(badge.to_string()),
                     )
                     .child(
                         div()
                             .ml_auto()
-                            .text_color(muted)
+                            .text_color(muted_fg)
                             .text_size(rems(0.75))
                             .child(result.version.clone()),
                     ),
@@ -170,7 +170,7 @@ impl SearchView {
                 div()
                     .w_full()
                     .truncate()
-                    .text_color(muted)
+                    .text_color(muted_fg)
                     .text_size(rems(0.8))
                     .child(d)
             }))
