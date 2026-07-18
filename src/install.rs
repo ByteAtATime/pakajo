@@ -425,7 +425,9 @@ pub(crate) fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aur::AurInfo;
     use crate::cli::ConsoleSink;
+    use crate::resolve::{BuildLayer, BuildPlan};
     use std::fs;
 
     fn setup_fake_root(suffix: &str) -> alpm::Alpm {
@@ -518,6 +520,65 @@ mod tests {
         assert!(
             handle.localdb().pkg("gvim").is_err(),
             "gvim must NOT be installed after the aborted conflict"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn dry_run_captures_installed_conflict() {
+        let mut handle = setup_fake_root("dryrun_conflict");
+        install_into(
+            &mut handle,
+            &[InstallTarget::Repo("cava".to_string())],
+            false,
+            ConsoleSink::new(),
+            || true,
+        )
+        .expect("cava should install first");
+        assert!(handle.localdb().pkg("cava").is_ok(), "cava installed");
+
+        let cava_git = AurInfo {
+            id: 1,
+            name: "cava-git".into(),
+            package_base_id: 2,
+            package_base: "cava-git".into(),
+            version: "0.10.4-1".into(),
+            description: Some("console-based audio visualizer".into()),
+            url: None,
+            num_votes: 100,
+            popularity: 5.0,
+            out_of_date: None,
+            maintainer: Some("someone".into()),
+            first_submitted: 0,
+            last_modified: 0,
+            url_path: None,
+            submitter: None,
+            depends: vec!["fftw".into()],
+            make_depends: vec![],
+            check_depends: vec![],
+            opt_depends: vec![],
+            conflicts: vec!["cava".into()],
+            provides: vec![],
+            replaces: vec![],
+            groups: vec![],
+            license: vec![],
+            keywords: vec![],
+            co_maintainers: vec![],
+        };
+        let plan = BuildPlan {
+            targets: vec!["cava-git".to_string()],
+            layers: vec![BuildLayer {
+                aur: vec![cava_git],
+                repo_deps: vec![],
+            }],
+        };
+
+        let qs = crate::dry_run::dry_run(&mut handle, &plan).expect("dry_run should succeed");
+        assert!(
+            qs.conflicts
+                .iter()
+                .any(|c| c.incoming == "cava-git" && c.removable == "cava"),
+            "should capture the cava-git vs cava conflict; got {qs:?}"
         );
     }
 }
