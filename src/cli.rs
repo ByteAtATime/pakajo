@@ -13,14 +13,24 @@ use crate::search::{AurSearchProvider, RepoSearchIndex, RepoSearchProvider, Sear
 use crate::utils::format_bytes;
 
 pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
+    let mut args = args;
     let mut json = false;
     let mut as_deps = false;
+    let mut approvals_b64: Option<String> = None;
     let mut positionals: Vec<String> = Vec::new();
-    for s in args {
+    while let Some(s) = args.next() {
         if s == "--json" {
             json = true;
         } else if s == "--asdeps" {
             as_deps = true;
+        } else if s == "--approvals" {
+            let v = args.next().unwrap_or_else(|| {
+                eprintln!("--approvals requires a value");
+                std::process::exit(2);
+            });
+            approvals_b64 = Some(v);
+        } else if let Some(rest) = s.strip_prefix("--approvals=") {
+            approvals_b64 = Some(rest.to_string());
         } else if s.starts_with('-') {
             eprintln!("unknown flag: {s}");
             std::process::exit(2);
@@ -34,7 +44,14 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
     }
 
     if unsafe { libc::geteuid() } == 0 {
-        exit_with_result(root_install(&positionals, as_deps, json));
+        let approvals = match approvals_b64.as_deref().map(decode_approvals).transpose() {
+            Ok(opt) => opt,
+            Err(e) => {
+                eprintln!("{e:#}");
+                std::process::exit(1);
+            }
+        };
+        exit_with_result(root_install(&positionals, as_deps, json, approvals));
     }
 
     if positionals.len() == 1 {
@@ -169,7 +186,20 @@ fn print_search_results(rows: &[SearchResult]) {
     }
 }
 
-fn root_install(positionals: &[String], as_deps: bool, json: bool) -> anyhow::Result<()> {
+fn decode_approvals(b64: &str) -> anyhow::Result<crate::question::Approvals> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .context("--approvals is not valid base64")?;
+    serde_json::from_slice(&bytes).context("--approvals is not valid JSON")
+}
+
+fn root_install(
+    positionals: &[String],
+    as_deps: bool,
+    json: bool,
+    approvals: Option<crate::question::Approvals>,
+) -> anyhow::Result<()> {
     let targets = positionals
         .iter()
         .map(|s| classify_target(s))
@@ -185,12 +215,13 @@ fn root_install(positionals: &[String], as_deps: bool, json: bool) -> anyhow::Re
             }
         }
     }
-    let answerer: Box<dyn crate::answerer::QuestionAnswerer> =
-        if unsafe { libc::isatty(0) } == 1 {
-            Box::new(crate::answerer::StdioAnswerer::new())
-        } else {
-            Box::new(crate::answerer::NonInteractiveAnswerer)
-        };
+    let answerer: Box<dyn crate::answerer::QuestionAnswerer> = if let Some(appr) = approvals {
+        Box::new(crate::answerer::ApprovalsAnswerer::new(appr))
+    } else if unsafe { libc::isatty(0) } == 1 {
+        Box::new(crate::answerer::StdioAnswerer::new())
+    } else {
+        Box::new(crate::answerer::NonInteractiveAnswerer)
+    };
     if json {
         install::run_install(&targets, as_deps, JsonSink::new(), || true, answerer)
     } else {
