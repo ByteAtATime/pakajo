@@ -134,8 +134,13 @@ fn run_search(query: &str) -> anyhow::Result<()> {
     let index = RepoSearchIndex::from_alpm(&handle);
     let repo_provider = RepoSearchProvider::new(Arc::new(index));
     let aur_provider = AurSearchProvider::new(Arc::new(AurClient::new()));
-    let outcome =
-        crate::search::dispatch_search(local_index, &repo_provider, &aur_provider, &installed, query);
+    let outcome = crate::search::dispatch_search(
+        local_index,
+        &repo_provider,
+        &aur_provider,
+        &installed,
+        query,
+    );
     print_search_results(&outcome.results);
     if let Some(err) = &outcome.aur_error {
         eprintln!("  aur: {err}");

@@ -1,6 +1,7 @@
 mod aur;
 mod build;
 mod cli;
+mod dry_run;
 mod events;
 mod icon;
 mod install;

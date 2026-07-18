@@ -217,8 +217,9 @@ impl PakajoRoot {
                         match info {
                             Ok(Some(a)) => this.set_detail(Package::from(a), cx),
                             Ok(None) if matches!(this.detail, DetailPane::Loading) => {
-                                this.detail =
-                                    DetailPane::Error(format!("package not found: {name_for_error}"));
+                                this.detail = DetailPane::Error(format!(
+                                    "package not found: {name_for_error}"
+                                ));
                                 cx.notify();
                             }
                             Ok(None) => {}

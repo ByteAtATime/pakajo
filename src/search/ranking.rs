@@ -67,20 +67,20 @@ pub fn score(
                 )
             })
             .collect();
-    
+
     ranked.sort_by(|a, b| {
         b.0.partial_cmp(&a.0)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.1.name.cmp(&b.1.name))
     });
-    
+
     ranked.into_iter().map(|(_, r)| r).take(q.limit).collect()
 }
 
 fn dedup_keep_repo(rows: Vec<SearchResult>) -> Vec<SearchResult> {
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut out: Vec<SearchResult> = Vec::with_capacity(rows.len());
-    
+
     for incoming in rows {
         match index.get(&incoming.name).copied() {
             None => {

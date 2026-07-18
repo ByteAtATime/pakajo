@@ -3,8 +3,8 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 
 use crate::aur::AurInfo;
 
@@ -65,8 +65,7 @@ mod tests {
 
     fn test_handle() -> alpm::Alpm {
         let db = tempfile::tempdir().expect("temp db dir");
-        alpm::Alpm::new("/", db.path().to_str().expect("utf8 temp path"))
-            .expect("alpm handle")
+        alpm::Alpm::new("/", db.path().to_str().expect("utf8 temp path")).expect("alpm handle")
     }
 
     #[test]

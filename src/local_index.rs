@@ -703,7 +703,10 @@ mod tests {
         let info: AurInfo = serde_json::from_str(blob).expect("parse yay");
 
         index.put_detail(&info).expect("first put_detail");
-        let got = index.detail("yay").expect("query").expect("present after write");
+        let got = index
+            .detail("yay")
+            .expect("query")
+            .expect("present after write");
         assert_eq!(got.name, "yay");
         assert_eq!(got.version, "13.0.1-1");
         assert_eq!(got.make_depends, vec!["go>=1.24".to_string()]);
@@ -711,8 +714,14 @@ mod tests {
         let mut updated = info.clone();
         updated.version = "14.0.0-1".to_string();
         index.put_detail(&updated).expect("overwrite put_detail");
-        let got2 = index.detail("yay").expect("query").expect("present after overwrite");
-        assert_eq!(got2.version, "14.0.0-1", "put_detail must overwrite an existing row");
+        let got2 = index
+            .detail("yay")
+            .expect("query")
+            .expect("present after overwrite");
+        assert_eq!(
+            got2.version, "14.0.0-1",
+            "put_detail must overwrite an existing row"
+        );
         assert_eq!(got2.name, "yay");
         assert_eq!(got2.make_depends, vec!["go>=1.24".to_string()]);
     }
