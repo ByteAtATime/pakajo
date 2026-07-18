@@ -16,10 +16,20 @@ use crate::events::{
     TransactionSummary,
 };
 
-#[derive(Default)]
 struct QuestionState {
     deny_flag: bool,
     detail: String,
+    answerer: Box<dyn crate::answerer::QuestionAnswerer>,
+}
+
+impl QuestionState {
+    fn new(answerer: Box<dyn crate::answerer::QuestionAnswerer>) -> Self {
+        Self {
+            deny_flag: false,
+            detail: String::new(),
+            answerer,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,10 +62,11 @@ pub fn run_install<S: InstallSink + 'static, F: FnOnce() -> bool>(
     as_deps: bool,
     sink: S,
     confirm: F,
+    answerer: Box<dyn crate::answerer::QuestionAnswerer>,
 ) -> anyhow::Result<()> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let mut handle = crate::pacman::init_alpm(&config)?;
-    install_into(&mut handle, targets, as_deps, sink, confirm)
+    install_into(&mut handle, targets, as_deps, sink, confirm, answerer)
 }
 
 fn install_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
@@ -64,9 +75,10 @@ fn install_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
     as_deps: bool,
     sink: S,
     confirm: F,
+    answerer: Box<dyn crate::answerer::QuestionAnswerer>,
 ) -> anyhow::Result<()> {
     let sink = Rc::new(RefCell::new(sink));
-    let qstate = Rc::new(RefCell::new(QuestionState::default()));
+    let qstate = Rc::new(RefCell::new(QuestionState::new(answerer)));
     register_callbacks(handle, sink.clone(), qstate.clone());
     let result = run_transaction(handle, targets, as_deps, &sink, &qstate, confirm);
     let _ = handle.trans_release();
@@ -116,21 +128,35 @@ fn register_callbacks<S: InstallSink + 'static>(
     handle.set_question_cb(
         qstate,
         |any_question: alpm::AnyQuestion, data: &mut Rc<RefCell<QuestionState>>| {
-            let mut state = data.borrow_mut();
+            let mut s = data.borrow_mut();
             match any_question.question() {
                 alpm::Question::Conflict(mut cq) => {
-                    let c = cq.conflict();
-                    state.detail = format!(
-                        "conflict {} vs {}",
-                        c.package1().name(),
-                        c.package2().name()
-                    );
-                    state.deny_flag = true;
-                    cq.set_remove(false);
+                    let (incoming, removable) = {
+                        let c = cq.conflict();
+                        (
+                            c.package1().name().to_string(),
+                            c.package2().name().to_string(),
+                        )
+                    };
+                    match s.answerer.answer_conflict(&incoming, &removable) {
+                        crate::answerer::ConflictDecision::Remove => {
+                            cq.set_remove(true);
+                        }
+                        crate::answerer::ConflictDecision::Decline => {
+                            s.deny_flag = true;
+                            s.detail = format!("declined to remove {removable}");
+                        }
+                        crate::answerer::ConflictDecision::CannotPrompt => {
+                            s.deny_flag = true;
+                            s.detail = format!(
+                                "cannot prompt for conflict ({incoming} vs {removable}): stdin is not a terminal; re-run from an interactive shell"
+                            );
+                        }
+                    }
                 }
                 _ => {
-                    state.deny_flag = true;
-                    state.detail = "unsupported transaction question".to_string();
+                    s.deny_flag = true;
+                    s.detail = "unsupported transaction question (only conflicts are handled in this version)".to_string();
                 }
             }
         },
@@ -461,6 +487,7 @@ mod tests {
             false,
             ConsoleSink::new(),
             || true,
+            Box::new(crate::answerer::DenyAllAnswerer),
         );
         result.expect("install should succeed");
         assert!(
@@ -479,6 +506,7 @@ mod tests {
             false,
             ConsoleSink::new(),
             || false,
+            Box::new(crate::answerer::DenyAllAnswerer),
         );
         result.expect("aborted install should not error");
         assert!(
@@ -497,6 +525,7 @@ mod tests {
             false,
             ConsoleSink::new(),
             || true,
+            Box::new(crate::answerer::DenyAllAnswerer),
         )
         .expect("vim should install first");
         assert!(
@@ -510,12 +539,17 @@ mod tests {
             false,
             ConsoleSink::new(),
             || true,
+            Box::new(crate::answerer::DenyAllAnswerer),
         );
         let err = result.expect_err("gvim install should abort due to vim conflict");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("conflict") && msg.contains("gvim") && msg.contains("vim"),
-            "error should name the conflict: {msg}"
+            msg.contains("declined to remove vim"),
+            "error must name vim (the installed package) as removable: {msg}"
+        );
+        assert!(
+            !msg.contains("failed to prepare transaction"),
+            "friendly detail must win over the generic context: {msg}"
         );
         assert!(
             handle.localdb().pkg("gvim").is_err(),
@@ -533,6 +567,7 @@ mod tests {
             false,
             ConsoleSink::new(),
             || true,
+            Box::new(crate::answerer::DenyAllAnswerer),
         )
         .expect("cava should install first");
         assert!(handle.localdb().pkg("cava").is_ok(), "cava installed");

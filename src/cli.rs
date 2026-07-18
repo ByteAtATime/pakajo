@@ -185,10 +185,16 @@ fn root_install(positionals: &[String], as_deps: bool, json: bool) -> anyhow::Re
             }
         }
     }
+    let answerer: Box<dyn crate::answerer::QuestionAnswerer> =
+        if unsafe { libc::isatty(0) } == 1 {
+            Box::new(crate::answerer::StdioAnswerer::new())
+        } else {
+            Box::new(crate::answerer::NonInteractiveAnswerer)
+        };
     if json {
-        install::run_install(&targets, as_deps, JsonSink::new(), || true)
+        install::run_install(&targets, as_deps, JsonSink::new(), || true, answerer)
     } else {
-        install::run_install(&targets, as_deps, ConsoleSink::new(), confirm_install)
+        install::run_install(&targets, as_deps, ConsoleSink::new(), confirm_install, answerer)
     }
 }
 

@@ -238,7 +238,7 @@ pub(crate) fn spawn_install_child(targets: &[String], as_deps: bool) -> anyhow::
     for target in targets {
         cmd.arg(target);
     }
-    cmd.stdin(Stdio::null())
+    cmd.stdin(Stdio::inherit())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
     cmd.spawn().context("failed to spawn install child")

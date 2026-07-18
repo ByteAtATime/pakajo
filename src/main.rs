@@ -1,3 +1,4 @@
+mod answerer;
 mod aur;
 mod build;
 mod cli;
