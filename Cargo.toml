@@ -21,8 +21,7 @@ ureq = { version = "3", features = ["json"] }
 flate2 = "1.0"
 rusqlite = { version = "0.40", features = ["bundled"] }
 nucleo-matcher = "0.3"
-
-[dev-dependencies]
+tar = "0.4"
 tempfile = "3"
 
 [profile.dev.package."*"]

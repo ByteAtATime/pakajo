@@ -10,10 +10,12 @@ mod lookup;
 mod package;
 mod package_detail;
 mod pacman;
+mod question;
 mod resolve;
 mod root;
 mod search;
 mod search_view;
+mod stub_pkg;
 mod utils;
 
 use crate::{pacman::init_alpm, root::PakajoRoot};
