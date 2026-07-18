@@ -16,6 +16,12 @@ use crate::events::{
     TransactionSummary,
 };
 
+#[derive(Default)]
+struct QuestionState {
+    deny_flag: bool,
+    detail: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum InstallProgress {
     Idle,
@@ -60,13 +66,18 @@ fn install_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
     confirm: F,
 ) -> anyhow::Result<()> {
     let sink = Rc::new(RefCell::new(sink));
-    register_callbacks(handle, sink.clone());
-    let result = run_transaction(handle, targets, as_deps, &sink, confirm);
+    let qstate = Rc::new(RefCell::new(QuestionState::default()));
+    register_callbacks(handle, sink.clone(), qstate.clone());
+    let result = run_transaction(handle, targets, as_deps, &sink, &qstate, confirm);
     let _ = handle.trans_release();
     result
 }
 
-fn register_callbacks<S: InstallSink + 'static>(handle: &alpm::Alpm, sink: Rc<RefCell<S>>) {
+fn register_callbacks<S: InstallSink + 'static>(
+    handle: &alpm::Alpm,
+    sink: Rc<RefCell<S>>,
+    qstate: Rc<RefCell<QuestionState>>,
+) {
     handle.set_event_cb(sink.clone(), |any_event, data| {
         if let Some(event) = convert_event(any_event) {
             data.borrow_mut().event(event);
@@ -101,6 +112,29 @@ fn register_callbacks<S: InstallSink + 'static>(handle: &alpm::Alpm, sink: Rc<Re
             });
         }
     });
+
+    handle.set_question_cb(
+        qstate,
+        |any_question: alpm::AnyQuestion, data: &mut Rc<RefCell<QuestionState>>| {
+            let mut state = data.borrow_mut();
+            match any_question.question() {
+                alpm::Question::Conflict(mut cq) => {
+                    let c = cq.conflict();
+                    state.detail = format!(
+                        "conflict {} vs {}",
+                        c.package1().name(),
+                        c.package2().name()
+                    );
+                    state.deny_flag = true;
+                    cq.set_remove(false);
+                }
+                _ => {
+                    state.deny_flag = true;
+                    state.detail = "unsupported transaction question".to_string();
+                }
+            }
+        },
+    );
 }
 
 fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
@@ -108,6 +142,7 @@ fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
     targets: &[InstallTarget],
     as_deps: bool,
     sink: &Rc<RefCell<S>>,
+    qstate: &Rc<RefCell<QuestionState>>,
     confirm: F,
 ) -> anyhow::Result<()> {
     handle
@@ -139,8 +174,11 @@ fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
         }
     }
 
-    handle
-        .trans_prepare()
+    let prepare_result = handle.trans_prepare();
+    if qstate.borrow().deny_flag {
+        anyhow::bail!("aborted: {}", qstate.borrow().detail);
+    }
+    prepare_result
         .map_err(alpm::Error::from)
         .context("failed to prepare transaction")?;
 
@@ -155,6 +193,9 @@ fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
     handle
         .trans_commit()
         .context("failed to commit transaction")?;
+    if qstate.borrow().deny_flag {
+        anyhow::bail!("aborted: {}", qstate.borrow().detail);
+    }
 
     if as_deps {
         for name in &added_names {
@@ -441,6 +482,42 @@ mod tests {
         assert!(
             handle.localdb().pkg("sl").is_err(),
             "sl must NOT be installed after an aborted confirm"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn test_conflict_surfaces_as_named_abort() {
+        let mut handle = setup_fake_root("conflict_abort");
+        install_into(
+            &mut handle,
+            &[InstallTarget::Repo("vim".to_string())],
+            false,
+            ConsoleSink::new(),
+            || true,
+        )
+        .expect("vim should install first");
+        assert!(
+            handle.localdb().pkg("vim").is_ok(),
+            "vim should be installed before the conflict test"
+        );
+
+        let result = install_into(
+            &mut handle,
+            &[InstallTarget::Repo("gvim".to_string())],
+            false,
+            ConsoleSink::new(),
+            || true,
+        );
+        let err = result.expect_err("gvim install should abort due to vim conflict");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("conflict") && msg.contains("gvim") && msg.contains("vim"),
+            "error should name the conflict: {msg}"
+        );
+        assert!(
+            handle.localdb().pkg("gvim").is_err(),
+            "gvim must NOT be installed after the aborted conflict"
         );
     }
 }
