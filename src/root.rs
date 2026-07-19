@@ -340,8 +340,12 @@ impl PakajoRoot {
         if matches!(self.install_progress, InstallProgress::Running) {
             return;
         }
-        let name = match &self.detail {
-            DetailPane::Ready(entity) => entity.read(cx).pkg.name.clone(),
+        let (name, source) = match &self.detail {
+            DetailPane::Ready(entity) => {
+                let name = entity.read(cx).pkg.name.clone();
+                let source = entity.read(cx).pkg.source;
+                (name, source)
+            }
             _ => return,
         };
         self.set_progress(InstallProgress::Running, cx);
@@ -358,6 +362,11 @@ impl PakajoRoot {
                 return;
             }
         };
+
+        if matches!(source, PackageSource::Repo) {
+            self.begin_install_subprocess(exe, name, None, window, cx);
+            return;
+        }
 
         let (mut dry_tx, mut dry_rx) =
             futures::channel::mpsc::channel::<anyhow::Result<crate::question::QuestionSet>>(1);
