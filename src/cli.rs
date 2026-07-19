@@ -227,7 +227,13 @@ fn root_install(
     if json {
         install::run_install(&targets, as_deps, JsonSink::new(), || true, answerer)
     } else {
-        install::run_install(&targets, as_deps, ConsoleSink::new(), confirm_install, answerer)
+        install::run_install(
+            &targets,
+            as_deps,
+            ConsoleSink::new(),
+            confirm_install,
+            answerer,
+        )
     }
 }
 
