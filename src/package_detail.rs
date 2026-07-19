@@ -185,11 +185,14 @@ impl PackageDetail {
             let (label, disabled) = match &install_progress {
                 InstallProgress::Idle if installed => ("Installed", true),
                 InstallProgress::Running => ("Installing…", true),
-                InstallProgress::Idle
-                | InstallProgress::Failed(_)
-                | InstallProgress::ConflictReview(_) => ("Install", false),
+                InstallProgress::ConflictReview(_) => ("Approve & install", false),
+                InstallProgress::Idle | InstallProgress::Failed(_) => ("Install", false),
             };
 
+            let conflict_qs = match &install_progress {
+                InstallProgress::ConflictReview(qs) => Some(qs.clone()),
+                _ => None,
+            };
             let root_for_click = root.clone();
             let mut install_button = Button::new("install-button")
                 .label(label)
@@ -198,7 +201,13 @@ impl PackageDetail {
                 .large()
                 .on_click(move |_, window, cx| {
                     if let Some(root) = root_for_click.upgrade() {
-                        root.update(cx, |root, cx| root.start_install(window, cx));
+                        root.update(cx, |root, cx| {
+                            if let Some(qs) = conflict_qs.clone() {
+                                root.approve_and_install(qs, window, cx);
+                            } else {
+                                root.start_install(window, cx);
+                            }
+                        });
                     }
                 });
             if !installed && !matches!(install_progress, InstallProgress::Running) {

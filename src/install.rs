@@ -391,7 +391,12 @@ fn convert_log_level(level: AlpmLogLevel) -> Option<LogLevel> {
     }
 }
 
-pub(crate) fn run_install_process(exe: PathBuf, name: String, mut tx: mpsc::Sender<StreamItem>) {
+pub(crate) fn run_install_process(
+    exe: PathBuf,
+    name: String,
+    mut tx: mpsc::Sender<StreamItem>,
+    approvals_b64: Option<String>,
+) {
     let mut send_event = |mut item: StreamItem| loop {
         match tx.try_send(item) {
             Ok(()) => return,
@@ -405,9 +410,12 @@ pub(crate) fn run_install_process(exe: PathBuf, name: String, mut tx: mpsc::Send
         }
     };
 
-    let outcome = match Command::new(&exe)
-        .arg("install")
-        .arg("--json")
+    let mut cmd = Command::new(&exe);
+    cmd.arg("install").arg("--json");
+    if let Some(b64) = &approvals_b64 {
+        cmd.arg("--approvals").arg(b64);
+    }
+    let outcome = match cmd
         .arg(&name)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

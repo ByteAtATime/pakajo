@@ -6,6 +6,7 @@ use crate::{
     package::{Package, PackageSource, installed_names, is_installed},
     package_detail::PackageDetail,
     pacman::{find_pkg, init_alpm},
+    question::QuestionSet,
     search::{self, AurSearchProvider, RepoSearchIndex, RepoSearchProvider},
     search_view::{SearchState, SearchView, centered},
 };
@@ -294,6 +295,47 @@ impl PakajoRoot {
         cx.notify();
     }
 
+    pub fn approve_and_install(
+        &mut self,
+        qs: QuestionSet,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.install_progress, InstallProgress::Running) {
+            return;
+        }
+        let exe = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                self.set_progress(
+                    InstallProgress::Failed(format!(
+                        "failed to determine executable path: {error}"
+                    )),
+                    cx,
+                );
+                return;
+            }
+        };
+        let name = match &self.detail {
+            DetailPane::Ready(entity) => entity.read(cx).pkg.name.clone(),
+            _ => return,
+        };
+        let selected: Vec<usize> = (0..qs.conflicts.len()).collect();
+        let approvals = qs.approve(&selected);
+        let b64 = match crate::question::encode_approvals(&approvals) {
+            Ok(b64) => b64,
+            Err(error) => {
+                self.set_progress(
+                    InstallProgress::Failed(format!("failed to encode approvals: {error}")),
+                    cx,
+                );
+                return;
+            }
+        };
+        self.set_progress(InstallProgress::Running, cx);
+        self.begin_install_subprocess(exe, name, Some(b64), window, cx);
+    }
+
     pub fn start_install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.install_progress, InstallProgress::Running) {
             return;
@@ -334,11 +376,11 @@ impl PakajoRoot {
                     this.set_progress(InstallProgress::ConflictReview(qs), cx);
                 }
                 Ok(_) => {
-                    this.begin_install_subprocess(exe, name, window, cx);
+                    this.begin_install_subprocess(exe, name, None, window, cx);
                 }
                 Err(err) => {
                     eprintln!("dry-run failed, proceeding with install: {err:#}");
-                    this.begin_install_subprocess(exe, name, window, cx);
+                    this.begin_install_subprocess(exe, name, None, window, cx);
                 }
             });
         })
@@ -349,6 +391,7 @@ impl PakajoRoot {
         &mut self,
         exe: std::path::PathBuf,
         name: String,
+        approvals_b64: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -364,7 +407,9 @@ impl PakajoRoot {
 
         let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
 
-        std::thread::spawn(move || crate::install::run_install_process(exe, name, tx));
+        std::thread::spawn(move || {
+            crate::install::run_install_process(exe, name, tx, approvals_b64)
+        });
 
         cx.spawn(async move |this, cx| {
             while let Some(item) = rx.next().await {
