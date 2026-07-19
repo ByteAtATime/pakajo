@@ -14,6 +14,19 @@ struct RecorderState {
     unsupported_summary: String,
 }
 
+pub fn dry_run_for_target(target: &str) -> anyhow::Result<QuestionSet> {
+    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
+    let mut alpm = crate::pacman::init_alpm(&config)?;
+    let aur = crate::aur::AurClient::new();
+    let plan = crate::resolve::resolve(
+        &crate::resolve::AlpmDb(&alpm),
+        &aur,
+        &[target.to_string()],
+        false,
+    )?;
+    dry_run(&mut alpm, &plan)
+}
+
 pub fn dry_run(handle: &mut alpm::Alpm, plan: &BuildPlan) -> anyhow::Result<QuestionSet> {
     let state = Rc::new(RefCell::new(RecorderState::default()));
     handle.set_question_cb(

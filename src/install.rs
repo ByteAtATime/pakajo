@@ -37,6 +37,7 @@ pub enum InstallProgress {
     Idle,
     Running,
     Failed(String),
+    ConflictReview(crate::question::QuestionSet),
 }
 
 #[derive(Clone, Debug)]

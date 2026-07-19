@@ -6,7 +6,7 @@ pub struct Conflict {
     pub removable: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct QuestionSet {
     pub conflicts: Vec<Conflict>,
     pub had_unsupported_question: bool,

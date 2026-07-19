@@ -317,6 +317,41 @@ impl PakajoRoot {
             }
         };
 
+        let (mut dry_tx, mut dry_rx) =
+            futures::channel::mpsc::channel::<anyhow::Result<crate::question::QuestionSet>>(1);
+        let name_for_dry_run = name.clone();
+        std::thread::spawn(move || {
+            let result = crate::dry_run::dry_run_for_target(&name_for_dry_run);
+            let _ = dry_tx.try_send(result);
+        });
+
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(result) = dry_rx.next().await else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok(qs) if !qs.conflicts.is_empty() || qs.had_unsupported_question => {
+                    this.set_progress(InstallProgress::ConflictReview(qs), cx);
+                }
+                Ok(_) => {
+                    this.begin_install_subprocess(exe, name, window, cx);
+                }
+                Err(err) => {
+                    eprintln!("dry-run failed, proceeding with install: {err:#}");
+                    this.begin_install_subprocess(exe, name, window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn begin_install_subprocess(
+        &mut self,
+        exe: std::path::PathBuf,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let log_view = cx.new(|_| InstallLogOverlay { logs: Vec::new() });
         self.install_log_view = Some(log_view.clone());
         window.close_all_dialogs(cx);
