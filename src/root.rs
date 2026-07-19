@@ -199,11 +199,11 @@ impl PakajoRoot {
                 let name_for_info = name.clone();
                 let name_for_error = name.clone();
                 let local_index_for_refresh = local_index.clone();
-                cx.spawn(async move |this, cx| {
-                    let info = cx
-                        .background_executor()
-                        .spawn(async move { aur.info(&name_for_info) })
-                        .await;
+                let (mut info_tx, mut info_rx) = futures::channel::mpsc::channel::<
+                    anyhow::Result<Option<crate::aur::AurInfo>>,
+                >(1);
+                std::thread::spawn(move || {
+                    let info = aur.info(&name_for_info);
                     if let Ok(Some(ref a)) = info
                         && let Some(index) = local_index_for_refresh.as_ref()
                     {
@@ -211,6 +211,13 @@ impl PakajoRoot {
                             .put_detail(a)
                             .map_err(|e| eprintln!("[pakajo] detail put_detail failed: {e:#}"));
                     }
+                    let _ = info_tx.try_send(info);
+                });
+
+                cx.spawn(async move |this, cx| {
+                    let Some(info) = info_rx.next().await else {
+                        return;
+                    };
                     let _ = this.update(cx, |this, cx| {
                         if this.detail_seq != seq {
                             return;
