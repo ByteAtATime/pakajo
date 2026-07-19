@@ -147,18 +147,42 @@ fn register_callbacks<S: InstallSink + 'static>(
                             s.deny_flag = true;
                             s.detail = format!("declined to remove {removable}");
                         }
-                        crate::answerer::ConflictDecision::CannotPrompt => {
-                            s.deny_flag = true;
-                            s.detail = format!(
-                                "cannot prompt for conflict ({incoming} vs {removable}): stdin is not a terminal; re-run from an interactive shell"
-                            );
-                        }
-                    }
-                }
-                _ => {
+                crate::answerer::ConflictDecision::CannotPrompt => {
                     s.deny_flag = true;
-                    s.detail = "unsupported transaction question (only conflicts are handled in this version)".to_string();
+                    s.detail = format!(
+                        "cannot prompt for conflict ({incoming} vs {removable}): stdin is not a terminal; re-run from an interactive shell"
+                    );
                 }
+            }
+        }
+        alpm::Question::SelectProvider(mut spq) => {
+            let depend = spq.depend().to_string();
+            let candidates: Vec<crate::question::ProviderCandidate> = spq
+                .providers()
+                .into_iter()
+                .map(|p| crate::question::ProviderCandidate {
+                    name: p.name().to_string(),
+                    repo: p.db().map(|d| d.name().to_string()),
+                })
+                .collect();
+            match s.answerer.answer_provider(&depend, &candidates) {
+                crate::answerer::ProviderDecision::Choose(i) => spq.set_index(i as i32),
+                crate::answerer::ProviderDecision::Decline => {
+                    s.deny_flag = true;
+                    s.detail = format!("declined to choose a provider for {depend}");
+                }
+                crate::answerer::ProviderDecision::CannotPrompt => {
+                    s.deny_flag = true;
+                    s.detail = format!(
+                        "cannot prompt for provider ({depend}): stdin is not a terminal; re-run from an interactive shell"
+                    );
+                }
+            }
+        }
+        _ => {
+            s.deny_flag = true;
+            s.detail = "unsupported transaction question".to_string();
+        }
             }
         },
     );
@@ -623,6 +647,60 @@ mod tests {
                 .iter()
                 .any(|c| c.incoming == "cava-git" && c.removable == "cava"),
             "should capture the cava-git vs cava conflict; got {qs:?}"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn test_provider_surfaces_choice() {
+        use std::sync::{Arc, Mutex};
+
+        use crate::answerer::{ConflictDecision, ProviderDecision, QuestionAnswerer};
+        use crate::question::ProviderCandidate;
+
+        struct RecordingAnswerer {
+            recorded: Arc<Mutex<Vec<(String, Vec<ProviderCandidate>)>>>,
+        }
+
+        impl QuestionAnswerer for RecordingAnswerer {
+            fn answer_conflict(&self, _incoming: &str, _removable: &str) -> ConflictDecision {
+                ConflictDecision::Decline
+            }
+
+            fn answer_provider(
+                &self,
+                depend: &str,
+                candidates: &[ProviderCandidate],
+            ) -> ProviderDecision {
+                self.recorded
+                    .lock()
+                    .unwrap()
+                    .push((depend.to_string(), candidates.to_vec()));
+                ProviderDecision::Choose(0)
+            }
+        }
+
+        let recorded: Arc<Mutex<Vec<(String, Vec<ProviderCandidate>)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let mut handle = setup_fake_root("provider");
+        let result = install_into(
+            &mut handle,
+            &[InstallTarget::Repo("sdl_net".to_string())],
+            false,
+            ConsoleSink::new(),
+            || false,
+            Box::new(RecordingAnswerer {
+                recorded: recorded.clone(),
+            }),
+        );
+        result.expect("install_into should succeed even when confirm aborts before commit");
+        let captured = recorded.lock().unwrap().clone();
+        println!("recorded provider prompts: {captured:?}");
+        assert!(
+            captured
+                .iter()
+                .any(|(depend, cands)| depend == "sdl" && cands.len() >= 2),
+            "expected a SelectProvider for \"sdl\" with >=2 candidates; got {captured:?}"
         );
     }
 }

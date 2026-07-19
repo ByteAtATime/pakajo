@@ -8,6 +8,12 @@ pub struct Conflict {
     pub removable: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ProviderCandidate {
+    pub name: String,
+    pub repo: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct QuestionSet {
     pub conflicts: Vec<Conflict>,
