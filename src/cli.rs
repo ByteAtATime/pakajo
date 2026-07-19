@@ -80,6 +80,7 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
                         as_deps,
                         &mut *sink,
                         |_| true,
+                        approvals_b64.as_deref(),
                     ));
                 } else {
                     exit_with_result(crate::build::run_build(
@@ -88,6 +89,7 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
                         as_deps,
                         &mut *sink,
                         confirm_build,
+                        approvals_b64.as_deref(),
                     ));
                 }
             }
@@ -241,7 +243,7 @@ fn escalate(targets: &[String], as_deps: bool, json: bool) -> ! {
 }
 
 fn escalate_result(targets: &[String], as_deps: bool, json: bool) -> anyhow::Result<i32> {
-    let mut child = crate::build::spawn_install_child(targets, as_deps)?;
+    let mut child = crate::build::spawn_install_child(targets, as_deps, None)?;
     let stdout = child.stdout.take().expect("piped stdout");
     let mut sink: Box<dyn InstallSink> = if json {
         Box::new(JsonSink::new())

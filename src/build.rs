@@ -13,6 +13,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
     user_as_deps: bool,
     sink: &mut S,
     confirm: impl FnOnce(&BuildPlan) -> bool,
+    approvals_b64: Option<&str>,
 ) -> anyhow::Result<()> {
     sink.event(InstallEvent::ResolvingAurDependencies {
         target: target.to_string(),
@@ -62,7 +63,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
         });
 
         if !layer.repo_deps.is_empty() {
-            run_install_child(&layer.repo_deps, true, sink)?;
+            run_install_child(&layer.repo_deps, true, sink, None)?;
         }
 
         for info in &layer.aur {
@@ -88,7 +89,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
             });
 
             let as_deps = user_as_deps || !plan.targets.iter().any(|t| t == &info.name);
-            run_install_child(&artifacts, as_deps, sink)?;
+            run_install_child(&artifacts, as_deps, sink, approvals_b64)?;
         }
     }
 
@@ -228,12 +229,19 @@ fn run_makepkg_streaming<S: InstallSink + ?Sized>(
     Ok(())
 }
 
-pub(crate) fn spawn_install_child(targets: &[String], as_deps: bool) -> anyhow::Result<Child> {
+pub(crate) fn spawn_install_child(
+    targets: &[String],
+    as_deps: bool,
+    approvals_b64: Option<&str>,
+) -> anyhow::Result<Child> {
     let exe = std::env::current_exe().context("failed to determine executable path")?;
     let mut cmd = crate::cli::escalation_command(&exe.to_string_lossy());
     cmd.arg("install").arg("--json");
     if as_deps {
         cmd.arg("--asdeps");
+    }
+    if let Some(b64) = approvals_b64 {
+        cmd.arg("--approvals").arg(b64);
     }
     for target in targets {
         cmd.arg(target);
@@ -248,8 +256,9 @@ fn run_install_child<S: InstallSink + ?Sized>(
     targets: &[String],
     as_deps: bool,
     sink: &mut S,
+    approvals_b64: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut child = spawn_install_child(targets, as_deps)?;
+    let mut child = spawn_install_child(targets, as_deps, approvals_b64)?;
     let stdout = child.stdout.take().expect("piped stdout");
     crate::events::read_event_stream(std::io::BufReader::new(stdout), sink);
     let status = child.wait().context("install child did not complete")?;
