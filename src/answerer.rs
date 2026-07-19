@@ -13,6 +13,7 @@ pub enum ConflictDecision {
     CannotPrompt,
 }
 
+#[derive(Debug)]
 pub enum ProviderDecision {
     Choose(usize),
     Decline,
@@ -142,19 +143,29 @@ impl QuestionAnswerer for ApprovalsAnswerer {
         }
     }
 
-    fn answer_provider(
-        &self,
-        _depend: &str,
-        _candidates: &[ProviderCandidate],
-    ) -> ProviderDecision {
-        ProviderDecision::Decline
+    fn answer_provider(&self, depend: &str, candidates: &[ProviderCandidate]) -> ProviderDecision {
+        let Some(approval) = self
+            .approvals
+            .approved_providers
+            .iter()
+            .find(|a| a.depend == depend)
+        else {
+            return ProviderDecision::Decline;
+        };
+        let Some(idx) = candidates
+            .iter()
+            .position(|c| c.name == approval.provider_name)
+        else {
+            return ProviderDecision::Decline;
+        };
+        ProviderDecision::Choose(idx)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::question::{Approvals, Conflict};
+    use crate::question::{Approvals, Conflict, ProviderApproval, ProviderCandidate};
 
     #[test]
     fn approvals_answerer_matches_in_either_direction() {
@@ -163,6 +174,7 @@ mod tests {
                 incoming: "cava-git".into(),
                 removable: "cava".into(),
             }],
+            approved_providers: vec![],
         };
         let a = ApprovalsAnswerer::new(approvals);
         assert!(matches!(
@@ -187,6 +199,7 @@ mod tests {
                 incoming: "cava-git".into(),
                 removable: "cava".into(),
             }],
+            approved_providers: vec![],
         };
         let json = serde_json::to_vec(&original).expect("serialize");
         let b64 = base64::engine::general_purpose::STANDARD.encode(&json);
@@ -245,6 +258,69 @@ mod tests {
     fn parse_provider_choice_non_numeric_is_declined() {
         assert!(matches!(
             parse_provider_choice("abc", 3),
+            ProviderDecision::Decline
+        ));
+    }
+
+    fn candidate(name: &str) -> ProviderCandidate {
+        ProviderCandidate {
+            name: name.into(),
+            repo: None,
+            version: None,
+        }
+    }
+
+    #[test]
+    fn approvals_answerer_picks_provider_by_name_after_reorder() {
+        let approvals = Approvals {
+            approved_conflicts: vec![],
+            approved_providers: vec![ProviderApproval {
+                depend: "sdl".into(),
+                provider_name: "B".into(),
+            }],
+        };
+        let a = ApprovalsAnswerer::new(approvals);
+
+        let reordered = vec![candidate("C"), candidate("B"), candidate("A")];
+        match a.answer_provider("sdl", &reordered) {
+            ProviderDecision::Choose(i) => assert_eq!(
+                i, 1,
+                "B is at index 1 in [C, B, A], proving name-based matching"
+            ),
+            other => panic!("expected Choose, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn approvals_answerer_declines_when_approved_provider_missing() {
+        let approvals = Approvals {
+            approved_conflicts: vec![],
+            approved_providers: vec![ProviderApproval {
+                depend: "sdl".into(),
+                provider_name: "B".into(),
+            }],
+        };
+        let a = ApprovalsAnswerer::new(approvals);
+
+        let no_b = vec![candidate("C"), candidate("A")];
+        assert!(matches!(
+            a.answer_provider("sdl", &no_b),
+            ProviderDecision::Decline
+        ));
+    }
+
+    #[test]
+    fn approvals_answerer_declines_when_no_matching_approval() {
+        let approvals = Approvals {
+            approved_conflicts: vec![],
+            approved_providers: vec![ProviderApproval {
+                depend: "sdl".into(),
+                provider_name: "A".into(),
+            }],
+        };
+        let a = ApprovalsAnswerer::new(approvals);
+        assert!(matches!(
+            a.answer_provider("libgl", &[candidate("libglvnd")]),
             ProviderDecision::Decline
         ));
     }

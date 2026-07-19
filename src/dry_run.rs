@@ -3,13 +3,14 @@ use std::rc::Rc;
 
 use anyhow::Context as _;
 
-use crate::question::{Conflict, QuestionSet};
+use crate::question::{Conflict, ProviderCandidate, ProviderPrompt, QuestionSet};
 use crate::resolve::BuildPlan;
 use crate::stub_pkg::build_stub_pkg;
 
 #[derive(Default)]
 struct RecorderState {
     conflicts: Vec<Conflict>,
+    providers: Vec<ProviderPrompt>,
     had_unsupported: bool,
     unsupported_summary: String,
 }
@@ -63,9 +64,18 @@ pub fn dry_run(handle: &mut alpm::Alpm, plan: &BuildPlan) -> anyhow::Result<Ques
                     s.unsupported_summary.push_str("remove-pkgs; ");
                 }
                 alpm::Question::SelectProvider(mut spq) => {
+                    let depend = spq.depend().to_string();
+                    let candidates: Vec<ProviderCandidate> = spq
+                        .providers()
+                        .into_iter()
+                        .map(|p| ProviderCandidate {
+                            name: p.name().to_string(),
+                            repo: p.db().map(|d| d.name().to_string()),
+                            version: Some(p.version().to_string()),
+                        })
+                        .collect();
+                    s.providers.push(ProviderPrompt { depend, candidates });
                     spq.set_index(0);
-                    s.had_unsupported = true;
-                    s.unsupported_summary.push_str("select-provider; ");
                 }
                 alpm::Question::ImportKey(mut iq) => {
                     iq.set_import(false);
@@ -118,6 +128,7 @@ fn snapshot(state: &Rc<RefCell<RecorderState>>) -> QuestionSet {
     let s = state.borrow();
     QuestionSet {
         conflicts: s.conflicts.clone(),
+        providers: s.providers.clone(),
         had_unsupported_question: s.had_unsupported,
         unsupported_summary: s.unsupported_summary.clone(),
     }

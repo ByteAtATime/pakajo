@@ -163,6 +163,7 @@ fn register_callbacks<S: InstallSink + 'static>(
                 .map(|p| crate::question::ProviderCandidate {
                     name: p.name().to_string(),
                     repo: p.db().map(|d| d.name().to_string()),
+                    version: Some(p.version().to_string()),
                 })
                 .collect();
             match s.answerer.answer_provider(&depend, &candidates) {

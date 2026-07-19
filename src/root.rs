@@ -328,7 +328,16 @@ impl PakajoRoot {
             _ => return,
         };
         let selected: Vec<usize> = (0..qs.conflicts.len()).collect();
-        let approvals = qs.approve(&selected);
+        let approvals = match qs.approve(&selected, &[]) {
+            Ok(a) => a,
+            Err(error) => {
+                self.set_progress(
+                    InstallProgress::Failed(format!("failed to encode approvals: {error}")),
+                    cx,
+                );
+                return;
+            }
+        };
         let b64 = match crate::question::encode_approvals(&approvals) {
             Ok(b64) => b64,
             Err(error) => {
