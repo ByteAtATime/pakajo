@@ -42,15 +42,15 @@ pub fn scored_candidates(candidates: Vec<SearchResult>, needle: &str) -> Vec<Sco
         .collect()
 }
 
-const W_NAME: f64 = 5.0;
-const W_DESC: f64 = 0.0;
-const W_POP: f64 = 1.0;
+const W_NAME: f64 = 1.0;
+const W_DESC: f64 = 0.3;
+const W_POP: f64 = 0.2;
+const W_REPO: f64 = 0.1;
 const W_RECENCY: f64 = 0.1;
-const W_INSTALLED: f64 = 2.0;
-const K_NAME: f64 = 200.0;
-const K_DESC: f64 = 40.0;
+const W_INSTALLED: f64 = 0.5;
+const K_NAME: f64 = 100.0;
+const K_DESC: f64 = 100.0;
 const K_POP: f64 = 10.0;
-const REPO_POP_FLOOR: f64 = 5.0;
 
 #[allow(dead_code)]
 pub fn score(
@@ -76,10 +76,15 @@ pub fn score(
     let mut ranked: Vec<(f64, SearchResult)> = filtered
         .into_iter()
         .map(|c| {
-            (
-                composite(&c.result, c.name_score, c.desc_score, installed, now),
-                c.result,
-            )
+            let s = composite(
+                &c.result,
+                &needle,
+                c.name_score,
+                c.desc_score,
+                installed,
+                now,
+            );
+            (s, c.result)
         })
         .collect();
 
@@ -114,24 +119,32 @@ fn dedup_keep_repo(rows: Vec<SearchResult>) -> Vec<SearchResult> {
     out
 }
 
-fn normalize(raw: f64, k: f64) -> f64 {
-    if raw <= 0.0 {
-        return 0.0;
-    }
-    raw / (raw + k)
+fn saturate(x: f64, k: f64) -> f64 {
+    x / (x + k)
 }
 
 fn composite(
     r: &SearchResult,
-    name: Option<u16>,
-    desc: Option<u16>,
+    needle: &str,
+    name_score: Option<u16>,
+    desc_score: Option<u16>,
     installed: &HashSet<String>,
     now: f64,
 ) -> f64 {
-    let norm_name = normalize(name.unwrap_or(0) as f64, K_NAME);
-    let norm_desc = normalize(desc.unwrap_or(0) as f64, K_DESC);
-    let raw_pop = r.popularity.unwrap_or(REPO_POP_FLOOR);
-    let norm_pop = normalize(raw_pop, K_POP);
+    let needle_len = needle.chars().count() as f64;
+    let name_len = r.name.chars().count() as f64;
+    let precision = (needle_len / name_len).min(1.0);
+
+    let norm_name = name_score
+        .map(|s| saturate(s as f64, K_NAME))
+        .unwrap_or(0.0);
+    let norm_desc = desc_score
+        .map(|s| saturate(s as f64, K_DESC))
+        .unwrap_or(0.0);
+    let norm_pop = r.popularity.map(|p| saturate(p, K_POP)).unwrap_or(0.0);
+
+    let text = norm_name * precision + W_DESC * norm_desc * (1.0 - norm_name);
+
     let recency = if r.source == PackageSource::Aur {
         r.last_update
             .map(|t| 1.0 / (1.0 + ((now - t as f64).max(0.0) / 2_592_000.0).ln_1p()))
@@ -139,12 +152,19 @@ fn composite(
     } else {
         1.0
     };
-    let boost = if installed.contains(&r.name) {
+
+    let repo_bonus = if r.source == PackageSource::Repo {
+        W_REPO
+    } else {
+        0.0
+    };
+    let installed_bonus = if installed.contains(&r.name) {
         W_INSTALLED
     } else {
         0.0
     };
-    W_NAME * norm_name + W_DESC * norm_desc + W_POP * norm_pop + W_RECENCY * recency + boost
+
+    W_NAME * text + W_RECENCY * recency + W_POP * norm_pop + repo_bonus + installed_bonus
 }
 
 fn now_secs() -> f64 {
@@ -260,6 +280,7 @@ mod tests {
         let e = HashSet::new();
         let ancient = composite(
             &pkg("x", PackageSource::Repo, Some(0), None),
+            "x",
             Some(10),
             None,
             &e,
@@ -267,6 +288,7 @@ mod tests {
         );
         let no_ts = composite(
             &pkg("x", PackageSource::Repo, None, None),
+            "x",
             Some(10),
             None,
             &e,
@@ -280,6 +302,7 @@ mod tests {
         let e = HashSet::new();
         let recent = composite(
             &pkg("x", PackageSource::Aur, Some(9_999_000_000), None),
+            "x",
             Some(10),
             None,
             &e,
@@ -287,6 +310,7 @@ mod tests {
         );
         let stale = composite(
             &pkg("x", PackageSource::Aur, Some(1_000_000_000), None),
+            "x",
             Some(10),
             None,
             &e,
@@ -300,6 +324,7 @@ mod tests {
         let e = HashSet::new();
         let base = composite(
             &pkg("a", PackageSource::Repo, None, None),
+            "a",
             Some(20),
             None,
             &e,
@@ -307,6 +332,7 @@ mod tests {
         );
         let pop = composite(
             &pkg("b", PackageSource::Repo, None, Some(10.0)),
+            "a",
             Some(20),
             None,
             &e,
@@ -315,6 +341,7 @@ mod tests {
         let inst = HashSet::from(["a".to_string()]);
         let boosted = composite(
             &pkg("a", PackageSource::Repo, None, None),
+            "a",
             Some(20),
             None,
             &inst,
@@ -324,6 +351,7 @@ mod tests {
         assert!(
             composite(
                 &pkg("c", PackageSource::Repo, None, None),
+                "a",
                 Some(100),
                 None,
                 &e,
