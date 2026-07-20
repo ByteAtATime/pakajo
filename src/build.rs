@@ -204,21 +204,48 @@ fn run_makepkg_streaming<S: InstallSink + ?Sized>(
         .env("PKGDEST", dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::piped());
 
     let mut child = cmd.spawn().context("failed to spawn makepkg")?;
-    if let Some(stdout) = child.stdout.take() {
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let stdout_tx = tx.clone();
+    let stdout_handle = std::thread::spawn(move || {
         let reader = std::io::BufReader::new(stdout);
         for line in reader.lines() {
             match line {
-                Ok(text) => sink.event(InstallEvent::BuildOutput {
-                    package: package.to_string(),
-                    line: text,
-                }),
+                Ok(text) => {
+                    if stdout_tx.send(text).is_err() {
+                        break;
+                    }
+                }
                 Err(_) => break,
             }
         }
+    });
+    let stderr_handle = std::thread::spawn(move || {
+        let reader = std::io::BufReader::new(stderr);
+        for line in reader.lines() {
+            match line {
+                Ok(text) => {
+                    if tx.send(text).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    let package = package.to_string();
+    for line in rx.iter() {
+        sink.event(InstallEvent::BuildOutput {
+            package: package.clone(),
+            line,
+        });
     }
+    let _ = stdout_handle.join();
+    let _ = stderr_handle.join();
     let status = child.wait().context("makepkg did not complete")?;
     if !status.success() {
         anyhow::bail!(
