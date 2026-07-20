@@ -42,10 +42,15 @@ pub fn scored_candidates(candidates: Vec<SearchResult>, needle: &str) -> Vec<Sco
         .collect()
 }
 
-const W_NAME: f64 = 1.0;
-const W_DESC: f64 = 0.15;
+const W_NAME: f64 = 5.0;
+const W_DESC: f64 = 0.0;
 const W_POP: f64 = 1.0;
-const W_INSTALLED: f64 = 15.0;
+const W_RECENCY: f64 = 0.1;
+const W_INSTALLED: f64 = 2.0;
+const K_NAME: f64 = 200.0;
+const K_DESC: f64 = 40.0;
+const K_POP: f64 = 10.0;
+const REPO_POP_FLOOR: f64 = 5.0;
 
 #[allow(dead_code)]
 pub fn score(
@@ -56,17 +61,27 @@ pub fn score(
     if q.text.is_empty() {
         return Vec::new();
     }
+    let needle = q.text.to_lowercase();
     let now = now_secs();
-    let mut ranked: Vec<(f64, SearchResult)> =
-        scored_candidates(dedup_keep_repo(candidates), &q.text.to_lowercase())
+    let scored = scored_candidates(dedup_keep_repo(candidates), &needle);
+    let has_name_match = scored.iter().any(|c| c.name_score.is_some());
+    let filtered: Vec<ScoredCandidate> = if has_name_match {
+        scored
             .into_iter()
-            .map(|c| {
-                (
-                    composite(&c.result, c.name_score, c.desc_score, installed, now),
-                    c.result,
-                )
-            })
-            .collect();
+            .filter(|c| c.name_score.is_some())
+            .collect()
+    } else {
+        scored
+    };
+    let mut ranked: Vec<(f64, SearchResult)> = filtered
+        .into_iter()
+        .map(|c| {
+            (
+                composite(&c.result, c.name_score, c.desc_score, installed, now),
+                c.result,
+            )
+        })
+        .collect();
 
     ranked.sort_by(|a, b| {
         b.0.partial_cmp(&a.0)
@@ -99,6 +114,13 @@ fn dedup_keep_repo(rows: Vec<SearchResult>) -> Vec<SearchResult> {
     out
 }
 
+fn normalize(raw: f64, k: f64) -> f64 {
+    if raw <= 0.0 {
+        return 0.0;
+    }
+    raw / (raw + k)
+}
+
 fn composite(
     r: &SearchResult,
     name: Option<u16>,
@@ -106,7 +128,10 @@ fn composite(
     installed: &HashSet<String>,
     now: f64,
 ) -> f64 {
-    let base = W_NAME * name.unwrap_or(0) as f64 + W_DESC * desc.unwrap_or(0) as f64;
+    let norm_name = normalize(name.unwrap_or(0) as f64, K_NAME);
+    let norm_desc = normalize(desc.unwrap_or(0) as f64, K_DESC);
+    let raw_pop = r.popularity.unwrap_or(REPO_POP_FLOOR);
+    let norm_pop = normalize(raw_pop, K_POP);
     let recency = if r.source == PackageSource::Aur {
         r.last_update
             .map(|t| 1.0 / (1.0 + ((now - t as f64).max(0.0) / 2_592_000.0).ln_1p()))
@@ -119,7 +144,7 @@ fn composite(
     } else {
         0.0
     };
-    base * recency + W_POP * r.popularity.unwrap_or(0.0) + boost
+    W_NAME * norm_name + W_DESC * norm_desc + W_POP * norm_pop + W_RECENCY * recency + boost
 }
 
 fn now_secs() -> f64 {
