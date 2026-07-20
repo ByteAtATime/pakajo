@@ -77,7 +77,7 @@ mod tests {
         let conn = rusqlite::Connection::open(dir.path().join("aur-meta.sqlite")).expect("seed");
         for (name, desc) in rows {
             conn.execute(
-                "INSERT INTO packages_fts \
+                "INSERT INTO packages \
                  (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
                  VALUES (?,?,?,?,?,?,?,?,?)",
                 rusqlite::params![name, desc, "aur", "aur", "1.0-1", 0i64, 0.0f64, 0i64, name],

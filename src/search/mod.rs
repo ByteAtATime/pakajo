@@ -341,23 +341,6 @@ mod tests {
             ],
         )
         .expect("seed packages");
-        conn.execute(
-            "INSERT INTO packages_fts \
-             (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
-             VALUES (?,?,?,?,?,?,?,?,?)",
-            rusqlite::params![
-                "google-chrome",
-                "browser",
-                "aur",
-                "aur",
-                "1.0-1",
-                0i64,
-                0.0f64,
-                0i64,
-                "google-chrome"
-            ],
-        )
-        .expect("seed packages_fts");
 
         let empty_installed: HashSet<String> = HashSet::new();
         let repo_provider =
@@ -402,15 +385,6 @@ mod tests {
         )
         .expect("seed packages vim");
         conn.execute(
-            "INSERT INTO packages_fts \
-             (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
-             VALUES (?,?,?,?,?,?,?,?,?)",
-            rusqlite::params![
-                "vim", "editor", "aur", "aur", "1.0-1", 0i64, 0.0f64, 0i64, "vim"
-            ],
-        )
-        .expect("seed packages_fts vim");
-        conn.execute(
             "INSERT INTO packages \
              (name,source,repo,version,description,num_votes,popularity,last_update,package_base) \
              VALUES (?,?,?,?,?,?,?,?,?)",
@@ -427,23 +401,6 @@ mod tests {
             ],
         )
         .expect("seed packages vim-plugins");
-        conn.execute(
-            "INSERT INTO packages_fts \
-             (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
-             VALUES (?,?,?,?,?,?,?,?,?)",
-            rusqlite::params![
-                "vim-plugins",
-                "vim addons",
-                "aur",
-                "aur",
-                "1.0-1",
-                0i64,
-                0.0f64,
-                0i64,
-                "vim-plugins"
-            ],
-        )
-        .expect("seed packages_fts vim-plugins");
 
         let installed: HashSet<String> = HashSet::from(["vim".to_string()]);
         let repo_provider =

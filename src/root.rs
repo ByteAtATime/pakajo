@@ -287,7 +287,6 @@ impl PakajoRoot {
             active_tooltip: None,
             root,
             install_progress,
-            installed_names: self.installed_names.clone(),
         });
         self.detail = DetailPane::Ready(entity);
         cx.notify();
@@ -514,7 +513,6 @@ impl PakajoRoot {
             let installed = is_installed(&self.alpm_handle, &pkg_name);
             entity.update(cx, |detail, cx| {
                 detail.installed = installed;
-                detail.installed_names = self.installed_names.clone();
                 cx.notify();
             });
         }

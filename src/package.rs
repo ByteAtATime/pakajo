@@ -51,13 +51,6 @@ impl Package {
     }
 }
 
-pub fn dep_base_name(name: &str) -> &str {
-    match name.find(|c| c == '<' || c == '>' || c == '=') {
-        Some(i) => &name[..i],
-        None => name,
-    }
-}
-
 fn parse_opt_dependency(dependency: &str) -> Option<OptDependency> {
     // TODO: write a proper regex for package names + comparisons
     let re = Regex::new(r"([^:]+)(: (.+))?").expect("Failed to parse opt dependency regex");
@@ -203,13 +196,5 @@ mod tests {
             pkg.opt_dependencies[0].reason.as_deref(),
             Some("extra tools")
         );
-    }
-
-    #[test]
-    fn dep_base_name_strips_version_comparators() {
-        assert_eq!(dep_base_name("python"), "python");
-        assert_eq!(dep_base_name("python>=3.10"), "python");
-        assert_eq!(dep_base_name("ffmpeg<5"), "ffmpeg");
-        assert_eq!(dep_base_name("foo=1"), "foo");
     }
 }

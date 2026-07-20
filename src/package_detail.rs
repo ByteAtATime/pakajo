@@ -1,11 +1,8 @@
 use crate::{
-    icon::PakajoIcon,
-    install::InstallProgress,
-    package::{Package, dep_base_name},
-    root::PakajoRoot,
+    icon::PakajoIcon, install::InstallProgress, package::Package, root::PakajoRoot,
     utils::format_bytes,
 };
-use gpui::{prelude::FluentBuilder, *};
+use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     spinner::Spinner,
@@ -35,7 +32,6 @@ pub struct PackageDetail {
     pub active_tooltip: Option<SizeTooltipTarget>,
     pub root: WeakEntity<PakajoRoot>,
     pub install_progress: InstallProgress,
-    pub installed_names: std::sync::Arc<std::collections::HashSet<String>>,
 }
 
 impl PackageDetail {
@@ -352,7 +348,6 @@ impl PackageDetail {
                     .v_flex()
                     .gap_2()
                     .children(self.pkg.opt_dependencies.iter().map(|dep| {
-                        let is_installed = self.installed_names.contains(dep_base_name(&dep.name));
                         div()
                             .h_flex()
                             .items_center()
@@ -360,20 +355,8 @@ impl PackageDetail {
                             .w_full()
                             .px_4()
                             .py_3()
-                            .bg(if is_installed {
-                                // TODO: urgh color mixing again
-                                cx.theme().green.opacity(0.1)
-                            } else {
-                                cx.theme().secondary
-                            })
-                            .child(
-                                div()
-                                    .font_bold()
-                                    .when(is_installed, |s| {
-                                        s.text_color(cx.theme().green.saturation(0.6))
-                                    })
-                                    .child(dep.name.clone()),
-                            )
+                            .bg(cx.theme().secondary)
+                            .child(div().font_bold().child(dep.name.clone()))
                             .children(dep.reason.clone().map(|r| div().child(r)))
                     })),
             )

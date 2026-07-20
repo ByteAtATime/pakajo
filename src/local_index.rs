@@ -136,9 +136,13 @@ impl LocalIndex {
         }
         let conn = self.read.lock().expect("read connection poisoned");
         let mut stmt = conn.prepare(
-            "SELECT name, description, source, repo, version, num_votes, popularity, \
-             last_update, package_base \
-             FROM packages_fts WHERE packages_fts MATCH ?1 LIMIT ?2",
+            "SELECT p.name, p.description, p.source, p.repo, p.version, p.num_votes, \
+             p.popularity, p.last_update, p.package_base \
+             FROM packages_fts \
+             JOIN packages p ON p.rowid = packages_fts.rowid \
+             WHERE packages_fts MATCH ?1 \
+             ORDER BY rank \
+             LIMIT ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![pattern, limit], row_to_package)?;
         rows.collect::<rusqlite::Result<Vec<PackageRow>>>()
@@ -194,26 +198,20 @@ impl LocalIndex {
         };
 
         let tx = conn.transaction()?;
-        tx.execute_batch("DELETE FROM packages; DELETE FROM packages_fts;")?;
+        tx.execute_batch("DELETE FROM packages;")?;
 
         let mut pkg_stmt = tx.prepare(
             "INSERT OR REPLACE INTO packages \
              (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json) \
              VALUES (?,?,?,?,?,?,?,?,?,?)",
         )?;
-        let mut fts_stmt = tx.prepare(
-            "INSERT INTO packages_fts \
-             (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
-             VALUES (?,?,?,?,?,?,?,?,?)",
-        )?;
 
-        let (aur_count, skipped) = index_aur_rows(&mut pkg_stmt, &mut fts_stmt, dump.reader())?;
+        let (aur_count, skipped) = index_aur_rows(&mut pkg_stmt, dump.reader())?;
 
         if fail_loud(aur_count, skipped) {
             let total = aur_count + skipped;
             let msg = format!("too many malformed AUR rows: {skipped} of {total}");
             drop(pkg_stmt);
-            drop(fts_stmt);
             drop(tx);
             let _ = meta_set(&conn, "last_error", &msg);
             return Err(anyhow::Error::msg(msg));
@@ -239,23 +237,11 @@ impl LocalIndex {
                     &null_base,
                     &null_detail,
                 ])?;
-                fts_stmt.execute(rusqlite::params![
-                    pkg.name(),
-                    pkg.desc(),
-                    "repo",
-                    repo,
-                    pkg.version().as_str(),
-                    &null_votes,
-                    &null_popularity,
-                    pkg.build_date(),
-                    &null_base,
-                ])?;
                 repo_count += 1;
             }
         }
 
         drop(pkg_stmt);
-        drop(fts_stmt);
         tx.commit()?;
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
 
@@ -306,7 +292,6 @@ fn row_to_package(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackageRow> {
 
 fn index_aur_rows(
     pkg_stmt: &mut rusqlite::Statement,
-    fts_stmt: &mut rusqlite::Statement,
     reader: impl std::io::BufRead,
 ) -> anyhow::Result<(usize, usize)> {
     let mut aur_count: usize = 0;
@@ -338,17 +323,6 @@ fn index_aur_rows(
                     &info.package_base,
                     payload,
                 ])?;
-                fts_stmt.execute(rusqlite::params![
-                    &info.name,
-                    &info.description,
-                    "aur",
-                    "aur",
-                    &info.version,
-                    info.num_votes as i64,
-                    info.popularity,
-                    info.last_modified,
-                    &info.package_base,
-                ])?;
                 aur_count += 1;
             }
             Err(_) => skipped += 1,
@@ -369,9 +343,22 @@ fn apply_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
            detail_json TEXT);\
          CREATE VIRTUAL TABLE IF NOT EXISTS packages_fts USING fts5(\
            name, description,\
-           source UNINDEXED, repo UNINDEXED, version UNINDEXED, num_votes UNINDEXED,\
-           popularity UNINDEXED, last_update UNINDEXED, package_base UNINDEXED,\
+           content='packages', content_rowid=rowid,\
            tokenize = 'unicode61 remove_diacritics 2');\
+         CREATE TRIGGER IF NOT EXISTS packages_ai AFTER INSERT ON packages BEGIN \
+           INSERT INTO packages_fts(rowid, name, description) \
+             VALUES (new.rowid, new.name, new.description); \
+         END;\
+         CREATE TRIGGER IF NOT EXISTS packages_ad AFTER DELETE ON packages BEGIN \
+           INSERT INTO packages_fts(packages_fts, rowid, name, description) \
+             VALUES('delete', old.rowid, old.name, old.description); \
+         END;\
+         CREATE TRIGGER IF NOT EXISTS packages_au AFTER UPDATE ON packages BEGIN \
+           INSERT INTO packages_fts(packages_fts, rowid, name, description) \
+             VALUES('delete', old.rowid, old.name, old.description); \
+           INSERT INTO packages_fts(rowid, name, description) \
+             VALUES (new.rowid, new.name, new.description); \
+         END;\
          CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);",
     )?;
     Ok(())
@@ -484,9 +471,6 @@ mod tests {
     const PKG_INSERT_SQL: &str = "INSERT OR REPLACE INTO packages \
          (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json) \
          VALUES (?,?,?,?,?,?,?,?,?,?)";
-    const FTS_INSERT_SQL: &str = "INSERT INTO packages_fts \
-         (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
-         VALUES (?,?,?,?,?,?,?,?,?)";
 
     fn aur_json(id: u64, name: &str) -> String {
         format!(
@@ -515,16 +499,12 @@ mod tests {
 
         let mut conn = index.write.lock().expect("write connection poisoned");
         let tx = conn.transaction().expect("transaction");
-        tx.execute_batch("DELETE FROM packages; DELETE FROM packages_fts;")
-            .expect("delete");
+        tx.execute_batch("DELETE FROM packages;").expect("delete");
         let mut pkg_stmt = tx.prepare(PKG_INSERT_SQL).expect("prepare pkg");
-        let mut fts_stmt = tx.prepare(FTS_INSERT_SQL).expect("prepare fts");
 
-        let (aur_count, skipped) =
-            index_aur_rows(&mut pkg_stmt, &mut fts_stmt, reader).expect("index");
+        let (aur_count, skipped) = index_aur_rows(&mut pkg_stmt, reader).expect("index");
 
         drop(pkg_stmt);
-        drop(fts_stmt);
         tx.commit().expect("commit");
         drop(conn);
 
@@ -576,13 +556,10 @@ mod tests {
 
         let mut conn = index.write.lock().expect("write connection poisoned");
         let tx = conn.transaction().expect("transaction");
-        tx.execute_batch("DELETE FROM packages; DELETE FROM packages_fts;")
-            .expect("delete");
+        tx.execute_batch("DELETE FROM packages;").expect("delete");
         let mut pkg_stmt = tx.prepare(PKG_INSERT_SQL).expect("prepare pkg");
-        let mut fts_stmt = tx.prepare(FTS_INSERT_SQL).expect("prepare fts");
 
-        let (aur_count, skipped) =
-            index_aur_rows(&mut pkg_stmt, &mut fts_stmt, reader).expect("index");
+        let (aur_count, skipped) = index_aur_rows(&mut pkg_stmt, reader).expect("index");
         let tripped = fail_loud(aur_count, skipped);
         let msg = format!(
             "too many malformed AUR rows: {skipped} of {}",
@@ -590,7 +567,6 @@ mod tests {
         );
 
         drop(pkg_stmt);
-        drop(fts_stmt);
         drop(tx);
         meta_set(&conn, "last_error", &msg).expect("record last_error");
         drop(conn);
