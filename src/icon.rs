@@ -58,3 +58,20 @@ impl AssetSource for Assets {
             .collect())
     }
 }
+
+pub struct CombinedAssets;
+
+impl AssetSource for CombinedAssets {
+    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Ok(Some(data)) = Assets.load(path) {
+            return Ok(Some(data));
+        }
+        gpui_component_assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        let mut out = Assets.list(path)?;
+        out.extend(gpui_component_assets::Assets.list(path)?);
+        Ok(out)
+    }
+}

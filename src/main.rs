@@ -39,7 +39,7 @@ fn main() -> anyhow::Result<()> {
     let handle = init_alpm(&config)?;
     let aur_client = crate::aur::AurClient::new();
 
-    let app = gpui_platform::application().with_assets(icon::Assets);
+    let app = gpui_platform::application().with_assets(icon::CombinedAssets);
 
     app.run(move |cx| {
         gpui_component::init(cx);
