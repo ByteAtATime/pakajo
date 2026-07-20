@@ -6,7 +6,6 @@ use anyhow::{Context, anyhow};
 use crate::events::{InstallSink, SummaryPackage, TransactionSummary};
 use crate::install::{QuestionState, register_callbacks};
 
-#[allow(dead_code)]
 pub fn run_remove<S: InstallSink + 'static, F: FnOnce() -> bool>(
     targets: &[String],
     sink: S,
@@ -18,7 +17,6 @@ pub fn run_remove<S: InstallSink + 'static, F: FnOnce() -> bool>(
     remove_into(&mut handle, targets, sink, confirm, answerer)
 }
 
-#[allow(dead_code)]
 fn remove_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
     handle: &mut alpm::Alpm,
     targets: &[String],
@@ -34,7 +32,6 @@ fn remove_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
     result
 }
 
-#[allow(dead_code)]
 fn run_remove_transaction<S: InstallSink, F: FnOnce() -> bool>(
     handle: &mut alpm::Alpm,
     targets: &[String],
@@ -101,7 +98,6 @@ fn classify_prepare_error(err: alpm::PrepareError) -> anyhow::Error {
     }
 }
 
-#[allow(dead_code)]
 fn build_remove_summary(handle: &alpm::Alpm) -> TransactionSummary {
     let mut packages = Vec::new();
     let mut total_installed_size = 0;
@@ -124,6 +120,20 @@ fn build_remove_summary(handle: &alpm::Alpm) -> TransactionSummary {
         total_download_size: 0,
         total_installed_size,
     }
+}
+
+pub(crate) fn spawn_remove_child(targets: &[String]) -> anyhow::Result<std::process::Child> {
+    use std::process::Stdio;
+    let exe = std::env::current_exe().context("failed to determine executable path")?;
+    let mut cmd = crate::cli::escalation_command(&exe.to_string_lossy());
+    cmd.arg("remove").arg("--json");
+    for target in targets {
+        cmd.arg(target);
+    }
+    cmd.stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    cmd.spawn().context("failed to spawn remove child")
 }
 
 #[cfg(test)]

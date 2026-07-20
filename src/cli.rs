@@ -122,6 +122,77 @@ pub(crate) fn aur_sync_subcommand(args: impl Iterator<Item = String>) -> ! {
     exit_with_result(run_aur_sync());
 }
 
+pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
+    let mut json = false;
+    let mut positionals: Vec<String> = Vec::new();
+    for s in args {
+        if s == "--json" {
+            json = true;
+        } else if s.starts_with('-') {
+            eprintln!("unknown flag: {s}");
+            std::process::exit(2);
+        } else {
+            positionals.push(s);
+        }
+    }
+
+    if positionals.is_empty() {
+        eprintln!("usage: pakajo remove [--json] <package>...");
+        std::process::exit(2);
+    }
+
+    if unsafe { libc::geteuid() } == 0 {
+        let answerer: Box<dyn crate::answerer::QuestionAnswerer> =
+            if unsafe { libc::isatty(0) } == 1 {
+                Box::new(crate::answerer::StdioAnswerer::new())
+            } else {
+                Box::new(crate::answerer::NonInteractiveAnswerer)
+            };
+        if json {
+            exit_with_result(crate::remove::run_remove(
+                &positionals,
+                JsonSink::new(),
+                || true,
+                answerer,
+            ));
+        } else {
+            exit_with_result(crate::remove::run_remove(
+                &positionals,
+                ConsoleSink::new(),
+                confirm_remove,
+                answerer,
+            ));
+        }
+    }
+
+    escalate_remove(&positionals, json);
+}
+
+fn escalate_remove(targets: &[String], json: bool) -> ! {
+    let mut child = match crate::remove::spawn_remove_child(targets) {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    };
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut sink: Box<dyn InstallSink> = if json {
+        Box::new(JsonSink::new())
+    } else {
+        Box::new(ConsoleSink::new())
+    };
+    crate::events::read_event_stream(std::io::BufReader::new(stdout), &mut *sink);
+    let status = match child.wait() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    };
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 fn alpm_handle() -> anyhow::Result<alpm::Alpm> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     crate::pacman::init_alpm(&config)
@@ -455,6 +526,10 @@ impl InstallSink for JsonSink {
 
 fn confirm_install() -> bool {
     confirm_yes("\n:: Proceed with installation?")
+}
+
+fn confirm_remove() -> bool {
+    confirm_yes("\n:: Proceed with removal?")
 }
 
 fn confirm_build(plan: &crate::resolve::BuildPlan) -> bool {

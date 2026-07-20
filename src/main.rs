@@ -33,6 +33,7 @@ fn main() -> anyhow::Result<()> {
         Some("install") => cli::install_subcommand(args),
         Some("search") => cli::search_subcommand(args),
         Some("aur-sync") => cli::aur_sync_subcommand(args),
+        Some("remove") => cli::remove_subcommand(args),
         _ => {}
     }
 
