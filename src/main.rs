@@ -14,6 +14,7 @@ mod package;
 mod package_detail;
 mod pacman;
 mod question;
+mod remove;
 mod resolve;
 mod root;
 mod search;

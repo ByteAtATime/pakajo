@@ -618,9 +618,12 @@ fn formatted_name(pkg: &SummaryPackage) -> String {
 }
 
 fn version_label(pkg: &SummaryPackage) -> String {
-    match &pkg.old_version {
-        Some(old) => format!("{old} -> {}", pkg.new_version),
-        None => pkg.new_version.clone(),
+    match (&pkg.old_version, pkg.new_version.is_empty()) {
+        (Some(old), false) => format!("{old} -> {}", pkg.new_version),
+        _ => pkg
+            .old_version
+            .clone()
+            .unwrap_or_else(|| pkg.new_version.clone()),
     }
 }
 

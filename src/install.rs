@@ -16,14 +16,17 @@ use crate::events::{
     TransactionSummary,
 };
 
-struct QuestionState {
-    deny_flag: bool,
-    detail: String,
+#[cfg(test)]
+pub(crate) use tests::setup_fake_root;
+
+pub(crate) struct QuestionState {
+    pub(crate) deny_flag: bool,
+    pub(crate) detail: String,
     answerer: Box<dyn crate::answerer::QuestionAnswerer>,
 }
 
 impl QuestionState {
-    fn new(answerer: Box<dyn crate::answerer::QuestionAnswerer>) -> Self {
+    pub(crate) fn new(answerer: Box<dyn crate::answerer::QuestionAnswerer>) -> Self {
         Self {
             deny_flag: false,
             detail: String::new(),
@@ -70,7 +73,7 @@ pub fn run_install<S: InstallSink + 'static, F: FnOnce() -> bool>(
     install_into(&mut handle, targets, as_deps, sink, confirm, answerer)
 }
 
-fn install_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
+pub(crate) fn install_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
     handle: &mut alpm::Alpm,
     targets: &[InstallTarget],
     as_deps: bool,
@@ -86,7 +89,7 @@ fn install_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
     result
 }
 
-fn register_callbacks<S: InstallSink + 'static>(
+pub(crate) fn register_callbacks<S: InstallSink + 'static>(
     handle: &alpm::Alpm,
     sink: Rc<RefCell<S>>,
     qstate: Rc<RefCell<QuestionState>>,
@@ -179,6 +182,9 @@ fn register_callbacks<S: InstallSink + 'static>(
                     );
                 }
             }
+        }
+        alpm::Question::RemovePkgs(mut rq) => {
+            rq.set_skip(false);
         }
         _ => {
             s.deny_flag = true;
@@ -490,7 +496,7 @@ mod tests {
     use crate::resolve::{BuildLayer, BuildPlan};
     use std::fs;
 
-    fn setup_fake_root(suffix: &str) -> alpm::Alpm {
+    pub(crate) fn setup_fake_root(suffix: &str) -> alpm::Alpm {
         let base = std::env::temp_dir().join(format!("pakajo_fake_root_{suffix}"));
         let _ = fs::remove_dir_all(&base);
         let root = base.join("root");
