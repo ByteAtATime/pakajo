@@ -32,6 +32,7 @@ pub struct PackageDetail {
     pub active_tooltip: Option<SizeTooltipTarget>,
     pub root: WeakEntity<PakajoRoot>,
     pub install_progress: InstallProgress,
+    pub installed_names: std::sync::Arc<std::collections::HashSet<String>>,
 }
 
 impl PackageDetail {
