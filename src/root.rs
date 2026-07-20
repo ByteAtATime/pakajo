@@ -2,6 +2,7 @@ use crate::{
     aur::AurClient,
     install::{ChildOutcome, InstallProgress, StreamItem},
     install_log_overlay::InstallLogOverlay,
+    install_review_dialog::{self, InstallReviewDialog},
     local_index::LocalIndex,
     package::{Package, PackageSource, installed_names, is_installed},
     package_detail::PackageDetail,
@@ -302,56 +303,6 @@ impl PakajoRoot {
         cx.notify();
     }
 
-    pub fn approve_and_install(
-        &mut self,
-        qs: QuestionSet,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if matches!(self.install_progress, InstallProgress::Running) {
-            return;
-        }
-        let exe = match std::env::current_exe() {
-            Ok(path) => path,
-            Err(error) => {
-                self.set_progress(
-                    InstallProgress::Failed(format!(
-                        "failed to determine executable path: {error}"
-                    )),
-                    cx,
-                );
-                return;
-            }
-        };
-        let name = match &self.detail {
-            DetailPane::Ready(entity) => entity.read(cx).pkg.name.clone(),
-            _ => return,
-        };
-        let selected: Vec<usize> = (0..qs.conflicts.len()).collect();
-        let approvals = match qs.approve(&selected, &[]) {
-            Ok(a) => a,
-            Err(error) => {
-                self.set_progress(
-                    InstallProgress::Failed(format!("failed to encode approvals: {error}")),
-                    cx,
-                );
-                return;
-            }
-        };
-        let b64 = match crate::question::encode_approvals(&approvals) {
-            Ok(b64) => b64,
-            Err(error) => {
-                self.set_progress(
-                    InstallProgress::Failed(format!("failed to encode approvals: {error}")),
-                    cx,
-                );
-                return;
-            }
-        };
-        self.set_progress(InstallProgress::Running, cx);
-        self.begin_install_subprocess(exe, name, Some(b64), window, cx);
-    }
-
     pub fn start_install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.install_progress, InstallProgress::Running) {
             return;
@@ -397,8 +348,12 @@ impl PakajoRoot {
                 return;
             };
             let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(qs) if !qs.conflicts.is_empty() || qs.had_unsupported_question => {
-                    this.set_progress(InstallProgress::ConflictReview(qs), cx);
+                Ok(qs)
+                    if !qs.conflicts.is_empty()
+                        || !qs.providers.is_empty()
+                        || qs.had_unsupported_question =>
+                {
+                    this.open_install_review(qs, exe, name, window, cx);
                 }
                 Ok(_) => {
                     this.begin_install_subprocess(exe, name, None, window, cx);
@@ -410,6 +365,78 @@ impl PakajoRoot {
             });
         })
         .detach();
+    }
+
+    fn open_install_review(
+        &mut self,
+        qs: QuestionSet,
+        exe: std::path::PathBuf,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_progress(InstallProgress::ConflictReview(qs.clone()), cx);
+
+        let root_for_approve = cx.weak_entity();
+        let exe_for_approve = exe;
+        let name_for_approve = name.clone();
+        let name_for_title = name.clone();
+        let on_approve = Box::new(
+            move |approvals: crate::question::Approvals, window: &mut Window, cx: &mut App| {
+                let Some(root) = root_for_approve.upgrade() else {
+                    return;
+                };
+                root.update(cx, |this, cx| {
+                    let b64 = match crate::question::encode_approvals(&approvals) {
+                        Ok(b64) => b64,
+                        Err(error) => {
+                            this.set_progress(
+                                InstallProgress::Failed(format!(
+                                    "failed to encode approvals: {error}"
+                                )),
+                                cx,
+                            );
+                            return;
+                        }
+                    };
+                    this.set_progress(InstallProgress::Running, cx);
+                    this.begin_install_subprocess(
+                        exe_for_approve,
+                        name_for_approve,
+                        Some(b64),
+                        window,
+                        cx,
+                    );
+                });
+            },
+        );
+
+        let root_for_cancel = cx.weak_entity();
+        let on_cancel = std::sync::Arc::new(move |_window: &mut Window, cx: &mut App| {
+            if let Some(root) = root_for_cancel.upgrade() {
+                root.update(cx, |this, cx| {
+                    this.set_progress(InstallProgress::Idle, cx);
+                });
+            }
+        }) as std::sync::Arc<dyn Fn(&mut Window, &mut App) + 'static>;
+
+        let on_cancel_for_dialog = on_cancel.clone();
+        let review = cx.new(|_| InstallReviewDialog::new(qs, on_approve, on_cancel));
+
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let title = install_review_dialog::build_title(&name_for_title, cx);
+            let on_cancel_arc = on_cancel_for_dialog.clone();
+            let review_for_content = review.clone();
+            dialog
+                .title(title)
+                .w(px(560.))
+                .close_button(true)
+                .on_cancel(move |_, window, cx| {
+                    on_cancel_arc(window, cx);
+                    true
+                })
+                .content(move |content, _window, _cx| content.child(review_for_content.clone()))
+        });
     }
 
     fn begin_install_subprocess(

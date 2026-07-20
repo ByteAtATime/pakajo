@@ -1,6 +1,6 @@
 use crate::{
-    icon::PakajoIcon, install::InstallProgress, package::Package, question::QuestionSet,
-    root::PakajoRoot, utils::format_bytes,
+    icon::PakajoIcon, install::InstallProgress, package::Package, root::PakajoRoot,
+    utils::format_bytes,
 };
 use gpui::*;
 use gpui_component::{
@@ -185,14 +185,10 @@ impl PackageDetail {
             let (label, disabled) = match &install_progress {
                 InstallProgress::Idle if installed => ("Installed", true),
                 InstallProgress::Running => ("Installing…", true),
-                InstallProgress::ConflictReview(_) => ("Approve & install", false),
+                InstallProgress::ConflictReview(_) => ("Reviewing…", true),
                 InstallProgress::Idle | InstallProgress::Failed(_) => ("Install", false),
             };
 
-            let conflict_qs = match &install_progress {
-                InstallProgress::ConflictReview(qs) => Some(qs.clone()),
-                _ => None,
-            };
             let root_for_click = root.clone();
             let mut install_button = Button::new("install-button")
                 .label(label)
@@ -202,11 +198,7 @@ impl PackageDetail {
                 .on_click(move |_, window, cx| {
                     if let Some(root) = root_for_click.upgrade() {
                         root.update(cx, |root, cx| {
-                            if let Some(qs) = conflict_qs.clone() {
-                                root.approve_and_install(qs, window, cx);
-                            } else {
-                                root.start_install(window, cx);
-                            }
+                            root.start_install(window, cx);
                         });
                     }
                 });
@@ -223,13 +215,7 @@ impl PackageDetail {
                         .child(message.clone())
                         .into_any_element(),
                 ),
-                InstallProgress::ConflictReview(qs) => Some(
-                    div()
-                        .text_color(cx.theme().danger)
-                        .text_size(rems(0.875))
-                        .child(format_conflict_review(qs))
-                        .into_any_element(),
-                ),
+                InstallProgress::ConflictReview(_) => None,
                 InstallProgress::Idle => None,
             };
 
@@ -394,18 +380,4 @@ impl Render for PackageDetail {
                 Some(self.opt_dependencies(cx))
             })
     }
-}
-
-fn format_conflict_review(qs: &QuestionSet) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    if !qs.conflicts.is_empty() {
-        lines.push("Conflicts detected:".to_string());
-        for c in &qs.conflicts {
-            lines.push(format!("{} vs {}", c.incoming, c.removable));
-        }
-    }
-    if qs.had_unsupported_question {
-        lines.push(format!("Unsupported: {}", qs.unsupported_summary));
-    }
-    lines.join("\n")
 }
