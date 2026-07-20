@@ -367,6 +367,35 @@ impl PakajoRoot {
         .detach();
     }
 
+    pub fn start_remove(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.install_progress, InstallProgress::Running) {
+            return;
+        }
+        let name = match &self.detail {
+            DetailPane::Ready(entity) => entity.read(cx).pkg.name.clone(),
+            _ => return,
+        };
+        if !is_installed(&self.alpm_handle, &name) {
+            return;
+        }
+        self.set_progress(InstallProgress::Running, cx);
+
+        let exe = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                self.set_progress(
+                    InstallProgress::Failed(format!(
+                        "failed to determine executable path: {error}"
+                    )),
+                    cx,
+                );
+                return;
+            }
+        };
+
+        self.begin_remove_subprocess(exe, name, window, cx);
+    }
+
     fn open_install_review(
         &mut self,
         qs: QuestionSet,
@@ -462,6 +491,35 @@ impl PakajoRoot {
         std::thread::spawn(move || {
             crate::install::run_install_process(exe, name, tx, approvals_b64)
         });
+
+        cx.spawn(async move |this, cx| {
+            while let Some(item) = rx.next().await {
+                let _ = this.update(cx, |this, cx| this.handle_stream_item(item, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn begin_remove_subprocess(
+        &mut self,
+        exe: std::path::PathBuf,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let log_view = cx.new(|_| InstallLogOverlay { logs: Vec::new() });
+        self.install_log_view = Some(log_view.clone());
+        window.close_all_dialogs(cx);
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title("Install logs")
+                .w(px(720.))
+                .child(log_view.clone())
+        });
+
+        let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
+
+        std::thread::spawn(move || crate::remove::run_remove_process(exe, name, tx));
 
         cx.spawn(async move |this, cx| {
             while let Some(item) = rx.next().await {

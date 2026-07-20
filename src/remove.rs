@@ -122,6 +122,58 @@ fn build_remove_summary(handle: &alpm::Alpm) -> TransactionSummary {
     }
 }
 
+pub(crate) fn run_remove_process(
+    exe: std::path::PathBuf,
+    name: String,
+    mut tx: futures::channel::mpsc::Sender<crate::install::StreamItem>,
+) {
+    use std::io::BufRead as _;
+    use std::process::{Command, Stdio};
+
+    let mut send_event = |mut item: crate::install::StreamItem| loop {
+        match tx.try_send(item) {
+            Ok(()) => return,
+            Err(err) => {
+                if err.is_disconnected() {
+                    return;
+                }
+                item = err.into_inner();
+                std::thread::yield_now();
+            }
+        }
+    };
+
+    let mut cmd = Command::new(&exe);
+    cmd.arg("remove").arg("--json").arg(&name);
+    let outcome = match cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+    {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            crate::install::ChildOutcome::NotFound
+        }
+        Err(error) => crate::install::ChildOutcome::Failed(error.to_string()),
+        Ok(mut child) => {
+            let stdout = child.stdout.take().expect("piped");
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines() {
+                match line {
+                    Ok(l) => {
+                        if let Ok(ev) = serde_json::from_str::<crate::events::InstallEvent>(&l) {
+                            send_event(crate::install::StreamItem::Event(ev));
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            crate::install::map_outcome(child.wait())
+        }
+    };
+    send_event(crate::install::StreamItem::Done(outcome));
+}
+
 pub(crate) fn spawn_remove_child(targets: &[String]) -> anyhow::Result<std::process::Child> {
     use std::process::Stdio;
     let exe = std::env::current_exe().context("failed to determine executable path")?;

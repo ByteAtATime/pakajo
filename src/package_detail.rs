@@ -183,13 +183,15 @@ impl PackageDetail {
                 - baseline_from_top(window, &version, version_size);
 
             let (label, disabled) = match &install_progress {
-                InstallProgress::Idle if installed => ("Installed", true),
+                InstallProgress::Idle if installed => ("Remove", false),
+                InstallProgress::Running if installed => ("Removing…", true),
                 InstallProgress::Running => ("Installing…", true),
                 InstallProgress::ConflictReview(_) => ("Reviewing…", true),
                 InstallProgress::Idle | InstallProgress::Failed(_) => ("Install", false),
             };
 
             let root_for_click = root.clone();
+            let installed_for_click = installed;
             let mut install_button = Button::new("install-button")
                 .label(label)
                 .disabled(disabled)
@@ -198,7 +200,11 @@ impl PackageDetail {
                 .on_click(move |_, window, cx| {
                     if let Some(root) = root_for_click.upgrade() {
                         root.update(cx, |root, cx| {
-                            root.start_install(window, cx);
+                            if installed_for_click {
+                                root.start_remove(window, cx);
+                            } else {
+                                root.start_install(window, cx);
+                            }
                         });
                     }
                 });
