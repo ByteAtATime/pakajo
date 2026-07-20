@@ -47,7 +47,6 @@ pub struct SearchResult {
     pub repo: Option<String>,
     pub num_votes: Option<u64>,
     pub popularity: Option<f64>,
-    #[allow(dead_code)]
     pub installed: bool,
     #[allow(dead_code)]
     pub last_update: Option<i64>,
@@ -91,19 +90,25 @@ pub(crate) fn dispatch_search(
     text: &str,
 ) -> SearchOutcome {
     let q = SearchQuery::new(text);
-    if let Some(index) = local
+    let mut outcome = if let Some(index) = local
         && index.is_populated()
     {
         let provider = LocalSearchProvider::new(index);
         if let Ok(candidates) = provider.search(&q) {
-            let results = ranking::score(candidates, &q, installed);
-            return SearchOutcome {
-                results,
+            SearchOutcome {
+                results: ranking::score(candidates, &q, installed),
                 aur_error: None,
-            };
+            }
+        } else {
+            execute_search(repo, aur, text)
         }
+    } else {
+        execute_search(repo, aur, text)
+    };
+    for result in outcome.results.iter_mut() {
+        result.installed = installed.contains(&result.name);
     }
-    execute_search(repo, aur, text)
+    outcome
 }
 
 pub(crate) fn friendly_search_error(err: &anyhow::Error) -> String {
@@ -377,5 +382,99 @@ mod tests {
             "local branch must not record an aur error"
         );
         assert!(index.is_populated(), "seeded index reports populated");
+    }
+
+    #[test]
+    fn dispatch_sets_installed_flag() {
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("aur-meta.sqlite");
+        let index = Arc::new(crate::local_index::LocalIndex::open(&path).expect("open"));
+        let conn = rusqlite::Connection::open(&path).expect("seed");
+        conn.execute(
+            "INSERT INTO packages \
+             (name,source,repo,version,description,num_votes,popularity,last_update,package_base) \
+             VALUES (?,?,?,?,?,?,?,?,?)",
+            rusqlite::params![
+                "vim", "aur", "aur", "1.0-1", "editor", 0i64, 0.0f64, 0i64, "vim"
+            ],
+        )
+        .expect("seed packages vim");
+        conn.execute(
+            "INSERT INTO packages_fts \
+             (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
+             VALUES (?,?,?,?,?,?,?,?,?)",
+            rusqlite::params![
+                "vim", "editor", "aur", "aur", "1.0-1", 0i64, 0.0f64, 0i64, "vim"
+            ],
+        )
+        .expect("seed packages_fts vim");
+        conn.execute(
+            "INSERT INTO packages \
+             (name,source,repo,version,description,num_votes,popularity,last_update,package_base) \
+             VALUES (?,?,?,?,?,?,?,?,?)",
+            rusqlite::params![
+                "vim-plugins",
+                "aur",
+                "aur",
+                "1.0-1",
+                "vim addons",
+                0i64,
+                0.0f64,
+                0i64,
+                "vim-plugins"
+            ],
+        )
+        .expect("seed packages vim-plugins");
+        conn.execute(
+            "INSERT INTO packages_fts \
+             (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
+             VALUES (?,?,?,?,?,?,?,?,?)",
+            rusqlite::params![
+                "vim-plugins",
+                "vim addons",
+                "aur",
+                "aur",
+                "1.0-1",
+                0i64,
+                0.0f64,
+                0i64,
+                "vim-plugins"
+            ],
+        )
+        .expect("seed packages_fts vim-plugins");
+
+        let installed: HashSet<String> = HashSet::from(["vim".to_string()]);
+        let repo_provider =
+            RepoSearchProvider::new(Arc::new(RepoSearchIndex::from_entries(Vec::new())));
+        let aur_provider = AurSearchProvider::new(Arc::new(crate::aur::AurClient::new()));
+
+        let outcome = dispatch_search(
+            Some(index.clone()),
+            &repo_provider,
+            &aur_provider,
+            &installed,
+            "vim",
+        );
+
+        let vim_result = outcome
+            .results
+            .iter()
+            .find(|r| r.name == "vim")
+            .expect("vim row present");
+        assert!(
+            vim_result.installed,
+            "vim is in installed set; flag must be true"
+        );
+        let plugins_result = outcome
+            .results
+            .iter()
+            .find(|r| r.name == "vim-plugins")
+            .expect("vim-plugins row present");
+        assert!(
+            !plugins_result.installed,
+            "vim-plugins is not in installed set; flag must be false"
+        );
     }
 }
