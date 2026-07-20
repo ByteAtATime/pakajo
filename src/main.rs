@@ -30,10 +30,12 @@ use gpui_component::*;
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        Some("install") => cli::install_subcommand(args),
+        Some("install") | Some("add") | Some("-S") => cli::install_subcommand(args),
         Some("search") => cli::search_subcommand(args),
         Some("aur-sync") => cli::aur_sync_subcommand(args),
-        Some("remove") => cli::remove_subcommand(args),
+        Some("remove") | Some("uninstall") | Some("rm") | Some("-R") => {
+            cli::remove_subcommand(args)
+        }
         _ => {}
     }
 
