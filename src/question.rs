@@ -33,6 +33,7 @@ pub struct QuestionSet {
 pub struct ProviderApproval {
     pub depend: String,
     pub provider_name: String,
+    pub provider_repo: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -46,7 +47,7 @@ impl QuestionSet {
     pub fn approve(
         &self,
         conflict_selections: &[usize],
-        provider_choices: &[(usize, String)],
+        provider_choices: &[(usize, usize)],
     ) -> anyhow::Result<Approvals> {
         for &i in conflict_selections {
             let Some(_) = self.conflicts.get(i) else {
@@ -56,19 +57,20 @@ impl QuestionSet {
                 );
             };
         }
-        for &(prompt_index, ref name) in provider_choices {
+        for &(prompt_index, candidate_index) in provider_choices {
             let Some(prompt) = self.providers.get(prompt_index) else {
                 bail!(
                     "provider prompt {prompt_index} out of range (have {})",
                     self.providers.len()
                 );
             };
-            if !prompt.candidates.iter().any(|c| c.name == *name) {
+            let Some(_) = prompt.candidates.get(candidate_index) else {
                 bail!(
-                    "provider \"{name}\" is not a candidate of prompt \"{depend}\"",
-                    depend = prompt.depend
+                    "provider candidate {candidate_index} out of range for prompt \"{}\" (have {})",
+                    prompt.depend,
+                    prompt.candidates.len()
                 );
-            }
+            };
         }
 
         let approved_conflicts = conflict_selections
@@ -77,9 +79,14 @@ impl QuestionSet {
             .collect();
         let approved_providers = provider_choices
             .iter()
-            .map(|&(prompt_index, ref name)| ProviderApproval {
-                depend: self.providers[prompt_index].depend.clone(),
-                provider_name: name.clone(),
+            .map(|&(prompt_index, candidate_index)| {
+                let prompt = &self.providers[prompt_index];
+                let candidate = &prompt.candidates[candidate_index];
+                ProviderApproval {
+                    depend: prompt.depend.clone(),
+                    provider_name: candidate.name.clone(),
+                    provider_repo: candidate.repo.clone(),
+                }
             })
             .collect();
         Ok(Approvals {
@@ -137,12 +144,7 @@ mod tests {
     #[test]
     fn approve_round_trips_conflicts_and_providers() {
         let qs = sample_question_set();
-        let approvals = qs
-            .approve(
-                &[0],
-                &[(0, "sdl12-compat".to_string()), (1, "libglvnd".to_string())],
-            )
-            .expect("approve");
+        let approvals = qs.approve(&[0], &[(0, 1), (1, 0)]).expect("approve");
 
         let b64 = encode_approvals(&approvals).expect("encode");
         let bytes = STANDARD.decode(&b64).expect("decode");
@@ -162,10 +164,12 @@ mod tests {
                 ProviderApproval {
                     depend: "sdl".into(),
                     provider_name: "sdl12-compat".into(),
+                    provider_repo: Some("extra".into()),
                 },
                 ProviderApproval {
                     depend: "libgl".into(),
                     provider_name: "libglvnd".into(),
+                    provider_repo: Some("extra".into()),
                 }
             ]
         );
@@ -182,23 +186,19 @@ mod tests {
     }
 
     #[test]
-    fn approve_rejects_unknown_provider_name() {
+    fn approve_rejects_out_of_range_candidate_index() {
         let qs = sample_question_set();
-        let err = qs
-            .approve(&[], &[(0, "not-a-real-provider".to_string())])
-            .unwrap_err();
+        let err = qs.approve(&[], &[(0, 99)]).unwrap_err();
         assert!(
-            format!("{err:#}").contains("not a candidate"),
-            "expected candidate message, got: {err:#}"
+            format!("{err:#}").contains("out of range"),
+            "expected out-of-range message, got: {err:#}"
         );
     }
 
     #[test]
     fn approve_rejects_out_of_range_prompt_index() {
         let qs = sample_question_set();
-        let err = qs
-            .approve(&[], &[(99, "whatever".to_string())])
-            .unwrap_err();
+        let err = qs.approve(&[], &[(99, 0)]).unwrap_err();
         assert!(
             format!("{err:#}").contains("out of range"),
             "expected out-of-range message, got: {err:#}"

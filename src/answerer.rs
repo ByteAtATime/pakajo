@@ -152,13 +152,19 @@ impl QuestionAnswerer for ApprovalsAnswerer {
         else {
             return ProviderDecision::Decline;
         };
-        let Some(idx) = candidates
-            .iter()
-            .position(|c| c.name == approval.provider_name)
-        else {
-            return ProviderDecision::Decline;
+        let idx = match &approval.provider_repo {
+            Some(required_repo) => candidates.iter().position(|c| {
+                c.name == approval.provider_name
+                    && c.repo.as_deref() == Some(required_repo.as_str())
+            }),
+            None => candidates
+                .iter()
+                .position(|c| c.name == approval.provider_name),
         };
-        ProviderDecision::Choose(idx)
+        match idx {
+            Some(i) => ProviderDecision::Choose(i),
+            None => ProviderDecision::Decline,
+        }
     }
 }
 
@@ -277,6 +283,7 @@ mod tests {
             approved_providers: vec![ProviderApproval {
                 depend: "sdl".into(),
                 provider_name: "B".into(),
+                provider_repo: None,
             }],
         };
         let a = ApprovalsAnswerer::new(approvals);
@@ -298,6 +305,7 @@ mod tests {
             approved_providers: vec![ProviderApproval {
                 depend: "sdl".into(),
                 provider_name: "B".into(),
+                provider_repo: None,
             }],
         };
         let a = ApprovalsAnswerer::new(approvals);
@@ -316,6 +324,7 @@ mod tests {
             approved_providers: vec![ProviderApproval {
                 depend: "sdl".into(),
                 provider_name: "A".into(),
+                provider_repo: None,
             }],
         };
         let a = ApprovalsAnswerer::new(approvals);
@@ -323,5 +332,37 @@ mod tests {
             a.answer_provider("libgl", &[candidate("libglvnd")]),
             ProviderDecision::Decline
         ));
+    }
+
+    #[test]
+    fn answer_provider_disambiguates_same_name_different_repo() {
+        let approvals = Approvals {
+            approved_conflicts: vec![],
+            approved_providers: vec![ProviderApproval {
+                depend: "sdl".into(),
+                provider_name: "sdl12-compat".into(),
+                provider_repo: Some("extra".into()),
+            }],
+        };
+        let a = ApprovalsAnswerer::new(approvals);
+        let candidates = vec![
+            ProviderCandidate {
+                name: "sdl12-compat".into(),
+                repo: Some("cachyos-extra-znver4".into()),
+                version: None,
+            },
+            ProviderCandidate {
+                name: "sdl12-compat".into(),
+                repo: Some("extra".into()),
+                version: None,
+            },
+        ];
+        match a.answer_provider("sdl", &candidates) {
+            ProviderDecision::Choose(i) => assert_eq!(
+                i, 1,
+                "must match by (name, repo) pair, not name alone — name-only would yield 0"
+            ),
+            other => panic!("expected Choose(1), got {other:?}"),
+        }
     }
 }
