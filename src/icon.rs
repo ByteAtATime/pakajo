@@ -13,6 +13,7 @@ pub enum PakajoIcon {
     HardDrive,
     Star,
     PackageCheck,
+    CircleCheck,
 }
 
 impl IconNamed for PakajoIcon {
@@ -25,6 +26,7 @@ impl IconNamed for PakajoIcon {
             PakajoIcon::HardDrive => "icons/hard-drive.svg",
             PakajoIcon::Star => "icons/star.svg",
             PakajoIcon::PackageCheck => "icons/package-check.svg",
+            PakajoIcon::CircleCheck => "icons/circle-check.svg",
         }
         .into()
     }

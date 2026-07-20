@@ -1,7 +1,8 @@
+use crate::icon::PakajoIcon;
 use crate::search::SearchResult;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{ActiveTheme as _, StyledExt as _};
+use gpui_component::{ActiveTheme as _, Icon, StyledExt as _};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -161,9 +162,20 @@ impl SearchView {
                     .child(
                         div()
                             .ml_auto()
-                            .text_color(muted_fg)
-                            .text_size(rems(0.75))
-                            .child(result.version.clone()),
+                            .h_flex()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .text_color(muted_fg)
+                                    .text_size(rems(0.75))
+                                    .child(result.version.clone()),
+                            )
+                            .children(result.installed.then(|| {
+                                Icon::new(PakajoIcon::CircleCheck)
+                                    .text_color(cx.theme().green)
+                                    .size(rems(0.75))
+                            })),
                     ),
             )
             .children(result.description.clone().map(|d| {
