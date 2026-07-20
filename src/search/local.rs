@@ -25,12 +25,13 @@ impl SearchProvider for LocalSearchProvider {
         let Some(pattern) = build_match(&q.text) else {
             return Ok(Vec::new());
         };
-        let rows = self.index.search(&pattern, 5000)?;
+        let rows = self.index.search(&pattern, dynamic_limit(&q.text))?;
         Ok(rows.into_iter().map(row_to_result).collect())
     }
 }
 
 fn build_match(query: &str) -> Option<String> {
+    let name_only = query.chars().count() <= 2;
     let mut tokens: Vec<&str> = Vec::new();
     for token in query.split(|c: char| !c.is_alphanumeric()) {
         if token.is_empty() {
@@ -43,12 +44,26 @@ fn build_match(query: &str) -> Option<String> {
     }
     let lower: Vec<String> = tokens
         .iter()
-        .map(|t| format!("{}*", t.to_lowercase()))
+        .map(|t| {
+            let star = format!("{}*", t.to_lowercase());
+            if name_only {
+                format!("name:{star}")
+            } else {
+                star
+            }
+        })
         .collect();
     Some(lower.join(" OR "))
 }
 
-fn row_to_result(row: PackageRow) -> SearchResult {
+fn dynamic_limit(query: &str) -> i64 {
+    match query.chars().count() {
+        2 => 250,
+        _ => 5000,
+    }
+}
+
+pub(super) fn row_to_result(row: PackageRow) -> SearchResult {
     let source = match row.source.as_str() {
         "aur" => PackageSource::Aur,
         _ => PackageSource::Repo,
@@ -211,5 +226,25 @@ mod tests {
     fn build_match_returns_none_for_punctuation_only() {
         assert!(build_match("--").is_none());
         assert!(build_match("!@#").is_none());
+    }
+
+    #[test]
+    fn dynamic_limit_two_chars_returns_two_hundred_fifty() {
+        assert_eq!(dynamic_limit("ca"), 250);
+    }
+
+    #[test]
+    fn dynamic_limit_three_chars_returns_default_cap() {
+        assert_eq!(dynamic_limit("cav"), 5000);
+    }
+
+    #[test]
+    fn build_match_two_char_query_uses_name_column() {
+        assert_eq!(build_match("ca").as_deref(), Some("name:ca*"));
+    }
+
+    #[test]
+    fn build_match_three_char_query_skips_column_filter() {
+        assert_eq!(build_match("cav").as_deref(), Some("cav*"));
     }
 }

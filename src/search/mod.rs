@@ -90,21 +90,36 @@ pub(crate) fn dispatch_search(
     text: &str,
 ) -> SearchOutcome {
     let q = SearchQuery::new(text);
-    let mut outcome = if let Some(index) = local
-        && index.is_populated()
-    {
-        let provider = LocalSearchProvider::new(index);
-        if let Ok(candidates) = provider.search(&q) {
-            SearchOutcome {
-                results: ranking::score(candidates, &q, installed),
-                aur_error: None,
+    let one_char_alnum = text.chars().count() == 1
+        && text
+            .chars()
+            .next()
+            .map(char::is_alphanumeric)
+            .unwrap_or(false);
+    let mut outcome =
+        if one_char_alnum && let Some(index) = local.as_ref().filter(|i| i.is_populated()) {
+            match index.search_recent_repo_prefix(text, 50) {
+                Ok(rows) => SearchOutcome {
+                    results: rows.into_iter().map(local::row_to_result).collect(),
+                    aur_error: None,
+                },
+                Err(_) => execute_search(repo, aur, text),
+            }
+        } else if let Some(index) = local
+            && index.is_populated()
+        {
+            let provider = LocalSearchProvider::new(index);
+            if let Ok(candidates) = provider.search(&q) {
+                SearchOutcome {
+                    results: ranking::score(candidates, &q, installed),
+                    aur_error: None,
+                }
+            } else {
+                execute_search(repo, aur, text)
             }
         } else {
             execute_search(repo, aur, text)
-        }
-    } else {
-        execute_search(repo, aur, text)
-    };
+        };
     for result in outcome.results.iter_mut() {
         result.installed = installed.contains(&result.name);
     }
@@ -433,5 +448,81 @@ mod tests {
             !plugins_result.installed,
             "vim-plugins is not in installed set; flag must be false"
         );
+    }
+
+    #[test]
+    fn dispatch_search_one_char_uses_recent_repo_prefix_branch() {
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("aur-meta.sqlite");
+        let index = Arc::new(crate::local_index::LocalIndex::open(&path).expect("open"));
+        let conn = rusqlite::Connection::open(&path).expect("seed");
+
+        let insert = |name: &str, source: &str, last_update: i64| {
+            conn.execute(
+                "INSERT INTO packages (name, source, repo, version, description, num_votes, popularity, last_update, package_base) \
+                 VALUES (?, ?, 'repo', '1', NULL, NULL, NULL, ?, NULL)",
+                rusqlite::params![name, source, last_update],
+            )
+            .expect("seed");
+        };
+        insert("chromium", "repo", 1000);
+        insert("cake", "repo", 500);
+        insert("c-aur", "aur", 9999);
+        insert("firefox", "repo", 9999);
+
+        let empty_installed: HashSet<String> = HashSet::new();
+        let repo_provider =
+            RepoSearchProvider::new(Arc::new(RepoSearchIndex::from_entries(Vec::new())));
+        let aur_provider = AurSearchProvider::new(Arc::new(crate::aur::AurClient::new()));
+
+        let outcome = dispatch_search(
+            Some(index.clone()),
+            &repo_provider,
+            &aur_provider,
+            &empty_installed,
+            "c",
+        );
+
+        let names: Vec<&str> = outcome.results.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["chromium", "cake"]);
+        assert!(
+            outcome
+                .results
+                .iter()
+                .all(|r| r.source == PackageSource::Repo),
+            "AUR package c-aur must not appear in 1-char recent-repo-prefix results"
+        );
+    }
+
+    #[test]
+    fn dispatch_search_one_char_non_alphanumeric_falls_through() {
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("aur-meta.sqlite");
+        let index = Arc::new(crate::local_index::LocalIndex::open(&path).expect("open"));
+        let conn = rusqlite::Connection::open(&path).expect("seed");
+        conn.execute(
+            "INSERT INTO packages (name, source, repo, version, description, num_votes, popularity, last_update, package_base) \
+             VALUES ('chromium', 'repo', 'extra', '1', NULL, NULL, NULL, 1000, NULL)",
+            [],
+        )
+        .expect("seed");
+
+        let empty_installed: HashSet<String> = HashSet::new();
+        let repo_provider =
+            RepoSearchProvider::new(Arc::new(RepoSearchIndex::from_entries(Vec::new())));
+        let aur_provider = AurSearchProvider::new(Arc::new(crate::aur::AurClient::new()));
+
+        let outcome = dispatch_search(
+            Some(index),
+            &repo_provider,
+            &aur_provider,
+            &empty_installed,
+            "?",
+        );
+        assert!(outcome.results.is_empty());
     }
 }

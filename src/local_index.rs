@@ -149,6 +149,26 @@ impl LocalIndex {
             .map_err(anyhow::Error::from)
     }
 
+    pub fn search_recent_repo_prefix(
+        &self,
+        prefix: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<PackageRow>> {
+        let pattern = format!("{}*", prefix);
+        let conn = self.read.lock().expect("read connection poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT p.name, p.description, p.source, p.repo, p.version, p.num_votes, \
+             p.popularity, p.last_update, p.package_base \
+             FROM packages p \
+             WHERE p.source = 'repo' AND p.name GLOB ?1 \
+             ORDER BY p.last_update DESC \
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![pattern, limit], row_to_package)?;
+        rows.collect::<rusqlite::Result<Vec<PackageRow>>>()
+            .map_err(anyhow::Error::from)
+    }
+
     pub fn detail(&self, name: &str) -> anyhow::Result<Option<crate::aur::AurInfo>> {
         use rusqlite::OptionalExtension;
         let conn = self.read.lock().expect("read connection poisoned");
@@ -700,5 +720,52 @@ mod tests {
         );
         assert_eq!(got2.name, "yay");
         assert_eq!(got2.make_depends, vec!["go>=1.24".to_string()]);
+    }
+
+    #[test]
+    fn search_recent_repo_prefix_filters_source_and_sorts_by_recency() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+        let conn = rusqlite::Connection::open(dir.path().join("aur-meta.sqlite")).expect("seed");
+
+        let insert = |name: &str, source: &str, last_update: i64| {
+            conn.execute(
+                "INSERT INTO packages (name, source, repo, version, description, num_votes, popularity, last_update, package_base) \
+                 VALUES (?, ?, 'repo', '1', NULL, NULL, NULL, ?, NULL)",
+                rusqlite::params![name, source, last_update],
+            )
+            .expect("seed");
+        };
+
+        insert("chromium", "repo", 1000);
+        insert("curl", "repo", 500);
+        insert("cmake", "repo", 200);
+        insert("c-aur-pkg", "aur", 9999);
+        insert("firefox", "repo", 9999);
+
+        let rows = index.search_recent_repo_prefix("c", 50).expect("query");
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["chromium", "curl", "cmake"]);
+        assert!(rows.iter().all(|r| r.source == "repo"));
+    }
+
+    #[test]
+    fn search_recent_repo_prefix_respects_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+        let conn = rusqlite::Connection::open(dir.path().join("aur-meta.sqlite")).expect("seed");
+        for i in 0..10 {
+            let name = format!("c{i:02}");
+            conn.execute(
+                "INSERT INTO packages (name, source, repo, version, description, num_votes, popularity, last_update, package_base) \
+                 VALUES (?, 'repo', 'repo', '1', NULL, NULL, NULL, ?, NULL)",
+                rusqlite::params![name, i],
+            )
+            .expect("seed");
+        }
+        let rows = index.search_recent_repo_prefix("c", 5).expect("query");
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].name, "c09");
+        assert_eq!(rows[4].name, "c05");
     }
 }
