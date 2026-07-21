@@ -19,6 +19,7 @@ mod resolve;
 mod root;
 mod search;
 mod search_view;
+mod stats;
 mod stub_pkg;
 mod upgrade;
 mod utils;
