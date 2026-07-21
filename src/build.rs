@@ -8,26 +8,23 @@ use crate::events::{AurDepSource, InstallEvent, InstallSink};
 use crate::resolve::BuildPlan;
 
 pub fn run_build<S: InstallSink + ?Sized>(
-    target: &str,
+    targets: &[String],
     no_check: bool,
     user_as_deps: bool,
     sink: &mut S,
     confirm: impl FnOnce(&BuildPlan) -> bool,
     approvals_b64: Option<&str>,
 ) -> anyhow::Result<()> {
-    sink.event(InstallEvent::ResolvingAurDependencies {
-        target: target.to_string(),
-    });
+    for target in targets {
+        sink.event(InstallEvent::ResolvingAurDependencies {
+            target: target.to_string(),
+        });
+    }
 
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let alpm = crate::pacman::init_alpm(&config)?;
     let aur = crate::aur::AurClient::new();
-    let plan = crate::resolve::resolve(
-        &crate::resolve::AlpmDb(&alpm),
-        &aur,
-        &[target.to_string()],
-        no_check,
-    )?;
+    let plan = crate::resolve::resolve(&crate::resolve::AlpmDb(&alpm), &aur, targets, no_check)?;
 
     let aur_packages: usize = plan.layers.iter().map(|l| l.aur.len()).sum();
     let repo_deps: usize = plan.layers.iter().map(|l| l.repo_deps.len()).sum();

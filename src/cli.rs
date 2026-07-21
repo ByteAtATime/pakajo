@@ -75,7 +75,7 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
                 };
                 if json {
                     exit_with_result(crate::build::run_build(
-                        name,
+                        std::slice::from_ref(name),
                         false,
                         as_deps,
                         &mut *sink,
@@ -84,7 +84,7 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
                     ));
                 } else {
                     exit_with_result(crate::build::run_build(
-                        name,
+                        std::slice::from_ref(name),
                         false,
                         as_deps,
                         &mut *sink,
