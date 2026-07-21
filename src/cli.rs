@@ -102,10 +102,38 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
             ));
         }
     } else {
-        eprintln!(
-            "cannot mix repository and AUR targets in one invocation; install them separately"
-        );
-        std::process::exit(2);
+        match escalate_result(&repo_or_file, as_deps, json) {
+            Ok(0) => {}
+            Ok(code) => std::process::exit(code),
+            Err(e) => {
+                eprintln!("{e:#}");
+                std::process::exit(1);
+            }
+        }
+        let mut sink: Box<dyn InstallSink> = sink_for(json);
+        let result = if json {
+            crate::build::run_build(
+                &aur,
+                false,
+                as_deps,
+                &mut *sink,
+                |_| true,
+                approvals_b64.as_deref(),
+            )
+        } else {
+            crate::build::run_build(
+                &aur,
+                false,
+                as_deps,
+                &mut *sink,
+                confirm_build,
+                approvals_b64.as_deref(),
+            )
+        };
+        if let Err(e) = &result {
+            eprintln!("warning: repo packages installed; AUR phase failed: {e:#}");
+        }
+        exit_with_result(result);
     }
 }
 
