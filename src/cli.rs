@@ -56,49 +56,57 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
         exit_with_result(root_install(&positionals, as_deps, json, approvals));
     }
 
-    if positionals.len() == 1 {
-        match classify_target(&positionals[0]) {
-            InstallTarget::File(_) => escalate(&positionals, as_deps, json),
+    let mut repo_or_file: Vec<String> = Vec::new();
+    let mut aur: Vec<String> = Vec::new();
+    let handle = match alpm_handle() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    };
+    for s in &positionals {
+        match classify_target(s) {
+            InstallTarget::File(_) => repo_or_file.push(s.clone()),
             InstallTarget::Repo(ref name) => {
-                let exists = match repo_target_exists(name) {
-                    Ok(exists) => exists,
-                    Err(e) => {
-                        eprintln!("{e:#}");
-                        std::process::exit(1);
-                    }
-                };
-                if exists {
-                    escalate(&positionals, as_deps, json);
-                }
-                let mut sink: Box<dyn InstallSink> = if json {
-                    Box::new(JsonSink::new())
+                if crate::pacman::find_pkg(&handle, name).is_some() {
+                    repo_or_file.push(s.clone());
                 } else {
-                    Box::new(ConsoleSink::new())
-                };
-                if json {
-                    exit_with_result(crate::build::run_build(
-                        std::slice::from_ref(name),
-                        false,
-                        as_deps,
-                        &mut *sink,
-                        |_| true,
-                        approvals_b64.as_deref(),
-                    ));
-                } else {
-                    exit_with_result(crate::build::run_build(
-                        std::slice::from_ref(name),
-                        false,
-                        as_deps,
-                        &mut *sink,
-                        confirm_build,
-                        approvals_b64.as_deref(),
-                    ));
+                    aur.push(s.clone());
                 }
             }
         }
     }
 
-    escalate(&positionals, as_deps, json);
+    if aur.is_empty() {
+        escalate(&positionals, as_deps, json);
+    } else if repo_or_file.is_empty() {
+        let mut sink: Box<dyn InstallSink> = sink_for(json);
+        if json {
+            exit_with_result(crate::build::run_build(
+                &aur,
+                false,
+                as_deps,
+                &mut *sink,
+                |_| true,
+                approvals_b64.as_deref(),
+            ));
+        } else {
+            exit_with_result(crate::build::run_build(
+                &aur,
+                false,
+                as_deps,
+                &mut *sink,
+                confirm_build,
+                approvals_b64.as_deref(),
+            ));
+        }
+    } else {
+        eprintln!(
+            "cannot mix repository and AUR targets in one invocation; install them separately"
+        );
+        std::process::exit(2);
+    }
 }
 
 pub(crate) fn search_subcommand(args: impl Iterator<Item = String>) -> ! {
@@ -333,9 +341,12 @@ fn escalate_result(targets: &[String], as_deps: bool, json: bool) -> anyhow::Res
     Ok(status.code().unwrap_or(1))
 }
 
-fn repo_target_exists(name: &str) -> anyhow::Result<bool> {
-    let handle = alpm_handle()?;
-    Ok(crate::pacman::find_pkg(&handle, name).is_some())
+fn sink_for(json: bool) -> Box<dyn InstallSink> {
+    if json {
+        Box::new(JsonSink::new())
+    } else {
+        Box::new(ConsoleSink::new())
+    }
 }
 
 pub(crate) fn escalation_command(exe: &str) -> std::process::Command {
