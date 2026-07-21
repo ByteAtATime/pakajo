@@ -205,6 +205,51 @@ pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
     escalate_remove(&positionals, json);
 }
 
+pub(crate) fn upgrade_subcommand(args: impl Iterator<Item = String>) -> ! {
+    let mut json = false;
+    let mut no_refresh = false;
+    let mut repo_only = false;
+    for s in args {
+        if s == "--json" {
+            json = true;
+        } else if s == "--no-refresh" {
+            no_refresh = true;
+        } else if s == "--repo-only" {
+            repo_only = true;
+        } else if s.starts_with('-') {
+            eprintln!("unknown flag: {s}");
+            std::process::exit(2);
+        } else {
+            eprintln!("usage: pakajo upgrade [--json] [--no-refresh]");
+            std::process::exit(2);
+        }
+    }
+
+    if repo_only {
+        let answerer: Box<dyn crate::answerer::QuestionAnswerer> =
+            if unsafe { libc::isatty(0) } == 1 {
+                Box::new(crate::answerer::StdioAnswerer::new())
+            } else {
+                Box::new(crate::answerer::NonInteractiveAnswerer)
+            };
+        if json {
+            exit_with_result(crate::upgrade::run_repo_sysupgrade(
+                no_refresh,
+                JsonSink::new(),
+                answerer,
+            ));
+        } else {
+            exit_with_result(crate::upgrade::run_repo_sysupgrade(
+                no_refresh,
+                ConsoleSink::new(),
+                answerer,
+            ));
+        }
+    }
+
+    escalate_upgrade(no_refresh, json);
+}
+
 fn escalate_remove(targets: &[String], json: bool) -> ! {
     let mut child = match crate::remove::spawn_remove_child(targets) {
         Ok(child) => child,
@@ -228,6 +273,45 @@ fn escalate_remove(targets: &[String], json: bool) -> ! {
         }
     };
     std::process::exit(status.code().unwrap_or(1));
+}
+
+fn escalate_upgrade(no_refresh: bool, json: bool) -> ! {
+    let mut child = match spawn_upgrade_child(no_refresh) {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    };
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut sink: Box<dyn InstallSink> = if json {
+        Box::new(JsonSink::new())
+    } else {
+        Box::new(ConsoleSink::new())
+    };
+    crate::events::read_event_stream(std::io::BufReader::new(stdout), &mut *sink);
+    let status = match child.wait() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    };
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+fn spawn_upgrade_child(no_refresh: bool) -> anyhow::Result<std::process::Child> {
+    use std::process::Stdio;
+    let exe = std::env::current_exe().context("failed to determine executable path")?;
+    let mut cmd = escalation_command(&exe.to_string_lossy());
+    cmd.arg("upgrade").arg("--json").arg("--repo-only");
+    if no_refresh {
+        cmd.arg("--no-refresh");
+    }
+    cmd.stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    cmd.spawn().context("failed to spawn upgrade child")
 }
 
 fn alpm_handle() -> anyhow::Result<alpm::Alpm> {

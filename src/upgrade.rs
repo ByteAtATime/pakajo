@@ -6,7 +6,6 @@ use anyhow::Context as _;
 use crate::events::{InstallEvent, InstallSink, TransactionSummary};
 use crate::install::{QuestionState, build_summary, register_callbacks};
 
-#[allow(dead_code)]
 pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
     no_refresh: bool,
     sink: S,
@@ -23,7 +22,6 @@ pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
     repo_sysupgrade_into(&mut handle, sink, answerer)
 }
 
-#[allow(dead_code)]
 fn repo_sysupgrade_into<S: InstallSink + 'static>(
     handle: &mut alpm::Alpm,
     sink: S,
@@ -37,7 +35,6 @@ fn repo_sysupgrade_into<S: InstallSink + 'static>(
     result
 }
 
-#[allow(dead_code)]
 fn run_sysupgrade_transaction<S: InstallSink>(
     handle: &mut alpm::Alpm,
     sink: &Rc<RefCell<S>>,

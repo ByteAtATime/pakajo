@@ -37,6 +37,7 @@ fn main() -> anyhow::Result<()> {
         Some("remove") | Some("uninstall") | Some("rm") | Some("-R") => {
             cli::remove_subcommand(args)
         }
+        Some("upgrade") => cli::upgrade_subcommand(args),
         _ => {}
     }
 
