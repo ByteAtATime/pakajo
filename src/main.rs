@@ -20,6 +20,7 @@ mod root;
 mod search;
 mod search_view;
 mod stub_pkg;
+mod upgrade;
 mod utils;
 
 use crate::{pacman::init_alpm, root::PakajoRoot};
