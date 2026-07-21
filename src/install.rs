@@ -538,6 +538,32 @@ mod tests {
 
     #[test]
     #[ignore]
+    fn test_install_multiple() {
+        let mut handle = setup_fake_root("install_multiple");
+        let result = install_into(
+            &mut handle,
+            &[
+                InstallTarget::Repo("sl".to_string()),
+                InstallTarget::Repo("figlet".to_string()),
+            ],
+            false,
+            ConsoleSink::new(),
+            || true,
+            Box::new(crate::answerer::DenyAllAnswerer),
+        );
+        result.expect("install should succeed");
+        assert!(
+            handle.localdb().pkg("sl").is_ok(),
+            "sl should be installed in the local db"
+        );
+        assert!(
+            handle.localdb().pkg("figlet").is_ok(),
+            "figlet should be installed in the local db"
+        );
+    }
+
+    #[test]
+    #[ignore]
     fn test_install_aborted() {
         let mut handle = setup_fake_root("abort");
         let result = install_into(
