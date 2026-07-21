@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 
@@ -122,6 +122,13 @@ impl LocalIndex {
     pub fn get_meta(&self, key: &str) -> anyhow::Result<Option<String>> {
         let conn = self.read.lock().expect("read connection poisoned");
         meta_get(&conn, key)
+    }
+
+    pub fn last_refreshed_age(&self) -> Option<Duration> {
+        let raw = self.get_meta("last_refreshed").ok().flatten()?;
+        let parsed: u64 = raw.parse().ok()?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+        Some(Duration::from_secs(now.as_secs().saturating_sub(parsed)))
     }
 
     #[allow(dead_code)]
@@ -767,5 +774,71 @@ mod tests {
         assert_eq!(rows.len(), 5);
         assert_eq!(rows[0].name, "c09");
         assert_eq!(rows[4].name, "c05");
+    }
+
+    #[test]
+    fn last_refreshed_age_is_none_when_unset() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+        assert!(index.last_refreshed_age().is_none());
+    }
+
+    #[test]
+    fn last_refreshed_age_is_none_for_garbage_value() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("aur-meta.sqlite");
+        let index = LocalIndex::open(&path).expect("open");
+        let conn = rusqlite::Connection::open(&path).expect("seed");
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES (?, ?)",
+            rusqlite::params!["last_refreshed", "not-a-number"],
+        )
+        .expect("seed");
+        drop(conn);
+        assert!(index.last_refreshed_age().is_none());
+    }
+
+    #[test]
+    fn last_refreshed_age_returns_small_duration_for_recent_refresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("aur-meta.sqlite");
+        let index = LocalIndex::open(&path).expect("open");
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("now")
+            .as_secs();
+        let conn = rusqlite::Connection::open(&path).expect("seed");
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES (?, ?)",
+            rusqlite::params!["last_refreshed", &now_secs.to_string()],
+        )
+        .expect("seed");
+        drop(conn);
+        let age = index.last_refreshed_age().expect("age");
+        assert!(age < Duration::from_secs(60), "age {age:?} should be < 60s");
+    }
+
+    #[test]
+    fn last_refreshed_age_returns_large_duration_for_old_refresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("aur-meta.sqlite");
+        let index = LocalIndex::open(&path).expect("open");
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("now")
+            .as_secs();
+        let old_secs = now_secs.saturating_sub(8 * 3600);
+        let conn = rusqlite::Connection::open(&path).expect("seed");
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES (?, ?)",
+            rusqlite::params!["last_refreshed", &old_secs.to_string()],
+        )
+        .expect("seed");
+        drop(conn);
+        let age = index.last_refreshed_age().expect("age");
+        assert!(
+            age > Duration::from_secs(7 * 3600),
+            "age {age:?} should be > 7h"
+        );
     }
 }
