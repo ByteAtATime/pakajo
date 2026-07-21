@@ -96,10 +96,7 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
         }
     }
 
-    if !as_deps {
-        usage_error();
-    }
-    escalate(&positionals, true, json);
+    escalate(&positionals, as_deps, json);
 }
 
 pub(crate) fn search_subcommand(args: impl Iterator<Item = String>) -> ! {
