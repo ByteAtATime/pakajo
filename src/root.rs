@@ -12,6 +12,7 @@ use crate::{
     search_view::{SearchState, SearchView, centered},
 };
 use alpm::Alpm;
+use anyhow::Context as _;
 use futures::StreamExt as _;
 use gpui::*;
 use gpui_component::{
@@ -24,6 +25,7 @@ use std::{sync::Arc, time::Duration};
 actions!(pakajo, [SelectUp, SelectDown]);
 
 const LIVE_DEBOUNCE: Duration = Duration::from_millis(300);
+const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 
 enum DetailPane {
     None,
@@ -82,6 +84,10 @@ impl PakajoRoot {
                 _ => {}
             },
         );
+        if let Some(index) = &local_index {
+            begin_aur_sync_in_background(index.clone());
+        }
+
         Self {
             alpm_handle,
             aur_client,
@@ -649,6 +655,57 @@ fn execute_search_for(
     let repo_provider = RepoSearchProvider::new(repo_index.clone());
     let aur_provider = AurSearchProvider::new(aur_client.clone());
     search::dispatch_search(local_index, &repo_provider, &aur_provider, &installed, text)
+}
+
+fn begin_aur_sync_in_background(local_index: Arc<LocalIndex>) {
+    std::thread::spawn(move || {
+        let reniced = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) };
+        if reniced != 0 {
+            eprintln!(
+                "[pakajo] failed to renice aur sync worker: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+
+        if let Some(age) = local_index.last_refreshed_age()
+            && age < AUR_SYNC_MIN_INTERVAL
+        {
+            eprintln!(
+                "[pakajo] skipping aur sync (last refresh {}h ago)",
+                age.as_secs() / 3600
+            );
+            return;
+        }
+
+        let handle = match pacmanconf::Config::new()
+            .context("failed to read pacman config")
+            .and_then(|cfg| init_alpm(&cfg))
+        {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("[pakajo] aur background sync failed to init alpm: {e:#}");
+                return;
+            }
+        };
+
+        match local_index.refresh(&handle) {
+            Ok(crate::local_index::RefreshOutcome::NotModified) => {
+                eprintln!("[pakajo] aur index up to date");
+            }
+            Ok(crate::local_index::RefreshOutcome::Updated {
+                aur_count,
+                repo_count,
+                skipped,
+            }) => {
+                eprintln!(
+                    "[pakajo] indexed {aur_count} aur + {repo_count} repo packages (skipped {skipped})"
+                );
+            }
+            Err(e) => {
+                eprintln!("[pakajo] aur background sync failed: {e:#}");
+            }
+        }
+    });
 }
 
 pub fn init(cx: &mut App) {
