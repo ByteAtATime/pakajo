@@ -267,7 +267,7 @@ fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
     Ok(())
 }
 
-fn build_summary(handle: &alpm::Alpm) -> TransactionSummary {
+pub(crate) fn build_summary(handle: &alpm::Alpm) -> TransactionSummary {
     let mut packages = Vec::new();
     let mut total_download_size = 0;
     let mut total_installed_size = 0;
