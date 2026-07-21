@@ -206,16 +206,26 @@ pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
 }
 
 pub(crate) fn upgrade_subcommand(args: impl Iterator<Item = String>) -> ! {
+    let mut args = args;
     let mut json = false;
     let mut no_refresh = false;
     let mut repo_only = false;
-    for s in args {
+    let mut ignores: Vec<String> = Vec::new();
+    while let Some(s) = args.next() {
         if s == "--json" {
             json = true;
         } else if s == "--no-refresh" {
             no_refresh = true;
         } else if s == "--repo-only" {
             repo_only = true;
+        } else if s == "--ignore" {
+            let v = args.next().unwrap_or_else(|| {
+                eprintln!("--ignore requires a value");
+                std::process::exit(2);
+            });
+            ignores.push(v);
+        } else if let Some(rest) = s.strip_prefix("--ignore=") {
+            ignores.push(rest.to_string());
         } else if s.starts_with('-') {
             eprintln!("unknown flag: {s}");
             std::process::exit(2);
@@ -235,19 +245,21 @@ pub(crate) fn upgrade_subcommand(args: impl Iterator<Item = String>) -> ! {
         if json {
             exit_with_result(crate::upgrade::run_repo_sysupgrade(
                 no_refresh,
+                &ignores,
                 JsonSink::new(),
                 answerer,
             ));
         } else {
             exit_with_result(crate::upgrade::run_repo_sysupgrade(
                 no_refresh,
+                &ignores,
                 ConsoleSink::new(),
                 answerer,
             ));
         }
     }
 
-    escalate_upgrade(no_refresh, json);
+    escalate_upgrade(no_refresh, &ignores, json);
 }
 
 fn escalate_remove(targets: &[String], json: bool) -> ! {
@@ -275,8 +287,8 @@ fn escalate_remove(targets: &[String], json: bool) -> ! {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-fn escalate_upgrade(no_refresh: bool, json: bool) -> ! {
-    let mut child = match spawn_upgrade_child(no_refresh) {
+fn escalate_upgrade(no_refresh: bool, ignores: &[String], json: bool) -> ! {
+    let mut child = match spawn_upgrade_child(no_refresh, ignores) {
         Ok(child) => child,
         Err(e) => {
             eprintln!("{e:#}");
@@ -300,13 +312,19 @@ fn escalate_upgrade(no_refresh: bool, json: bool) -> ! {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-fn spawn_upgrade_child(no_refresh: bool) -> anyhow::Result<std::process::Child> {
+fn spawn_upgrade_child(
+    no_refresh: bool,
+    ignores: &[String],
+) -> anyhow::Result<std::process::Child> {
     use std::process::Stdio;
     let exe = std::env::current_exe().context("failed to determine executable path")?;
     let mut cmd = escalation_command(&exe.to_string_lossy());
     cmd.arg("upgrade").arg("--json").arg("--repo-only");
     if no_refresh {
         cmd.arg("--no-refresh");
+    }
+    for name in ignores {
+        cmd.arg("--ignore").arg(name);
     }
     cmd.stdin(Stdio::inherit())
         .stdout(Stdio::piped())
