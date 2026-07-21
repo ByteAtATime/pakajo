@@ -225,6 +225,46 @@ mod tests {
 
     #[test]
     #[ignore]
+    fn test_remove_multiple() {
+        let mut handle = crate::install::setup_fake_root("remove_multiple");
+        install_into(
+            &mut handle,
+            &[
+                InstallTarget::Repo("sl".to_string()),
+                InstallTarget::Repo("figlet".to_string()),
+            ],
+            false,
+            ConsoleSink::new(),
+            || true,
+            Box::new(crate::answerer::DenyAllAnswerer),
+        )
+        .expect("sl and figlet should install first");
+        assert!(
+            handle.localdb().pkg("sl").is_ok(),
+            "sl must be installed before remove"
+        );
+        assert!(
+            handle.localdb().pkg("figlet").is_ok(),
+            "figlet must be installed before remove"
+        );
+
+        remove_into(
+            &mut handle,
+            &["sl".to_string(), "figlet".to_string()],
+            ConsoleSink::new(),
+            || true,
+            Box::new(crate::answerer::DenyAllAnswerer),
+        )
+        .expect("remove should succeed");
+        assert!(handle.localdb().pkg("sl").is_err(), "sl must be removed");
+        assert!(
+            handle.localdb().pkg("figlet").is_err(),
+            "figlet must be removed"
+        );
+    }
+
+    #[test]
+    #[ignore]
     fn test_remove_uninstalled_errors() {
         let mut handle = crate::install::setup_fake_root("remove_uninstalled");
         let result = remove_into(
