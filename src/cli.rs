@@ -39,6 +39,8 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
         }
     }
 
+    let positionals = dedup_positionals(positionals);
+
     if positionals.is_empty() {
         usage_error();
     }
@@ -132,6 +134,8 @@ pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
             positionals.push(s);
         }
     }
+
+    let positionals = dedup_positionals(positionals);
 
     if positionals.is_empty() {
         eprintln!("usage: pakajo remove [--json] <package>...");
@@ -351,6 +355,14 @@ fn classify_target(s: &str) -> InstallTarget {
     } else {
         InstallTarget::Repo(s.into())
     }
+}
+
+fn dedup_positionals(positionals: Vec<String>) -> Vec<String> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    positionals
+        .into_iter()
+        .filter(|s| seen.insert(s.clone()))
+        .collect()
 }
 
 fn usage_error() -> ! {
