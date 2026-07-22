@@ -59,12 +59,14 @@ pub fn scored_candidates(candidates: Vec<SearchResult>, needle: &str) -> Vec<Sco
 
 const W_NAME: f64 = 1.0;
 const W_DESC: f64 = 0.3;
+const W_KW: f64 = 0.5;
 const W_POP: f64 = 0.2;
 const W_REPO: f64 = 0.1;
 const W_RECENCY: f64 = 0.1;
 const W_INSTALLED: f64 = 0.5;
 const K_NAME: f64 = 100.0;
 const K_DESC: f64 = 100.0;
+const K_KW: f64 = 100.0;
 const K_POP: f64 = 10.0;
 
 #[allow(dead_code)]
@@ -83,7 +85,7 @@ pub fn score(
     let filtered: Vec<ScoredCandidate> = if has_name_match {
         scored
             .into_iter()
-            .filter(|c| c.name_score.is_some())
+            .filter(|c| c.name_score.is_some() || c.keyword_score.is_some())
             .collect()
     } else {
         scored
@@ -96,6 +98,7 @@ pub fn score(
                 &needle,
                 c.name_score,
                 c.desc_score,
+                c.keyword_score,
                 installed,
                 now,
             );
@@ -143,6 +146,7 @@ fn composite(
     needle: &str,
     name_score: Option<u16>,
     desc_score: Option<u16>,
+    keyword_score: Option<u16>,
     installed: &HashSet<String>,
     now: f64,
 ) -> f64 {
@@ -156,9 +160,14 @@ fn composite(
     let norm_desc = desc_score
         .map(|s| saturate(s as f64, K_DESC))
         .unwrap_or(0.0);
+    let norm_kw = keyword_score
+        .map(|s| saturate(s as f64, K_KW))
+        .unwrap_or(0.0);
     let norm_pop = r.popularity.map(|p| saturate(p, K_POP)).unwrap_or(0.0);
 
-    let text = norm_name * precision + W_DESC * norm_desc * (1.0 - norm_name);
+    let text = norm_name * precision
+        + W_KW * norm_kw * (1.0 - norm_name)
+        + W_DESC * norm_desc * (1.0 - norm_name.max(norm_kw));
 
     let recency = if r.source == PackageSource::Aur {
         r.last_update
@@ -300,6 +309,7 @@ mod tests {
             "x",
             Some(10),
             None,
+            None,
             &e,
             1e12,
         );
@@ -307,6 +317,7 @@ mod tests {
             &pkg("x", PackageSource::Repo, None, None),
             "x",
             Some(10),
+            None,
             None,
             &e,
             1e12,
@@ -322,6 +333,7 @@ mod tests {
             "x",
             Some(10),
             None,
+            None,
             &e,
             1e10,
         );
@@ -329,6 +341,7 @@ mod tests {
             &pkg("x", PackageSource::Aur, Some(1_000_000_000), None),
             "x",
             Some(10),
+            None,
             None,
             &e,
             1e10,
@@ -344,6 +357,7 @@ mod tests {
             "a",
             Some(20),
             None,
+            None,
             &e,
             0.0,
         );
@@ -351,6 +365,7 @@ mod tests {
             &pkg("b", PackageSource::Repo, None, Some(10.0)),
             "a",
             Some(20),
+            None,
             None,
             &e,
             0.0,
@@ -361,6 +376,7 @@ mod tests {
             "a",
             Some(20),
             None,
+            None,
             &inst,
             0.0,
         );
@@ -370,6 +386,7 @@ mod tests {
                 &pkg("c", PackageSource::Repo, None, None),
                 "a",
                 Some(100),
+                None,
                 None,
                 &e,
                 0.0
@@ -396,6 +413,92 @@ mod tests {
             )
             .len(),
             1
+        );
+    }
+
+    fn row_kw(name: &str, description: Option<&str>, keywords: Vec<String>) -> SearchResult {
+        SearchResult {
+            name: name.to_string(),
+            source: PackageSource::Aur,
+            description: description.map(str::to_string),
+            version: "1.0-1".to_string(),
+            repo: Some("aur".to_string()),
+            num_votes: None,
+            popularity: None,
+            installed: false,
+            last_update: None,
+            keywords,
+        }
+    }
+
+    #[test]
+    fn keyword_only_surfaces_amid_name_matches() {
+        let e = HashSet::new();
+        let candidates = vec![
+            row("arm-none-eabi-gcc", None),
+            row_kw("yay", Some("yet another yogurt"), vec!["arm".into()]),
+        ];
+        let results = score(candidates, &SearchQuery::new("arm"), &e);
+        assert!(
+            results.iter().any(|r| r.name == "yay"),
+            "keyword-only hit must survive the name-match filter; got {:?}",
+            results.iter().map(|r| r.name.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn name_outranks_equal_keyword() {
+        let e = HashSet::new();
+        let candidates = vec![row_kw("xyz", None, vec!["arm".into()]), row("arm", None)];
+        let results = score(candidates, &SearchQuery::new("arm"), &e);
+        assert_eq!(
+            results[0].name, "arm",
+            "exact name match must outrank an equal-strength keyword match"
+        );
+    }
+
+    #[test]
+    fn keyword_outranks_description_only() {
+        let e = HashSet::new();
+        let candidates = vec![
+            row_kw("zzz", Some("unrelated stuff"), vec!["edit".into()]),
+            row("qqq", Some("fast editor")),
+        ];
+        let results = score(candidates, &SearchQuery::new("edit"), &e);
+        assert!(
+            results.iter().any(|r| r.name == "zzz"),
+            "keyword candidate must survive in the no-name-match regime"
+        );
+        let zzz_pos = results
+            .iter()
+            .position(|r| r.name == "zzz")
+            .expect("zzz present");
+        let qqq_pos = results
+            .iter()
+            .position(|r| r.name == "qqq")
+            .expect("qqq present");
+        assert!(
+            zzz_pos < qqq_pos,
+            "keyword match (W_KW=0.5) must outrank description-only (W_DESC=0.3)"
+        );
+    }
+
+    #[test]
+    fn long_named_keyword_match_present_not_first() {
+        let e = HashSet::new();
+        let candidates = vec![
+            row_kw("010editor", None, vec!["sweetscape".into()]),
+            row("sweetscape-bin", None),
+        ];
+        let results = score(candidates, &SearchQuery::new("sweetscape"), &e);
+        assert!(
+            results.iter().any(|r| r.name == "010editor"),
+            "010editor must surface via its keyword; got {:?}",
+            results.iter().map(|r| r.name.as_str()).collect::<Vec<_>>()
+        );
+        assert_ne!(
+            results[0].name, "010editor",
+            "keyword-only hit must not outrank a real name match"
         );
     }
 }
