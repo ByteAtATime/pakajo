@@ -648,6 +648,28 @@ impl ConsoleSink {
                 println!(":: built {package}");
             }
             InstallEvent::LayerBoundary { .. } => {}
+            InstallEvent::SysupgradeAurCandidates { candidates } => {
+                if candidates.is_empty() {
+                    return;
+                }
+                println!(":: {} AUR package(s) to upgrade:", candidates.len());
+                let name_width = candidates.iter().map(|c| c.name.len()).max().unwrap_or(0);
+                let ver_width = candidates
+                    .iter()
+                    .map(|c| c.local_version.len().max(c.remote_version.len()))
+                    .max()
+                    .unwrap_or(0);
+                for c in candidates {
+                    println!(
+                        "  {:<nw$}  {:<vw$} -> {:<vw$}",
+                        c.name,
+                        c.local_version,
+                        c.remote_version,
+                        nw = name_width,
+                        vw = ver_width,
+                    );
+                }
+            }
         }
     }
 }

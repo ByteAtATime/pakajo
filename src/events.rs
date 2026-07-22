@@ -95,6 +95,9 @@ pub enum InstallEvent {
         layer: usize,
         total: usize,
     },
+    SysupgradeAurCandidates {
+        candidates: Vec<crate::upgrade::AurUpgradeCandidate>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +167,33 @@ pub fn read_event_stream<R: std::io::BufRead, S: InstallSink + ?Sized>(reader: R
                 }
             }
             Err(_) => break,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sysupgrade_aur_candidates_round_trips_json() {
+        let event = InstallEvent::SysupgradeAurCandidates {
+            candidates: vec![crate::upgrade::AurUpgradeCandidate {
+                name: "foo".to_string(),
+                local_version: "1.0".to_string(),
+                remote_version: "1.1".to_string(),
+                package_base: "foo".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        let back: InstallEvent = serde_json::from_str(&json).expect("deserialize");
+        match back {
+            InstallEvent::SysupgradeAurCandidates { candidates } => {
+                assert_eq!(candidates.len(), 1);
+                assert_eq!(candidates[0].name, "foo");
+                assert_eq!(candidates[0].remote_version, "1.1");
+            }
+            _ => panic!("wrong variant after round-trip"),
         }
     }
 }
