@@ -1,10 +1,13 @@
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use anyhow::Context as _;
 
+use crate::aur::AurInfo;
 use crate::events::{InstallEvent, InstallSink, TransactionSummary};
 use crate::install::{QuestionState, build_summary, register_callbacks};
+use crate::resolve::AurQuery;
 
 pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
     no_refresh: bool,
@@ -34,6 +37,80 @@ fn apply_ignores(handle: &mut alpm::Alpm, config: &pacmanconf::Config, extra: &[
     for name in extra {
         let _ = handle.add_ignorepkg(name.as_str());
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[allow(dead_code)]
+pub(crate) struct AurUpgradeCandidate {
+    pub name: String,
+    pub local_version: String,
+    pub remote_version: String,
+    pub package_base: String,
+}
+
+#[allow(dead_code)]
+fn select_upgradable_candidates(
+    installed: Vec<(String, String)>,
+    sync_names: &HashSet<String>,
+    aur_infos: &HashMap<String, AurInfo>,
+) -> Vec<AurUpgradeCandidate> {
+    let mut candidates: Vec<AurUpgradeCandidate> = installed
+        .into_iter()
+        .filter_map(|(name, local_version)| {
+            if sync_names.contains(&name) {
+                return None;
+            }
+            let info = aur_infos.get(&name)?;
+            if alpm::vercmp(info.version.clone(), local_version.clone())
+                != std::cmp::Ordering::Greater
+            {
+                return None;
+            }
+            Some(AurUpgradeCandidate {
+                name,
+                local_version,
+                remote_version: info.version.clone(),
+                package_base: info.package_base.clone(),
+            })
+        })
+        .collect();
+    candidates.sort_by(|a, b| a.name.cmp(&b.name));
+    candidates
+}
+
+#[allow(dead_code)]
+pub(crate) fn compute_aur_upgrades(
+    handle: &alpm::Alpm,
+    aur: &impl AurQuery,
+) -> anyhow::Result<Vec<AurUpgradeCandidate>> {
+    let sync_names: HashSet<String> = handle
+        .syncdbs()
+        .iter()
+        .flat_map(|db| db.pkgs().iter())
+        .map(|p| p.name().to_string())
+        .collect();
+    let installed: Vec<(String, String)> = handle
+        .localdb()
+        .pkgs()
+        .iter()
+        .map(|p| (p.name().to_string(), p.version().to_string()))
+        .collect();
+    let foreign_names: Vec<String> = installed
+        .iter()
+        .map(|(name, _)| name.clone())
+        .filter(|name| !sync_names.contains(name))
+        .collect();
+    if foreign_names.is_empty() {
+        return Ok(vec![]);
+    }
+    let infos = aur.info_many(&foreign_names)?;
+    let aur_infos: HashMap<String, AurInfo> =
+        infos.into_iter().map(|i| (i.name.clone(), i)).collect();
+    Ok(select_upgradable_candidates(
+        installed,
+        &sync_names,
+        &aur_infos,
+    ))
 }
 
 fn repo_sysupgrade_into<S: InstallSink + 'static>(
@@ -102,6 +179,91 @@ mod tests {
             Box::new(crate::answerer::DenyAllAnswerer),
         );
         result.expect("sysupgrade with nothing to do should succeed");
+    }
+
+    #[test]
+    fn select_upgradable_candidates_filters_and_compares() {
+        let installed = vec![
+            ("foo".to_string(), "1.0".to_string()),
+            ("bar".to_string(), "1.0".to_string()),
+            ("baz".to_string(), "1.0".to_string()),
+            ("qux".to_string(), "1.0".to_string()),
+            ("wal".to_string(), "2.0".to_string()),
+        ];
+        let sync_names = HashSet::from(["baz".to_string()]);
+        let mut aur_infos = HashMap::new();
+        aur_infos.insert("foo".to_string(), test_aur_info("foo", "1.1"));
+        aur_infos.insert("bar".to_string(), test_aur_info("bar", "1.0"));
+        aur_infos.insert("wal".to_string(), test_aur_info("wal", "1.5"));
+
+        let result = select_upgradable_candidates(installed, &sync_names, &aur_infos);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "foo");
+        assert_eq!(result[0].local_version, "1.0");
+        assert_eq!(result[0].remote_version, "1.1");
+        assert_eq!(result[0].package_base, "foo");
+    }
+
+    #[test]
+    fn select_upgradable_candidates_sorted_deterministically() {
+        let installed = vec![
+            ("zeta".to_string(), "1.0".to_string()),
+            ("alpha".to_string(), "1.0".to_string()),
+            ("mid".to_string(), "1.0".to_string()),
+        ];
+        let sync_names = HashSet::new();
+        let aur_infos = HashMap::from([
+            ("zeta".to_string(), test_aur_info("zeta", "2.0")),
+            ("alpha".to_string(), test_aur_info("alpha", "2.0")),
+            ("mid".to_string(), test_aur_info("mid", "2.0")),
+        ]);
+
+        let result = select_upgradable_candidates(installed, &sync_names, &aur_infos);
+        assert_eq!(
+            result.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["alpha", "mid", "zeta"]
+        );
+    }
+
+    fn test_aur_info(name: &str, version: &str) -> AurInfo {
+        AurInfo {
+            id: 0,
+            name: name.to_string(),
+            package_base_id: 0,
+            package_base: name.to_string(),
+            version: version.to_string(),
+            description: None,
+            url: None,
+            num_votes: 0,
+            popularity: 0.0,
+            out_of_date: None,
+            maintainer: None,
+            first_submitted: 0,
+            last_modified: 0,
+            url_path: None,
+            submitter: None,
+            depends: Vec::new(),
+            make_depends: Vec::new(),
+            check_depends: Vec::new(),
+            opt_depends: Vec::new(),
+            conflicts: Vec::new(),
+            provides: Vec::new(),
+            replaces: Vec::new(),
+            groups: Vec::new(),
+            license: Vec::new(),
+            keywords: Vec::new(),
+            co_maintainers: Vec::new(),
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn compute_aur_upgrades_live() {
+        let config = pacmanconf::Config::new().expect("pacman config");
+        let handle = crate::pacman::init_alpm(&config).expect("alpm");
+        let aur = crate::aur::AurClient::new();
+        let candidates = compute_aur_upgrades(&handle, &aur).expect("rpc succeeds");
+        println!("candidates: {candidates:?}");
     }
 
     #[test]
