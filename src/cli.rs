@@ -259,6 +259,27 @@ pub(crate) fn upgrade_subcommand(args: impl Iterator<Item = String>) -> ! {
         }
     }
 
+    let handle = match alpm_handle() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    };
+    let aur = crate::aur::AurClient::new();
+    let aur_targets = match crate::upgrade::compute_aur_upgrades(&handle, &aur) {
+        Ok(candidates) => candidates,
+        Err(e) => {
+            eprintln!("warning: AUR upgrade detection failed: {e:#}");
+            vec![]
+        }
+    };
+    let mut sink = sink_for(json);
+    sink.event(InstallEvent::SysupgradeAurCandidates {
+        candidates: aur_targets.clone(),
+    });
+    let _aur_targets = aur_targets;
+
     escalate_upgrade(no_refresh, &ignores, json);
 }
 
