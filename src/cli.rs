@@ -278,9 +278,29 @@ pub(crate) fn upgrade_subcommand(args: impl Iterator<Item = String>) -> ! {
     sink.event(InstallEvent::SysupgradeAurCandidates {
         candidates: aur_targets.clone(),
     });
-    let _aur_targets = aur_targets;
 
-    escalate_upgrade(no_refresh, &ignores, json);
+    let exit_code = escalate_upgrade(no_refresh, &ignores, json);
+    if exit_code == 0 && !aur_targets.is_empty() {
+        let aur_names: Vec<String> = aur_targets.iter().map(|c| c.name.clone()).collect();
+        let mut build_sink: Box<dyn InstallSink> = sink_for(json);
+        let result = if json {
+            crate::build::run_build(&aur_names, false, false, &mut *build_sink, |_| true, None)
+        } else {
+            crate::build::run_build(
+                &aur_names,
+                false,
+                false,
+                &mut *build_sink,
+                confirm_build,
+                None,
+            )
+        };
+        if let Err(e) = &result {
+            eprintln!("warning: repo packages upgraded; AUR phase failed: {e:#}");
+        }
+        exit_with_result(result);
+    }
+    std::process::exit(exit_code);
 }
 
 fn escalate_remove(targets: &[String], json: bool) -> ! {
@@ -308,7 +328,7 @@ fn escalate_remove(targets: &[String], json: bool) -> ! {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-fn escalate_upgrade(no_refresh: bool, ignores: &[String], json: bool) -> ! {
+fn escalate_upgrade(no_refresh: bool, ignores: &[String], json: bool) -> i32 {
     let mut child = match spawn_upgrade_child(no_refresh, ignores) {
         Ok(child) => child,
         Err(e) => {
@@ -330,7 +350,7 @@ fn escalate_upgrade(no_refresh: bool, ignores: &[String], json: bool) -> ! {
             std::process::exit(1);
         }
     };
-    std::process::exit(status.code().unwrap_or(1));
+    status.code().unwrap_or(1)
 }
 
 fn spawn_upgrade_child(
@@ -725,7 +745,7 @@ fn confirm_remove() -> bool {
     confirm_yes("\n:: Proceed with removal?")
 }
 
-fn confirm_build(plan: &crate::resolve::BuildPlan) -> bool {
+pub(crate) fn confirm_build(plan: &crate::resolve::BuildPlan) -> bool {
     let rows: Vec<(&str, &str, Option<&str>)> = plan
         .layers
         .iter()
