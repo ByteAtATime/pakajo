@@ -197,8 +197,8 @@ impl LocalIndex {
         let json = serde_json::to_string(info)?;
         conn.execute(
             "INSERT OR REPLACE INTO packages \
-             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json) \
-             VALUES (?,?,?,?,?,?,?,?,?,?)",
+             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json,keywords) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             rusqlite::params![
                 &info.name,
                 "aur",
@@ -210,6 +210,7 @@ impl LocalIndex {
                 info.last_modified,
                 &info.package_base,
                 &json,
+                &info.keywords.join(" "),
             ],
         )?;
         Ok(())
@@ -229,8 +230,8 @@ impl LocalIndex {
 
         let mut pkg_stmt = tx.prepare(
             "INSERT OR REPLACE INTO packages \
-             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json) \
-             VALUES (?,?,?,?,?,?,?,?,?,?)",
+             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json,keywords) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         )?;
 
         let (aur_count, skipped) = index_aur_rows(&mut pkg_stmt, dump.reader())?;
@@ -248,6 +249,7 @@ impl LocalIndex {
         let null_popularity: Option<f64> = None;
         let null_base: Option<&str> = None;
         let null_detail: Option<&str> = None;
+        let null_keywords: Option<&str> = None;
         let mut repo_count: usize = 0;
         for db in handle.syncdbs().iter() {
             let repo = db.name();
@@ -263,6 +265,7 @@ impl LocalIndex {
                     pkg.build_date(),
                     &null_base,
                     &null_detail,
+                    &null_keywords,
                 ])?;
                 repo_count += 1;
             }
@@ -349,6 +352,7 @@ fn index_aur_rows(
                     info.last_modified,
                     &info.package_base,
                     payload,
+                    &info.keywords.join(" "),
                 ])?;
                 aur_count += 1;
             }
@@ -367,24 +371,24 @@ fn apply_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         "CREATE TABLE IF NOT EXISTS packages (\
            name TEXT PRIMARY KEY, source TEXT, repo TEXT, version TEXT, description TEXT,\
            num_votes INTEGER, popularity REAL, last_update INTEGER, package_base TEXT,\
-           detail_json TEXT);\
+           detail_json TEXT, keywords TEXT);\
          CREATE VIRTUAL TABLE IF NOT EXISTS packages_fts USING fts5(\
-           name, description,\
+           name, description, keywords,\
            content='packages', content_rowid=rowid,\
            tokenize = 'unicode61 remove_diacritics 2');\
          CREATE TRIGGER IF NOT EXISTS packages_ai AFTER INSERT ON packages BEGIN \
-           INSERT INTO packages_fts(rowid, name, description) \
-             VALUES (new.rowid, new.name, new.description); \
+           INSERT INTO packages_fts(rowid, name, description, keywords) \
+             VALUES (new.rowid, new.name, new.description, new.keywords); \
          END;\
          CREATE TRIGGER IF NOT EXISTS packages_ad AFTER DELETE ON packages BEGIN \
-           INSERT INTO packages_fts(packages_fts, rowid, name, description) \
-             VALUES('delete', old.rowid, old.name, old.description); \
+           INSERT INTO packages_fts(packages_fts, rowid, name, description, keywords) \
+             VALUES('delete', old.rowid, old.name, old.description, old.keywords); \
          END;\
          CREATE TRIGGER IF NOT EXISTS packages_au AFTER UPDATE ON packages BEGIN \
-           INSERT INTO packages_fts(packages_fts, rowid, name, description) \
-             VALUES('delete', old.rowid, old.name, old.description); \
-           INSERT INTO packages_fts(rowid, name, description) \
-             VALUES (new.rowid, new.name, new.description); \
+           INSERT INTO packages_fts(packages_fts, rowid, name, description, keywords) \
+             VALUES('delete', old.rowid, old.name, old.description, old.keywords); \
+           INSERT INTO packages_fts(rowid, name, description, keywords) \
+             VALUES (new.rowid, new.name, new.description, new.keywords); \
          END;\
          CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);",
     )?;
@@ -456,6 +460,30 @@ mod tests {
         );
         assert!(names.contains(&"meta".to_string()), "meta table missing");
 
+        let pkg_cols: Vec<String> = check
+            .prepare("PRAGMA table_info(packages)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            pkg_cols.contains(&"keywords".to_string()),
+            "packages.keywords column missing"
+        );
+
+        let fts_cols: Vec<String> = check
+            .prepare("PRAGMA table_info(packages_fts)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            fts_cols.contains(&"keywords".to_string()),
+            "packages_fts.keywords column missing"
+        );
+
         assert!(!index.is_populated());
         assert_eq!(index.row_count().expect("row_count"), 0);
     }
@@ -496,8 +524,8 @@ mod tests {
     }
 
     const PKG_INSERT_SQL: &str = "INSERT OR REPLACE INTO packages \
-         (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json) \
-         VALUES (?,?,?,?,?,?,?,?,?,?)";
+         (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json,keywords) \
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)";
 
     fn aur_json(id: u64, name: &str) -> String {
         format!(
@@ -560,6 +588,41 @@ mod tests {
             )
             .expect("alpha detail_json");
         assert_eq!(alpha_detail, aur_json(1, "alpha"));
+    }
+
+    #[test]
+    fn index_aur_rows_populates_keywords() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+
+        let row = r#"{"ID":7,"Name":"hex-tools","PackageBaseID":7,"PackageBase":"hex-tools","Version":"1.0-1","Description":"hex stuff","NumVotes":0,"Popularity":0.0,"FirstSubmitted":0,"LastModified":0,"Keywords":["hex","binary"]}"#;
+        let input = format!("[\n{row}\n]");
+        let reader = std::io::Cursor::new(input.into_bytes());
+
+        let mut conn = index.write.lock().expect("write connection poisoned");
+        let tx = conn.transaction().expect("transaction");
+        tx.execute_batch("DELETE FROM packages;").expect("delete");
+        let mut pkg_stmt = tx.prepare(PKG_INSERT_SQL).expect("prepare pkg");
+        let (aur_count, skipped) = index_aur_rows(&mut pkg_stmt, reader).expect("index");
+        drop(pkg_stmt);
+        tx.commit().expect("commit");
+        drop(conn);
+
+        assert_eq!(aur_count, 1, "one valid row should be indexed");
+        assert_eq!(skipped, 0, "no malformed rows");
+
+        let check = rusqlite::Connection::open(dir.path().join("aur-meta.sqlite")).expect("reopen");
+        let keywords: String = check
+            .query_row(
+                "SELECT keywords FROM packages WHERE name = 'hex-tools'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("keywords query");
+        assert_eq!(
+            keywords, "hex binary",
+            "keywords should be space-joined into the column"
+        );
     }
 
     #[test]
@@ -713,6 +776,21 @@ mod tests {
         assert_eq!(got.name, "yay");
         assert_eq!(got.version, "13.0.1-1");
         assert_eq!(got.make_depends, vec!["go>=1.24".to_string()]);
+
+        {
+            let conn = index.read.lock().expect("read connection poisoned");
+            let keywords: String = conn
+                .query_row(
+                    "SELECT keywords FROM packages WHERE name = 'yay'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("keywords query");
+            assert_eq!(
+                keywords, "arm",
+                "keywords should be space-joined after put_detail"
+            );
+        }
 
         let mut updated = info.clone();
         updated.version = "14.0.0-1".to_string();
