@@ -148,7 +148,7 @@ impl LocalIndex {
              FROM packages_fts \
              JOIN packages p ON p.rowid = packages_fts.rowid \
              WHERE packages_fts MATCH ?1 \
-             ORDER BY rank \
+             ORDER BY bm25(packages_fts, 10.0, 1.0, 5.0) \
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![pattern, limit], row_to_package)?;
@@ -801,6 +801,37 @@ mod tests {
         assert_eq!(rows.len(), 5);
         assert_eq!(rows[0].name, "c09");
         assert_eq!(rows[4].name, "c05");
+    }
+
+    #[test]
+    fn bm25_weights_name_above_description() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("aur-meta.sqlite");
+        let index = LocalIndex::open(&path).expect("open");
+        let conn = rusqlite::Connection::open(&path).expect("seed");
+
+        conn.execute(
+            "INSERT INTO packages \
+             (name,description,source,repo,version,num_votes,popularity,last_update,package_base,detail_json,keywords) \
+             VALUES ('gizmo','something else','aur','aur','1',0,0.0,0,NULL,NULL,NULL)",
+            [],
+        )
+        .expect("seed gizmo");
+        conn.execute(
+            "INSERT INTO packages \
+             (name,description,source,repo,version,num_votes,popularity,last_update,package_base,detail_json,keywords) \
+             VALUES ('alpha','gizmo','aur','aur','1',0,0.0,0,NULL,NULL,NULL)",
+            [],
+        )
+        .expect("seed alpha");
+        drop(conn);
+
+        let rows = index.search("gizmo*", 10).expect("search");
+        assert_eq!(rows.len(), 2, "both rows match the gizmo* prefix token");
+        assert_eq!(
+            rows[0].name, "gizmo",
+            "name match must outrank description-only match under bm25 weights"
+        );
     }
 
     #[test]
