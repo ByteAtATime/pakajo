@@ -179,6 +179,34 @@ mod tests {
     }
 
     #[test]
+    fn aur_targets_filtered_by_ignore_list() {
+        let mut targets = vec![
+            AurUpgradeCandidate {
+                name: "foo".to_string(),
+                local_version: "1.0".to_string(),
+                remote_version: "1.1".to_string(),
+                package_base: "foo".to_string(),
+            },
+            AurUpgradeCandidate {
+                name: "bar".to_string(),
+                local_version: "1.0".to_string(),
+                remote_version: "1.1".to_string(),
+                package_base: "bar".to_string(),
+            },
+            AurUpgradeCandidate {
+                name: "baz".to_string(),
+                local_version: "1.0".to_string(),
+                remote_version: "1.1".to_string(),
+                package_base: "baz".to_string(),
+            },
+        ];
+        let ignores: Vec<String> = vec!["bar".to_string()];
+        targets.retain(|c| !ignores.contains(&c.name));
+        assert_eq!(targets.len(), 2);
+        assert!(targets.iter().all(|c| c.name != "bar"));
+    }
+
+    #[test]
     fn select_upgradable_candidates_filters_and_compares() {
         let installed = vec![
             ("foo".to_string(), "1.0".to_string()),

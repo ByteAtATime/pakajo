@@ -267,13 +267,14 @@ pub(crate) fn upgrade_subcommand(args: impl Iterator<Item = String>) -> ! {
         }
     };
     let aur = crate::aur::AurClient::new();
-    let aur_targets = match crate::upgrade::compute_aur_upgrades(&handle, &aur) {
+    let mut aur_targets = match crate::upgrade::compute_aur_upgrades(&handle, &aur) {
         Ok(candidates) => candidates,
         Err(e) => {
             eprintln!("warning: AUR upgrade detection failed: {e:#}");
             vec![]
         }
     };
+    aur_targets.retain(|c| !ignores.contains(&c.name));
     let mut sink = sink_for(json);
     sink.event(InstallEvent::SysupgradeAurCandidates {
         candidates: aur_targets.clone(),
