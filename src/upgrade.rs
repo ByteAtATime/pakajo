@@ -40,7 +40,6 @@ fn apply_ignores(handle: &mut alpm::Alpm, config: &pacmanconf::Config, extra: &[
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[allow(dead_code)]
 pub(crate) struct AurUpgradeCandidate {
     pub name: String,
     pub local_version: String,
@@ -48,7 +47,6 @@ pub(crate) struct AurUpgradeCandidate {
     pub package_base: String,
 }
 
-#[allow(dead_code)]
 fn select_upgradable_candidates(
     installed: Vec<(String, String)>,
     sync_names: &HashSet<String>,
@@ -78,7 +76,6 @@ fn select_upgradable_candidates(
     candidates
 }
 
-#[allow(dead_code)]
 pub(crate) fn compute_aur_upgrades(
     handle: &alpm::Alpm,
     aur: &impl AurQuery,
