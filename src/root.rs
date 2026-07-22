@@ -25,6 +25,7 @@ use std::{sync::Arc, time::Duration};
 actions!(pakajo, [SelectUp, SelectDown]);
 
 const LIVE_DEBOUNCE: Duration = Duration::from_millis(300);
+const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
 const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 
 enum DetailPane {
@@ -202,29 +203,58 @@ impl PakajoRoot {
             PackageSource::Aur => {
                 let aur = self.aur_client.clone();
                 let local_index = self.local_index.clone();
-
                 let name_for_info = name.clone();
                 let name_for_error = name.clone();
-                let local_index_for_refresh = local_index.clone();
-                let (mut info_tx, mut info_rx) = futures::channel::mpsc::channel::<
-                    anyhow::Result<Option<crate::aur::AurInfo>>,
-                >(1);
-                std::thread::spawn(move || {
-                    let info = aur.info(&name_for_info);
-                    if let Ok(Some(ref a)) = info
-                        && let Some(index) = local_index_for_refresh.as_ref()
-                    {
-                        let _ = index
-                            .put_detail(a)
-                            .map_err(|e| eprintln!("[pakajo] detail put_detail failed: {e:#}"));
-                    }
-                    let _ = info_tx.try_send(info);
-                });
 
                 cx.spawn(async move |this, cx| {
-                    let Some(info) = info_rx.next().await else {
-                        return;
+                    let cached = if let Some(index) = local_index.clone() {
+                        let name_for_cache = name_for_info.clone();
+                        cx.background_executor()
+                            .spawn(async move { index.detail(&name_for_cache) })
+                            .await
+                    } else {
+                        Ok(None)
                     };
+
+                    let had_cache = matches!(cached, Ok(Some(_)));
+                    match cached {
+                        Ok(Some(info)) => {
+                            let _ = this.update(cx, |this, cx| {
+                                if this.detail_seq == seq {
+                                    this.set_detail(Package::from(info), cx);
+                                }
+                            });
+                        }
+                        Ok(None) => {}
+                        Err(e) => eprintln!("[pakajo] detail cache read failed: {e:#}"),
+                    }
+
+                    if had_cache {
+                        cx.background_executor().timer(DETAIL_DEBOUNCE).await;
+                        let still_valid = this
+                            .update(cx, |this, _cx| this.detail_seq == seq)
+                            .unwrap_or(false);
+                        if !still_valid {
+                            return;
+                        }
+                    }
+
+                    let index_for_cache = local_index.clone();
+                    let info = cx
+                        .background_executor()
+                        .spawn(async move {
+                            let info = aur.info(&name_for_info);
+                            if let Ok(Some(ref a)) = info
+                                && let Some(index) = index_for_cache.as_ref()
+                            {
+                                let _ = index.put_detail(a).map_err(|e| {
+                                    eprintln!("[pakajo] detail put_detail failed: {e:#}")
+                                });
+                            }
+                            info
+                        })
+                        .await;
+
                     let _ = this.update(cx, |this, cx| {
                         if this.detail_seq != seq {
                             return;
@@ -247,24 +277,6 @@ impl PakajoRoot {
                     });
                 })
                 .detach();
-
-                if let Some(index) = local_index {
-                    let name_for_cache = name.clone();
-                    cx.spawn(async move |this, cx| {
-                        let cached = cx
-                            .background_executor()
-                            .spawn(async move { index.detail(&name_for_cache) })
-                            .await;
-                        if let Ok(Some(info)) = cached {
-                            let _ = this.update(cx, |this, cx| {
-                                if this.detail_seq == seq {
-                                    this.set_detail(Package::from(info), cx);
-                                }
-                            });
-                        }
-                    })
-                    .detach();
-                }
             }
         }
     }
