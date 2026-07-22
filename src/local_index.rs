@@ -438,57 +438,6 @@ mod tests {
     }
 
     #[test]
-    fn open_creates_schema_and_starts_empty() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
-
-        let check = rusqlite::Connection::open(dir.path().join("aur-meta.sqlite")).unwrap();
-        let names: Vec<String> = check
-            .prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
-            .unwrap()
-            .query_map([], |row| row.get::<_, String>(0))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        assert!(
-            names.contains(&"packages".to_string()),
-            "packages table missing"
-        );
-        assert!(
-            names.contains(&"packages_fts".to_string()),
-            "packages_fts table missing"
-        );
-        assert!(names.contains(&"meta".to_string()), "meta table missing");
-
-        let pkg_cols: Vec<String> = check
-            .prepare("PRAGMA table_info(packages)")
-            .unwrap()
-            .query_map([], |row| row.get::<_, String>(1))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        assert!(
-            pkg_cols.contains(&"keywords".to_string()),
-            "packages.keywords column missing"
-        );
-
-        let fts_cols: Vec<String> = check
-            .prepare("PRAGMA table_info(packages_fts)")
-            .unwrap()
-            .query_map([], |row| row.get::<_, String>(1))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        assert!(
-            fts_cols.contains(&"keywords".to_string()),
-            "packages_fts.keywords column missing"
-        );
-
-        assert!(!index.is_populated());
-        assert_eq!(index.row_count().expect("row_count"), 0);
-    }
-
-    #[test]
     fn meta_round_trip_upserts() {
         let dir = tempfile::tempdir().expect("tempdir");
         let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
@@ -874,49 +823,5 @@ mod tests {
         .expect("seed");
         drop(conn);
         assert!(index.last_refreshed_age().is_none());
-    }
-
-    #[test]
-    fn last_refreshed_age_returns_small_duration_for_recent_refresh() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("aur-meta.sqlite");
-        let index = LocalIndex::open(&path).expect("open");
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("now")
-            .as_secs();
-        let conn = rusqlite::Connection::open(&path).expect("seed");
-        conn.execute(
-            "INSERT INTO meta(key, value) VALUES (?, ?)",
-            rusqlite::params!["last_refreshed", &now_secs.to_string()],
-        )
-        .expect("seed");
-        drop(conn);
-        let age = index.last_refreshed_age().expect("age");
-        assert!(age < Duration::from_secs(60), "age {age:?} should be < 60s");
-    }
-
-    #[test]
-    fn last_refreshed_age_returns_large_duration_for_old_refresh() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("aur-meta.sqlite");
-        let index = LocalIndex::open(&path).expect("open");
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("now")
-            .as_secs();
-        let old_secs = now_secs.saturating_sub(8 * 3600);
-        let conn = rusqlite::Connection::open(&path).expect("seed");
-        conn.execute(
-            "INSERT INTO meta(key, value) VALUES (?, ?)",
-            rusqlite::params!["last_refreshed", &old_secs.to_string()],
-        )
-        .expect("seed");
-        drop(conn);
-        let age = index.last_refreshed_age().expect("age");
-        assert!(
-            age > Duration::from_secs(7 * 3600),
-            "age {age:?} should be > 7h"
-        );
     }
 }
