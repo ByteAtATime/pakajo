@@ -78,6 +78,7 @@ pub(super) fn row_to_result(row: PackageRow) -> SearchResult {
         popularity: row.popularity,
         installed: false,
         last_update: row.last_update,
+        keywords: row.keywords,
     }
 }
 

@@ -80,6 +80,7 @@ impl SearchProvider for RepoSearchProvider {
                 popularity: None,
                 installed: false,
                 last_update: None,
+                keywords: Vec::new(),
             });
         }
         Ok(out)

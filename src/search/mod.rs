@@ -50,6 +50,7 @@ pub struct SearchResult {
     pub installed: bool,
     #[allow(dead_code)]
     pub last_update: Option<i64>,
+    pub keywords: Vec<String>,
 }
 
 pub trait SearchProvider: Send + Sync {
@@ -235,6 +236,7 @@ mod tests {
             popularity,
             installed: false,
             last_update: None,
+            keywords: vec![],
         }
     }
 

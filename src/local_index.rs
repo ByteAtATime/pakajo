@@ -144,7 +144,7 @@ impl LocalIndex {
         let conn = self.read.lock().expect("read connection poisoned");
         let mut stmt = conn.prepare(
             "SELECT p.name, p.description, p.source, p.repo, p.version, p.num_votes, \
-             p.popularity, p.last_update, p.package_base \
+             p.popularity, p.last_update, p.package_base, p.keywords \
              FROM packages_fts \
              JOIN packages p ON p.rowid = packages_fts.rowid \
              WHERE packages_fts MATCH ?1 \
@@ -165,7 +165,7 @@ impl LocalIndex {
         let conn = self.read.lock().expect("read connection poisoned");
         let mut stmt = conn.prepare(
             "SELECT p.name, p.description, p.source, p.repo, p.version, p.num_votes, \
-             p.popularity, p.last_update, p.package_base \
+             p.popularity, p.last_update, p.package_base, p.keywords \
              FROM packages p \
              WHERE p.source = 'repo' AND p.name GLOB ?1 \
              ORDER BY p.last_update DESC \
@@ -304,9 +304,11 @@ pub struct PackageRow {
     pub last_update: Option<i64>,
     #[allow(dead_code)]
     pub package_base: Option<String>,
+    pub keywords: Vec<String>,
 }
 
 fn row_to_package(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackageRow> {
+    let keywords_raw: Option<String> = row.get(9)?;
     Ok(PackageRow {
         name: row.get(0)?,
         description: row.get(1)?,
@@ -317,6 +319,9 @@ fn row_to_package(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackageRow> {
         popularity: row.get(6)?,
         last_update: row.get(7)?,
         package_base: row.get(8)?,
+        keywords: keywords_raw
+            .map(|s| s.split_whitespace().map(String::from).collect())
+            .unwrap_or_default(),
     })
 }
 

@@ -41,6 +41,7 @@ impl From<AurInfo> for SearchResult {
             popularity: Some(info.popularity),
             installed: false,
             last_update: None,
+            keywords: Vec::new(),
         }
     }
 }

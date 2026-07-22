@@ -11,6 +11,7 @@ pub struct ScoredCandidate {
     pub result: SearchResult,
     pub name_score: Option<u16>,
     pub desc_score: Option<u16>,
+    pub keyword_score: Option<u16>,
 }
 
 #[allow(dead_code)]
@@ -33,10 +34,24 @@ pub fn scored_candidates(candidates: Vec<SearchResult>, needle: &str) -> Vec<Sco
                 let d = Utf32Str::new(d, &mut hbuf);
                 matcher.fuzzy_match(d, needle_utf32)
             });
+            let keyword_score = if result.keywords.is_empty() {
+                None
+            } else {
+                let mut best: Option<u16> = None;
+                for kw in &result.keywords {
+                    hbuf.clear();
+                    let kw_s = Utf32Str::new(kw, &mut hbuf);
+                    if let Some(sc) = matcher.fuzzy_match(kw_s, needle_utf32) {
+                        best = Some(best.map_or(sc, |b| b.max(sc)));
+                    }
+                }
+                best
+            };
             ScoredCandidate {
                 result,
                 name_score,
                 desc_score,
+                keyword_score,
             }
         })
         .collect()
@@ -190,6 +205,7 @@ mod tests {
             popularity: None,
             installed: false,
             last_update: None,
+            keywords: vec![],
         }
     }
 
@@ -262,6 +278,7 @@ mod tests {
             popularity,
             installed: false,
             last_update,
+            keywords: vec![],
         }
     }
 
