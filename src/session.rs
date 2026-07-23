@@ -8,8 +8,9 @@ use crate::{
 };
 use alpm::Alpm;
 use anyhow::Context as _;
+use futures::StreamExt as _;
 use gpui::*;
-use std::{sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -36,6 +37,7 @@ pub(crate) enum SessionEvent {
     SearchUpdated,
     InstallProgressChanged(InstallProgress),
     InstallLog(String),
+    InstallLogsOpened,
 }
 
 impl EventEmitter<SessionEvent> for PakajoSession {}
@@ -212,7 +214,7 @@ impl PakajoSession {
         cx.emit(SessionEvent::InstallProgressChanged(progress));
     }
 
-    pub(crate) fn handle_stream_item(&mut self, item: StreamItem, cx: &mut Context<Self>) {
+    fn handle_stream_item(&mut self, item: StreamItem, cx: &mut Context<Self>) {
         match item {
             StreamItem::Event(ev) => {
                 cx.emit(SessionEvent::InstallLog(format!("{ev:?}")));
@@ -234,6 +236,43 @@ impl PakajoSession {
                 self.set_progress(InstallProgress::Failed(message), cx);
             }
         }
+    }
+
+    pub(crate) fn spawn_install_subprocess(
+        &mut self,
+        exe: PathBuf,
+        name: String,
+        approvals_b64: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(SessionEvent::InstallLogsOpened);
+        let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
+        std::thread::spawn(move || {
+            crate::install::run_install_process(exe, name, tx, approvals_b64)
+        });
+        cx.spawn(async move |this, cx| {
+            while let Some(item) = rx.next().await {
+                let _ = this.update(cx, |this, cx| this.handle_stream_item(item, cx));
+            }
+        })
+        .detach();
+    }
+
+    pub(crate) fn spawn_remove_subprocess(
+        &mut self,
+        exe: PathBuf,
+        name: String,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(SessionEvent::InstallLogsOpened);
+        let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
+        std::thread::spawn(move || crate::remove::run_remove_process(exe, name, tx));
+        cx.spawn(async move |this, cx| {
+            while let Some(item) = rx.next().await {
+                let _ = this.update(cx, |this, cx| this.handle_stream_item(item, cx));
+            }
+        })
+        .detach();
     }
 
     fn refresh_after_install(&mut self, cx: &mut Context<Self>) {

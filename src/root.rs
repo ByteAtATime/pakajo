@@ -1,6 +1,6 @@
 use crate::{
     aur::AurClient,
-    install::{InstallProgress, StreamItem},
+    install::InstallProgress,
     install_log_overlay::InstallLogOverlay,
     install_review_dialog::{self, InstallReviewDialog},
     package::{PackageSource, is_installed},
@@ -63,13 +63,14 @@ impl PakajoRoot {
         let session_subscription = cx.subscribe_in(
             &session,
             session_window,
-            |this, _session, ev: &SessionEvent, _window, cx| match ev {
+            |this, _session, ev: &SessionEvent, window, cx| match ev {
                 SessionEvent::DetailUpdated => this.on_detail_updated(cx),
                 SessionEvent::SearchUpdated => this.on_search_updated(cx),
                 SessionEvent::InstallProgressChanged(progress) => {
                     this.on_install_progress_changed(progress.clone(), cx)
                 }
                 SessionEvent::InstallLog(line) => this.on_install_log(line.clone(), cx),
+                SessionEvent::InstallLogsOpened => this.on_install_logs_opened(window, cx),
             },
         );
 
@@ -208,7 +209,8 @@ impl PakajoRoot {
         };
 
         if matches!(source, PackageSource::Repo) {
-            self.begin_install_subprocess(exe, name, None, window, cx);
+            self.session
+                .update(cx, |s, cx| s.spawn_install_subprocess(exe, name, None, cx));
             return;
         }
 
@@ -233,18 +235,20 @@ impl PakajoRoot {
                     this.open_install_review(qs, exe, name, window, cx);
                 }
                 Ok(_) => {
-                    this.begin_install_subprocess(exe, name, None, window, cx);
+                    this.session
+                        .update(cx, |s, cx| s.spawn_install_subprocess(exe, name, None, cx));
                 }
                 Err(err) => {
                     eprintln!("dry-run failed, proceeding with install: {err:#}");
-                    this.begin_install_subprocess(exe, name, None, window, cx);
+                    this.session
+                        .update(cx, |s, cx| s.spawn_install_subprocess(exe, name, None, cx));
                 }
             });
         })
         .detach();
     }
 
-    pub fn start_remove(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn start_remove(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.install_progress, InstallProgress::Running) {
             return;
         }
@@ -270,7 +274,8 @@ impl PakajoRoot {
             }
         };
 
-        self.begin_remove_subprocess(exe, name, window, cx);
+        self.session
+            .update(cx, |s, cx| s.spawn_remove_subprocess(exe, name, cx));
     }
 
     fn open_install_review(
@@ -288,7 +293,7 @@ impl PakajoRoot {
         let name_for_approve = name.clone();
         let name_for_title = name.clone();
         let on_approve = Box::new(
-            move |approvals: crate::question::Approvals, window: &mut Window, cx: &mut App| {
+            move |approvals: crate::question::Approvals, _window: &mut Window, cx: &mut App| {
                 let Some(root) = root_for_approve.upgrade() else {
                     return;
                 };
@@ -306,13 +311,9 @@ impl PakajoRoot {
                         }
                     };
                     this.set_progress(InstallProgress::Running, cx);
-                    this.begin_install_subprocess(
-                        exe_for_approve,
-                        name_for_approve,
-                        Some(b64),
-                        window,
-                        cx,
-                    );
+                    this.session.update(cx, |s, cx| {
+                        s.spawn_install_subprocess(exe_for_approve, name_for_approve, Some(b64), cx)
+                    });
                 });
             },
         );
@@ -345,14 +346,7 @@ impl PakajoRoot {
         });
     }
 
-    fn begin_install_subprocess(
-        &mut self,
-        exe: std::path::PathBuf,
-        name: String,
-        approvals_b64: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_install_logs_opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let log_view = cx.new(|_| InstallLogOverlay { logs: Vec::new() });
         self.install_log_view = Some(log_view.clone());
         window.close_all_dialogs(cx);
@@ -362,52 +356,6 @@ impl PakajoRoot {
                 .w(px(720.))
                 .child(log_view.clone())
         });
-
-        let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
-
-        std::thread::spawn(move || {
-            crate::install::run_install_process(exe, name, tx, approvals_b64)
-        });
-
-        cx.spawn(async move |this, cx| {
-            while let Some(item) = rx.next().await {
-                let _ = this.update(cx, |this, cx| this.handle_stream_item(item, cx));
-            }
-        })
-        .detach();
-    }
-
-    fn begin_remove_subprocess(
-        &mut self,
-        exe: std::path::PathBuf,
-        name: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let log_view = cx.new(|_| InstallLogOverlay { logs: Vec::new() });
-        self.install_log_view = Some(log_view.clone());
-        window.close_all_dialogs(cx);
-        window.open_dialog(cx, move |dialog, _window, _cx| {
-            dialog
-                .title("Install logs")
-                .w(px(720.))
-                .child(log_view.clone())
-        });
-
-        let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
-
-        std::thread::spawn(move || crate::remove::run_remove_process(exe, name, tx));
-
-        cx.spawn(async move |this, cx| {
-            while let Some(item) = rx.next().await {
-                let _ = this.update(cx, |this, cx| this.handle_stream_item(item, cx));
-            }
-        })
-        .detach();
-    }
-
-    fn handle_stream_item(&mut self, item: StreamItem, cx: &mut Context<Self>) {
-        self.session.update(cx, |s, cx| s.handle_stream_item(item, cx));
     }
 }
 
