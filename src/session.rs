@@ -12,6 +12,7 @@ use std::{sync::Arc, time::Duration};
 
 const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
+const LIVE_DEBOUNCE: Duration = Duration::from_millis(300);
 
 #[derive(Clone)]
 #[allow(clippy::large_enum_variant)]
@@ -20,6 +21,13 @@ pub(crate) enum DetailData {
     Loading,
     Ready { pkg: Package, installed: bool },
     Error(String),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum SearchState {
+    Idle,
+    Searching,
+    Done,
 }
 
 pub(crate) enum SessionEvent {
@@ -39,6 +47,9 @@ pub(crate) struct PakajoSession {
     detail_seq: u64,
     pub(crate) results: Vec<SearchResult>,
     pub(crate) selected_index: Option<usize>,
+    search_seq: u64,
+    pub(crate) search_state: SearchState,
+    aur_error: Option<String>,
 }
 
 impl PakajoSession {
@@ -69,6 +80,9 @@ impl PakajoSession {
             detail_seq: 0,
             results: Vec::new(),
             selected_index: None,
+            search_seq: 0,
+            search_state: SearchState::Idle,
+            aur_error: None,
         }
     }
 
@@ -197,6 +211,70 @@ impl PakajoSession {
         } else {
             Some(next)
         }
+    }
+
+    pub(crate) fn on_search_change(&mut self, text: String, cx: &mut Context<Self>) {
+        self.search_seq = self.search_seq.wrapping_add(1);
+        let seq = self.search_seq;
+
+        if text.trim().is_empty() {
+            self.clear(cx);
+            self.aur_error = None;
+            self.search_state = SearchState::Idle;
+            cx.notify();
+            return;
+        }
+
+        self.search_state = SearchState::Searching;
+        self.aur_error = None;
+        cx.notify();
+
+        let repo_index = self.repo_index.clone();
+        let aur_client = self.aur_client.clone();
+        let local_index = self.local_index.clone();
+        let installed = self.installed_names.clone();
+        let debounce = if self
+            .local_index
+            .as_ref()
+            .is_some_and(|i| i.is_populated())
+        {
+            Duration::ZERO
+        } else {
+            LIVE_DEBOUNCE
+        };
+        cx.spawn(async move |this, cx| {
+            if !debounce.is_zero() {
+                cx.background_executor().timer(debounce).await;
+            }
+
+            let still_valid = this
+                .update(cx, |this, _cx| this.search_seq == seq)
+                .unwrap_or(false);
+            if !still_valid {
+                return;
+            }
+
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    execute_search_for(local_index, &repo_index, &aur_client, installed, &text)
+                })
+                .await;
+
+            let _ = this.update(cx, |this, cx| {
+                if this.search_seq != seq {
+                    return;
+                }
+                this.aur_error = outcome.aur_error;
+                this.search_state = SearchState::Done;
+                if let Some(err) = &this.aur_error {
+                    eprintln!("  aur: {err}");
+                }
+                this.set_results(outcome.results, cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn set_results(&mut self, results: Vec<SearchResult>, cx: &mut Context<Self>) {

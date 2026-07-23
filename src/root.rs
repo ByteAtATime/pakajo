@@ -7,8 +7,8 @@ use crate::{
     package_detail::PackageDetail,
     pacman::init_alpm,
     question::QuestionSet,
-    search_view::{SearchState, SearchView, centered},
-    session::{DetailData, PakajoSession, SessionEvent},
+    search_view::{SearchView, centered},
+    session::{DetailData, PakajoSession, SearchState, SessionEvent},
 };
 use alpm::Alpm;
 use futures::StreamExt as _;
@@ -18,11 +18,9 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     spinner::Spinner,
 };
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 actions!(pakajo, [SelectUp, SelectDown]);
-
-const LIVE_DEBOUNCE: Duration = Duration::from_millis(300);
 
 enum DetailPane {
     None,
@@ -36,9 +34,6 @@ pub struct PakajoRoot {
     pub install_progress: InstallProgress,
     search_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
-    search_seq: u64,
-    search_state: SearchState,
-    aur_error: Option<String>,
     detail: DetailPane,
     search_view: SearchView,
     install_log_view: Option<Entity<InstallLogOverlay>>,
@@ -80,9 +75,6 @@ impl PakajoRoot {
             install_progress: InstallProgress::Idle,
             search_input,
             _subscriptions: vec![subscription, session_subscription],
-            search_seq: 0,
-            search_state: SearchState::Idle,
-            aur_error: None,
             detail: DetailPane::None,
             search_view: SearchView::new(),
             install_log_view: None,
@@ -90,74 +82,9 @@ impl PakajoRoot {
     }
 
     fn on_search_change(&mut self, cx: &mut Context<Self>) {
-        self.search_seq = self.search_seq.wrapping_add(1);
-        let seq = self.search_seq;
         let text = self.search_input.read(cx).value().to_string();
-
-        if text.trim().is_empty() {
-            self.session
-                .update(cx, |session, cx| session.clear(cx));
-            self.aur_error = None;
-            self.search_state = SearchState::Idle;
-            cx.notify();
-            return;
-        }
-
-        self.search_state = SearchState::Searching;
-        self.aur_error = None;
-        cx.notify();
-
-        let repo_index = self.session.read(cx).repo_index.clone();
-        let aur_client = self.session.read(cx).aur_client.clone();
-        let local_index = self.session.read(cx).local_index.clone();
-        let installed = self.session.read(cx).installed_names.clone();
-        let debounce = if self
-            .session
-            .read(cx)
-            .local_index
-            .as_ref()
-            .is_some_and(|i| i.is_populated())
-        {
-            Duration::ZERO
-        } else {
-            LIVE_DEBOUNCE
-        };
-        cx.spawn(async move |this, cx| {
-            if !debounce.is_zero() {
-                cx.background_executor().timer(debounce).await;
-            }
-
-            let still_valid = this
-                .update(cx, |this, _cx| this.search_seq == seq)
-                .unwrap_or(false);
-            if !still_valid {
-                return;
-            }
-
-            let outcome = cx
-                .background_executor()
-                .spawn(async move {
-                    crate::session::execute_search_for(
-                        local_index, &repo_index, &aur_client, installed, &text,
-                    )
-                })
-                .await;
-
-            let _ = this.update(cx, |this, cx| {
-                if this.search_seq != seq {
-                    return;
-                }
-                this.aur_error = outcome.aur_error;
-                this.search_state = SearchState::Done;
-                if let Some(err) = &this.aur_error {
-                    eprintln!("  aur: {err}");
-                }
-                this.session
-                    .update(cx, |session, cx| session.set_results(outcome.results, cx));
-                cx.notify();
-            });
-        })
-        .detach();
+        self.session
+            .update(cx, |session, cx| session.on_search_change(text, cx));
     }
 
     fn select_by_index(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -515,7 +442,7 @@ impl Render for PakajoRoot {
         let session = self.session.read(cx);
 
         let body = if session.results.is_empty() {
-            let status = match self.search_state {
+            let status = match session.search_state {
                 SearchState::Idle => "Search for packages to get started".to_string(),
                 SearchState::Searching => "Searching…".to_string(),
                 SearchState::Done => "No packages found".to_string(),
@@ -551,7 +478,7 @@ impl Render for PakajoRoot {
                 .child(self.search_view.render(
                     &session.results,
                     session.selected_index,
-                    self.search_state,
+                    session.search_state,
                     on_select,
                     cx,
                 ))

@@ -1,16 +1,10 @@
 use crate::icon::PakajoIcon;
 use crate::search::SearchResult;
+use crate::session::SearchState;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{ActiveTheme as _, Icon, StyledExt as _};
 use std::sync::Arc;
-
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum SearchState {
-    Idle,
-    Searching,
-    Done,
-}
 
 pub(crate) struct SearchView {
     scroll_handle: ScrollHandle,
