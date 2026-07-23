@@ -3,7 +3,7 @@ use crate::{
     install::InstallProgress,
     install_log_overlay::InstallLogOverlay,
     install_review_dialog::{self, InstallReviewDialog},
-    package_detail::PackageDetail,
+    package_detail::{DetailIntent, PackageDetail},
     question::QuestionSet,
     search_view::{SearchView, centered},
     session::{DetailData, PakajoSession, SearchState, SessionEvent},
@@ -32,6 +32,7 @@ pub struct PakajoRoot {
     search_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
     detail: DetailPane,
+    detail_subscription: Option<Subscription>,
     search_view: SearchView,
     install_log_view: Option<Entity<InstallLogOverlay>>,
 }
@@ -81,6 +82,7 @@ impl PakajoRoot {
             search_input,
             _subscriptions: vec![subscription, session_subscription],
             detail: DetailPane::None,
+            detail_subscription: None,
             search_view: SearchView::new(),
             install_log_view: None,
         }
@@ -136,15 +138,15 @@ impl PakajoRoot {
                     _ => true,
                 };
                 if rebuild {
-                    let root = cx.weak_entity();
                     let install_progress = self.install_progress.clone();
                     let entity = cx.new(|_| PackageDetail {
                         pkg,
                         installed,
                         active_tooltip: None,
-                        root,
                         install_progress,
                     });
+                    self.detail_subscription =
+                        Some(cx.subscribe(&entity, Self::on_detail_intent));
                     self.detail = DetailPane::Ready(entity);
                     cx.notify();
                 } else if let DetailPane::Ready(entity) = &self.detail {
@@ -178,12 +180,16 @@ impl PakajoRoot {
         }
     }
 
-    pub fn start_install(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.session.update(cx, |s, cx| s.start_install(cx));
-    }
-
-    pub fn start_remove(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.session.update(cx, |s, cx| s.start_remove(cx));
+    fn on_detail_intent(
+        &mut self,
+        _: Entity<PackageDetail>,
+        intent: &DetailIntent,
+        cx: &mut Context<Self>,
+    ) {
+        match intent {
+            DetailIntent::Install => self.session.update(cx, |s, cx| s.start_install(cx)),
+            DetailIntent::Remove => self.session.update(cx, |s, cx| s.start_remove(cx)),
+        }
     }
 
     fn on_review_required(

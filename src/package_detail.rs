@@ -1,7 +1,4 @@
-use crate::{
-    icon::PakajoIcon, install::InstallProgress, package::Package, root::PakajoRoot,
-    utils::format_bytes,
-};
+use crate::{icon::PakajoIcon, install::InstallProgress, package::Package, utils::format_bytes};
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -26,13 +23,20 @@ impl SizeTooltipTarget {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum DetailIntent {
+    Install,
+    Remove,
+}
+
 pub struct PackageDetail {
     pub pkg: Package,
     pub installed: bool,
     pub active_tooltip: Option<SizeTooltipTarget>,
-    pub root: WeakEntity<PakajoRoot>,
     pub install_progress: InstallProgress,
 }
+
+impl EventEmitter<DetailIntent> for PackageDetail {}
 
 impl PackageDetail {
     fn format_name(&self) -> String {
@@ -174,7 +178,7 @@ impl PackageDetail {
             version: String,
             installed: bool,
             install_progress: InstallProgress,
-            root: WeakEntity<PakajoRoot>,
+            entity: Entity<PackageDetail>,
             window: &Window,
         ) -> impl IntoElement {
             let name_size = 2.0;
@@ -190,23 +194,20 @@ impl PackageDetail {
                 InstallProgress::Idle | InstallProgress::Failed(_) => ("Install", false),
             };
 
-            let root_for_click = root.clone();
             let installed_for_click = installed;
             let mut install_button = Button::new("install-button")
                 .label(label)
                 .disabled(disabled)
                 .rounded_none()
                 .large()
-                .on_click(move |_, window, cx| {
-                    if let Some(root) = root_for_click.upgrade() {
-                        root.update(cx, |root, cx| {
-                            if installed_for_click {
-                                root.start_remove(window, cx);
-                            } else {
-                                root.start_install(window, cx);
-                            }
+                .on_click(move |_, _window, cx| {
+                    entity.update(cx, |_, cx| {
+                        cx.emit(if installed_for_click {
+                            DetailIntent::Remove
+                        } else {
+                            DetailIntent::Install
                         });
-                    }
+                    });
                 });
             if !installed && !matches!(install_progress, InstallProgress::Running) {
                 install_button = install_button.primary();
@@ -257,7 +258,7 @@ impl PackageDetail {
                 self.pkg.version.clone(),
                 self.installed,
                 self.install_progress.clone(),
-                self.root.clone(),
+                entity.clone(),
                 window,
             ))
             .children(
