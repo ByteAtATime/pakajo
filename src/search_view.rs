@@ -13,78 +13,24 @@ pub(crate) enum SearchState {
 }
 
 pub(crate) struct SearchView {
-    results: Vec<SearchResult>,
-    selected_index: Option<usize>,
     scroll_handle: ScrollHandle,
 }
 
 impl SearchView {
     pub(crate) fn new() -> Self {
         Self {
-            results: Vec::new(),
-            selected_index: None,
             scroll_handle: ScrollHandle::default(),
         }
     }
 
-    pub(crate) fn set_results(&mut self, results: Vec<SearchResult>) {
-        self.results = results;
-        self.selected_index = if self.results.is_empty() {
-            None
-        } else {
-            Some(0)
-        };
-        if !self.results.is_empty() {
-            self.scroll_handle.scroll_to_item(0);
-        }
-    }
-
-    pub(crate) fn set_selected_index(&mut self, index: usize) {
-        self.selected_index = Some(index);
-    }
-
-    pub(crate) fn move_cursor(&mut self, delta: i32) -> Option<usize> {
-        let max = self.results.len().checked_sub(1)?;
-        let current = self.selected_index.unwrap_or(0);
-        let next = (current as i32 + delta).clamp(0, max as i32) as usize;
-        if self.selected_index == Some(next) {
-            return None;
-        }
-        self.selected_index = Some(next);
-        self.scroll_handle.scroll_to_item(next);
-        Some(next)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn selected_index(&self) -> Option<usize> {
-        self.selected_index
-    }
-
-    pub(crate) fn result_at(&self, index: usize) -> Option<&SearchResult> {
-        self.results.get(index)
-    }
-
-    pub(crate) fn selected_name(&self) -> Option<&str> {
-        self.selected_index
-            .and_then(|i| self.results.get(i))
-            .map(|r| r.name.as_str())
-    }
-
-    pub(crate) fn first_result(&self) -> Option<&SearchResult> {
-        self.results.first()
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.results.is_empty()
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.results.clear();
-        self.selected_index = None;
+    pub(crate) fn scroll_to(&self, index: usize) {
+        self.scroll_handle.scroll_to_item(index);
     }
 
     pub(crate) fn render(
         &self,
+        results: &[SearchResult],
+        selected_index: Option<usize>,
         search_state: SearchState,
         on_select: Arc<dyn Fn(usize, &mut App)>,
         cx: &App,
@@ -92,13 +38,13 @@ impl SearchView {
         let header = if matches!(search_state, SearchState::Searching) {
             "Searching…".to_string()
         } else {
-            format!("{} result(s)", self.results.len())
+            format!("{} result(s)", results.len())
         };
 
-        let mut rows: Vec<AnyElement> = Vec::with_capacity(self.results.len());
-        for (index, result) in self.results.iter().enumerate() {
+        let mut rows: Vec<AnyElement> = Vec::with_capacity(results.len());
+        for (index, result) in results.iter().enumerate() {
             rows.push(
-                self.result_row(index, result, on_select.clone(), cx)
+                self.result_row(index, result, selected_index, on_select.clone(), cx)
                     .into_any_element(),
             );
         }
@@ -131,10 +77,11 @@ impl SearchView {
         &self,
         index: usize,
         result: &SearchResult,
+        selected_index: Option<usize>,
         on_select: Arc<dyn Fn(usize, &mut App)>,
         cx: &App,
     ) -> impl IntoElement {
-        let is_selected = self.selected_index == Some(index);
+        let is_selected = selected_index == Some(index);
         let badge = result.repo.as_deref().unwrap_or("aur");
         let muted_fg = cx.theme().muted_foreground;
         let muted_bg = cx.theme().muted;

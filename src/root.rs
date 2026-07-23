@@ -71,6 +71,7 @@ impl PakajoRoot {
             session_window,
             |this, _session, ev: &SessionEvent, _window, cx| match ev {
                 SessionEvent::DetailUpdated => this.on_detail_updated(cx),
+                SessionEvent::SearchUpdated => this.on_search_updated(cx),
             },
         );
 
@@ -94,7 +95,8 @@ impl PakajoRoot {
         let text = self.search_input.read(cx).value().to_string();
 
         if text.trim().is_empty() {
-            self.search_view.clear();
+            self.session
+                .update(cx, |session, cx| session.clear(cx));
             self.aur_error = None;
             self.search_state = SearchState::Idle;
             cx.notify();
@@ -145,22 +147,13 @@ impl PakajoRoot {
                 if this.search_seq != seq {
                     return;
                 }
-                let prev_selected = this.search_view.selected_name().map(str::to_string);
-                this.search_view.set_results(outcome.results);
                 this.aur_error = outcome.aur_error;
                 this.search_state = SearchState::Done;
                 if let Some(err) = &this.aur_error {
                     eprintln!("  aur: {err}");
                 }
-                let first_name = this.search_view.first_result().map(|r| r.name.clone());
-                if let Some(name) = first_name {
-                    let unchanged =
-                        matches!(this.detail, DetailPane::Ready(_) | DetailPane::Loading)
-                            && prev_selected.as_deref() == Some(name.as_str());
-                    if !unchanged {
-                        this.select_by_index(0, cx);
-                    }
-                }
+                this.session
+                    .update(cx, |session, cx| session.set_results(outcome.results, cx));
                 cx.notify();
             });
         })
@@ -168,28 +161,26 @@ impl PakajoRoot {
     }
 
     fn select_by_index(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(result) = self.search_view.result_at(index) else {
-            return;
-        };
-        let name = result.name.clone();
-        let source = result.source;
-        self.search_view.set_selected_index(index);
         self.session
-            .update(cx, |session, cx| session.load_detail(name, source, cx));
+            .update(cx, |session, cx| session.select_by_index(index, cx));
     }
 
     fn on_select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        if let Some(ix) = self.search_view.move_cursor(-1) {
-            self.select_by_index(ix, cx);
-        }
+        self.session
+            .update(cx, |session, cx| session.select_delta(-1, cx));
     }
 
     fn on_select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        if let Some(ix) = self.search_view.move_cursor(1) {
-            self.select_by_index(ix, cx);
-        }
+        self.session
+            .update(cx, |session, cx| session.select_delta(1, cx));
+    }
+
+    fn on_search_updated(&mut self, cx: &mut Context<Self>) {
+        let index = self.session.read(cx).selected_index.unwrap_or(0);
+        self.search_view.scroll_to(index);
+        cx.notify();
     }
 
     fn on_detail_updated(&mut self, cx: &mut Context<Self>) {
@@ -521,7 +512,9 @@ impl Render for PakajoRoot {
             entity.update(cx, |root, cx| root.select_by_index(index, cx));
         });
 
-        let body = if self.search_view.is_empty() {
+        let session = self.session.read(cx);
+
+        let body = if session.results.is_empty() {
             let status = match self.search_state {
                 SearchState::Idle => "Search for packages to get started".to_string(),
                 SearchState::Searching => "Searching…".to_string(),
@@ -555,7 +548,13 @@ impl Render for PakajoRoot {
                 .h_flex()
                 .min_h_0()
                 .gap_4()
-                .child(self.search_view.render(self.search_state, on_select, cx))
+                .child(self.search_view.render(
+                    &session.results,
+                    session.selected_index,
+                    self.search_state,
+                    on_select,
+                    cx,
+                ))
                 .child(detail_pane)
                 .into_any_element()
         };

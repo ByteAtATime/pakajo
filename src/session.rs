@@ -3,7 +3,7 @@ use crate::{
     local_index::LocalIndex,
     package::{Package, PackageSource, installed_names, is_installed},
     pacman::{find_pkg, init_alpm},
-    search::{self, AurSearchProvider, RepoSearchIndex, RepoSearchProvider},
+    search::{self, AurSearchProvider, RepoSearchIndex, RepoSearchProvider, SearchResult},
 };
 use alpm::Alpm;
 use anyhow::Context as _;
@@ -24,6 +24,7 @@ pub(crate) enum DetailData {
 
 pub(crate) enum SessionEvent {
     DetailUpdated,
+    SearchUpdated,
 }
 
 impl EventEmitter<SessionEvent> for PakajoSession {}
@@ -36,6 +37,8 @@ pub(crate) struct PakajoSession {
     pub(crate) installed_names: Arc<std::collections::HashSet<String>>,
     pub(crate) detail: DetailData,
     detail_seq: u64,
+    pub(crate) results: Vec<SearchResult>,
+    pub(crate) selected_index: Option<usize>,
 }
 
 impl PakajoSession {
@@ -64,6 +67,8 @@ impl PakajoSession {
             installed_names,
             detail: DetailData::None,
             detail_seq: 0,
+            results: Vec::new(),
+            selected_index: None,
         }
     }
 
@@ -182,6 +187,71 @@ impl PakajoSession {
             cx.emit(SessionEvent::DetailUpdated);
         }
     }
+
+    fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Option<usize> {
+        let max = len.checked_sub(1)?;
+        let cur = current.unwrap_or(0);
+        let next = (cur as i32 + delta).clamp(0, max as i32) as usize;
+        if current == Some(next) {
+            None
+        } else {
+            Some(next)
+        }
+    }
+
+    pub(crate) fn set_results(&mut self, results: Vec<SearchResult>, cx: &mut Context<Self>) {
+        let prev_selected = self.selected_name().map(str::to_string);
+        self.results = results;
+        self.selected_index = if self.results.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+        cx.emit(SessionEvent::SearchUpdated);
+        if let Some(first) = self.results.first() {
+            let unchanged = matches!(
+                self.detail,
+                DetailData::Loading | DetailData::Ready { .. }
+            ) && prev_selected.as_deref() == Some(first.name.as_str());
+            if !unchanged {
+                let name = first.name.clone();
+                let source = first.source;
+                self.load_detail(name, source, cx);
+            }
+        }
+    }
+
+    pub(crate) fn select_by_index(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(result) = self.results.get(index) else {
+            return;
+        };
+        let name = result.name.clone();
+        let source = result.source;
+        self.selected_index = Some(index);
+        self.load_detail(name, source, cx);
+    }
+
+    pub(crate) fn select_delta(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let Some(index) =
+            Self::next_selected_index(self.results.len(), self.selected_index, delta)
+        else {
+            return;
+        };
+        cx.emit(SessionEvent::SearchUpdated);
+        self.select_by_index(index, cx);
+    }
+
+    pub(crate) fn clear(&mut self, cx: &mut Context<Self>) {
+        self.results.clear();
+        self.selected_index = None;
+        cx.emit(SessionEvent::SearchUpdated);
+    }
+
+    fn selected_name(&self) -> Option<&str> {
+        self.selected_index
+            .and_then(|i| self.results.get(i))
+            .map(|r| r.name.as_str())
+    }
 }
 
 pub(crate) fn execute_search_for(
@@ -245,4 +315,32 @@ pub(crate) fn begin_aur_sync_in_background(local_index: Arc<LocalIndex>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PakajoSession;
+
+    #[test]
+    fn next_selected_index_empty_returns_none() {
+        assert_eq!(PakajoSession::next_selected_index(0, None, 1), None);
+    }
+
+    #[test]
+    fn next_selected_index_clamps_to_bounds() {
+        assert_eq!(PakajoSession::next_selected_index(5, None, -3), Some(0));
+        assert_eq!(PakajoSession::next_selected_index(5, None, 100), Some(4));
+    }
+
+    #[test]
+    fn next_selected_index_noop_returns_none() {
+        assert_eq!(PakajoSession::next_selected_index(5, Some(4), 1), None);
+        assert_eq!(PakajoSession::next_selected_index(5, Some(0), -1), None);
+    }
+
+    #[test]
+    fn next_selected_index_moves() {
+        assert_eq!(PakajoSession::next_selected_index(5, Some(2), -1), Some(1));
+        assert_eq!(PakajoSession::next_selected_index(5, Some(2), 1), Some(3));
+    }
 }
