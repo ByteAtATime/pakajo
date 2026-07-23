@@ -3,13 +3,12 @@ use crate::{
     install::{ChildOutcome, InstallProgress, StreamItem},
     install_log_overlay::InstallLogOverlay,
     install_review_dialog::{self, InstallReviewDialog},
-    package::{Package, PackageSource, installed_names, is_installed},
+    package::{PackageSource, installed_names, is_installed},
     package_detail::PackageDetail,
-    pacman::{find_pkg, init_alpm},
+    pacman::init_alpm,
     question::QuestionSet,
-    search::{self},
     search_view::{SearchState, SearchView, centered},
-    session::PakajoSession,
+    session::{DetailData, PakajoSession, SessionEvent},
 };
 use alpm::Alpm;
 use futures::StreamExt as _;
@@ -24,7 +23,6 @@ use std::{sync::Arc, time::Duration};
 actions!(pakajo, [SelectUp, SelectDown]);
 
 const LIVE_DEBOUNCE: Duration = Duration::from_millis(300);
-const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
 
 enum DetailPane {
     None,
@@ -42,7 +40,6 @@ pub struct PakajoRoot {
     search_state: SearchState,
     aur_error: Option<String>,
     detail: DetailPane,
-    detail_seq: u64,
     search_view: SearchView,
     install_log_view: Option<Entity<InstallLogOverlay>>,
 }
@@ -68,16 +65,24 @@ impl PakajoRoot {
             },
         );
 
+        let session_window = &mut *window;
+        let session_subscription = cx.subscribe_in(
+            &session,
+            session_window,
+            |this, _session, ev: &SessionEvent, _window, cx| match ev {
+                SessionEvent::DetailUpdated => this.on_detail_updated(cx),
+            },
+        );
+
         Self {
             session,
             install_progress: InstallProgress::Idle,
             search_input,
-            _subscriptions: vec![subscription],
+            _subscriptions: vec![subscription, session_subscription],
             search_seq: 0,
             search_state: SearchState::Idle,
             aur_error: None,
             detail: DetailPane::None,
-            detail_seq: 0,
             search_view: SearchView::new(),
             install_log_view: None,
         }
@@ -168,100 +173,9 @@ impl PakajoRoot {
         };
         let name = result.name.clone();
         let source = result.source;
-        self.detail_seq = self.detail_seq.wrapping_add(1);
-        let seq = self.detail_seq;
         self.search_view.set_selected_index(index);
-        self.detail = DetailPane::Loading;
-        cx.notify();
-
-        match source {
-            PackageSource::Repo => {
-                if let Some(pkg) = find_pkg(&self.session.read(cx).alpm_handle, &name) {
-                    self.set_detail(Package::from(pkg), cx);
-                } else {
-                    self.detail = DetailPane::Error(format!("package not found: {name}"));
-                    cx.notify();
-                }
-            }
-            PackageSource::Aur => {
-                let aur = self.session.read(cx).aur_client.clone();
-                let local_index = self.session.read(cx).local_index.clone();
-                let name_for_info = name.clone();
-                let name_for_error = name.clone();
-
-                cx.spawn(async move |this, cx| {
-                    let cached = if let Some(index) = local_index.clone() {
-                        let name_for_cache = name_for_info.clone();
-                        cx.background_executor()
-                            .spawn(async move { index.detail(&name_for_cache) })
-                            .await
-                    } else {
-                        Ok(None)
-                    };
-
-                    let had_cache = matches!(cached, Ok(Some(_)));
-                    match cached {
-                        Ok(Some(info)) => {
-                            let _ = this.update(cx, |this, cx| {
-                                if this.detail_seq == seq {
-                                    this.set_detail(Package::from(info), cx);
-                                }
-                            });
-                        }
-                        Ok(None) => {}
-                        Err(e) => eprintln!("[pakajo] detail cache read failed: {e:#}"),
-                    }
-
-                    if had_cache {
-                        cx.background_executor().timer(DETAIL_DEBOUNCE).await;
-                        let still_valid = this
-                            .update(cx, |this, _cx| this.detail_seq == seq)
-                            .unwrap_or(false);
-                        if !still_valid {
-                            return;
-                        }
-                    }
-
-                    let index_for_cache = local_index.clone();
-                    let info = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let info = aur.info(&name_for_info);
-                            if let Ok(Some(ref a)) = info
-                                && let Some(index) = index_for_cache.as_ref()
-                            {
-                                let _ = index.put_detail(a).map_err(|e| {
-                                    eprintln!("[pakajo] detail put_detail failed: {e:#}")
-                                });
-                            }
-                            info
-                        })
-                        .await;
-
-                    let _ = this.update(cx, |this, cx| {
-                        if this.detail_seq != seq {
-                            return;
-                        }
-                        match info {
-                            Ok(Some(a)) => this.set_detail(Package::from(a), cx),
-                            Ok(None) if matches!(this.detail, DetailPane::Loading) => {
-                                this.detail = DetailPane::Error(format!(
-                                    "package not found: {name_for_error}"
-                                ));
-                                cx.notify();
-                            }
-                            Ok(None) => {}
-                            Err(e) if matches!(this.detail, DetailPane::Loading) => {
-                                this.detail = DetailPane::Error(search::friendly_search_error(&e));
-                                cx.notify();
-                            }
-                            Err(_) => {}
-                        }
-                    });
-                })
-                .detach();
-            }
-        }
+        self.session
+            .update(cx, |session, cx| session.load_detail(name, source, cx));
     }
 
     fn on_select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -278,19 +192,47 @@ impl PakajoRoot {
         }
     }
 
-    fn set_detail(&mut self, pkg: Package, cx: &mut Context<Self>) {
-        let installed = is_installed(&self.session.read(cx).alpm_handle, &pkg.name);
-        let root = cx.weak_entity();
-        let install_progress = self.install_progress.clone();
-        let entity = cx.new(|_| PackageDetail {
-            pkg,
-            installed,
-            active_tooltip: None,
-            root,
-            install_progress,
-        });
-        self.detail = DetailPane::Ready(entity);
-        cx.notify();
+    fn on_detail_updated(&mut self, cx: &mut Context<Self>) {
+        let incoming = self.session.read(cx).detail.clone();
+        match incoming {
+            DetailData::None => {
+                self.detail = DetailPane::None;
+                cx.notify();
+            }
+            DetailData::Loading => {
+                self.detail = DetailPane::Loading;
+                cx.notify();
+            }
+            DetailData::Error(message) => {
+                self.detail = DetailPane::Error(message);
+                cx.notify();
+            }
+            DetailData::Ready { pkg, installed } => {
+                let rebuild = match &self.detail {
+                    DetailPane::Ready(entity) => entity.read(cx).pkg.name != pkg.name,
+                    _ => true,
+                };
+                if rebuild {
+                    let root = cx.weak_entity();
+                    let install_progress = self.install_progress.clone();
+                    let entity = cx.new(|_| PackageDetail {
+                        pkg,
+                        installed,
+                        active_tooltip: None,
+                        root,
+                        install_progress,
+                    });
+                    self.detail = DetailPane::Ready(entity);
+                    cx.notify();
+                } else if let DetailPane::Ready(entity) = &self.detail {
+                    entity.update(cx, |detail, cx| {
+                        detail.pkg = pkg;
+                        detail.installed = installed;
+                        cx.notify();
+                    });
+                }
+            }
+        }
     }
 
     fn set_progress(&mut self, progress: InstallProgress, cx: &mut Context<Self>) {
@@ -560,23 +502,15 @@ impl PakajoRoot {
     }
 
     fn refresh_after_install(&mut self, cx: &mut Context<Self>) {
-        self.session.update(cx, |s, _cx| {
+        self.session.update(cx, |s, cx| {
             if let Ok(config) = pacmanconf::Config::new()
                 && let Ok(handle) = init_alpm(&config)
             {
                 s.alpm_handle = handle;
             }
             s.installed_names = Arc::new(installed_names(&s.alpm_handle));
+            s.refresh_detail_installed(cx);
         });
-
-        if let DetailPane::Ready(entity) = &self.detail {
-            let pkg_name = entity.read(cx).pkg.name.clone();
-            let installed = is_installed(&self.session.read(cx).alpm_handle, &pkg_name);
-            entity.update(cx, |detail, cx| {
-                detail.installed = installed;
-                cx.notify();
-            });
-        }
     }
 }
 

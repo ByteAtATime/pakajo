@@ -1,7 +1,7 @@
 use crate::aur::AurInfo;
 use regex::Regex;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OptDependency {
     pub name: String,
     pub reason: Option<String>,
@@ -15,6 +15,7 @@ pub enum PackageSource {
 }
 
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct Package {
     pub source: PackageSource,
     pub name: String,
