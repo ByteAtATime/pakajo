@@ -1,5 +1,6 @@
 use crate::{
     aur::AurClient,
+    install::{ChildOutcome, InstallProgress, StreamItem},
     local_index::LocalIndex,
     package::{Package, PackageSource, installed_names, is_installed},
     pacman::{find_pkg, init_alpm},
@@ -33,6 +34,8 @@ pub(crate) enum SearchState {
 pub(crate) enum SessionEvent {
     DetailUpdated,
     SearchUpdated,
+    InstallProgressChanged(InstallProgress),
+    InstallLog(String),
 }
 
 impl EventEmitter<SessionEvent> for PakajoSession {}
@@ -50,6 +53,7 @@ pub(crate) struct PakajoSession {
     search_seq: u64,
     pub(crate) search_state: SearchState,
     aur_error: Option<String>,
+    install_progress: InstallProgress,
 }
 
 impl PakajoSession {
@@ -83,6 +87,7 @@ impl PakajoSession {
             search_seq: 0,
             search_state: SearchState::Idle,
             aur_error: None,
+            install_progress: InstallProgress::Idle,
         }
     }
 
@@ -200,6 +205,45 @@ impl PakajoSession {
             self.detail = DetailData::Ready { pkg, installed };
             cx.emit(SessionEvent::DetailUpdated);
         }
+    }
+
+    pub(crate) fn set_progress(&mut self, progress: InstallProgress, cx: &mut Context<Self>) {
+        self.install_progress = progress.clone();
+        cx.emit(SessionEvent::InstallProgressChanged(progress));
+    }
+
+    pub(crate) fn handle_stream_item(&mut self, item: StreamItem, cx: &mut Context<Self>) {
+        match item {
+            StreamItem::Event(ev) => {
+                cx.emit(SessionEvent::InstallLog(format!("{ev:?}")));
+            }
+            StreamItem::Done(ChildOutcome::Success) => {
+                self.refresh_after_install(cx);
+                self.set_progress(InstallProgress::Idle, cx);
+            }
+            StreamItem::Done(ChildOutcome::Dismissed) => {
+                self.set_progress(InstallProgress::Idle, cx);
+            }
+            StreamItem::Done(ChildOutcome::NotFound) => {
+                self.set_progress(
+                    InstallProgress::Failed("install child not found".into()),
+                    cx,
+                );
+            }
+            StreamItem::Done(ChildOutcome::Failed(message)) => {
+                self.set_progress(InstallProgress::Failed(message), cx);
+            }
+        }
+    }
+
+    fn refresh_after_install(&mut self, cx: &mut Context<Self>) {
+        if let Ok(config) = pacmanconf::Config::new()
+            && let Ok(handle) = init_alpm(&config)
+        {
+            self.alpm_handle = handle;
+        }
+        self.installed_names = Arc::new(installed_names(&self.alpm_handle));
+        self.refresh_detail_installed(cx);
     }
 
     fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Option<usize> {

@@ -1,11 +1,10 @@
 use crate::{
     aur::AurClient,
-    install::{ChildOutcome, InstallProgress, StreamItem},
+    install::{InstallProgress, StreamItem},
     install_log_overlay::InstallLogOverlay,
     install_review_dialog::{self, InstallReviewDialog},
-    package::{PackageSource, installed_names, is_installed},
+    package::{PackageSource, is_installed},
     package_detail::PackageDetail,
-    pacman::init_alpm,
     question::QuestionSet,
     search_view::{SearchView, centered},
     session::{DetailData, PakajoSession, SearchState, SessionEvent},
@@ -67,6 +66,10 @@ impl PakajoRoot {
             |this, _session, ev: &SessionEvent, _window, cx| match ev {
                 SessionEvent::DetailUpdated => this.on_detail_updated(cx),
                 SessionEvent::SearchUpdated => this.on_search_updated(cx),
+                SessionEvent::InstallProgressChanged(progress) => {
+                    this.on_install_progress_changed(progress.clone(), cx)
+                }
+                SessionEvent::InstallLog(line) => this.on_install_log(line.clone(), cx),
             },
         );
 
@@ -154,6 +157,10 @@ impl PakajoRoot {
     }
 
     fn set_progress(&mut self, progress: InstallProgress, cx: &mut Context<Self>) {
+        self.session.update(cx, |s, cx| s.set_progress(progress, cx));
+    }
+
+    fn on_install_progress_changed(&mut self, progress: InstallProgress, cx: &mut Context<Self>) {
         if let DetailPane::Ready(entity) = &self.detail {
             entity.update(cx, |detail, cx| {
                 detail.install_progress = progress.clone();
@@ -162,6 +169,15 @@ impl PakajoRoot {
         }
         self.install_progress = progress;
         cx.notify();
+    }
+
+    fn on_install_log(&mut self, line: String, cx: &mut Context<Self>) {
+        if let Some(view) = &self.install_log_view {
+            view.update(cx, |overlay, cx| {
+                overlay.logs.push(line);
+                cx.notify();
+            });
+        }
     }
 
     pub fn start_install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -391,44 +407,7 @@ impl PakajoRoot {
     }
 
     fn handle_stream_item(&mut self, item: StreamItem, cx: &mut Context<Self>) {
-        match item {
-            StreamItem::Event(ev) => {
-                if let Some(view) = &self.install_log_view {
-                    view.update(cx, |overlay, cx| {
-                        overlay.logs.push(format!("{ev:?}"));
-                        cx.notify();
-                    });
-                }
-            }
-            StreamItem::Done(ChildOutcome::Success) => {
-                self.refresh_after_install(cx);
-                self.set_progress(InstallProgress::Idle, cx);
-            }
-            StreamItem::Done(ChildOutcome::Dismissed) => {
-                self.set_progress(InstallProgress::Idle, cx);
-            }
-            StreamItem::Done(ChildOutcome::NotFound) => {
-                self.set_progress(
-                    InstallProgress::Failed("install child not found".into()),
-                    cx,
-                );
-            }
-            StreamItem::Done(ChildOutcome::Failed(message)) => {
-                self.set_progress(InstallProgress::Failed(message), cx);
-            }
-        }
-    }
-
-    fn refresh_after_install(&mut self, cx: &mut Context<Self>) {
-        self.session.update(cx, |s, cx| {
-            if let Ok(config) = pacmanconf::Config::new()
-                && let Ok(handle) = init_alpm(&config)
-            {
-                s.alpm_handle = handle;
-            }
-            s.installed_names = Arc::new(installed_names(&s.alpm_handle));
-            s.refresh_detail_installed(cx);
-        });
+        self.session.update(cx, |s, cx| s.handle_stream_item(item, cx));
     }
 }
 
