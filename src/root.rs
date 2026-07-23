@@ -3,14 +3,12 @@ use crate::{
     install::InstallProgress,
     install_log_overlay::InstallLogOverlay,
     install_review_dialog::{self, InstallReviewDialog},
-    package::{PackageSource, is_installed},
     package_detail::PackageDetail,
     question::QuestionSet,
     search_view::{SearchView, centered},
     session::{DetailData, PakajoSession, SearchState, SessionEvent},
 };
 use alpm::Alpm;
-use futures::StreamExt as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme as _, Root, StyledExt as _, WindowExt as _,
@@ -71,6 +69,9 @@ impl PakajoRoot {
                 }
                 SessionEvent::InstallLog(line) => this.on_install_log(line.clone(), cx),
                 SessionEvent::InstallLogsOpened => this.on_install_logs_opened(window, cx),
+                SessionEvent::ReviewRequired { qs, name } => {
+                    this.on_review_required(qs.clone(), name.clone(), window, cx)
+                }
             },
         );
 
@@ -157,10 +158,6 @@ impl PakajoRoot {
         }
     }
 
-    fn set_progress(&mut self, progress: InstallProgress, cx: &mut Context<Self>) {
-        self.session.update(cx, |s, cx| s.set_progress(progress, cx));
-    }
-
     fn on_install_progress_changed(&mut self, progress: InstallProgress, cx: &mut Context<Self>) {
         if let DetailPane::Ready(entity) = &self.detail {
             entity.update(cx, |detail, cx| {
@@ -181,139 +178,31 @@ impl PakajoRoot {
         }
     }
 
-    pub fn start_install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.install_progress, InstallProgress::Running) {
-            return;
-        }
-        let (name, source) = match &self.detail {
-            DetailPane::Ready(entity) => {
-                let name = entity.read(cx).pkg.name.clone();
-                let source = entity.read(cx).pkg.source;
-                (name, source)
-            }
-            _ => return,
-        };
-        self.set_progress(InstallProgress::Running, cx);
-
-        let exe = match std::env::current_exe() {
-            Ok(path) => path,
-            Err(error) => {
-                self.set_progress(
-                    InstallProgress::Failed(format!(
-                        "failed to determine executable path: {error}"
-                    )),
-                    cx,
-                );
-                return;
-            }
-        };
-
-        if matches!(source, PackageSource::Repo) {
-            self.session
-                .update(cx, |s, cx| s.spawn_install_subprocess(exe, name, None, cx));
-            return;
-        }
-
-        let (mut dry_tx, mut dry_rx) =
-            futures::channel::mpsc::channel::<anyhow::Result<crate::question::QuestionSet>>(1);
-        let name_for_dry_run = name.clone();
-        std::thread::spawn(move || {
-            let result = crate::dry_run::dry_run_for_target(&name_for_dry_run);
-            let _ = dry_tx.try_send(result);
-        });
-
-        cx.spawn_in(window, async move |this, cx| {
-            let Some(result) = dry_rx.next().await else {
-                return;
-            };
-            let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(qs)
-                    if !qs.conflicts.is_empty()
-                        || !qs.providers.is_empty()
-                        || qs.had_unsupported_question =>
-                {
-                    this.open_install_review(qs, exe, name, window, cx);
-                }
-                Ok(_) => {
-                    this.session
-                        .update(cx, |s, cx| s.spawn_install_subprocess(exe, name, None, cx));
-                }
-                Err(err) => {
-                    eprintln!("dry-run failed, proceeding with install: {err:#}");
-                    this.session
-                        .update(cx, |s, cx| s.spawn_install_subprocess(exe, name, None, cx));
-                }
-            });
-        })
-        .detach();
+    pub fn start_install(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.session.update(cx, |s, cx| s.start_install(cx));
     }
 
     pub fn start_remove(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.install_progress, InstallProgress::Running) {
-            return;
-        }
-        let name = match &self.detail {
-            DetailPane::Ready(entity) => entity.read(cx).pkg.name.clone(),
-            _ => return,
-        };
-        if !is_installed(&self.session.read(cx).alpm_handle, &name) {
-            return;
-        }
-        self.set_progress(InstallProgress::Running, cx);
-
-        let exe = match std::env::current_exe() {
-            Ok(path) => path,
-            Err(error) => {
-                self.set_progress(
-                    InstallProgress::Failed(format!(
-                        "failed to determine executable path: {error}"
-                    )),
-                    cx,
-                );
-                return;
-            }
-        };
-
-        self.session
-            .update(cx, |s, cx| s.spawn_remove_subprocess(exe, name, cx));
+        self.session.update(cx, |s, cx| s.start_remove(cx));
     }
 
-    fn open_install_review(
+    fn on_review_required(
         &mut self,
         qs: QuestionSet,
-        exe: std::path::PathBuf,
         name: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_progress(InstallProgress::ConflictReview(qs.clone()), cx);
+        let name_for_title = name;
 
         let root_for_approve = cx.weak_entity();
-        let exe_for_approve = exe;
-        let name_for_approve = name.clone();
-        let name_for_title = name.clone();
         let on_approve = Box::new(
             move |approvals: crate::question::Approvals, _window: &mut Window, cx: &mut App| {
                 let Some(root) = root_for_approve.upgrade() else {
                     return;
                 };
                 root.update(cx, |this, cx| {
-                    let b64 = match crate::question::encode_approvals(&approvals) {
-                        Ok(b64) => b64,
-                        Err(error) => {
-                            this.set_progress(
-                                InstallProgress::Failed(format!(
-                                    "failed to encode approvals: {error}"
-                                )),
-                                cx,
-                            );
-                            return;
-                        }
-                    };
-                    this.set_progress(InstallProgress::Running, cx);
-                    this.session.update(cx, |s, cx| {
-                        s.spawn_install_subprocess(exe_for_approve, name_for_approve, Some(b64), cx)
-                    });
+                    this.session.update(cx, |s, cx| s.confirm_install(approvals, cx));
                 });
             },
         );
@@ -322,7 +211,7 @@ impl PakajoRoot {
         let on_cancel = std::sync::Arc::new(move |_window: &mut Window, cx: &mut App| {
             if let Some(root) = root_for_cancel.upgrade() {
                 root.update(cx, |this, cx| {
-                    this.set_progress(InstallProgress::Idle, cx);
+                    this.session.update(cx, |s, cx| s.cancel_install(cx));
                 });
             }
         }) as std::sync::Arc<dyn Fn(&mut Window, &mut App) + 'static>;

@@ -4,13 +4,14 @@ use crate::{
     local_index::LocalIndex,
     package::{Package, PackageSource, installed_names, is_installed},
     pacman::{find_pkg, init_alpm},
+    question::{QuestionSet, encode_approvals},
     search::{self, AurSearchProvider, RepoSearchIndex, RepoSearchProvider, SearchResult},
 };
 use alpm::Alpm;
 use anyhow::Context as _;
 use futures::StreamExt as _;
 use gpui::*;
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{env::current_exe, sync::Arc, time::Duration};
 
 const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -38,9 +39,14 @@ pub(crate) enum SessionEvent {
     InstallProgressChanged(InstallProgress),
     InstallLog(String),
     InstallLogsOpened,
+    ReviewRequired { qs: QuestionSet, name: String },
 }
 
 impl EventEmitter<SessionEvent> for PakajoSession {}
+
+struct PendingInstall {
+    name: String,
+}
 
 pub(crate) struct PakajoSession {
     pub(crate) alpm_handle: Alpm,
@@ -56,6 +62,7 @@ pub(crate) struct PakajoSession {
     pub(crate) search_state: SearchState,
     aur_error: Option<String>,
     install_progress: InstallProgress,
+    pending_install: Option<PendingInstall>,
 }
 
 impl PakajoSession {
@@ -90,6 +97,7 @@ impl PakajoSession {
             search_state: SearchState::Idle,
             aur_error: None,
             install_progress: InstallProgress::Idle,
+            pending_install: None,
         }
     }
 
@@ -240,11 +248,22 @@ impl PakajoSession {
 
     pub(crate) fn spawn_install_subprocess(
         &mut self,
-        exe: PathBuf,
         name: String,
         approvals_b64: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        let exe = match current_exe() {
+            Ok(exe) => exe,
+            Err(error) => {
+                self.set_progress(
+                    InstallProgress::Failed(format!(
+                        "failed to determine executable path: {error}"
+                    )),
+                    cx,
+                );
+                return;
+            }
+        };
         cx.emit(SessionEvent::InstallLogsOpened);
         let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
         std::thread::spawn(move || {
@@ -260,10 +279,21 @@ impl PakajoSession {
 
     pub(crate) fn spawn_remove_subprocess(
         &mut self,
-        exe: PathBuf,
         name: String,
         cx: &mut Context<Self>,
     ) {
+        let exe = match current_exe() {
+            Ok(exe) => exe,
+            Err(error) => {
+                self.set_progress(
+                    InstallProgress::Failed(format!(
+                        "failed to determine executable path: {error}"
+                    )),
+                    cx,
+                );
+                return;
+            }
+        };
         cx.emit(SessionEvent::InstallLogsOpened);
         let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
         std::thread::spawn(move || crate::remove::run_remove_process(exe, name, tx));
@@ -273,6 +303,107 @@ impl PakajoSession {
             }
         })
         .detach();
+    }
+
+    pub(crate) fn start_install(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.install_progress, InstallProgress::Running) {
+            return;
+        }
+        let (name, source) = match &self.detail {
+            DetailData::Ready { pkg, .. } => (pkg.name.clone(), pkg.source),
+            _ => return,
+        };
+        self.set_progress(InstallProgress::Running, cx);
+
+        if matches!(source, PackageSource::Repo) {
+            self.spawn_install_subprocess(name, None, cx);
+            return;
+        }
+
+        self.pending_install = Some(PendingInstall {
+            name: name.clone(),
+        });
+
+        let (mut dry_tx, mut dry_rx) =
+            futures::channel::mpsc::channel::<anyhow::Result<crate::question::QuestionSet>>(1);
+        let name_for_dry_run = name.clone();
+        std::thread::spawn(move || {
+            let result = crate::dry_run::dry_run_for_target(&name_for_dry_run);
+            let _ = dry_tx.try_send(result);
+        });
+
+        cx.spawn(async move |this, cx| {
+            let Some(result) = dry_rx.next().await else {
+                let _ = this.update(cx, |this, cx| {
+                    this.pending_install.take();
+                    this.set_progress(InstallProgress::Idle, cx);
+                });
+                return;
+            };
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(qs)
+                    if !qs.conflicts.is_empty()
+                        || !qs.providers.is_empty()
+                        || qs.had_unsupported_question =>
+                {
+                    this.set_progress(InstallProgress::ConflictReview(qs.clone()), cx);
+                    cx.emit(SessionEvent::ReviewRequired { qs, name: name.clone() });
+                }
+                Ok(_) => {
+                    this.spawn_install_subprocess(name.clone(), None, cx);
+                    this.pending_install.take();
+                }
+                Err(err) => {
+                    eprintln!("dry-run failed, proceeding with install: {err:#}");
+                    this.spawn_install_subprocess(name.clone(), None, cx);
+                    this.pending_install.take();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn start_remove(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.install_progress, InstallProgress::Running) {
+            return;
+        }
+        let name = match &self.detail {
+            DetailData::Ready { pkg, .. } => pkg.name.clone(),
+            _ => return,
+        };
+        if !is_installed(&self.alpm_handle, &name) {
+            return;
+        }
+        self.set_progress(InstallProgress::Running, cx);
+        self.spawn_remove_subprocess(name, cx);
+    }
+
+    pub(crate) fn confirm_install(
+        &mut self,
+        approvals: crate::question::Approvals,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pending) = self.pending_install.take() else {
+            return;
+        };
+        let name = pending.name;
+        match encode_approvals(&approvals) {
+            Err(error) => {
+                self.set_progress(
+                    InstallProgress::Failed(format!("failed to encode approvals: {error}")),
+                    cx,
+                );
+            }
+            Ok(b64) => {
+                self.set_progress(InstallProgress::Running, cx);
+                self.spawn_install_subprocess(name, Some(b64), cx);
+            }
+        }
+    }
+
+    pub(crate) fn cancel_install(&mut self, cx: &mut Context<Self>) {
+        self.pending_install.take();
+        self.set_progress(InstallProgress::Idle, cx);
     }
 
     fn refresh_after_install(&mut self, cx: &mut Context<Self>) {
