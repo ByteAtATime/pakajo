@@ -3,16 +3,15 @@ use crate::{
     install::{ChildOutcome, InstallProgress, StreamItem},
     install_log_overlay::InstallLogOverlay,
     install_review_dialog::{self, InstallReviewDialog},
-    local_index::LocalIndex,
     package::{Package, PackageSource, installed_names, is_installed},
     package_detail::PackageDetail,
     pacman::{find_pkg, init_alpm},
     question::QuestionSet,
-    search::{self, AurSearchProvider, RepoSearchIndex, RepoSearchProvider},
+    search::{self},
     search_view::{SearchState, SearchView, centered},
+    session::PakajoSession,
 };
 use alpm::Alpm;
-use anyhow::Context as _;
 use futures::StreamExt as _;
 use gpui::*;
 use gpui_component::{
@@ -26,7 +25,6 @@ actions!(pakajo, [SelectUp, SelectDown]);
 
 const LIVE_DEBOUNCE: Duration = Duration::from_millis(300);
 const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
-const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 
 enum DetailPane {
     None,
@@ -36,13 +34,9 @@ enum DetailPane {
 }
 
 pub struct PakajoRoot {
-    pub alpm_handle: Alpm,
-    pub aur_client: Arc<AurClient>,
+    session: Entity<PakajoSession>,
     pub install_progress: InstallProgress,
     search_input: Entity<InputState>,
-    repo_index: Arc<RepoSearchIndex>,
-    local_index: Option<Arc<LocalIndex>>,
-    installed_names: Arc<std::collections::HashSet<String>>,
     _subscriptions: Vec<Subscription>,
     search_seq: u64,
     search_state: SearchState,
@@ -60,19 +54,7 @@ impl PakajoRoot {
         alpm_handle: Alpm,
         aur_client: AurClient,
     ) -> Self {
-        let repo_index = Arc::new(RepoSearchIndex::from_alpm(&alpm_handle));
-        let local_index = LocalIndex::db_path()
-            .ok()
-            .and_then(|p| {
-                LocalIndex::open(&p)
-                    .map_err(|e| {
-                        eprintln!("local index unavailable, falling back to live search: {e:#}")
-                    })
-                    .ok()
-            })
-            .map(Arc::new);
-        let installed_names = Arc::new(installed_names(&alpm_handle));
-        let aur_client = Arc::new(aur_client);
+        let session = cx.new(|_cx| PakajoSession::new(alpm_handle, aur_client));
         let input_window = &mut *window;
         let search_input =
             cx.new(|cx| InputState::new(input_window, cx).placeholder("Search packages…"));
@@ -85,18 +67,11 @@ impl PakajoRoot {
                 _ => {}
             },
         );
-        if let Some(index) = &local_index {
-            begin_aur_sync_in_background(index.clone());
-        }
 
         Self {
-            alpm_handle,
-            aur_client,
+            session,
             install_progress: InstallProgress::Idle,
             search_input,
-            repo_index,
-            local_index,
-            installed_names,
             _subscriptions: vec![subscription],
             search_seq: 0,
             search_state: SearchState::Idle,
@@ -125,11 +100,17 @@ impl PakajoRoot {
         self.aur_error = None;
         cx.notify();
 
-        let repo_index = self.repo_index.clone();
-        let aur_client = self.aur_client.clone();
-        let local_index = self.local_index.clone();
-        let installed = self.installed_names.clone();
-        let debounce = if self.local_index.as_ref().is_some_and(|i| i.is_populated()) {
+        let repo_index = self.session.read(cx).repo_index.clone();
+        let aur_client = self.session.read(cx).aur_client.clone();
+        let local_index = self.session.read(cx).local_index.clone();
+        let installed = self.session.read(cx).installed_names.clone();
+        let debounce = if self
+            .session
+            .read(cx)
+            .local_index
+            .as_ref()
+            .is_some_and(|i| i.is_populated())
+        {
             Duration::ZERO
         } else {
             LIVE_DEBOUNCE
@@ -149,7 +130,9 @@ impl PakajoRoot {
             let outcome = cx
                 .background_executor()
                 .spawn(async move {
-                    execute_search_for(local_index, &repo_index, &aur_client, installed, &text)
+                    crate::session::execute_search_for(
+                        local_index, &repo_index, &aur_client, installed, &text,
+                    )
                 })
                 .await;
 
@@ -193,7 +176,7 @@ impl PakajoRoot {
 
         match source {
             PackageSource::Repo => {
-                if let Some(pkg) = find_pkg(&self.alpm_handle, &name) {
+                if let Some(pkg) = find_pkg(&self.session.read(cx).alpm_handle, &name) {
                     self.set_detail(Package::from(pkg), cx);
                 } else {
                     self.detail = DetailPane::Error(format!("package not found: {name}"));
@@ -201,8 +184,8 @@ impl PakajoRoot {
                 }
             }
             PackageSource::Aur => {
-                let aur = self.aur_client.clone();
-                let local_index = self.local_index.clone();
+                let aur = self.session.read(cx).aur_client.clone();
+                let local_index = self.session.read(cx).local_index.clone();
                 let name_for_info = name.clone();
                 let name_for_error = name.clone();
 
@@ -296,7 +279,7 @@ impl PakajoRoot {
     }
 
     fn set_detail(&mut self, pkg: Package, cx: &mut Context<Self>) {
-        let installed = is_installed(&self.alpm_handle, &pkg.name);
+        let installed = is_installed(&self.session.read(cx).alpm_handle, &pkg.name);
         let root = cx.weak_entity();
         let install_progress = self.install_progress.clone();
         let entity = cx.new(|_| PackageDetail {
@@ -393,7 +376,7 @@ impl PakajoRoot {
             DetailPane::Ready(entity) => entity.read(cx).pkg.name.clone(),
             _ => return,
         };
-        if !is_installed(&self.alpm_handle, &name) {
+        if !is_installed(&self.session.read(cx).alpm_handle, &name) {
             return;
         }
         self.set_progress(InstallProgress::Running, cx);
@@ -577,16 +560,18 @@ impl PakajoRoot {
     }
 
     fn refresh_after_install(&mut self, cx: &mut Context<Self>) {
-        if let Ok(config) = pacmanconf::Config::new()
-            && let Ok(handle) = init_alpm(&config)
-        {
-            self.alpm_handle = handle;
-        }
-        self.installed_names = Arc::new(installed_names(&self.alpm_handle));
+        self.session.update(cx, |s, _cx| {
+            if let Ok(config) = pacmanconf::Config::new()
+                && let Ok(handle) = init_alpm(&config)
+            {
+                s.alpm_handle = handle;
+            }
+            s.installed_names = Arc::new(installed_names(&s.alpm_handle));
+        });
 
         if let DetailPane::Ready(entity) = &self.detail {
             let pkg_name = entity.read(cx).pkg.name.clone();
-            let installed = is_installed(&self.alpm_handle, &pkg_name);
+            let installed = is_installed(&self.session.read(cx).alpm_handle, &pkg_name);
             entity.update(cx, |detail, cx| {
                 detail.installed = installed;
                 cx.notify();
@@ -655,69 +640,6 @@ impl Render for PakajoRoot {
             .child(body)
             .children(Root::render_dialog_layer(window, cx))
     }
-}
-
-fn execute_search_for(
-    local_index: Option<Arc<LocalIndex>>,
-    repo_index: &Arc<RepoSearchIndex>,
-    aur_client: &Arc<AurClient>,
-    installed: Arc<std::collections::HashSet<String>>,
-    text: &str,
-) -> search::SearchOutcome {
-    let repo_provider = RepoSearchProvider::new(repo_index.clone());
-    let aur_provider = AurSearchProvider::new(aur_client.clone());
-    search::dispatch_search(local_index, &repo_provider, &aur_provider, &installed, text)
-}
-
-fn begin_aur_sync_in_background(local_index: Arc<LocalIndex>) {
-    std::thread::spawn(move || {
-        let reniced = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) };
-        if reniced != 0 {
-            eprintln!(
-                "[pakajo] failed to renice aur sync worker: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-
-        if let Some(age) = local_index.last_refreshed_age()
-            && age < AUR_SYNC_MIN_INTERVAL
-        {
-            eprintln!(
-                "[pakajo] skipping aur sync (last refresh {}h ago)",
-                age.as_secs() / 3600
-            );
-            return;
-        }
-
-        let handle = match pacmanconf::Config::new()
-            .context("failed to read pacman config")
-            .and_then(|cfg| init_alpm(&cfg))
-        {
-            Ok(h) => h,
-            Err(e) => {
-                eprintln!("[pakajo] aur background sync failed to init alpm: {e:#}");
-                return;
-            }
-        };
-
-        match local_index.refresh(&handle) {
-            Ok(crate::local_index::RefreshOutcome::NotModified) => {
-                eprintln!("[pakajo] aur index up to date");
-            }
-            Ok(crate::local_index::RefreshOutcome::Updated {
-                aur_count,
-                repo_count,
-                skipped,
-            }) => {
-                eprintln!(
-                    "[pakajo] indexed {aur_count} aur + {repo_count} repo packages (skipped {skipped})"
-                );
-            }
-            Err(e) => {
-                eprintln!("[pakajo] aur background sync failed: {e:#}");
-            }
-        }
-    });
 }
 
 pub fn init(cx: &mut App) {
