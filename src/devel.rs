@@ -34,6 +34,16 @@ pub(crate) struct DevelInfo {
     pub info: HashMap<String, PkgInfo>,
 }
 
+#[derive(serde::Deserialize)]
+struct YayOriginInfo {
+    #[serde(default)]
+    protocols: Vec<String>,
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    sha: String,
+}
+
 pub(crate) fn state_path() -> std::path::PathBuf {
     cache_dir().join("pakajo").join("devel.json")
 }
@@ -49,7 +59,22 @@ fn cache_dir() -> std::path::PathBuf {
 }
 
 pub(crate) fn load_devel_info() -> DevelInfo {
-    load_from(&state_path())
+    let path = state_path();
+    if path.exists() {
+        return load_from(&path);
+    }
+    if let Some(imported) = std::fs::read(yay_vcs_path())
+        .ok()
+        .and_then(|b| import_yay_from(&b))
+    {
+        let _ = save_to(&imported, &path);
+        return imported;
+    }
+    DevelInfo::default()
+}
+
+fn yay_vcs_path() -> std::path::PathBuf {
+    cache_dir().join("yay").join("vcs.json")
 }
 
 fn load_from(path: &std::path::Path) -> DevelInfo {
@@ -58,6 +83,43 @@ fn load_from(path: &std::path::Path) -> DevelInfo {
         Err(_) => return DevelInfo::default(),
     };
     serde_json::from_slice(&bytes).unwrap_or_default()
+}
+
+fn import_yay_from(bytes: &[u8]) -> Option<DevelInfo> {
+    let yay: HashMap<String, HashMap<String, YayOriginInfo>> = serde_json::from_slice(bytes).ok()?;
+
+    let mut info: HashMap<String, PkgInfo> = HashMap::new();
+    for (pkgname, url_map) in yay {
+        let mut repos: HashSet<RepoInfo> = HashSet::new();
+        for (url_key, oi) in url_map {
+            let Some(proto) = oi.protocols.last() else {
+                continue;
+            };
+            if oi.sha.is_empty() {
+                continue;
+            }
+            let url = format!("{proto}://{url_key}");
+            let branch = if oi.branch.is_empty() || oi.branch == "HEAD" {
+                None
+            } else {
+                Some(oi.branch.clone())
+            };
+            repos.replace(RepoInfo {
+                url,
+                branch,
+                commit: oi.sha,
+            });
+        }
+        if repos.is_empty() {
+            continue;
+        }
+        info.insert(pkgname, PkgInfo { repos });
+    }
+
+    if info.is_empty() {
+        return None;
+    }
+    Some(DevelInfo { info })
 }
 
 pub(crate) fn save_devel_info(info: &DevelInfo) -> anyhow::Result<()> {
@@ -408,5 +470,72 @@ mod tests {
             updates.iter().any(|name| name == "cava-git"),
             "expected cava-git to be reported as updatable, got {updates:?}"
         );
+    }
+
+    fn find_repo<'a>(pkg: &'a PkgInfo, url: &str) -> &'a RepoInfo {
+        pkg.repos
+            .iter()
+            .find(|r| r.url == url)
+            .expect("repo present")
+    }
+
+    #[test]
+    fn import_yay_from_converts_happy_path() {
+        let bytes = br#"{"cava-git":{"github.com/karlstav/cava.git":{"protocols":["https"],"branch":"HEAD","sha":"abc"}},"foo-git":{"github.com/x/foo.git":{"protocols":["ssh"],"branch":"dev","sha":"def"}}}"#;
+        let info = import_yay_from(bytes).expect("happy path yields Some");
+
+        assert_eq!(info.info.len(), 2);
+
+        let cava = info.info.get("cava-git").expect("cava-git present");
+        assert_eq!(cava.repos.len(), 1);
+        let repo = cava.repos.iter().next().expect("repo present");
+        assert_eq!(repo.url, "https://github.com/karlstav/cava.git");
+        assert_eq!(repo.branch, None);
+        assert_eq!(repo.commit, "abc");
+
+        let foo = info.info.get("foo-git").expect("foo-git present");
+        let repo = find_repo(foo, "ssh://github.com/x/foo.git");
+        assert_eq!(repo.branch.as_deref(), Some("dev"));
+        assert_eq!(repo.commit, "def");
+    }
+
+    #[test]
+    fn import_yay_from_normalizes_head_and_empty_branch() {
+        let bytes = br#"{"pkg-git":{"example.com/repo.git":{"protocols":["https"],"branch":"HEAD","sha":"abc"},"example.com/other.git":{"protocols":["https"],"branch":"","sha":"def"}}}"#;
+        let info = import_yay_from(bytes).expect("Some");
+
+        let pkg = info.info.get("pkg-git").expect("pkg present");
+        assert_eq!(pkg.repos.len(), 2);
+        for repo in &pkg.repos {
+            assert_eq!(repo.branch, None);
+        }
+    }
+
+    #[test]
+    fn import_yay_from_skips_repo_with_missing_or_empty_protocols() {
+        let bytes = br#"{"pkg-git":{"example.com/kept.git":{"protocols":["https"],"sha":"abc"},"example.com/dropped.git":{"protocols":[],"sha":"def"},"example.com/alsodropped.git":{"sha":"ghi"}}}"#;
+        let info = import_yay_from(bytes).expect("Some");
+
+        let pkg = info.info.get("pkg-git").expect("pkg present");
+        assert_eq!(pkg.repos.len(), 1);
+        let repo = pkg.repos.iter().next().expect("repo present");
+        assert_eq!(repo.url, "https://example.com/kept.git");
+        assert_eq!(repo.commit, "abc");
+    }
+
+    #[test]
+    fn import_yay_from_skips_repo_with_empty_sha() {
+        let bytes = br#"{"pkg-git":{"example.com/kept.git":{"protocols":["https"],"sha":"abc"},"example.com/dropped.git":{"protocols":["https"],"sha":""}}}"#;
+        let info = import_yay_from(bytes).expect("Some");
+
+        let pkg = info.info.get("pkg-git").expect("pkg present");
+        assert_eq!(pkg.repos.len(), 1);
+        let repo = pkg.repos.iter().next().expect("repo present");
+        assert_eq!(repo.url, "https://example.com/kept.git");
+    }
+
+    #[test]
+    fn import_yay_from_corrupt_json_returns_none() {
+        assert!(import_yay_from(b"{ not valid").is_none());
     }
 }
