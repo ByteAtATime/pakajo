@@ -1,4 +1,4 @@
-use crate::events::{DownloadResult, InstallEvent, LogLevel, PackageOp};
+use crate::events::{DownloadResult, InstallEvent, LogLevel, PackageOp, ProgressPhase};
 use crate::icon::PakajoIcon;
 use crate::install::InstallProgress;
 use crate::session::InstallKind;
@@ -7,15 +7,32 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    h_flex, progress::Progress, v_flex,
 };
 use std::sync::Arc;
+
+struct PkgProgress {
+    package: String,
+    percent: i32,
+    current: usize,
+    total: usize,
+}
+
+struct FileDownload {
+    filename: String,
+    downloaded: i64,
+    total: i64,
+}
 
 pub struct InstallLogPage {
     pub kind: InstallKind,
     pub name: String,
     pub logs: Vec<InstallEvent>,
     pub status: InstallProgress,
+    package: Option<PkgProgress>,
+    download: Option<FileDownload>,
+    overall: f32,
+    indeterminate: bool,
     on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static>,
 }
 
@@ -30,8 +47,80 @@ impl InstallLogPage {
             name,
             logs: Vec::new(),
             status: InstallProgress::Idle,
+            package: None,
+            download: None,
+            overall: 0.0,
+            indeterminate: true,
             on_back,
         }
+    }
+
+    pub fn handle_event(&mut self, ev: InstallEvent, cx: &mut Context<Self>) {
+        match &ev {
+            InstallEvent::DownloadCompleted { filename, .. } => {
+                if self
+                    .download
+                    .as_ref()
+                    .map_or(false, |d| d.filename == *filename)
+                {
+                    self.download = None;
+                }
+            }
+            InstallEvent::BuildStarted { .. } => {
+                self.indeterminate = true;
+                self.package = None;
+                self.download = None;
+            }
+            _ => {}
+        }
+        match ev {
+            InstallEvent::Progress {
+                phase,
+                package,
+                percent,
+                current,
+                total,
+            } => {
+                let is_op = matches!(
+                    phase,
+                    ProgressPhase::Add
+                        | ProgressPhase::Upgrade
+                        | ProgressPhase::Downgrade
+                        | ProgressPhase::Reinstall
+                        | ProgressPhase::Remove
+                );
+                if is_op && total > 0 {
+                    self.indeterminate = false;
+                    self.overall = ((current.saturating_sub(1) as f32 + percent as f32 / 100.0)
+                        / total as f32
+                        * 100.0)
+                        .min(100.0);
+                    self.package = Some(PkgProgress {
+                        package,
+                        percent: percent.clamp(0, 100),
+                        current,
+                        total,
+                    });
+                } else {
+                    self.indeterminate = true;
+                }
+            }
+            InstallEvent::DownloadProgress {
+                filename,
+                downloaded,
+                total,
+            } => {
+                self.download = Some(FileDownload {
+                    filename,
+                    downloaded,
+                    total,
+                });
+            }
+            other => {
+                self.logs.push(other);
+            }
+        }
+        cx.notify();
     }
 
     fn title(&self) -> String {
@@ -65,6 +154,76 @@ impl InstallLogPage {
                 .child(div().text_sm().child(label))
                 .into_any_element(),
         )
+    }
+
+    fn render_progress(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !matches!(self.status, InstallProgress::Running) {
+            return None;
+        }
+        let overall_label = if self.indeterminate {
+            "Working…".to_string()
+        } else {
+            format!("{:.0}%", self.overall)
+        };
+        let overall_bar = if self.indeterminate {
+            Progress::new("install-overall").loading(true)
+        } else {
+            Progress::new("install-overall").value(self.overall)
+        };
+        let mut section = v_flex()
+            .gap_3()
+            .w_full()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .h_flex()
+                            .justify_between()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(div().child("Overall"))
+                            .child(div().child(overall_label)),
+                    )
+                    .child(overall_bar),
+            );
+        if let Some(p) = &self.package {
+            section = section.child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{} ({}/{})", p.package, p.current, p.total)),
+                    )
+                    .child(Progress::new("install-pkg").value(p.percent as f32)),
+            );
+        }
+        if let Some(d) = &self.download {
+            let pct = if d.total > 0 {
+                (d.downloaded as f32 / d.total as f32 * 100.0).min(100.0)
+            } else {
+                0.0
+            };
+            section = section.child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{} ({} / {})",
+                                d.filename,
+                                format_bytes(d.downloaded),
+                                format_bytes(d.total)
+                            )),
+                    )
+                    .child(Progress::new("install-dl").value(pct)),
+            );
+        }
+        Some(section.into_any_element())
     }
 
     fn render_event(ev: &InstallEvent) -> Option<Div> {
@@ -185,6 +344,7 @@ impl Render for InstallLogPage {
                     ),
             )
             .children(self.render_banner(cx))
+            .children(self.render_progress(cx))
             .child(
                 div()
                     .id("install-log-scroll")

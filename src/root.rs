@@ -192,8 +192,7 @@ impl PakajoRoot {
     fn on_install_log(&mut self, ev: InstallEvent, cx: &mut Context<Self>) {
         if let Some(page) = &self.install_page {
             page.update(cx, |install_page, cx| {
-                install_page.logs.push(ev);
-                cx.notify();
+                install_page.handle_event(ev, cx);
             });
         }
     }
