@@ -19,29 +19,40 @@ pub fn scored_candidates(candidates: Vec<SearchResult>, needle: &str) -> Vec<Sco
     let mut cfg = Config::DEFAULT;
     cfg.prefer_prefix = true;
     let mut matcher = Matcher::new(cfg);
-    let needle_lc = needle.to_lowercase();
-    let mut nbuf: Vec<char> = Vec::new();
-    let needle_utf32 = Utf32Str::new(&needle_lc, &mut nbuf);
+    let tokens: Vec<String> = needle.split_whitespace().map(str::to_lowercase).collect();
     let mut hbuf: Vec<char> = Vec::new();
+    let mut nbuf: Vec<char> = Vec::new();
+    let mut match_field = |haystack: &str| -> Option<u16> {
+        if tokens.is_empty() {
+            return None;
+        }
+        hbuf.clear();
+        let haystack_utf32 = Utf32Str::new(haystack, &mut hbuf);
+        let mut sum: u16 = 0;
+        for token in &tokens {
+            nbuf.clear();
+            let token_utf32 = Utf32Str::new(token, &mut nbuf);
+            match matcher.fuzzy_match(haystack_utf32, token_utf32) {
+                Some(s) => sum += s,
+                None => return None,
+            }
+        }
+        Some(sum)
+    };
     candidates
         .into_iter()
         .map(|result| {
-            hbuf.clear();
-            let name = Utf32Str::new(&result.name, &mut hbuf);
-            let name_score = matcher.fuzzy_match(name, needle_utf32);
-            hbuf.clear();
-            let desc_score = result.description.as_ref().and_then(|d| {
-                let d = Utf32Str::new(d, &mut hbuf);
-                matcher.fuzzy_match(d, needle_utf32)
-            });
+            let name_score = match_field(&result.name);
+            let desc_score = result
+                .description
+                .as_ref()
+                .and_then(|d| match_field(d));
             let keyword_score = if result.keywords.is_empty() {
                 None
             } else {
                 let mut best: Option<u16> = None;
                 for kw in &result.keywords {
-                    hbuf.clear();
-                    let kw_s = Utf32Str::new(kw, &mut hbuf);
-                    if let Some(sc) = matcher.fuzzy_match(kw_s, needle_utf32) {
+                    if let Some(sc) = match_field(kw) {
                         best = Some(best.map_or(sc, |b| b.max(sc)));
                     }
                 }
@@ -150,7 +161,10 @@ fn composite(
     installed: &HashSet<String>,
     now: f64,
 ) -> f64 {
-    let needle_len = needle.chars().count() as f64;
+    let needle_len = needle
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .count() as f64;
     let name_len = r.name.chars().count() as f64;
     let precision = (needle_len / name_len).min(1.0);
 
@@ -499,6 +513,53 @@ mod tests {
         assert_ne!(
             results[0].name, "010editor",
             "keyword-only hit must not outrank a real name match"
+        );
+    }
+
+    #[test]
+    fn multiword_query_name_matches_when_each_token_is_a_subsequence() {
+        let scored = scored_candidates(vec![row("google-chrome", None)], "google chr");
+        assert_eq!(scored.len(), 1);
+        assert!(
+            scored[0].name_score.is_some(),
+            "multi-word query must still name-match when every token is a subsequence of the name"
+        );
+    }
+
+    #[test]
+    fn multiword_query_requires_every_token_to_match() {
+        let scored = scored_candidates(
+            vec![row("python-google-auth-httplib2", None)],
+            "google chr",
+        );
+        assert_eq!(scored.len(), 1);
+        assert!(
+            scored[0].name_score.is_none(),
+            "AND semantics: a name missing one token's subsequence (no 'c' here) must yield None"
+        );
+    }
+
+    #[test]
+    fn multiword_query_ranks_chrome_above_python_google_auth() {
+        let e = HashSet::new();
+        let candidates = vec![
+            row(
+                "python-google-auth-httplib2",
+                Some("Google Authentication Library: httplib2 transport"),
+            ),
+            row(
+                "google-chrome",
+                Some("The popular web browser by Google (Stable Channel)"),
+            ),
+        ];
+        let results = score(candidates, &SearchQuery::new("google chr"), &e);
+        assert!(
+            !results.is_empty(),
+            "results must be non-empty for a name-matching multi-word query"
+        );
+        assert_eq!(
+            results[0].name, "google-chrome",
+            "google-chrome must outrank python-google-auth-httplib2 for 'google chr'"
         );
     }
 }
