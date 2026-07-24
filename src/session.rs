@@ -34,12 +34,18 @@ pub(crate) enum SearchState {
     Done,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallKind {
+    Install,
+    Remove,
+}
+
 pub(crate) enum SessionEvent {
     DetailUpdated,
     SearchUpdated,
     InstallProgressChanged(InstallProgress),
     InstallLog(InstallEvent),
-    InstallLogsOpened,
+    InstallLogsOpened { kind: InstallKind, name: String },
     ReviewRequired { qs: QuestionSet, name: String },
 }
 
@@ -265,7 +271,10 @@ impl PakajoSession {
                 return;
             }
         };
-        cx.emit(SessionEvent::InstallLogsOpened);
+        cx.emit(SessionEvent::InstallLogsOpened {
+            kind: InstallKind::Install,
+            name: name.clone(),
+        });
         let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
         std::thread::spawn(move || {
             crate::install::run_install_process(exe, name, tx, approvals_b64)
@@ -295,7 +304,10 @@ impl PakajoSession {
                 return;
             }
         };
-        cx.emit(SessionEvent::InstallLogsOpened);
+        cx.emit(SessionEvent::InstallLogsOpened {
+            kind: InstallKind::Remove,
+            name: name.clone(),
+        });
         let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
         std::thread::spawn(move || crate::remove::run_remove_process(exe, name, tx));
         cx.spawn(async move |this, cx| {

@@ -1,13 +1,42 @@
 use crate::events::{DownloadResult, InstallEvent, LogLevel, PackageOp};
+use crate::session::InstallKind;
 use crate::utils::format_bytes;
 use gpui::*;
-use gpui_component::{ActiveTheme as _, StyledExt as _};
+use gpui_component::{
+    ActiveTheme as _, StyledExt as _,
+    button::{Button, ButtonVariants as _},
+    h_flex, v_flex,
+};
+use std::sync::Arc;
 
-pub struct InstallLogOverlay {
+pub struct InstallLogPage {
+    pub kind: InstallKind,
+    pub name: String,
     pub logs: Vec<InstallEvent>,
+    on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static>,
 }
 
-impl InstallLogOverlay {
+impl InstallLogPage {
+    pub fn new(
+        kind: InstallKind,
+        name: String,
+        on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static>,
+    ) -> Self {
+        Self {
+            kind,
+            name,
+            logs: Vec::new(),
+            on_back,
+        }
+    }
+
+    fn title(&self) -> String {
+        match self.kind {
+            InstallKind::Install => format!("Installing {}", self.name),
+            InstallKind::Remove => format!("Removing {}", self.name),
+        }
+    }
+
     fn render_event(ev: &InstallEvent) -> Option<Div> {
         let text = match ev {
             InstallEvent::ResolvingDependencies => ":: resolving dependencies...".to_string(),
@@ -105,18 +134,39 @@ fn format_package_operation(
     }
 }
 
-impl Render for InstallLogOverlay {
+impl Render for InstallLogPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id("install-log-scroll")
-            .overflow_y_scroll()
-            .max_h(px(400.))
-            .v_flex()
-            .gap_1()
-            .p_3()
-            .bg(cx.theme().muted)
-            .text_color(cx.theme().muted_foreground)
-            .text_size(rems(0.8))
-            .children(self.logs.iter().filter_map(InstallLogOverlay::render_event))
+        let on_back = self.on_back.clone();
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .gap_4()
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .child(div().text_lg().font_semibold().child(self.title()))
+                    .child(
+                        Button::new("install-back")
+                            .label("Back")
+                            .ghost()
+                            .rounded_none()
+                            .on_click(move |_, window, cx| on_back(window, cx)),
+                    ),
+            )
+            .child(
+                div()
+                    .id("install-log-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .v_flex()
+                    .gap_1()
+                    .p_3()
+                    .bg(cx.theme().muted)
+                    .text_color(cx.theme().muted_foreground)
+                    .text_size(rems(0.8))
+                    .children(self.logs.iter().filter_map(InstallLogPage::render_event)),
+            )
     }
 }

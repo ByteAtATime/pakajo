@@ -8,7 +8,7 @@ mod events;
 mod git;
 mod icon;
 mod install;
-mod install_log_overlay;
+mod install_log_page;
 mod install_review_dialog;
 mod local_index;
 mod lookup;

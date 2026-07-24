@@ -2,12 +2,12 @@ use crate::{
     aur::AurClient,
     events::InstallEvent,
     install::InstallProgress,
-    install_log_overlay::InstallLogOverlay,
+    install_log_page::InstallLogPage,
     install_review_dialog::{self, InstallReviewDialog},
     package_detail::{DetailIntent, PackageDetail},
     question::QuestionSet,
     search_view::{SearchView, centered},
-    session::{DetailData, PakajoSession, SearchState, SessionEvent},
+    session::{DetailData, InstallKind, PakajoSession, SearchState, SessionEvent},
 };
 use alpm::Alpm;
 use gpui::*;
@@ -27,6 +27,12 @@ enum DetailPane {
     Error(String),
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Page {
+    Main,
+    Install,
+}
+
 pub struct PakajoRoot {
     session: Entity<PakajoSession>,
     pub install_progress: InstallProgress,
@@ -35,7 +41,8 @@ pub struct PakajoRoot {
     detail: DetailPane,
     detail_subscription: Option<Subscription>,
     search_view: SearchView,
-    install_log_view: Option<Entity<InstallLogOverlay>>,
+    page: Page,
+    install_page: Option<Entity<InstallLogPage>>,
 }
 
 impl PakajoRoot {
@@ -70,7 +77,9 @@ impl PakajoRoot {
                     this.on_install_progress_changed(progress.clone(), cx)
                 }
                 SessionEvent::InstallLog(ev) => this.on_install_log(ev.clone(), cx),
-                SessionEvent::InstallLogsOpened => this.on_install_logs_opened(window, cx),
+                SessionEvent::InstallLogsOpened { kind, name } => {
+                    this.on_install_logs_opened(kind.clone(), name.clone(), window, cx)
+                }
                 SessionEvent::ReviewRequired { qs, name } => {
                     this.on_review_required(qs.clone(), name.clone(), window, cx)
                 }
@@ -85,7 +94,8 @@ impl PakajoRoot {
             detail: DetailPane::None,
             detail_subscription: None,
             search_view: SearchView::new(),
-            install_log_view: None,
+            page: Page::Main,
+            install_page: None,
         }
     }
 
@@ -173,9 +183,9 @@ impl PakajoRoot {
     }
 
     fn on_install_log(&mut self, ev: InstallEvent, cx: &mut Context<Self>) {
-        if let Some(view) = &self.install_log_view {
-            view.update(cx, |overlay, cx| {
-                overlay.logs.push(ev);
+        if let Some(page) = &self.install_page {
+            page.update(cx, |install_page, cx| {
+                install_page.logs.push(ev);
                 cx.notify();
             });
         }
@@ -242,16 +252,25 @@ impl PakajoRoot {
         });
     }
 
-    fn on_install_logs_opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let log_view = cx.new(|_| InstallLogOverlay { logs: Vec::new() });
-        self.install_log_view = Some(log_view.clone());
+    fn on_install_logs_opened(
+        &mut self,
+        kind: InstallKind,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let root_entity = cx.entity();
+        let on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static> =
+            Arc::new(move |_window, cx| {
+                root_entity.update(cx, |root, cx| {
+                    root.page = Page::Main;
+                    cx.notify();
+                });
+            });
+        let page = cx.new(|_| InstallLogPage::new(kind, name, on_back));
+        self.install_page = Some(page);
+        self.page = Page::Install;
         window.close_all_dialogs(cx);
-        window.open_dialog(cx, move |dialog, _window, _cx| {
-            dialog
-                .title("Install logs")
-                .w(px(720.))
-                .child(log_view.clone())
-        });
     }
 }
 
@@ -262,54 +281,65 @@ impl Render for PakajoRoot {
             entity.update(cx, |root, cx| root.select_by_index(index, cx));
         });
 
-        let session = self.session.read(cx);
+        let is_install = self.page == Page::Install && self.install_page.is_some();
 
-        let body = if session.results.is_empty() {
-            let status = match session.search_state {
-                SearchState::Idle => "Search for packages to get started".to_string(),
-                SearchState::Searching => "Searching…".to_string(),
-                SearchState::Done => "No packages found".to_string(),
-            };
-            centered()
-                .text_color(cx.theme().muted_foreground)
-                .child(status)
-                .into_any_element()
-        } else {
-            let detail_pane = match &self.detail {
-                DetailPane::None => centered()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Select a package")
-                    .into_any_element(),
-                DetailPane::Loading => centered().child(Spinner::new()).into_any_element(),
-                DetailPane::Error(message) => centered()
-                    .text_color(cx.theme().danger_foreground)
-                    .child(message.clone())
-                    .into_any_element(),
-                DetailPane::Ready(detail_entity) => div()
-                    .flex_1()
-                    .size_full()
-                    .child(detail_entity.clone())
-                    .into_any_element(),
-            };
-
-            div()
+        let body: AnyElement = match (&self.page, &self.install_page) {
+            (Page::Install, Some(page)) => div()
                 .flex_1()
                 .size_full()
-                .h_flex()
                 .min_h_0()
-                .gap_4()
-                .child(self.search_view.render(
-                    &session.results,
-                    session.selected_index,
-                    session.search_state,
-                    on_select,
-                    cx,
-                ))
-                .child(detail_pane)
-                .into_any_element()
+                .child(page.clone())
+                .into_any_element(),
+            _ => {
+                let session = self.session.read(cx);
+                if session.results.is_empty() {
+                    let status = match session.search_state {
+                        SearchState::Idle => "Search for packages to get started".to_string(),
+                        SearchState::Searching => "Searching…".to_string(),
+                        SearchState::Done => "No packages found".to_string(),
+                    };
+                    centered()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(status)
+                        .into_any_element()
+                } else {
+                    let detail_pane = match &self.detail {
+                        DetailPane::None => centered()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Select a package")
+                            .into_any_element(),
+                        DetailPane::Loading => centered().child(Spinner::new()).into_any_element(),
+                        DetailPane::Error(message) => centered()
+                            .text_color(cx.theme().danger_foreground)
+                            .child(message.clone())
+                            .into_any_element(),
+                        DetailPane::Ready(detail_entity) => div()
+                            .flex_1()
+                            .size_full()
+                            .child(detail_entity.clone())
+                            .into_any_element(),
+                    };
+
+                    div()
+                        .flex_1()
+                        .size_full()
+                        .h_flex()
+                        .min_h_0()
+                        .gap_4()
+                        .child(self.search_view.render(
+                            &session.results,
+                            session.selected_index,
+                            session.search_state,
+                            on_select,
+                            cx,
+                        ))
+                        .child(detail_pane)
+                        .into_any_element()
+                }
+            }
         };
 
-        div()
+        let shell = div()
             .v_flex()
             .gap_4()
             .p_4()
@@ -318,10 +348,17 @@ impl Render for PakajoRoot {
             .id("pakajo-root")
             .key_context("PakajoSearch")
             .on_action(cx.listener(Self::on_select_up))
-            .on_action(cx.listener(Self::on_select_down))
-            .child(Input::new(&self.search_input).rounded_none())
-            .child(body)
-            .children(Root::render_dialog_layer(window, cx))
+            .on_action(cx.listener(Self::on_select_down));
+
+        let shell = if is_install {
+            shell.child(body)
+        } else {
+            shell
+                .child(Input::new(&self.search_input).rounded_none())
+                .child(body)
+        };
+
+        shell.children(Root::render_dialog_layer(window, cx))
     }
 }
 
