@@ -79,6 +79,9 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
     }
 
     if aur.is_empty() {
+        if !json {
+            print_sync_preamble(&handle, &positionals);
+        }
         escalate(&positionals, as_deps, json);
     } else if repo_or_file.is_empty() {
         let mut sink: Box<dyn InstallSink> = sink_for(json);
@@ -102,6 +105,9 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
             ));
         }
     } else {
+        if !json {
+            print_sync_preamble(&handle, &repo_or_file);
+        }
         match escalate_result(&repo_or_file, as_deps, json) {
             Ok(0) => {}
             Ok(code) => std::process::exit(code),
@@ -639,6 +645,17 @@ fn classify_target(s: &str) -> InstallTarget {
     } else {
         InstallTarget::Repo(s.into())
     }
+}
+
+fn print_sync_preamble(handle: &alpm::Alpm, targets: &[String]) {
+    let labeled: Vec<String> = targets
+        .iter()
+        .map(|name| match crate::pacman::find_pkg(handle, name) {
+            Some(pkg) => format!("{name}-{}", pkg.version()),
+            None => name.clone(),
+        })
+        .collect();
+    println!("Sync Explicit ({}): {}", targets.len(), labeled.join(", "));
 }
 
 fn dedup_positionals(positionals: Vec<String>) -> Vec<String> {
