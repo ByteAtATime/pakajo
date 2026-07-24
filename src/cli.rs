@@ -5,7 +5,7 @@ use anyhow::Context as _;
 
 use crate::aur::AurClient;
 use crate::events::{
-    DownloadResult, InstallEvent, InstallSink, LogLevel, PackageOp, ProgressPhase, SummaryPackage,
+    DownloadResult, InstallEvent, InstallSink, LogLevel, ProgressPhase, SummaryPackage,
     TransactionSummary,
 };
 use crate::install::{self, InstallTarget};
@@ -681,28 +681,18 @@ impl ConsoleSink {
         match event {
             InstallEvent::ResolvingDependencies => println!("resolving dependencies..."),
             InstallEvent::CheckingConflicts => println!("looking for conflicting packages..."),
-            InstallEvent::CheckingFileConflicts => println!(":: checking for file conflicts..."),
-            InstallEvent::CheckingIntegrity => println!(":: checking package integrity..."),
-            InstallEvent::CheckingDiskSpace => println!(":: checking available disk space..."),
-            InstallEvent::LoadingPackages => println!(":: loading package files..."),
-            InstallEvent::KeyringStart => println!(":: checking keyring..."),
+            InstallEvent::CheckingFileConflicts => {},
+            InstallEvent::CheckingIntegrity => {},
+            InstallEvent::CheckingDiskSpace => {},
+            InstallEvent::LoadingPackages => {},
+            InstallEvent::KeyringStart => {},
             InstallEvent::RetrievingPackages { num, total_bytes } => {
                 println!(
                     ":: retrieving {num} packages ({})",
                     format_bytes(*total_bytes)
                 );
             }
-            InstallEvent::PackageOperation {
-                operation,
-                package,
-                new_version,
-                old_version,
-            } => {
-                println!(
-                    "{}",
-                    format_package_operation(*operation, package, new_version, old_version)
-                );
-            }
+            InstallEvent::PackageOperation { .. } => {},
             InstallEvent::DownloadInit { filename, optional } => {
                 if *optional {
                     println!("  {filename} (optional)");
@@ -1019,23 +1009,6 @@ fn version_label(pkg: &SummaryPackage) -> String {
             .old_version
             .clone()
             .unwrap_or_else(|| pkg.new_version.clone()),
-    }
-}
-
-fn format_package_operation(
-    operation: PackageOp,
-    package: &str,
-    new_version: &Option<String>,
-    old_version: &Option<String>,
-) -> String {
-    let new = new_version.as_deref().unwrap_or("?");
-    let old = old_version.as_deref().unwrap_or("?");
-    match operation {
-        PackageOp::Install => format!("installing {package} ({new})"),
-        PackageOp::Upgrade => format!("upgrading {package} ({old} -> {new})"),
-        PackageOp::Reinstall => format!("reinstalling {package} ({new})"),
-        PackageOp::Downgrade => format!("downgrading {package} ({old} -> {new})"),
-        PackageOp::Remove => format!("removing {package} ({old})"),
     }
 }
 
