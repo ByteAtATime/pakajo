@@ -145,6 +145,29 @@ pub(crate) fn fetch_devel_info(arch: &str, srcinfo: &srcinfo::Srcinfo) -> anyhow
     Ok(PkgInfo { repos })
 }
 
+pub(crate) fn refresh_baseline(build_dir: &std::path::Path, arch: &str) -> anyhow::Result<()> {
+    let srcinfo = if build_dir.join(".SRCINFO").exists() {
+        crate::srcinfo_io::read_from_dir(build_dir)?
+    } else {
+        crate::srcinfo_io::generate(build_dir)?
+    };
+    let pkg_info = fetch_devel_info(arch, &srcinfo)?;
+    if pkg_info.repos.is_empty() {
+        return Ok(());
+    }
+    let mut devel = load_devel_info();
+    merge_baseline(&mut devel, &srcinfo, pkg_info);
+    save_devel_info(&devel)
+}
+
+fn merge_baseline(devel: &mut DevelInfo, srcinfo: &srcinfo::Srcinfo, pkg_info: PkgInfo) {
+    for name in srcinfo.pkgnames() {
+        if devel.info.contains_key(name) {
+            devel.info.insert(name.to_string(), pkg_info.clone());
+        }
+    }
+}
+
 pub(crate) fn possible_devel_updates_from(info: &DevelInfo) -> Vec<String> {
     let targets: Vec<(&String, &RepoInfo)> = info
         .info
@@ -301,6 +324,69 @@ mod tests {
         assert!(info.info.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_baseline_updates_stale_commit() {
+        let mut devel = DevelInfo::default();
+        devel.info.insert(
+            "example-git".to_string(),
+            PkgInfo {
+                repos: std::iter::once(RepoInfo {
+                    url: "https://example.com/example.git".to_string(),
+                    branch: None,
+                    commit: "0000000000000000000000000000000000000000".to_string(),
+                })
+                .collect(),
+            },
+        );
+
+        let srcinfo: ::srcinfo::Srcinfo = "pkgbase = example\n\
+             pkgver = 1.0\n\
+             pkgrel = 1\n\
+             \n\
+             pkgname = example-git\n"
+            .parse()
+            .expect("srcinfo parses");
+
+        let fresh = PkgInfo {
+            repos: std::iter::once(RepoInfo {
+                url: "https://example.com/example.git".to_string(),
+                branch: None,
+                commit: "1111111111111111111111111111111111111111".to_string(),
+            })
+            .collect(),
+        };
+
+        merge_baseline(&mut devel, &srcinfo, fresh);
+
+        let updated = devel.info.get("example-git").expect("entry remains");
+        let repo = updated.repos.iter().next().expect("repo present");
+        assert_eq!(repo.commit, "1111111111111111111111111111111111111111");
+    }
+
+    #[test]
+    fn merge_baseline_creates_no_stray_entries() {
+        let mut devel = DevelInfo::default();
+        let srcinfo: ::srcinfo::Srcinfo = "pkgbase = example\n\
+             pkgver = 1.0\n\
+             pkgrel = 1\n\
+             \n\
+             pkgname = example-git\n"
+            .parse()
+            .expect("srcinfo parses");
+        let fresh = PkgInfo {
+            repos: std::iter::once(RepoInfo {
+                url: "https://example.com/example.git".to_string(),
+                branch: None,
+                commit: "1111111111111111111111111111111111111111".to_string(),
+            })
+            .collect(),
+        };
+
+        merge_baseline(&mut devel, &srcinfo, fresh);
+
+        assert!(devel.info.is_empty());
     }
 
     #[test]

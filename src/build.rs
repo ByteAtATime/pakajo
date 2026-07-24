@@ -53,6 +53,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
     }
 
     let total_layers = plan.layers.len();
+    let arch = alpm.architectures().first();
     for (idx, layer) in plan.layers.iter().enumerate() {
         sink.event(InstallEvent::LayerBoundary {
             layer: idx,
@@ -84,6 +85,12 @@ pub fn run_build<S: InstallSink + ?Sized>(
                 package: info.name.clone(),
                 artifacts: artifacts.clone(),
             });
+
+            if let Some(arch) = arch {
+                if let Err(e) = crate::devel::refresh_baseline(&dir, arch) {
+                    eprintln!("warning: devel baseline refresh failed for {pkgbase}: {e:#}");
+                }
+            }
 
             let as_deps = user_as_deps || !plan.targets.iter().any(|t| t == &info.name);
             run_install_child(&artifacts, as_deps, sink, approvals_b64)?;
