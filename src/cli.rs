@@ -679,8 +679,8 @@ impl ConsoleSink {
 
     fn print_event(&mut self, event: &InstallEvent) {
         match event {
-            InstallEvent::ResolvingDependencies => println!(":: resolving dependencies..."),
-            InstallEvent::CheckingConflicts => println!(":: checking for conflicts..."),
+            InstallEvent::ResolvingDependencies => println!("resolving dependencies..."),
+            InstallEvent::CheckingConflicts => println!("looking for conflicting packages..."),
             InstallEvent::CheckingFileConflicts => println!(":: checking for file conflicts..."),
             InstallEvent::CheckingIntegrity => println!(":: checking package integrity..."),
             InstallEvent::CheckingDiskSpace => println!(":: checking available disk space..."),
