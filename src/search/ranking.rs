@@ -75,6 +75,7 @@ const W_POP: f64 = 0.2;
 const W_REPO: f64 = 0.1;
 const W_RECENCY: f64 = 0.1;
 const W_INSTALLED: f64 = 0.5;
+const W_PREFIX: f64 = 0.25;
 const K_NAME: f64 = 100.0;
 const K_DESC: f64 = 100.0;
 const K_KW: f64 = 100.0;
@@ -161,13 +162,6 @@ fn composite(
     installed: &HashSet<String>,
     now: f64,
 ) -> f64 {
-    let needle_len = needle
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .count() as f64;
-    let name_len = r.name.chars().count() as f64;
-    let precision = (needle_len / name_len).min(1.0);
-
     let norm_name = name_score
         .map(|s| saturate(s as f64, K_NAME))
         .unwrap_or(0.0);
@@ -179,7 +173,7 @@ fn composite(
         .unwrap_or(0.0);
     let norm_pop = r.popularity.map(|p| saturate(p, K_POP)).unwrap_or(0.0);
 
-    let text = norm_name * precision
+    let text = norm_name
         + W_KW * norm_kw * (1.0 - norm_name)
         + W_DESC * norm_desc * (1.0 - norm_name.max(norm_kw));
 
@@ -201,8 +195,13 @@ fn composite(
     } else {
         0.0
     };
+    let prefix_bonus = if r.name.to_lowercase().starts_with(needle) {
+        W_PREFIX
+    } else {
+        0.0
+    };
 
-    W_NAME * text + W_RECENCY * recency + W_POP * norm_pop + repo_bonus + installed_bonus
+    W_NAME * text + W_RECENCY * recency + W_POP * norm_pop + repo_bonus + installed_bonus + prefix_bonus
 }
 
 fn now_secs() -> f64 {
@@ -367,7 +366,7 @@ mod tests {
     fn installed_and_popularity_are_small_tiebreaks() {
         let e = HashSet::new();
         let base = composite(
-            &pkg("a", PackageSource::Repo, None, None),
+            &pkg("ab", PackageSource::Repo, None, None),
             "a",
             Some(20),
             None,
@@ -376,7 +375,7 @@ mod tests {
             0.0,
         );
         let pop = composite(
-            &pkg("b", PackageSource::Repo, None, Some(10.0)),
+            &pkg("ac", PackageSource::Repo, None, Some(10.0)),
             "a",
             Some(20),
             None,
@@ -384,9 +383,9 @@ mod tests {
             &e,
             0.0,
         );
-        let inst = HashSet::from(["a".to_string()]);
+        let inst = HashSet::from(["ab".to_string()]);
         let boosted = composite(
-            &pkg("a", PackageSource::Repo, None, None),
+            &pkg("ab", PackageSource::Repo, None, None),
             "a",
             Some(20),
             None,
@@ -397,7 +396,7 @@ mod tests {
         assert!(boosted > pop && pop > base);
         assert!(
             composite(
-                &pkg("c", PackageSource::Repo, None, None),
+                &pkg("ad", PackageSource::Repo, None, None),
                 "a",
                 Some(100),
                 None,
@@ -560,6 +559,36 @@ mod tests {
         assert_eq!(
             results[0].name, "google-chrome",
             "google-chrome must outrank python-google-auth-httplib2 for 'google chr'"
+        );
+    }
+
+    #[test]
+    fn cava_g_prefers_git_even_when_bg_more_popular() {
+        let e = HashSet::new();
+        let candidates = vec![
+            pkg("cava-bg", PackageSource::Aur, Some(1_730_000_000), Some(20.0)),
+            pkg("cava-git", PackageSource::Aur, Some(1_730_000_000), Some(0.0)),
+        ];
+        let results = score(candidates, &SearchQuery::new("cava-g"), &e);
+        assert!(!results.is_empty());
+        assert_eq!(
+            results[0].name, "cava-git",
+            "cava-g is a literal prefix of cava-git; intent must win even though cava-bg is more popular"
+        );
+    }
+
+    #[test]
+    fn prefix_match_outranks_more_popular_substring() {
+        let e = HashSet::new();
+        let candidates = vec![
+            pkg("backfire", PackageSource::Aur, None, Some(50.0)),
+            pkg("firefox", PackageSource::Aur, None, Some(0.0)),
+        ];
+        let results = score(candidates, &SearchQuery::new("fire"), &e);
+        assert!(!results.is_empty());
+        assert_eq!(
+            results[0].name, "firefox",
+            "a name prefixed by the needle must outrank a more-popular mere substring"
         );
     }
 }
