@@ -787,9 +787,14 @@ impl ConsoleSink {
                     println!("  {line}");
                 }
             }
-            InstallEvent::BuildCompleted { package, .. } => {
-                println!(":: built {package}");
-            }
+            InstallEvent::BuildCompleted {
+                package,
+                version,
+                ..
+            } => match version {
+                Some(version) => println!(":: built {package} {version}"),
+                None => println!(":: built {package}"),
+            },
             InstallEvent::LayerBoundary { .. } => {}
             InstallEvent::SysupgradeAurCandidates { candidates } => {
                 if candidates.is_empty() {

@@ -90,6 +90,8 @@ pub enum InstallEvent {
     BuildCompleted {
         package: String,
         artifacts: Vec<String>,
+        #[serde(default)]
+        version: Option<String>,
     },
     LayerBoundary {
         layer: usize,

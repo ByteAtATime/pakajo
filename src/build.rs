@@ -81,9 +81,19 @@ pub fn run_build<S: InstallSink + ?Sized>(
             let expected = expected_artifacts(&dir)
                 .with_context(|| format!("failed to enumerate artifacts for {}", info.name))?;
             let artifacts = collect_artifacts(&dir, &expected)?;
+            let parsed: Vec<(String, String)> = expected
+                .iter()
+                .filter_map(|basename| parse_package_filename(basename))
+                .collect();
+            let version = parsed
+                .iter()
+                .find(|(pkgname, _)| pkgname == &info.name)
+                .or_else(|| parsed.first())
+                .map(|(_, version)| version.clone());
             sink.event(InstallEvent::BuildCompleted {
                 package: info.name.clone(),
                 artifacts: artifacts.clone(),
+                version,
             });
 
             if let Some(arch) = arch {
@@ -191,6 +201,16 @@ fn expected_artifacts(dir: &Path) -> anyhow::Result<Vec<String>> {
             (!basename.is_empty()).then_some(basename)
         })
         .collect())
+}
+
+fn parse_package_filename(basename: &str) -> Option<(String, String)> {
+    let split: Vec<&str> = basename.split('-').collect();
+    if split.len() < 4 {
+        return None;
+    }
+    let pkgname = split[..split.len() - 3].join("-");
+    let version = split[split.len() - 3..split.len() - 1].join("-");
+    Some((pkgname, version))
 }
 
 fn run_makepkg_streaming<S: InstallSink + ?Sized>(
@@ -323,5 +343,29 @@ mod tests {
                 "is_valid_pkgbase({input:?})"
             );
         }
+    }
+
+    #[test]
+    fn parse_package_filename_extracts_git_pkgver() {
+        let (pkgname, version) =
+            parse_package_filename("cava-git-r1136.20a5997-2-x86_64.pkg.tar.zst")
+                .expect("parseable vcs package basename");
+        assert_eq!(pkgname, "cava-git");
+        assert_eq!(version, "r1136.20a5997-2");
+    }
+
+    #[test]
+    fn parse_package_filename_handles_pkgname_with_many_dashes() {
+        let (pkgname, version) =
+            parse_package_filename("python-tokenize-rt-5.2.0-3-any.pkg.tar.zst")
+                .expect("pkgname with multiple dashes still parses");
+        assert_eq!(pkgname, "python-tokenize-rt");
+        assert_eq!(version, "5.2.0-3");
+    }
+
+    #[test]
+    fn parse_package_filename_rejects_too_few_segments() {
+        assert!(parse_package_filename("foo-1.pkg.tar.zst").is_none());
+        assert!(parse_package_filename("foo-1-2").is_none());
     }
 }
