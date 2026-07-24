@@ -38,6 +38,8 @@ enum Page {
 pub struct PakajoRoot {
     session: Entity<PakajoSession>,
     pub install_progress: InstallProgress,
+    status_overall: f32,
+    status_indeterminate: bool,
     search_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
     detail: DetailPane,
@@ -91,6 +93,8 @@ impl PakajoRoot {
         Self {
             session,
             install_progress: InstallProgress::Idle,
+            status_overall: 0.0,
+            status_indeterminate: true,
             search_input,
             _subscriptions: vec![subscription, session_subscription],
             detail: DetailPane::None,
@@ -194,6 +198,15 @@ impl PakajoRoot {
             page.update(cx, |install_page, cx| {
                 install_page.handle_event(ev, cx);
             });
+            let (overall, indeterminate) = {
+                let pg = page.read(cx);
+                (pg.overall, pg.indeterminate)
+            };
+            if (overall, indeterminate) != (self.status_overall, self.status_indeterminate) {
+                self.status_overall = overall;
+                self.status_indeterminate = indeterminate;
+                cx.notify();
+            }
         }
     }
 
@@ -281,6 +294,8 @@ impl PakajoRoot {
         });
         self.install_page = Some(page);
         self.page = Page::Install;
+        self.status_overall = 0.0;
+        self.status_indeterminate = true;
         window.close_all_dialogs(cx);
     }
 
@@ -289,6 +304,8 @@ impl PakajoRoot {
         self.install_progress = InstallProgress::Idle;
         self.install_page = None;
         self.page = Page::Main;
+        self.status_overall = 0.0;
+        self.status_indeterminate = true;
         cx.notify();
     }
 
@@ -334,9 +351,17 @@ impl PakajoRoot {
                             }
                         })),
                 )
-                .children(
-                    show_bar.then(|| Progress::new("install-status").loading(true).w(px(200.))),
-                )
+                .children(show_bar.then(|| {
+                    if self.status_indeterminate {
+                        Progress::new("install-status")
+                            .loading(true)
+                            .w(px(200.))
+                    } else {
+                        Progress::new("install-status")
+                            .value(self.status_overall)
+                            .w(px(200.))
+                    }
+                }))
                 .children(terminal.then(|| {
                     Button::new("install-dismiss")
                         .icon(IconName::Close)

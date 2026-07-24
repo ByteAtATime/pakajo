@@ -31,8 +31,8 @@ pub struct InstallLogPage {
     pub status: InstallProgress,
     package: Option<PkgProgress>,
     download: Option<FileDownload>,
-    overall: f32,
-    indeterminate: bool,
+    pub overall: f32,
+    pub indeterminate: bool,
     on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static>,
 }
 
