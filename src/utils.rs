@@ -11,3 +11,11 @@ pub fn format_bytes(bytes: i64) -> String {
     }
     format!("{value:.1} {}", UNITS[unit])
 }
+
+pub fn format_mib(bytes: i64) -> String {
+    let mut val = bytes as f64 / 1048576.0;
+    if val < 0.0 && val > -0.005 {
+        val = 0.0;
+    }
+    format!("{val:.2} MiB")
+}

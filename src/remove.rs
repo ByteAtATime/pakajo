@@ -100,25 +100,27 @@ fn classify_prepare_error(err: alpm::PrepareError) -> anyhow::Error {
 
 fn build_remove_summary(handle: &alpm::Alpm) -> TransactionSummary {
     let mut packages = Vec::new();
-    let mut total_installed_size = 0;
+    let mut total_removed_size = 0;
     for pkg in handle.trans_remove().iter() {
         let name = pkg.name().to_string();
         let old_version = pkg.version().to_string();
         let installed_size = pkg.isize();
-        total_installed_size += installed_size;
+        total_removed_size += installed_size;
         packages.push(SummaryPackage {
-            repository: pkg.db().map(|d| d.name().to_string()),
+            repository: None,
             new_version: String::new(),
             name,
             old_version: Some(old_version),
             download_size: 0,
             installed_size,
+            is_removal: true,
         });
     }
     TransactionSummary {
         packages,
         total_download_size: 0,
-        total_installed_size,
+        total_installed_size: 0,
+        total_removed_size,
     }
 }
 

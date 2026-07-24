@@ -10,7 +10,7 @@ use crate::events::{
 };
 use crate::install::{self, InstallTarget};
 use crate::search::{AurSearchProvider, RepoSearchIndex, RepoSearchProvider, SearchResult};
-use crate::utils::format_bytes;
+use crate::utils::{format_bytes, format_mib};
 
 pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
     let mut args = args;
@@ -941,82 +941,156 @@ fn print_summary(summary: &TransactionSummary) {
         println!(" nothing to do");
         return;
     }
+    print!("{}", render_summary(summary));
+}
 
+struct SummaryColumn {
+    header: String,
+    right_align_data: bool,
+    cells: Vec<String>,
+}
+
+fn append_table_line(out: &mut String, cells: &[String], right_align: &[bool], widths: &[usize]) {
+    for (i, (cell, width)) in cells.iter().zip(widths.iter()).enumerate() {
+        if i > 0 {
+            out.push_str("  ");
+        }
+        if right_align[i] {
+            out.push_str(&format!("{:>w$}", cell, w = width));
+        } else {
+            out.push_str(&format!("{:<w$}", cell, w = width));
+        }
+    }
+    out.push('\n');
+}
+
+fn render_summary(summary: &TransactionSummary) -> String {
     let count = summary.packages.len();
-    let rows: Vec<(String, String, String, String)> = summary
-        .packages
+
+    let mut ordered: Vec<&SummaryPackage> = summary.packages.iter().collect();
+    ordered.sort_by_key(|p| (!p.is_removal, p.name.clone()));
+
+    let rows: Vec<(String, String, String, String, String)> = ordered
         .iter()
         .map(|p| {
+            let net = if p.is_removal {
+                -p.installed_size
+            } else {
+                p.installed_size
+            };
+            let dl = if p.download_size > 0 {
+                format_mib(p.download_size)
+            } else {
+                String::new()
+            };
             (
                 formatted_name(p),
-                version_label(p),
-                format_bytes(p.installed_size),
-                format_bytes(p.download_size),
+                p.old_version.clone().unwrap_or_default(),
+                p.new_version.clone(),
+                format_mib(net),
+                dl,
             )
         })
         .collect();
 
-    let name_width = rows
-        .iter()
-        .map(|(name, _, _, _)| name.len())
-        .max()
-        .unwrap_or(0)
-        .max(format!("Package ({count})").len());
-    let version_width = rows
-        .iter()
-        .map(|(_, version, _, _)| version.len())
-        .max()
-        .unwrap_or(0)
-        .max("Version".len());
-    let installed_width = rows
-        .iter()
-        .map(|(_, _, installed, _)| installed.len())
-        .max()
-        .unwrap_or(0)
-        .max("Installed Size".len());
-    let download_width = rows
-        .iter()
-        .map(|(_, _, _, download)| download.len())
-        .max()
-        .unwrap_or(0)
-        .max("Download Size".len());
+    let has_old = rows.iter().any(|(_, old, _, _, _)| !old.is_empty());
+    let has_new = rows.iter().any(|(_, _, new, _, _)| !new.is_empty());
+    let has_dl = rows.iter().any(|(_, _, _, _, dl)| !dl.is_empty());
 
-    println!();
-    println!(
-        " {:<nw$}  {:<vw$}  {:>iw$}  {:>dw$}",
-        format!("Package ({count})"),
-        "Version",
-        "Installed Size",
-        "Download Size",
-        nw = name_width,
-        vw = version_width,
-        iw = installed_width,
-        dw = download_width,
-    );
-    println!();
-    for (name, version, installed, download) in &rows {
-        println!(
-            " {:<nw$}  {:<vw$}  {:>iw$}  {:>dw$}",
-            name,
-            version,
-            installed,
-            download,
-            nw = name_width,
-            vw = version_width,
-            iw = installed_width,
-            dw = download_width,
-        );
+    let mut columns: Vec<SummaryColumn> = Vec::new();
+    columns.push(SummaryColumn {
+        header: format!("Package ({count})"),
+        right_align_data: false,
+        cells: rows.iter().map(|(name, _, _, _, _)| name.clone()).collect(),
+    });
+    if has_old {
+        columns.push(SummaryColumn {
+            header: "Old Version".to_string(),
+            right_align_data: false,
+            cells: rows.iter().map(|(_, old, _, _, _)| old.clone()).collect(),
+        });
     }
-    println!();
-    println!(
-        "Total Download Size:   {}",
-        format_bytes(summary.total_download_size)
-    );
-    println!(
-        "Total Installed Size:  {}",
-        format_bytes(summary.total_installed_size)
-    );
-    println!();
+    if has_new {
+        columns.push(SummaryColumn {
+            header: "New Version".to_string(),
+            right_align_data: false,
+            cells: rows.iter().map(|(_, _, new, _, _)| new.clone()).collect(),
+        });
+    }
+    columns.push(SummaryColumn {
+        header: "Net Change".to_string(),
+        right_align_data: true,
+        cells: rows.iter().map(|(_, _, _, net, _)| net.clone()).collect(),
+    });
+    if has_dl {
+        columns.push(SummaryColumn {
+            header: "Download Size".to_string(),
+            right_align_data: true,
+            cells: rows.iter().map(|(_, _, _, _, dl)| dl.clone()).collect(),
+        });
+    }
+
+    let widths: Vec<usize> = columns
+        .iter()
+        .map(|col| {
+            let mut w = col.header.len();
+            for cell in &col.cells {
+                w = w.max(cell.len());
+            }
+            w
+        })
+        .collect();
+
+    let num_rows = rows.len();
+    let mut out = String::new();
+
+    out.push('\n');
+    let header_cells: Vec<String> = columns.iter().map(|c| c.header.clone()).collect();
+    let header_align: Vec<bool> = columns.iter().map(|_| false).collect();
+    append_table_line(&mut out, &header_cells, &header_align, &widths);
+    out.push('\n');
+    let data_align: Vec<bool> = columns.iter().map(|c| c.right_align_data).collect();
+    for row_idx in 0..num_rows {
+        let row_cells: Vec<String> = columns.iter().map(|c| c.cells[row_idx].clone()).collect();
+        append_table_line(&mut out, &row_cells, &data_align, &widths);
+    }
+    out.push('\n');
+
+    append_footer(&mut out, summary);
+
+    out
+}
+
+fn append_footer(out: &mut String, summary: &TransactionSummary) {
+    let dlsize = summary.total_download_size;
+    let isize = summary.total_installed_size;
+    let rsize = summary.total_removed_size;
+
+    let mut rows: Vec<(String, String)> = Vec::new();
+    if dlsize > 0 {
+        rows.push(("Total Download Size:".to_string(), format_mib(dlsize)));
+    }
+    if isize > 0 {
+        rows.push(("Total Installed Size:".to_string(), format_mib(isize)));
+    }
+    if rsize > 0 && isize == 0 {
+        rows.push(("Total Removed Size:".to_string(), format_mib(rsize)));
+    }
+    if isize > 0 && rsize > 0 {
+        rows.push((
+            "Net Upgrade Size:".to_string(),
+            format_mib(isize - rsize),
+        ));
+    }
+    if rows.is_empty() {
+        return;
+    }
+
+    let lw = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
+    let vw = rows.iter().map(|(_, value)| value.len()).max().unwrap_or(0);
+    for (label, value) in &rows {
+        out.push_str(&format!("{:<lw$}  {:>vw$}\n", label, value, lw = lw, vw = vw));
+    }
 }
 
 fn formatted_name(pkg: &SummaryPackage) -> String {
@@ -1029,16 +1103,6 @@ fn formatted_name(pkg: &SummaryPackage) -> String {
 fn clean_pkg_filename(name: &str) -> &str {
     let stripped = name.strip_suffix(".sig").unwrap_or(name);
     stripped.split(".pkg").next().unwrap_or(stripped)
-}
-
-fn version_label(pkg: &SummaryPackage) -> String {
-    match (&pkg.old_version, pkg.new_version.is_empty()) {
-        (Some(old), false) => format!("{old} -> {}", pkg.new_version),
-        _ => pkg
-            .old_version
-            .clone()
-            .unwrap_or_else(|| pkg.new_version.clone()),
-    }
 }
 
 fn print_progress(phase: ProgressPhase, package: &str, percent: i32, current: usize, total: usize) {
@@ -1076,7 +1140,8 @@ fn progress_phase_label(phase: ProgressPhase) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::classify_target;
+    use super::{classify_target, render_summary};
+    use crate::events::{SummaryPackage, TransactionSummary};
     use crate::install::InstallTarget;
 
     #[test]
@@ -1100,5 +1165,52 @@ mod tests {
             };
             assert_eq!(actual, *expected, "classify_target({input:?})");
         }
+    }
+
+    #[test]
+    fn render_summary_matches_pacman_cava_case() {
+        let installed = 199229;
+        let removed = 241591;
+        let summary = TransactionSummary {
+            packages: vec![
+                SummaryPackage {
+                    name: "cava".to_string(),
+                    repository: Some("extra".to_string()),
+                    new_version: "0.10.7-1".to_string(),
+                    old_version: None,
+                    download_size: 0,
+                    installed_size: installed,
+                    is_removal: false,
+                },
+                SummaryPackage {
+                    name: "cava-git".to_string(),
+                    repository: None,
+                    new_version: String::new(),
+                    old_version: Some("r1162.4b12c2b-1".to_string()),
+                    download_size: 0,
+                    installed_size: removed,
+                    is_removal: true,
+                },
+            ],
+            total_download_size: 0,
+            total_installed_size: installed,
+            total_removed_size: removed,
+        };
+
+        let expected = [
+            "",
+            "Package (2)  Old Version      New Version  Net Change",
+            "",
+            "cava-git     r1162.4b12c2b-1                -0.23 MiB",
+            "extra/cava                    0.10.7-1       0.19 MiB",
+            "",
+            "Total Installed Size:   0.19 MiB",
+            "Net Upgrade Size:      -0.04 MiB",
+        ]
+        .join("\n")
+            + "\n";
+
+        let actual = render_summary(&summary);
+        assert_eq!(actual, expected, "rendered summary table mismatch");
     }
 }

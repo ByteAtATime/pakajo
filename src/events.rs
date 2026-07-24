@@ -108,6 +108,8 @@ pub struct TransactionSummary {
     pub packages: Vec<SummaryPackage>,
     pub total_download_size: i64,
     pub total_installed_size: i64,
+    #[serde(default)]
+    pub total_removed_size: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +120,8 @@ pub struct SummaryPackage {
     pub old_version: Option<String>,
     pub download_size: i64,
     pub installed_size: i64,
+    #[serde(default)]
+    pub is_removal: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
