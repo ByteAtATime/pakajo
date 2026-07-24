@@ -24,6 +24,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 nucleo-matcher = "0.3"
 tar = "0.4"
 tempfile = "3"
+srcinfo = "2.1.0"
 
 [profile.dev.package."*"]
 opt-level = 2

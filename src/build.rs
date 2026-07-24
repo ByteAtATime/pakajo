@@ -119,7 +119,7 @@ fn is_valid_pkgbase(s: &str) -> Option<()> {
     Some(())
 }
 
-fn clone_dir(pkgbase: &str) -> anyhow::Result<PathBuf> {
+pub(crate) fn clone_dir(pkgbase: &str) -> anyhow::Result<PathBuf> {
     if is_valid_pkgbase(pkgbase).is_none() {
         anyhow::bail!("invalid pkgbase from AUR: {pkgbase:?}");
     }
@@ -134,7 +134,7 @@ fn clone_dir(pkgbase: &str) -> anyhow::Result<PathBuf> {
     Ok(cache.join("pakajo").join(pkgbase))
 }
 
-fn git_clone_or_pull(dir: &Path, pkgbase: &str) -> anyhow::Result<()> {
+pub(crate) fn git_clone_or_pull(dir: &Path, pkgbase: &str) -> anyhow::Result<()> {
     if dir.exists() {
         let status = std::process::Command::new("git")
             .arg("-C")

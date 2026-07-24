@@ -157,6 +157,27 @@ pub(crate) fn aur_sync_subcommand(args: impl Iterator<Item = String>) -> ! {
     exit_with_result(run_aur_sync());
 }
 
+pub(crate) fn srcinfo_subcommand(args: impl Iterator<Item = String>) -> ! {
+    let mut pkgbase: Option<String> = None;
+    for s in args {
+        if s.starts_with('-') {
+            eprintln!("usage: pakajo srcinfo <pkgbase>");
+            std::process::exit(2);
+        }
+        if pkgbase.is_none() {
+            pkgbase = Some(s);
+        }
+    }
+    let pkgbase = match pkgbase {
+        Some(p) => p,
+        None => {
+            eprintln!("usage: pakajo srcinfo <pkgbase>");
+            std::process::exit(2);
+        }
+    };
+    exit_with_result(run_srcinfo(&pkgbase));
+}
+
 pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
     let mut json = false;
     let mut positionals: Vec<String> = Vec::new();
@@ -391,6 +412,23 @@ fn run_aur_sync() -> anyhow::Result<()> {
         } => {
             println!("indexed {aur_count} aur + {repo_count} repo packages (skipped {skipped})");
         }
+    }
+    Ok(())
+}
+
+fn run_srcinfo(pkgbase: &str) -> anyhow::Result<()> {
+    let dir = crate::build::clone_dir(pkgbase)?;
+    crate::build::git_clone_or_pull(&dir, pkgbase)?;
+    let si = if dir.join(".SRCINFO").exists() {
+        crate::srcinfo_io::read_from_dir(&dir)?
+    } else {
+        crate::srcinfo_io::generate(&dir)?
+    };
+    println!("pkgbase = {}", si.base.pkgbase);
+    println!("pkgver = {}", si.base.pkgver);
+    println!("pkgrel = {}", si.base.pkgrel);
+    for url in si.base.source.all() {
+        println!("source = {url}");
     }
     Ok(())
 }

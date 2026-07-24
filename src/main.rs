@@ -20,6 +20,7 @@ mod root;
 mod search;
 mod search_view;
 mod session;
+mod srcinfo_io;
 mod stats;
 mod stub_pkg;
 mod upgrade;
@@ -36,6 +37,7 @@ fn main() -> anyhow::Result<()> {
         Some("install") | Some("add") | Some("-S") => cli::install_subcommand(args),
         Some("search") => cli::search_subcommand(args),
         Some("aur-sync") => cli::aur_sync_subcommand(args),
+        Some("srcinfo") => cli::srcinfo_subcommand(args),
         Some("remove") | Some("uninstall") | Some("rm") | Some("-R") => {
             cli::remove_subcommand(args)
         }

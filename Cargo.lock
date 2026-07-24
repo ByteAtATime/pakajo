@@ -4524,6 +4524,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "srcinfo",
  "tar",
  "tempfile",
  "ureq",
@@ -6125,6 +6126,12 @@ dependencies = [
  "rsqlite-vfs",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "srcinfo"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2f8e6fa7b2376b02839a9fa290dfb4944c441ff9bac51fb4618647232b54d17"
 
 [[package]]
 name = "stable_deref_trait"
