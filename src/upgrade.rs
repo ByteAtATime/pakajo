@@ -103,11 +103,26 @@ pub(crate) fn compute_aur_upgrades(
     let infos = aur.info_many(&foreign_names)?;
     let aur_infos: HashMap<String, AurInfo> =
         infos.into_iter().map(|i| (i.name.clone(), i)).collect();
-    Ok(select_upgradable_candidates(
-        installed,
-        &sync_names,
-        &aur_infos,
-    ))
+    let mut candidates = select_upgradable_candidates(installed, &sync_names, &aur_infos);
+
+    let devel_updates = crate::devel::possible_devel_updates();
+    let devel_names: HashSet<String> = devel_updates.into_iter().collect();
+    candidates.retain(|c| !devel_names.contains(&c.name));
+    for name in &devel_names {
+        let pkg = match handle.localdb().pkg(name.as_str()) {
+            Ok(pkg) => pkg,
+            Err(_) => continue,
+        };
+        candidates.push(AurUpgradeCandidate {
+            name: name.clone(),
+            local_version: pkg.version().to_string(),
+            remote_version: "latest-commit".to_string(),
+            package_base: pkg.base().unwrap_or(name).to_string(),
+        });
+    }
+    candidates.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(candidates)
 }
 
 fn repo_sysupgrade_into<S: InstallSink + 'static>(

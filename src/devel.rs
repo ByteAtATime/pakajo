@@ -145,6 +145,47 @@ pub(crate) fn fetch_devel_info(arch: &str, srcinfo: &srcinfo::Srcinfo) -> anyhow
     Ok(PkgInfo { repos })
 }
 
+pub(crate) fn possible_devel_updates_from(info: &DevelInfo) -> Vec<String> {
+    let targets: Vec<(&String, &RepoInfo)> = info
+        .info
+        .iter()
+        .flat_map(|(pkgname, pkg)| pkg.repos.iter().map(move |repo| (pkgname, repo)))
+        .collect();
+
+    let results: Vec<Option<&String>> = std::thread::scope(|s| {
+        let handles: Vec<_> = targets
+            .iter()
+            .map(|(pkgname, repo)| {
+                s.spawn(move || match crate::git::ls_remote(&repo.url, repo.branch.as_deref()) {
+                    Ok(current) => (current != repo.commit).then_some(*pkgname),
+                    Err(e) => {
+                        eprintln!("warning: failed to look up {}: {e:#}", repo.url);
+                        None
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or(None))
+            .collect()
+    });
+
+    let mut updated: Vec<String> = results
+        .into_iter()
+        .flatten()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .cloned()
+        .collect();
+    updated.sort();
+    updated
+}
+
+pub(crate) fn possible_devel_updates() -> Vec<String> {
+    possible_devel_updates_from(&load_devel_info())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +301,26 @@ mod tests {
         assert!(info.info.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore]
+    fn possible_devel_updates_from_detects_wrong_commit() {
+        let mut info = DevelInfo::default();
+        let pkg = PkgInfo {
+            repos: std::iter::once(RepoInfo {
+                url: "https://github.com/karlstav/cava.git".to_string(),
+                branch: None,
+                commit: "0000000000000000000000000000000000000000".to_string(),
+            })
+            .collect(),
+        };
+        info.info.insert("cava-git".to_string(), pkg);
+
+        let updates = possible_devel_updates_from(&info);
+        assert!(
+            updates.iter().any(|name| name == "cava-git"),
+            "expected cava-git to be reported as updatable, got {updates:?}"
+        );
     }
 }
