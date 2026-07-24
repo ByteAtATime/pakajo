@@ -292,7 +292,8 @@ impl InstallLogPage {
             | InstallEvent::AurDepResolved { .. }
             | InstallEvent::ResolutionComplete { .. }
             | InstallEvent::LayerBoundary { .. }
-            | InstallEvent::SysupgradeAurCandidates { .. } => return None,
+            | InstallEvent::SysupgradeAurCandidates { .. }
+            | InstallEvent::ProcessingChanges => return None,
             InstallEvent::ResolvingAurDependencies { target } => {
                 format!(":: resolving dependencies for {target}...")
             }

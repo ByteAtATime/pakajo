@@ -686,12 +686,10 @@ impl ConsoleSink {
             InstallEvent::CheckingDiskSpace => {},
             InstallEvent::LoadingPackages => {},
             InstallEvent::KeyringStart => {},
-            InstallEvent::RetrievingPackages { num, total_bytes } => {
-                println!(
-                    ":: retrieving {num} packages ({})",
-                    format_bytes(*total_bytes)
-                );
+            InstallEvent::RetrievingPackages { .. } => {
+                println!(":: Retrieving packages...");
             }
+            InstallEvent::ProcessingChanges => println!(":: Processing package changes..."),
             InstallEvent::PackageOperation { .. } => {},
             InstallEvent::DownloadInit { filename, optional } => {
                 if *optional {
@@ -718,14 +716,17 @@ impl ConsoleSink {
                 filename,
                 total,
                 result,
-            } => {
-                let status = match result {
-                    DownloadResult::Success => "done",
-                    DownloadResult::UpToDate => "up to date",
-                    DownloadResult::Failed => "failed",
-                };
-                println!("\r  {filename}: {} [{status}]", format_bytes(*total));
-            }
+            } => match result {
+                DownloadResult::UpToDate => {
+                    println!(" {} is up to date", clean_pkg_filename(filename));
+                }
+                DownloadResult::Success => {
+                    println!("\r  {filename}: {} [done]", format_bytes(*total));
+                }
+                DownloadResult::Failed => {
+                    println!("\r  {filename}: {} [failed]", format_bytes(*total));
+                }
+            },
             InstallEvent::Progress {
                 phase,
                 package,
@@ -1000,6 +1001,11 @@ fn formatted_name(pkg: &SummaryPackage) -> String {
         Some(repo) => format!("{repo}/{}", pkg.name),
         None => pkg.name.clone(),
     }
+}
+
+fn clean_pkg_filename(name: &str) -> &str {
+    let stripped = name.strip_suffix(".sig").unwrap_or(name);
+    stripped.split(".pkg").next().unwrap_or(stripped)
 }
 
 fn version_label(pkg: &SummaryPackage) -> String {

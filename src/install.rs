@@ -340,6 +340,7 @@ fn convert_event(any_event: alpm::AnyEvent) -> Option<InstallEvent> {
             desc: e.desc().map(str::to_string),
         }),
         alpm::Event::TransactionDone => Some(InstallEvent::TransactionDone),
+        alpm::Event::TransactionStart => Some(InstallEvent::ProcessingChanges),
         _ => None,
     }
 }

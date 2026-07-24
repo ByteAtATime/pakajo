@@ -64,6 +64,7 @@ pub enum InstallEvent {
         message: String,
     },
     TransactionDone,
+    ProcessingChanges,
     TransactionSummary(TransactionSummary),
     ResolvingAurDependencies {
         target: String,
