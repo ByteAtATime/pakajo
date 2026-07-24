@@ -2,8 +2,10 @@ mod answerer;
 mod aur;
 mod build;
 mod cli;
+mod devel;
 mod dry_run;
 mod events;
+mod git;
 mod icon;
 mod install;
 mod install_log_overlay;
@@ -37,7 +39,7 @@ fn main() -> anyhow::Result<()> {
         Some("install") | Some("add") | Some("-S") => cli::install_subcommand(args),
         Some("search") => cli::search_subcommand(args),
         Some("aur-sync") => cli::aur_sync_subcommand(args),
-        Some("srcinfo") => cli::srcinfo_subcommand(args),
+        Some("devel-info") => cli::devel_info_subcommand(args),
         Some("remove") | Some("uninstall") | Some("rm") | Some("-R") => {
             cli::remove_subcommand(args)
         }

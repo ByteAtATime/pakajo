@@ -25,6 +25,7 @@ nucleo-matcher = "0.3"
 tar = "0.4"
 tempfile = "3"
 srcinfo = "2.1.0"
+wait-timeout = "0.2"
 
 [profile.dev.package."*"]
 opt-level = 2

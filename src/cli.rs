@@ -157,11 +157,11 @@ pub(crate) fn aur_sync_subcommand(args: impl Iterator<Item = String>) -> ! {
     exit_with_result(run_aur_sync());
 }
 
-pub(crate) fn srcinfo_subcommand(args: impl Iterator<Item = String>) -> ! {
+pub(crate) fn devel_info_subcommand(args: impl Iterator<Item = String>) -> ! {
     let mut pkgbase: Option<String> = None;
     for s in args {
         if s.starts_with('-') {
-            eprintln!("usage: pakajo srcinfo <pkgbase>");
+            eprintln!("usage: pakajo devel-info <pkgbase>");
             std::process::exit(2);
         }
         if pkgbase.is_none() {
@@ -171,11 +171,11 @@ pub(crate) fn srcinfo_subcommand(args: impl Iterator<Item = String>) -> ! {
     let pkgbase = match pkgbase {
         Some(p) => p,
         None => {
-            eprintln!("usage: pakajo srcinfo <pkgbase>");
+            eprintln!("usage: pakajo devel-info <pkgbase>");
             std::process::exit(2);
         }
     };
-    exit_with_result(run_srcinfo(&pkgbase));
+    exit_with_result(run_devel_info(&pkgbase));
 }
 
 pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
@@ -416,19 +416,30 @@ fn run_aur_sync() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_srcinfo(pkgbase: &str) -> anyhow::Result<()> {
+fn run_devel_info(pkgbase: &str) -> anyhow::Result<()> {
     let dir = crate::build::clone_dir(pkgbase)?;
     crate::build::git_clone_or_pull(&dir, pkgbase)?;
-    let si = if dir.join(".SRCINFO").exists() {
+    let srcinfo = if dir.join(".SRCINFO").exists() {
         crate::srcinfo_io::read_from_dir(&dir)?
     } else {
         crate::srcinfo_io::generate(&dir)?
     };
-    println!("pkgbase = {}", si.base.pkgbase);
-    println!("pkgver = {}", si.base.pkgver);
-    println!("pkgrel = {}", si.base.pkgrel);
-    for url in si.base.source.all() {
-        println!("source = {url}");
+    let handle = alpm_handle()?;
+    let arch = handle
+        .architectures()
+        .first()
+        .context("no architecture configured in alpm")?;
+    let info = crate::devel::fetch_devel_info(arch, &srcinfo)?;
+    if info.repos.is_empty() {
+        println!("no upstream git sources for {pkgbase}");
+        return Ok(());
+    }
+    for repo in &info.repos {
+        let branch = repo.branch.as_deref().unwrap_or("HEAD");
+        println!("url = {}", repo.url);
+        println!("branch = {branch}");
+        println!("commit = {}", repo.commit);
+        println!();
     }
     Ok(())
 }
