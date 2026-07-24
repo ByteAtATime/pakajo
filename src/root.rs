@@ -12,7 +12,8 @@ use crate::{
 use alpm::Alpm;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _, Root, StyledExt as _, WindowExt as _,
+    ActiveTheme as _, IconName, Root, StyledExt as _, WindowExt as _,
+    button::{Button, ButtonVariants as _},
     input::{Input, InputEvent, InputState},
     progress::Progress,
     spinner::Spinner,
@@ -284,6 +285,14 @@ impl PakajoRoot {
         window.close_all_dialogs(cx);
     }
 
+    fn dismiss_install(&mut self, cx: &mut Context<Self>) {
+        self.session.update(cx, |s, cx| s.reset_install(cx));
+        self.install_progress = InstallProgress::Idle;
+        self.install_page = None;
+        self.page = Page::Main;
+        cx.notify();
+    }
+
     fn render_install_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (label, color): (&str, Hsla) = match &self.install_progress {
             InstallProgress::Running => ("Installing…", cx.theme().muted_foreground),
@@ -294,6 +303,10 @@ impl PakajoRoot {
         };
         let label = label.to_string();
         let show_bar = matches!(self.install_progress, InstallProgress::Running);
+        let terminal = matches!(
+            self.install_progress,
+            InstallProgress::Completed | InstallProgress::Failed(_) | InstallProgress::Cancelled
+        );
         Some(
             div()
                 .id("install-status-bar")
@@ -305,17 +318,33 @@ impl PakajoRoot {
                 .py_2()
                 .rounded_md()
                 .bg(cx.theme().title_bar)
-                .text_color(color)
-                .child(div().text_sm().child(label))
-                .child(div().flex_1())
+                .child(
+                    div()
+                        .id("install-status-label")
+                        .h_flex()
+                        .items_center()
+                        .gap_2()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(color)
+                        .child(div().text_sm().child(label))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                            if this.install_page.is_some() {
+                                this.page = Page::Install;
+                                cx.notify();
+                            }
+                        })),
+                )
                 .children(
                     show_bar.then(|| Progress::new("install-status").loading(true).w(px(200.))),
                 )
-                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                    if this.install_page.is_some() {
-                        this.page = Page::Install;
-                        cx.notify();
-                    }
+                .children(terminal.then(|| {
+                    Button::new("install-dismiss")
+                        .icon(IconName::Close)
+                        .ghost()
+                        .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                            this.dismiss_install(cx);
+                        }))
                 }))
                 .into_any_element(),
         )

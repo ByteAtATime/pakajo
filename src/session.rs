@@ -423,6 +423,10 @@ impl PakajoSession {
         self.set_progress(InstallProgress::Idle, cx);
     }
 
+    pub(crate) fn reset_install(&mut self, cx: &mut Context<Self>) {
+        self.cancel_install(cx);
+    }
+
     fn refresh_after_install(&mut self, cx: &mut Context<Self>) {
         if let Ok(config) = pacmanconf::Config::new()
             && let Ok(handle) = init_alpm(&config)
