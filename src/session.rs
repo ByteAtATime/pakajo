@@ -1,6 +1,6 @@
 use crate::{
     aur::AurClient,
-    events::InstallEvent,
+    events::{InstallEvent, LogLevel},
     install::{ChildOutcome, InstallProgress, StreamItem},
     local_index::LocalIndex,
     package::{Package, PackageSource, installed_names, is_installed},
@@ -236,10 +236,10 @@ impl PakajoSession {
             }
             StreamItem::Done(ChildOutcome::Success) => {
                 self.refresh_after_install(cx);
-                self.set_progress(InstallProgress::Idle, cx);
+                self.set_progress(InstallProgress::Completed, cx);
             }
             StreamItem::Done(ChildOutcome::Dismissed) => {
-                self.set_progress(InstallProgress::Idle, cx);
+                self.set_progress(InstallProgress::Cancelled, cx);
             }
             StreamItem::Done(ChildOutcome::NotFound) => {
                 self.set_progress(
@@ -248,6 +248,10 @@ impl PakajoSession {
                 );
             }
             StreamItem::Done(ChildOutcome::Failed(message)) => {
+                cx.emit(SessionEvent::InstallLog(InstallEvent::Log {
+                    level: LogLevel::Error,
+                    message: message.clone(),
+                }));
                 self.set_progress(InstallProgress::Failed(message), cx);
             }
         }

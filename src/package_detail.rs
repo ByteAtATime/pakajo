@@ -187,11 +187,17 @@ impl PackageDetail {
                 - baseline_from_top(window, &version, version_size);
 
             let (label, disabled) = match &install_progress {
-                InstallProgress::Idle if installed => ("Remove", false),
                 InstallProgress::Running if installed => ("Removing…", true),
                 InstallProgress::Running => ("Installing…", true),
                 InstallProgress::ConflictReview(_) => ("Reviewing…", true),
-                InstallProgress::Idle | InstallProgress::Failed(_) => ("Install", false),
+                InstallProgress::Idle
+                | InstallProgress::Completed
+                | InstallProgress::Cancelled
+                    if installed =>
+                {
+                    ("Remove", false)
+                }
+                _ => ("Install", false),
             };
 
             let installed_for_click = installed;
@@ -222,8 +228,7 @@ impl PackageDetail {
                         .child(message.clone())
                         .into_any_element(),
                 ),
-                InstallProgress::ConflictReview(_) => None,
-                InstallProgress::Idle => None,
+                _ => None,
             };
 
             div()

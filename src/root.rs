@@ -178,6 +178,12 @@ impl PakajoRoot {
                 cx.notify();
             });
         }
+        if let Some(page) = &self.install_page {
+            page.update(cx, |install_page, cx| {
+                install_page.status = progress.clone();
+                cx.notify();
+            });
+        }
         self.install_progress = progress;
         cx.notify();
     }
@@ -267,23 +273,27 @@ impl PakajoRoot {
                 cx.notify();
             });
         });
-        let page = cx.new(|_| InstallLogPage::new(kind, name, on_back));
+        let current_progress = self.install_progress.clone();
+        let page = cx.new(|_| {
+            let mut page = InstallLogPage::new(kind, name, on_back);
+            page.status = current_progress;
+            page
+        });
         self.install_page = Some(page);
         self.page = Page::Install;
         window.close_all_dialogs(cx);
     }
 
     fn render_install_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (label, failed) = match &self.install_progress {
-            InstallProgress::Running => ("Installing…", false),
-            InstallProgress::Failed(_) => ("Install failed", true),
+        let (label, color): (&str, Hsla) = match &self.install_progress {
+            InstallProgress::Running => ("Installing…", cx.theme().muted_foreground),
+            InstallProgress::Failed(_) => ("Install failed", cx.theme().danger),
+            InstallProgress::Completed => ("Install complete", cx.theme().green),
+            InstallProgress::Cancelled => ("Cancelled", cx.theme().muted_foreground),
             InstallProgress::Idle | InstallProgress::ConflictReview(_) => return None,
         };
         let label = label.to_string();
-        let mut bar = Progress::new("install-status").loading(true);
-        if failed {
-            bar = bar.color(cx.theme().danger);
-        }
+        let show_bar = matches!(self.install_progress, InstallProgress::Running);
         Some(
             div()
                 .id("install-status-bar")
@@ -295,14 +305,12 @@ impl PakajoRoot {
                 .py_2()
                 .rounded_md()
                 .bg(cx.theme().title_bar)
-                .text_color(if failed {
-                    cx.theme().danger
-                } else {
-                    cx.theme().muted_foreground
-                })
+                .text_color(color)
                 .child(div().text_sm().child(label))
                 .child(div().flex_1())
-                .child(bar.w(px(200.)))
+                .children(
+                    show_bar.then(|| Progress::new("install-status").loading(true).w(px(200.))),
+                )
                 .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                     if this.install_page.is_some() {
                         this.page = Page::Install;

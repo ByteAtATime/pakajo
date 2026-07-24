@@ -1,4 +1,6 @@
 use crate::events::{DownloadResult, InstallEvent, LogLevel, PackageOp};
+use crate::icon::PakajoIcon;
+use crate::install::InstallProgress;
 use crate::session::InstallKind;
 use crate::utils::format_bytes;
 use gpui::*;
@@ -13,6 +15,7 @@ pub struct InstallLogPage {
     pub kind: InstallKind,
     pub name: String,
     pub logs: Vec<InstallEvent>,
+    pub status: InstallProgress,
     on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static>,
 }
 
@@ -26,6 +29,7 @@ impl InstallLogPage {
             kind,
             name,
             logs: Vec::new(),
+            status: InstallProgress::Idle,
             on_back,
         }
     }
@@ -35,6 +39,32 @@ impl InstallLogPage {
             InstallKind::Install => format!("Installing {}", self.name),
             InstallKind::Remove => format!("Removing {}", self.name),
         }
+    }
+
+    fn render_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (label, color): (String, Hsla) = match &self.status {
+            InstallProgress::Completed => ("Completed".to_string(), cx.theme().green),
+            InstallProgress::Failed(message) => (format!("Failed: {message}"), cx.theme().danger),
+            InstallProgress::Cancelled => ("Cancelled".to_string(), cx.theme().muted_foreground),
+            InstallProgress::Running
+            | InstallProgress::Idle
+            | InstallProgress::ConflictReview(_) => return None,
+        };
+        Some(
+            div()
+                .h_flex()
+                .items_center()
+                .gap_2()
+                .w_full()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .bg(cx.theme().title_bar)
+                .text_color(color)
+                .child(PakajoIcon::PackageCheck)
+                .child(div().text_sm().child(label))
+                .into_any_element(),
+        )
     }
 
     fn render_event(ev: &InstallEvent) -> Option<Div> {
@@ -154,6 +184,7 @@ impl Render for InstallLogPage {
                             .on_click(move |_, window, cx| on_back(window, cx)),
                     ),
             )
+            .children(self.render_banner(cx))
             .child(
                 div()
                     .id("install-log-scroll")
