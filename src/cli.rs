@@ -667,6 +667,7 @@ fn exit_with_result(result: anyhow::Result<()>) -> ! {
 pub(crate) struct ConsoleSink {
     to_build: usize,
     last_progress: Option<(ProgressPhase, String, i32)>,
+    hooks_header_done: bool,
 }
 
 impl ConsoleSink {
@@ -674,6 +675,7 @@ impl ConsoleSink {
         Self {
             to_build: 0,
             last_progress: None,
+            hooks_header_done: false,
         }
     }
 
@@ -747,8 +749,12 @@ impl ConsoleSink {
                 name,
                 desc,
             } => {
+                if !self.hooks_header_done {
+                    self.hooks_header_done = true;
+                    println!(":: Running post-transaction hooks...");
+                }
                 let label = desc.as_deref().unwrap_or(name);
-                println!(":: running hook ({position}/{total}): {label}");
+                println!("({position}/{total}) {label}...");
             }
             InstallEvent::ScriptletInfo { line } => println!("{line}"),
             InstallEvent::Log { level, message } => match level {
