@@ -1,5 +1,6 @@
 use crate::{
     aur::AurClient,
+    events::InstallEvent,
     install::InstallProgress,
     install_log_overlay::InstallLogOverlay,
     install_review_dialog::{self, InstallReviewDialog},
@@ -68,7 +69,7 @@ impl PakajoRoot {
                 SessionEvent::InstallProgressChanged(progress) => {
                     this.on_install_progress_changed(progress.clone(), cx)
                 }
-                SessionEvent::InstallLog(line) => this.on_install_log(line.clone(), cx),
+                SessionEvent::InstallLog(ev) => this.on_install_log(ev.clone(), cx),
                 SessionEvent::InstallLogsOpened => this.on_install_logs_opened(window, cx),
                 SessionEvent::ReviewRequired { qs, name } => {
                     this.on_review_required(qs.clone(), name.clone(), window, cx)
@@ -171,10 +172,10 @@ impl PakajoRoot {
         cx.notify();
     }
 
-    fn on_install_log(&mut self, line: String, cx: &mut Context<Self>) {
+    fn on_install_log(&mut self, ev: InstallEvent, cx: &mut Context<Self>) {
         if let Some(view) = &self.install_log_view {
             view.update(cx, |overlay, cx| {
-                overlay.logs.push(line);
+                overlay.logs.push(ev);
                 cx.notify();
             });
         }

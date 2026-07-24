@@ -1,5 +1,6 @@
 use crate::{
     aur::AurClient,
+    events::InstallEvent,
     install::{ChildOutcome, InstallProgress, StreamItem},
     local_index::LocalIndex,
     package::{Package, PackageSource, installed_names, is_installed},
@@ -37,7 +38,7 @@ pub(crate) enum SessionEvent {
     DetailUpdated,
     SearchUpdated,
     InstallProgressChanged(InstallProgress),
-    InstallLog(String),
+    InstallLog(InstallEvent),
     InstallLogsOpened,
     ReviewRequired { qs: QuestionSet, name: String },
 }
@@ -225,7 +226,7 @@ impl PakajoSession {
     fn handle_stream_item(&mut self, item: StreamItem, cx: &mut Context<Self>) {
         match item {
             StreamItem::Event(ev) => {
-                cx.emit(SessionEvent::InstallLog(format!("{ev:?}")));
+                cx.emit(SessionEvent::InstallLog(ev));
             }
             StreamItem::Done(ChildOutcome::Success) => {
                 self.refresh_after_install(cx);
