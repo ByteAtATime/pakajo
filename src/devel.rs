@@ -162,9 +162,7 @@ pub(crate) fn refresh_baseline(build_dir: &std::path::Path, arch: &str) -> anyho
 
 fn merge_baseline(devel: &mut DevelInfo, srcinfo: &srcinfo::Srcinfo, pkg_info: PkgInfo) {
     for name in srcinfo.pkgnames() {
-        if devel.info.contains_key(name) {
-            devel.info.insert(name.to_string(), pkg_info.clone());
-        }
+        devel.info.insert(name.to_string(), pkg_info.clone());
     }
 }
 
@@ -366,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_baseline_creates_no_stray_entries() {
+    fn merge_baseline_auto_registers_new_package() {
         let mut devel = DevelInfo::default();
         let srcinfo: ::srcinfo::Srcinfo = "pkgbase = example\n\
              pkgver = 1.0\n\
@@ -386,7 +384,9 @@ mod tests {
 
         merge_baseline(&mut devel, &srcinfo, fresh);
 
-        assert!(devel.info.is_empty());
+        let registered = devel.info.get("example-git").expect("package auto-registered");
+        let repo = registered.repos.iter().next().expect("repo present");
+        assert_eq!(repo.commit, "1111111111111111111111111111111111111111");
     }
 
     #[test]
