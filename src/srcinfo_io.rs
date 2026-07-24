@@ -23,7 +23,6 @@ pub fn generate(dir: &Path) -> anyhow::Result<::srcinfo::Srcinfo> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn parses_pkgver_pkgrel_and_source_from_buf() {
