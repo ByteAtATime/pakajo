@@ -38,6 +38,7 @@ enum Page {
 pub struct PakajoRoot {
     session: Entity<PakajoSession>,
     pub install_progress: InstallProgress,
+    install_kind: InstallKind,
     status_overall: f32,
     status_indeterminate: bool,
     search_input: Entity<InputState>,
@@ -93,6 +94,7 @@ impl PakajoRoot {
         Self {
             session,
             install_progress: InstallProgress::Idle,
+            install_kind: InstallKind::Install,
             status_overall: 0.0,
             status_indeterminate: true,
             search_input,
@@ -279,6 +281,7 @@ impl PakajoRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.install_kind = kind;
         let root_entity = cx.entity();
         let on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static> = Arc::new(move |_window, cx| {
             root_entity.update(cx, |root, cx| {
@@ -310,14 +313,17 @@ impl PakajoRoot {
     }
 
     fn render_install_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (label, color): (&str, Hsla) = match &self.install_progress {
-            InstallProgress::Running => ("Installing…", cx.theme().muted_foreground),
-            InstallProgress::Failed(_) => ("Install failed", cx.theme().danger),
-            InstallProgress::Completed => ("Install complete", cx.theme().green),
-            InstallProgress::Cancelled => ("Cancelled", cx.theme().muted_foreground),
+        let (present, past) = match self.install_kind {
+            InstallKind::Install => ("Installing", "Install"),
+            InstallKind::Remove => ("Removing", "Remove"),
+        };
+        let (label, color): (String, Hsla) = match &self.install_progress {
+            InstallProgress::Running => (format!("{present}…"), cx.theme().muted_foreground),
+            InstallProgress::Failed(_) => (format!("{past} failed"), cx.theme().danger),
+            InstallProgress::Completed => (format!("{past} complete"), cx.theme().green),
+            InstallProgress::Cancelled => ("Cancelled".to_string(), cx.theme().muted_foreground),
             InstallProgress::Idle | InstallProgress::ConflictReview(_) => return None,
         };
-        let label = label.to_string();
         let show_bar = matches!(self.install_progress, InstallProgress::Running);
         let terminal = matches!(
             self.install_progress,

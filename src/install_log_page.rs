@@ -131,9 +131,15 @@ impl InstallLogPage {
     }
 
     fn render_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let past = match self.kind {
+            InstallKind::Install => "Install",
+            InstallKind::Remove => "Remove",
+        };
         let (label, color): (String, Hsla) = match &self.status {
-            InstallProgress::Completed => ("Completed".to_string(), cx.theme().green),
-            InstallProgress::Failed(message) => (format!("Failed: {message}"), cx.theme().danger),
+            InstallProgress::Completed => (format!("{past} complete"), cx.theme().green),
+            InstallProgress::Failed(message) => {
+                (format!("{past} failed: {message}"), cx.theme().danger)
+            }
             InstallProgress::Cancelled => ("Cancelled".to_string(), cx.theme().muted_foreground),
             InstallProgress::Running
             | InstallProgress::Idle
