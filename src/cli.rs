@@ -1014,11 +1014,16 @@ fn version_label(pkg: &SummaryPackage) -> String {
 
 fn print_progress(phase: ProgressPhase, package: &str, percent: i32, current: usize, total: usize) {
     let label = progress_phase_label(phase);
+    let subject = if package.is_empty() {
+        label.to_string()
+    } else {
+        format!("{label} {package}")
+    };
     let bar_width = 30;
     let filled = (percent as usize * bar_width / 100).min(bar_width);
     let bar: String = "#".repeat(filled);
     let spaces = "-".repeat(bar_width - filled);
-    print!("\r{label} {package} ({current}/{total}) [{bar}{spaces}] {percent:>3}%");
+    print!("\r({current}/{total}) {subject} [{bar}{spaces}] {percent:>3}%");
     let _ = std::io::stdout().flush();
     if percent >= 100 {
         println!();
@@ -1032,11 +1037,11 @@ fn progress_phase_label(phase: ProgressPhase) -> &'static str {
         ProgressPhase::Downgrade => "downgrading",
         ProgressPhase::Reinstall => "reinstalling",
         ProgressPhase::Remove => "removing",
-        ProgressPhase::Conflicts => "checking conflicts",
-        ProgressPhase::Diskspace => "checking disk space",
-        ProgressPhase::Integrity => "checking integrity",
-        ProgressPhase::Load => "loading",
-        ProgressPhase::Keyring => "checking keyring",
+        ProgressPhase::Conflicts => "checking for file conflicts",
+        ProgressPhase::Diskspace => "checking available disk space",
+        ProgressPhase::Integrity => "checking package integrity",
+        ProgressPhase::Load => "loading package files",
+        ProgressPhase::Keyring => "checking keys in keyring",
     }
 }
 
