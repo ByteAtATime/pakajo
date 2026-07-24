@@ -14,6 +14,7 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme as _, Root, StyledExt as _, WindowExt as _,
     input::{Input, InputEvent, InputState},
+    progress::Progress,
     spinner::Spinner,
 };
 use std::sync::Arc;
@@ -156,8 +157,7 @@ impl PakajoRoot {
                         active_tooltip: None,
                         install_progress,
                     });
-                    self.detail_subscription =
-                        Some(cx.subscribe(&entity, Self::on_detail_intent));
+                    self.detail_subscription = Some(cx.subscribe(&entity, Self::on_detail_intent));
                     self.detail = DetailPane::Ready(entity);
                     cx.notify();
                 } else if let DetailPane::Ready(entity) = &self.detail {
@@ -219,7 +219,8 @@ impl PakajoRoot {
                     return;
                 };
                 root.update(cx, |this, cx| {
-                    this.session.update(cx, |s, cx| s.confirm_install(approvals, cx));
+                    this.session
+                        .update(cx, |s, cx| s.confirm_install(approvals, cx));
                 });
             },
         );
@@ -260,17 +261,56 @@ impl PakajoRoot {
         cx: &mut Context<Self>,
     ) {
         let root_entity = cx.entity();
-        let on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static> =
-            Arc::new(move |_window, cx| {
-                root_entity.update(cx, |root, cx| {
-                    root.page = Page::Main;
-                    cx.notify();
-                });
+        let on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static> = Arc::new(move |_window, cx| {
+            root_entity.update(cx, |root, cx| {
+                root.page = Page::Main;
+                cx.notify();
             });
+        });
         let page = cx.new(|_| InstallLogPage::new(kind, name, on_back));
         self.install_page = Some(page);
         self.page = Page::Install;
         window.close_all_dialogs(cx);
+    }
+
+    fn render_install_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (label, failed) = match &self.install_progress {
+            InstallProgress::Running => ("Installing…", false),
+            InstallProgress::Failed(_) => ("Install failed", true),
+            InstallProgress::Idle | InstallProgress::ConflictReview(_) => return None,
+        };
+        let label = label.to_string();
+        let mut bar = Progress::new("install-status").loading(true);
+        if failed {
+            bar = bar.color(cx.theme().danger);
+        }
+        Some(
+            div()
+                .id("install-status-bar")
+                .h_flex()
+                .items_center()
+                .gap_2()
+                .w_full()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .bg(cx.theme().title_bar)
+                .text_color(if failed {
+                    cx.theme().danger
+                } else {
+                    cx.theme().muted_foreground
+                })
+                .child(div().text_sm().child(label))
+                .child(div().flex_1())
+                .child(bar.w(px(200.)))
+                .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                    if this.install_page.is_some() {
+                        this.page = Page::Install;
+                        cx.notify();
+                    }
+                }))
+                .into_any_element(),
+        )
     }
 }
 
@@ -358,7 +398,9 @@ impl Render for PakajoRoot {
                 .child(body)
         };
 
-        shell.children(Root::render_dialog_layer(window, cx))
+        shell
+            .children(self.render_install_status(cx))
+            .children(Root::render_dialog_layer(window, cx))
     }
 }
 
