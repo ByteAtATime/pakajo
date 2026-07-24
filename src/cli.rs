@@ -157,25 +157,14 @@ pub(crate) fn aur_sync_subcommand(args: impl Iterator<Item = String>) -> ! {
     exit_with_result(run_aur_sync());
 }
 
-pub(crate) fn devel_info_subcommand(args: impl Iterator<Item = String>) -> ! {
-    let mut pkgbase: Option<String> = None;
+pub(crate) fn gendb_subcommand(args: impl Iterator<Item = String>) -> ! {
     for s in args {
         if s.starts_with('-') {
-            eprintln!("usage: pakajo devel-info <pkgbase>");
+            eprintln!("usage: pakajo gendb");
             std::process::exit(2);
-        }
-        if pkgbase.is_none() {
-            pkgbase = Some(s);
         }
     }
-    let pkgbase = match pkgbase {
-        Some(p) => p,
-        None => {
-            eprintln!("usage: pakajo devel-info <pkgbase>");
-            std::process::exit(2);
-        }
-    };
-    exit_with_result(run_devel_info(&pkgbase));
+    exit_with_result(run_gendb());
 }
 
 pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
@@ -416,32 +405,95 @@ fn run_aur_sync() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_devel_info(pkgbase: &str) -> anyhow::Result<()> {
-    let dir = crate::build::clone_dir(pkgbase)?;
-    crate::build::git_clone_or_pull(&dir, pkgbase)?;
-    let srcinfo = if dir.join(".SRCINFO").exists() {
-        crate::srcinfo_io::read_from_dir(&dir)?
-    } else {
-        crate::srcinfo_io::generate(&dir)?
-    };
+fn run_gendb() -> anyhow::Result<()> {
     let handle = alpm_handle()?;
     let arch = handle
         .architectures()
         .first()
         .context("no architecture configured in alpm")?;
-    let info = crate::devel::fetch_devel_info(arch, &srcinfo)?;
-    if info.repos.is_empty() {
-        println!("no upstream git sources for {pkgbase}");
+
+    let sync_names: std::collections::HashSet<String> = handle
+        .syncdbs()
+        .iter()
+        .flat_map(|db| db.pkgs().iter())
+        .map(|p| p.name().to_string())
+        .collect();
+    let foreign: Vec<String> = handle
+        .localdb()
+        .pkgs()
+        .iter()
+        .map(|p| p.name().to_string())
+        .filter(|name| !sync_names.contains(name))
+        .collect();
+
+    let mut devel = crate::devel::load_devel_info();
+
+    if foreign.is_empty() {
+        crate::devel::save_devel_info(&devel)?;
+        println!(
+            "no foreign packages installed; wrote {}",
+            crate::devel::state_path().display()
+        );
         return Ok(());
     }
-    for repo in &info.repos {
-        let branch = repo.branch.as_deref().unwrap_or("HEAD");
-        println!("url = {}", repo.url);
-        println!("branch = {branch}");
-        println!("commit = {}", repo.commit);
-        println!();
+
+    let aur = crate::aur::AurClient::new();
+    let infos = match aur.info_many(&foreign) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("warning: AUR info lookup failed: {e:#}");
+            crate::devel::save_devel_info(&devel)?;
+            return Ok(());
+        }
+    };
+
+    let mut base_to_names: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for info in &infos {
+        base_to_names
+            .entry(info.package_base.clone())
+            .or_default()
+            .push(info.name.clone());
     }
+
+    let mut recorded = 0usize;
+    for (base, names) in &base_to_names {
+        let pkg_info = match fetch_base_devel_info(base, arch) {
+            Ok(Some(p)) => p,
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("warning: skipping {base}: {e:#}");
+                continue;
+            }
+        };
+        for name in names {
+            devel.info.insert(name.clone(), pkg_info.clone());
+        }
+        recorded += 1;
+    }
+
+    let path = crate::devel::state_path();
+    crate::devel::save_devel_info(&devel)?;
+    println!("recorded {recorded} devel package(s) to {}", path.display());
     Ok(())
+}
+
+fn fetch_base_devel_info(
+    base: &str,
+    arch: &str,
+) -> anyhow::Result<Option<crate::devel::PkgInfo>> {
+    let dir = crate::build::clone_dir(base)?;
+    crate::build::git_clone_or_pull(&dir, base)?;
+    let srcinfo = if dir.join(".SRCINFO").exists() {
+        crate::srcinfo_io::read_from_dir(&dir)?
+    } else {
+        crate::srcinfo_io::generate(&dir)?
+    };
+    let pkg_info = crate::devel::fetch_devel_info(arch, &srcinfo)?;
+    if pkg_info.repos.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(pkg_info))
 }
 
 fn run_search(query: &str) -> anyhow::Result<()> {
