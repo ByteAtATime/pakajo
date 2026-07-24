@@ -3,7 +3,13 @@ use std::io::Write as _;
 use crate::question::ProviderCandidate;
 
 pub trait QuestionAnswerer {
-    fn answer_conflict(&self, incoming: &str, removable: &str) -> ConflictDecision;
+    fn answer_conflict(
+        &self,
+        incoming: &str,
+        incoming_version: &str,
+        removable: &str,
+        removable_version: &str,
+    ) -> ConflictDecision;
     fn answer_provider(&self, depend: &str, candidates: &[ProviderCandidate]) -> ProviderDecision;
 }
 
@@ -44,10 +50,16 @@ impl StdioAnswerer {
 }
 
 impl QuestionAnswerer for StdioAnswerer {
-    fn answer_conflict(&self, incoming: &str, removable: &str) -> ConflictDecision {
+    fn answer_conflict(
+        &self,
+        incoming: &str,
+        incoming_version: &str,
+        removable: &str,
+        removable_version: &str,
+    ) -> ConflictDecision {
         eprint!(
-            ":: {} and {} are in conflict. Remove {}? [y/N] ",
-            incoming, removable, removable
+            ":: {}-{} and {}-{} are in conflict. Remove {}? [y/N] ",
+            incoming, incoming_version, removable, removable_version, removable
         );
         let _ = std::io::stderr().flush();
         let mut input = String::new();
@@ -89,7 +101,13 @@ impl QuestionAnswerer for StdioAnswerer {
 pub struct NonInteractiveAnswerer;
 
 impl QuestionAnswerer for NonInteractiveAnswerer {
-    fn answer_conflict(&self, _incoming: &str, _removable: &str) -> ConflictDecision {
+    fn answer_conflict(
+        &self,
+        _incoming: &str,
+        _incoming_version: &str,
+        _removable: &str,
+        _removable_version: &str,
+    ) -> ConflictDecision {
         ConflictDecision::CannotPrompt
     }
 
@@ -107,7 +125,13 @@ impl QuestionAnswerer for NonInteractiveAnswerer {
 pub struct DenyAllAnswerer;
 
 impl QuestionAnswerer for DenyAllAnswerer {
-    fn answer_conflict(&self, _incoming: &str, _removable: &str) -> ConflictDecision {
+    fn answer_conflict(
+        &self,
+        _incoming: &str,
+        _incoming_version: &str,
+        _removable: &str,
+        _removable_version: &str,
+    ) -> ConflictDecision {
         ConflictDecision::Decline
     }
 
@@ -131,7 +155,13 @@ impl ApprovalsAnswerer {
 }
 
 impl QuestionAnswerer for ApprovalsAnswerer {
-    fn answer_conflict(&self, incoming: &str, removable: &str) -> ConflictDecision {
+    fn answer_conflict(
+        &self,
+        incoming: &str,
+        _incoming_version: &str,
+        removable: &str,
+        _removable_version: &str,
+    ) -> ConflictDecision {
         let approved = self.approvals.approved_conflicts.iter().any(|c| {
             (c.incoming == incoming && c.removable == removable)
                 || (c.incoming == removable && c.removable == incoming)
@@ -184,15 +214,15 @@ mod tests {
         };
         let a = ApprovalsAnswerer::new(approvals);
         assert!(matches!(
-            a.answer_conflict("cava-git", "cava"),
+            a.answer_conflict("cava-git", "", "cava", ""),
             ConflictDecision::Remove
         ));
         assert!(matches!(
-            a.answer_conflict("cava", "cava-git"),
+            a.answer_conflict("cava", "", "cava-git", ""),
             ConflictDecision::Remove
         ));
         assert!(matches!(
-            a.answer_conflict("foo", "bar"),
+            a.answer_conflict("foo", "", "bar", ""),
             ConflictDecision::Decline
         ));
     }
@@ -215,7 +245,7 @@ mod tests {
         let decoded: Approvals = serde_json::from_slice(&bytes).expect("deserialize");
         let a = ApprovalsAnswerer::new(decoded);
         assert!(matches!(
-            a.answer_conflict("cava-git", "cava"),
+            a.answer_conflict("cava-git", "", "cava", ""),
             ConflictDecision::Remove
         ));
     }

@@ -137,14 +137,21 @@ pub(crate) fn register_callbacks<S: InstallSink + 'static>(
             let mut s = data.borrow_mut();
             match any_question.question() {
                 alpm::Question::Conflict(mut cq) => {
-                    let (incoming, removable) = {
+                    let (incoming, incoming_version, removable, removable_version) = {
                         let c = cq.conflict();
                         (
                             c.package1().name().to_string(),
+                            c.package1().version().to_string(),
                             c.package2().name().to_string(),
+                            c.package2().version().to_string(),
                         )
                     };
-                    match s.answerer.answer_conflict(&incoming, &removable) {
+                    match s.answerer.answer_conflict(
+                        &incoming,
+                        &incoming_version,
+                        &removable,
+                        &removable_version,
+                    ) {
                         crate::answerer::ConflictDecision::Remove => {
                             cq.set_remove(true);
                         }
@@ -699,7 +706,13 @@ mod tests {
         }
 
         impl QuestionAnswerer for RecordingAnswerer {
-            fn answer_conflict(&self, _incoming: &str, _removable: &str) -> ConflictDecision {
+            fn answer_conflict(
+                &self,
+                _incoming: &str,
+                _incoming_version: &str,
+                _removable: &str,
+                _removable_version: &str,
+            ) -> ConflictDecision {
                 ConflictDecision::Decline
             }
 
