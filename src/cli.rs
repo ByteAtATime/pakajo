@@ -5,7 +5,7 @@ use clap::Parser;
 
 mod args;
 pub(crate) use self::args::{Cli, Command};
-use self::args::{InstallArgs, RemoveArgs, SearchArgs, UpgradeArgs};
+use self::args::{CleanArgs, InstallArgs, RemoveArgs, SearchArgs, UpgradeArgs};
 
 mod summary;
 
@@ -136,6 +136,10 @@ pub(crate) fn aur_sync_subcommand() -> ! {
 
 pub(crate) fn gendb_subcommand() -> ! {
     exit_with_result(run_gendb());
+}
+
+pub(crate) fn clean_subcommand(args: CleanArgs) -> ! {
+    exit_with_result(crate::clean::run_clean(args.remove));
 }
 
 pub(crate) fn remove_subcommand(args: RemoveArgs) -> ! {

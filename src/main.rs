@@ -1,6 +1,7 @@
 mod answerer;
 mod aur;
 mod build;
+mod clean;
 mod cli;
 mod color;
 mod devel;
@@ -41,6 +42,7 @@ fn main() -> anyhow::Result<()> {
         Some(cli::Command::Remove(a)) => cli::remove_subcommand(a),
         Some(cli::Command::Upgrade(a)) => cli::upgrade_subcommand(a),
         Some(cli::Command::Search(a)) => cli::search_subcommand(a),
+        Some(cli::Command::Clean(a)) => cli::clean_subcommand(a),
         Some(cli::Command::AurSync) => cli::aur_sync_subcommand(),
         Some(cli::Command::Gendb) => cli::gendb_subcommand(),
         None => {}

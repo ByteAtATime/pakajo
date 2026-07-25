@@ -15,6 +15,7 @@ pub(crate) enum Command {
     Remove(RemoveArgs),
     Upgrade(UpgradeArgs),
     Search(SearchArgs),
+    Clean(CleanArgs),
     AurSync,
     Gendb,
 }
@@ -52,4 +53,10 @@ pub(crate) struct UpgradeArgs {
 #[derive(Args)]
 pub(crate) struct SearchArgs {
     pub(super) query: Vec<String>,
+}
+
+#[derive(Args)]
+pub(crate) struct CleanArgs {
+    #[arg(short = 'r', long = "remove")]
+    pub(super) remove: bool,
 }
