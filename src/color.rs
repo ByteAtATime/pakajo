@@ -4,6 +4,8 @@ pub const COLON: &str = "\x1b[1;34m";
 pub const BOLD: &str = "\x1b[0;1m";
 pub const VERSION: &str = "\x1b[38;5;243m";
 pub const CYAN: &str = "\x1b[36m";
+pub const RED: &str = "\x1b[1;31m";
+pub const YELLOW: &str = "\x1b[1;33m";
 pub const RESET: &str = "\x1b[0m";
 
 pub fn stdout_color() -> bool {

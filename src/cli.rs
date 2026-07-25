@@ -800,14 +800,20 @@ impl ConsoleSink {
                 }
             }
             InstallEvent::Log { level, message } => match level {
-                LogLevel::Error => eprint!("error: {message}"),
-                LogLevel::Warning => eprint!("warning: {message}"),
+                LogLevel::Error => eprint!("{} {message}", color::paint(self.color, color::RED, "error:")),
+                LogLevel::Warning => eprint!(
+                    "{} {message}",
+                    color::paint(self.color, color::YELLOW, "warning:")
+                ),
                 LogLevel::Debug => {}
             },
             InstallEvent::TransactionDone => {}
             InstallEvent::TransactionSummary(s) => print_summary(s),
             InstallEvent::ResolvingAurDependencies { target } => {
-                println!(":: resolving dependencies for {target}...");
+                println!(
+                    "{}",
+                    color::colon(self.color, &format!("resolving dependencies for {}...", target))
+                );
             }
             InstallEvent::AurDepResolved { .. } => {}
             InstallEvent::ResolutionComplete { .. } => {}
@@ -820,7 +826,13 @@ impl ConsoleSink {
                 if candidates.is_empty() {
                     return;
                 }
-                println!(":: {} AUR package(s) to upgrade:", candidates.len());
+                println!(
+                    "{}",
+                    color::colon(
+                        self.color,
+                        &format!("{} AUR package(s) to upgrade:", candidates.len())
+                    )
+                );
                 let name_width = candidates.iter().map(|c| c.name.len()).max().unwrap_or(0);
                 let ver_width = candidates
                     .iter()
@@ -893,11 +905,13 @@ impl InstallSink for EscalatedSink {
 }
 
 fn confirm_install() -> bool {
-    confirm_yes("\n:: Proceed with installation?")
+    print!("\n");
+    confirm_yes("Proceed with installation?")
 }
 
 fn confirm_remove() -> bool {
-    confirm_yes("\n:: Proceed with removal?")
+    print!("\n");
+    confirm_yes("Proceed with removal?")
 }
 
 pub(crate) fn confirm_build(plan: &crate::resolve::BuildPlan) -> bool {
@@ -927,19 +941,21 @@ pub(crate) fn confirm_build(plan: &crate::resolve::BuildPlan) -> bool {
         .unwrap_or(0);
 
     println!();
+    let c = color::stdout_color();
     for (name, version, label) in &rows {
+        let v = color::paint(c, color::VERSION, version);
         match label {
             Some(l) => println!(
                 "  {:<nw$}  {:<vw$}  ({l})",
                 name,
-                version,
+                v,
                 nw = name_width,
                 vw = version_width,
             ),
             None => println!(
                 "  {:<nw$}  {:<vw$}",
                 name,
-                version,
+                v,
                 nw = name_width,
                 vw = version_width,
             ),
@@ -955,15 +971,29 @@ pub(crate) fn confirm_build(plan: &crate::resolve::BuildPlan) -> bool {
         "packages"
     };
     if repo_dep_count > 0 {
-        println!(":: {aur_count} {aur_word} to build, {repo_dep_count} to install");
+        println!(
+            "{}",
+            color::colon(
+                c,
+                &format!("{aur_count} {aur_word} to build, {repo_dep_count} to install")
+            )
+        );
     } else {
-        println!(":: {aur_count} {aur_word} to build");
+        println!(
+            "{}",
+            color::colon(c, &format!("{aur_count} {aur_word} to build"))
+        );
     }
-    confirm_yes(":: Proceed with build?")
+    confirm_yes("Proceed with build?")
 }
 
-fn confirm_yes(prompt: &str) -> bool {
-    print!("{prompt} [Y/n] ");
+fn confirm_yes(message: &str) -> bool {
+    let c = color::stdout_color();
+    print!(
+        "{} {} ",
+        color::colon(c, message),
+        color::paint(c, color::BOLD, "[Y/n]")
+    );
     let _ = std::io::stdout().flush();
     let mut input = String::new();
     let _ = std::io::stdin().read_line(&mut input);
