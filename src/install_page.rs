@@ -1,5 +1,7 @@
 use crate::color;
-use crate::events::{DownloadResult, InstallEvent, LogLevel, PackageOp, ProgressPhase};
+use crate::events::{
+    DownloadResult, InstallEvent, LogLevel, PackageOp, ProgressPhase, TransactionSummary,
+};
 use crate::icon::PakajoIcon;
 use crate::install::InstallProgress;
 use crate::package::PackageSource;
@@ -26,10 +28,17 @@ struct FileDownload {
     total: i64,
 }
 
+enum PageMode {
+    Repo(RepoState),
+    Aur,
+}
+
+struct RepoState {
+    manifest: Option<TransactionSummary>,
+}
+
 pub struct InstallPage {
     pub kind: InstallKind,
-    #[allow(dead_code)]
-    pub source: PackageSource,
     pub name: String,
     pub logs: Vec<InstallEvent>,
     pub status: InstallProgress,
@@ -37,6 +46,7 @@ pub struct InstallPage {
     download: Option<FileDownload>,
     pub overall: f32,
     pub indeterminate: bool,
+    mode: PageMode,
     on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static>,
 }
 
@@ -47,9 +57,12 @@ impl InstallPage {
         name: String,
         on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static>,
     ) -> Self {
+        let mode = match source {
+            PackageSource::Repo => PageMode::Repo(RepoState { manifest: None }),
+            PackageSource::Aur => PageMode::Aur,
+        };
         Self {
             kind,
-            source,
             name,
             logs: Vec::new(),
             status: InstallProgress::Idle,
@@ -58,6 +71,7 @@ impl InstallPage {
             overall: 0.0,
             indeterminate: true,
             on_back,
+            mode,
         }
     }
 
@@ -121,6 +135,11 @@ impl InstallPage {
                     downloaded,
                     total,
                 });
+            }
+            InstallEvent::TransactionSummary(summary) => {
+                if let PageMode::Repo(state) = &mut self.mode {
+                    state.manifest = Some(summary);
+                }
             }
             other => {
                 self.logs.push(other);
@@ -319,27 +338,8 @@ impl InstallPage {
         };
         Some(div().child(text))
     }
-}
 
-fn format_package_operation(
-    operation: PackageOp,
-    package: &str,
-    new_version: &Option<String>,
-    old_version: &Option<String>,
-) -> String {
-    let new = new_version.as_deref().unwrap_or("?");
-    let old = old_version.as_deref().unwrap_or("?");
-    match operation {
-        PackageOp::Install => format!("installing {package} ({new})"),
-        PackageOp::Upgrade => format!("upgrading {package} ({old} -> {new})"),
-        PackageOp::Reinstall => format!("reinstalling {package} ({new})"),
-        PackageOp::Downgrade => format!("downgrading {package} ({old} -> {new})"),
-        PackageOp::Remove => format!("removing {package} ({old})"),
-    }
-}
-
-impl Render for InstallPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_aur(&self, cx: &mut Context<Self>) -> Div {
         let on_back = self.on_back.clone();
         v_flex()
             .size_full()
@@ -374,5 +374,239 @@ impl Render for InstallPage {
                     .text_size(rems(0.8))
                     .children(self.logs.iter().filter_map(InstallPage::render_event)),
             )
+    }
+
+    fn render_repo(&self, cx: &mut Context<Self>) -> Div {
+        let on_back = self.on_back.clone();
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .gap_4()
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .child(div().text_lg().font_semibold().child(self.title()))
+                    .child(
+                        Button::new("install-back")
+                            .label("Back")
+                            .ghost()
+                            .rounded_none()
+                            .on_click(move |_, window, cx| on_back(window, cx)),
+                    ),
+            )
+            .child(self.render_summary(cx))
+            .child(
+                div()
+                    .id("install-log-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .v_flex()
+                    .gap_1()
+                    .p_3()
+                    .bg(cx.theme().muted)
+                    .text_color(cx.theme().muted_foreground)
+                    .text_size(rems(0.8))
+                    .children(self.logs.iter().filter_map(InstallPage::render_event)),
+            )
+    }
+
+    fn render_summary(&self, cx: &mut Context<Self>) -> Div {
+        let PageMode::Repo(state) = &self.mode else {
+            return div();
+        };
+        match &state.manifest {
+            Some(summary) if !summary.packages.is_empty() => {
+                let mut installs = 0u32;
+                let mut upgrades = 0u32;
+                let mut removes = 0u32;
+                for pkg in &summary.packages {
+                    if pkg.is_removal {
+                        removes += 1;
+                    } else if pkg.old_version.is_some() {
+                        upgrades += 1;
+                    } else {
+                        installs += 1;
+                    }
+                }
+
+                let mut segments: Vec<String> = Vec::new();
+                if installs > 0 {
+                    segments.push(format!("Install {installs}"));
+                }
+                if upgrades > 0 {
+                    segments.push(format!("Upgrade {upgrades}"));
+                }
+                if removes > 0 {
+                    segments.push(format!("Remove {removes}"));
+                }
+                let counts_left = segments.join(" · ");
+
+                let download_right = match self.kind {
+                    InstallKind::Install if summary.total_download_size > 0 => Some(format!(
+                        "↓ {}",
+                        format_bytes(summary.total_download_size)
+                    )),
+                    _ => None,
+                };
+
+                let net_text = match self.kind {
+                    InstallKind::Install => {
+                        let net = summary.total_installed_size - summary.total_removed_size;
+                        if net != 0 {
+                            let sign = if net > 0 { "+" } else { "-" };
+                            Some(format!("Net {sign}{}", format_bytes(net.abs())))
+                        } else {
+                            None
+                        }
+                    }
+                    InstallKind::Remove if summary.total_removed_size > 0 => {
+                        Some(format!("Frees {}", format_bytes(summary.total_removed_size)))
+                    }
+                    _ => None,
+                };
+
+                let mut card = v_flex()
+                    .gap_3()
+                    .w_full()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .p_4()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().child(counts_left))
+                            .children(download_right.map(|d| div().child(d))),
+                    );
+
+                if let Some(net) = net_text {
+                    card = card.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(net),
+                    );
+                }
+
+                card = card.child(div().h_px().w_full().bg(cx.theme().border));
+
+                let total = summary.packages.len();
+                for pkg in summary.packages.iter().take(6) {
+                    let (op_label, op_color, version_text) = if pkg.is_removal {
+                        (
+                            "Remove",
+                            cx.theme().danger,
+                            pkg.old_version.clone().unwrap_or_default(),
+                        )
+                    } else if pkg.old_version.is_some() {
+                        (
+                            "Upgrade",
+                            cx.theme().blue,
+                            format!(
+                                "{} → {}",
+                                pkg.old_version.as_deref().unwrap_or("?"),
+                                pkg.new_version,
+                            ),
+                        )
+                    } else {
+                        ("Install", cx.theme().green, pkg.new_version.clone())
+                    };
+                    card = card.child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().flex_1().child(pkg.name.clone()))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(version_text),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(op_color)
+                                    .bg(op_color.opacity(0.1))
+                                    .px_2()
+                                    .child(op_label),
+                            ),
+                    );
+                }
+
+                let extra = total.saturating_sub(6);
+                if extra > 0 {
+                    card = card.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("+{extra} more")),
+                    );
+                }
+
+                card
+            }
+            Some(_) => v_flex()
+                .w_full()
+                .rounded_md()
+                .border_1()
+                .border_color(cx.theme().border)
+                .p_4()
+                .text_color(cx.theme().muted_foreground)
+                .child("Nothing to do"),
+            None => match &self.status {
+                InstallProgress::Failed(message) => v_flex()
+                    .w_full()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .p_4()
+                    .text_color(cx.theme().danger)
+                    .child(format!("Transaction failed: {message}")),
+                _ => v_flex()
+                    .gap_2()
+                    .w_full()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .p_4()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Preparing transaction…"),
+                    )
+                    .child(Progress::new("install-summary-prep").loading(true)),
+            },
+        }
+    }
+}
+
+fn format_package_operation(
+    operation: PackageOp,
+    package: &str,
+    new_version: &Option<String>,
+    old_version: &Option<String>,
+) -> String {
+    let new = new_version.as_deref().unwrap_or("?");
+    let old = old_version.as_deref().unwrap_or("?");
+    match operation {
+        PackageOp::Install => format!("installing {package} ({new})"),
+        PackageOp::Upgrade => format!("upgrading {package} ({old} -> {new})"),
+        PackageOp::Reinstall => format!("reinstalling {package} ({new})"),
+        PackageOp::Downgrade => format!("downgrading {package} ({old} -> {new})"),
+        PackageOp::Remove => format!("removing {package} ({old})"),
+    }
+}
+
+impl Render for InstallPage {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if matches!(self.mode, PageMode::Aur) {
+            self.render_aur(cx)
+        } else {
+            self.render_repo(cx)
+        }
     }
 }
