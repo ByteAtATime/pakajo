@@ -2,6 +2,7 @@ mod answerer;
 mod aur;
 mod build;
 mod cli;
+mod color;
 mod devel;
 mod dry_run;
 mod events;

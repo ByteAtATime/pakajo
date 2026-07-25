@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 
 use crate::aur::AurClient;
+use crate::color;
 use crate::events::{
     DownloadResult, InstallEvent, InstallSink, LogLevel, ProgressPhase, SummaryPackage,
     TransactionSummary,
@@ -666,7 +667,12 @@ fn print_sync_preamble(handle: &alpm::Alpm, targets: &[String]) {
             None => name.clone(),
         })
         .collect();
-    println!("Sync Explicit ({}): {}", targets.len(), labeled.join(", "));
+    let c = color::stdout_color();
+    println!(
+        "{} {}",
+        color::paint(c, color::BOLD, &format!("Sync Explicit ({}):", targets.len())),
+        color::paint(c, color::CYAN, &labeled.join(", "))
+    );
 }
 
 fn dedup_positionals(positionals: Vec<String>) -> Vec<String> {
@@ -695,6 +701,7 @@ fn exit_with_result(result: anyhow::Result<()>) -> ! {
 pub(crate) struct ConsoleSink {
     last_progress: Option<(ProgressPhase, String, i32)>,
     hooks_header_done: bool,
+    color: bool,
 }
 
 impl ConsoleSink {
@@ -702,6 +709,7 @@ impl ConsoleSink {
         Self {
             last_progress: None,
             hooks_header_done: false,
+            color: color::stdout_color(),
         }
     }
 
@@ -715,9 +723,11 @@ impl ConsoleSink {
             InstallEvent::LoadingPackages => println!("loading packages..."),
             InstallEvent::KeyringStart => {},
             InstallEvent::RetrievingPackages { .. } => {
-                println!(":: Retrieving packages...");
+                println!("{}", color::colon(self.color, "Retrieving packages..."));
             }
-            InstallEvent::ProcessingChanges => println!(":: Processing package changes..."),
+            InstallEvent::ProcessingChanges => {
+                println!("{}", color::colon(self.color, "Processing package changes..."));
+            }
             InstallEvent::PackageOperation { .. } => {},
             InstallEvent::DownloadInit { filename, optional } => {
                 if *optional {
@@ -777,7 +787,7 @@ impl ConsoleSink {
             } => {
                 if !self.hooks_header_done {
                     self.hooks_header_done = true;
-                    println!(":: Running post-transaction hooks...");
+                    println!("{}", color::colon(self.color, "Running post-transaction hooks..."));
                 }
                 let label = desc.as_deref().unwrap_or(name);
                 println!("({position}/{total}) {label}");
@@ -961,7 +971,12 @@ fn confirm_yes(prompt: &str) -> bool {
 }
 
 fn confirm_install_stderr() -> bool {
-    eprint!("\n:: Proceed with installation? [Y/n] ");
+    let c = color::stderr_color();
+    eprint!(
+        "\n{} {} ",
+        color::colon(c, "Proceed with installation?"),
+        color::paint(c, color::BOLD, "[Y/n]")
+    );
     let _ = std::io::stderr().flush();
     let mut input = String::new();
     let _ = std::io::stdin().read_line(&mut input);
