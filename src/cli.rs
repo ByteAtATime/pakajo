@@ -702,6 +702,7 @@ pub(crate) struct ConsoleSink {
     last_progress: Option<(ProgressPhase, String, i32)>,
     hooks_header_done: bool,
     color: bool,
+    stderr_color: bool,
 }
 
 impl ConsoleSink {
@@ -710,6 +711,7 @@ impl ConsoleSink {
             last_progress: None,
             hooks_header_done: false,
             color: color::stdout_color(),
+            stderr_color: color::stderr_color(),
         }
     }
 
@@ -800,10 +802,10 @@ impl ConsoleSink {
                 }
             }
             InstallEvent::Log { level, message } => match level {
-                LogLevel::Error => eprint!("{} {message}", color::paint(self.color, color::RED, "error:")),
+                LogLevel::Error => eprint!("{} {message}", color::paint(self.stderr_color, color::RED, "error:")),
                 LogLevel::Warning => eprint!(
                     "{} {message}",
-                    color::paint(self.color, color::YELLOW, "warning:")
+                    color::paint(self.stderr_color, color::YELLOW, "warning:")
                 ),
                 LogLevel::Debug => {}
             },
