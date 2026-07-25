@@ -31,3 +31,58 @@ pub fn colon(enabled: bool, msg: &str) -> String {
         format!(":: {msg}")
     }
 }
+
+pub fn visible_width(s: &str) -> usize {
+    let mut count = 0;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            count += 1;
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some('(') | Some(')') => {
+                let _ = chars.next();
+            }
+            _ => {}
+        }
+    }
+    count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visible_width;
+
+    #[test]
+    fn visible_width_bold_then_reset() {
+        assert_eq!(visible_width("\x1b[1mhi\x1b[0m"), 2);
+    }
+
+    #[test]
+    fn visible_width_256_color_version() {
+        assert_eq!(visible_width("\x1b[38;5;243mv1.0-1\x1b[0m"), 6);
+    }
+
+    #[test]
+    fn visible_width_colon_form() {
+        assert_eq!(visible_width("\x1b[1;34m::\x1b[0;1m hi there\x1b[0m"), 11);
+    }
+
+    #[test]
+    fn visible_width_plain() {
+        assert_eq!(visible_width("plain"), 5);
+    }
+
+    #[test]
+    fn visible_width_empty() {
+        assert_eq!(visible_width(""), 0);
+    }
+}

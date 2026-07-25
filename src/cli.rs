@@ -931,12 +931,12 @@ pub(crate) fn confirm_build(plan: &crate::resolve::BuildPlan) -> bool {
 
     let name_width = rows
         .iter()
-        .map(|(name, _, _)| name.len())
+        .map(|(name, _, _)| name.chars().count())
         .max()
         .unwrap_or(0);
     let version_width = rows
         .iter()
-        .map(|(_, version, _)| version.len())
+        .map(|(_, version, _)| version.chars().count())
         .max()
         .unwrap_or(0);
 
@@ -944,20 +944,21 @@ pub(crate) fn confirm_build(plan: &crate::resolve::BuildPlan) -> bool {
     let c = color::stdout_color();
     for (name, version, label) in &rows {
         let v = color::paint(c, color::VERSION, version);
+        let vw = version_width + v.chars().count().saturating_sub(color::visible_width(&v));
         match label {
             Some(l) => println!(
                 "  {:<nw$}  {:<vw$}  ({l})",
                 name,
                 v,
                 nw = name_width,
-                vw = version_width,
+                vw = vw,
             ),
             None => println!(
                 "  {:<nw$}  {:<vw$}",
                 name,
                 v,
                 nw = name_width,
-                vw = version_width,
+                vw = vw,
             ),
         }
     }
@@ -1032,10 +1033,11 @@ fn append_table_line(out: &mut String, cells: &[String], right_align: &[bool], w
         if i > 0 {
             out.push_str("  ");
         }
+        let target = *width + cell.chars().count().saturating_sub(color::visible_width(cell));
         if right_align[i] {
-            out.push_str(&format!("{:>w$}", cell, w = width));
+            out.push_str(&format!("{:>t$}", cell, t = target));
         } else {
-            out.push_str(&format!("{:<w$}", cell, w = width));
+            out.push_str(&format!("{:<t$}", cell, t = target));
         }
     }
     out.push('\n');
@@ -1175,10 +1177,11 @@ fn append_footer(out: &mut String, summary: &TransactionSummary, colored: bool) 
         return;
     }
 
-    let lw = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
-    let vw = rows.iter().map(|(_, value)| value.len()).max().unwrap_or(0);
+    let lw = rows.iter().map(|(label, _)| color::visible_width(label)).max().unwrap_or(0);
+    let vw = rows.iter().map(|(_, value)| color::visible_width(value)).max().unwrap_or(0);
     for (label, value) in &rows {
-        out.push_str(&format!("{:<lw$}  {:>vw$}\n", label, value, lw = lw, vw = vw));
+        let lwt = lw + label.chars().count().saturating_sub(color::visible_width(label));
+        out.push_str(&format!("{:<lwt$}  {:>vw$}\n", label, value, lwt = lwt, vw = vw));
     }
 }
 
