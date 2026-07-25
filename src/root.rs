@@ -2,7 +2,7 @@ use crate::{
     aur::AurClient,
     events::InstallEvent,
     install::InstallProgress,
-    install_log_page::InstallLogPage,
+    install_page::InstallPage,
     install_review_dialog::{self, InstallReviewDialog},
     package::PackageSource,
     package_detail::{DetailIntent, PackageDetail},
@@ -48,7 +48,7 @@ pub struct PakajoRoot {
     detail_subscription: Option<Subscription>,
     search_view: SearchView,
     page: Page,
-    install_page: Option<Entity<InstallLogPage>>,
+    install_page: Option<Entity<InstallPage>>,
 }
 
 impl PakajoRoot {
@@ -295,7 +295,7 @@ impl PakajoRoot {
         });
         let current_progress = self.install_progress.clone();
         let page = cx.new(|_| {
-            let mut page = InstallLogPage::new(kind, source, name, on_back);
+            let mut page = InstallPage::new(kind, source, name, on_back);
             page.status = current_progress;
             page
         });

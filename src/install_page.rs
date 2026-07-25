@@ -26,7 +26,7 @@ struct FileDownload {
     total: i64,
 }
 
-pub struct InstallLogPage {
+pub struct InstallPage {
     pub kind: InstallKind,
     #[allow(dead_code)]
     pub source: PackageSource,
@@ -40,7 +40,7 @@ pub struct InstallLogPage {
     on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static>,
 }
 
-impl InstallLogPage {
+impl InstallPage {
     pub fn new(
         kind: InstallKind,
         source: PackageSource,
@@ -338,7 +338,7 @@ fn format_package_operation(
     }
 }
 
-impl Render for InstallLogPage {
+impl Render for InstallPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let on_back = self.on_back.clone();
         v_flex()
@@ -372,7 +372,7 @@ impl Render for InstallLogPage {
                     .bg(cx.theme().muted)
                     .text_color(cx.theme().muted_foreground)
                     .text_size(rems(0.8))
-                    .children(self.logs.iter().filter_map(InstallLogPage::render_event)),
+                    .children(self.logs.iter().filter_map(InstallPage::render_event)),
             )
     }
 }
