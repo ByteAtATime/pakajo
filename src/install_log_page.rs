@@ -1,3 +1,4 @@
+use crate::color;
 use crate::events::{DownloadResult, InstallEvent, LogLevel, PackageOp, ProgressPhase};
 use crate::icon::PakajoIcon;
 use crate::install::InstallProgress;
@@ -301,7 +302,9 @@ impl InstallLogPage {
                 format!(":: retrieving build files for {package}...")
             }
             InstallEvent::BuildStarted { package } => format!(":: building {package}..."),
-            InstallEvent::BuildOutput { line, .. } => format!("  {line}"),
+            InstallEvent::BuildOutput { line, .. } => {
+                format!("  {}", color::ansi_strip(line))
+            }
             InstallEvent::BuildCompleted {
                 package, version, ..
             } => match version {

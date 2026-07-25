@@ -4517,6 +4517,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui_platform",
  "libc",
+ "nix 0.31.3",
  "nucleo-matcher",
  "pacmanconf",
  "regex",

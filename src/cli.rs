@@ -821,7 +821,13 @@ impl ConsoleSink {
             InstallEvent::ResolutionComplete { .. } => {}
             InstallEvent::CloningRepo { .. } => {}
             InstallEvent::BuildStarted { .. } => {}
-            InstallEvent::BuildOutput { line, .. } => println!("{line}"),
+            InstallEvent::BuildOutput { line, .. } => {
+                if self.color {
+                    println!("{line}");
+                } else {
+                    println!("{}", color::ansi_strip(line));
+                }
+            }
             InstallEvent::BuildCompleted { .. } => {}
             InstallEvent::LayerBoundary { .. } => {}
             InstallEvent::SysupgradeAurCandidates { candidates } => {

@@ -219,6 +219,11 @@ fn run_makepkg_streaming<S: InstallSink + ?Sized>(
     package: &str,
     sink: &mut S,
 ) -> anyhow::Result<()> {
+    let win_size = stdout_winsize();
+    let pty = nix::pty::openpty(&win_size, None).context("failed to open pseudoterminal")?;
+    let slave_stdout = pty.slave.try_clone().context("failed to clone pty slave")?;
+    let slave_stderr = pty.slave.try_clone().context("failed to clone pty slave")?;
+
     let mut cmd = std::process::Command::new("makepkg");
     cmd.args(["--noconfirm", "-f"]);
     if no_check {
@@ -227,49 +232,25 @@ fn run_makepkg_streaming<S: InstallSink + ?Sized>(
     cmd.current_dir(dir)
         .env("PKGDEST", dir)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(Stdio::from(slave_stdout))
+        .stderr(Stdio::from(slave_stderr));
 
     let mut child = cmd.spawn().context("failed to spawn makepkg")?;
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    let stdout_tx = tx.clone();
-    let stdout_handle = std::thread::spawn(move || {
-        let reader = std::io::BufReader::new(stdout);
-        for line in reader.lines() {
-            match line {
-                Ok(text) => {
-                    if stdout_tx.send(text).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
-    let stderr_handle = std::thread::spawn(move || {
-        let reader = std::io::BufReader::new(stderr);
-        for line in reader.lines() {
-            match line {
-                Ok(text) => {
-                    if tx.send(text).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
+    drop(pty.slave);
+
     let package = package.to_string();
-    for line in rx.iter() {
+    let reader = std::io::BufReader::new(std::fs::File::from(pty.master));
+    for line in reader.lines() {
+        let mut text = line.context("failed to read makepkg output")?;
+        if text.ends_with('\r') {
+            text.pop();
+        }
         sink.event(InstallEvent::BuildOutput {
             package: package.clone(),
-            line,
+            line: text,
         });
     }
-    let _ = stdout_handle.join();
-    let _ = stderr_handle.join();
+
     let status = child.wait().context("makepkg did not complete")?;
     if !status.success() {
         anyhow::bail!(
@@ -278,6 +259,22 @@ fn run_makepkg_streaming<S: InstallSink + ?Sized>(
         );
     }
     Ok(())
+}
+
+fn stdout_winsize() -> libc::winsize {
+    use std::os::unix::io::AsRawFd as _;
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let fd = std::io::stdout().as_raw_fd();
+    let ok = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0;
+    if ok && ws.ws_col > 0 && ws.ws_row > 0 {
+        return ws;
+    }
+    libc::winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    }
 }
 
 pub(crate) fn spawn_install_child(

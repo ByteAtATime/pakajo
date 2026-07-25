@@ -1,4 +1,13 @@
 use std::io::IsTerminal;
+use std::sync::LazyLock;
+
+static ANSI_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\x1b(?:\[[0-9;?]*[A-Za-z]|\(B)").expect("valid ansi strip regex")
+});
+
+pub fn ansi_strip(s: &str) -> String {
+    ANSI_RE.replace_all(s, "").into_owned()
+}
 
 pub const COLON: &str = "\x1b[1;34m";
 pub const BOLD: &str = "\x1b[0;1m";
