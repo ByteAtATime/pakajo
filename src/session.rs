@@ -235,7 +235,7 @@ impl PakajoSession {
                 cx.emit(SessionEvent::InstallLog(ev));
             }
             StreamItem::Done(ChildOutcome::Success) => {
-                self.refresh_after_install(cx);
+                self.refresh_installed_state(cx);
                 self.set_progress(InstallProgress::Completed, cx);
             }
             StreamItem::Done(ChildOutcome::Dismissed) => {
@@ -427,14 +427,19 @@ impl PakajoSession {
         self.cancel_install(cx);
     }
 
-    fn refresh_after_install(&mut self, cx: &mut Context<Self>) {
+    fn refresh_installed_state(&mut self, cx: &mut Context<Self>) {
         if let Ok(config) = pacmanconf::Config::new()
             && let Ok(handle) = init_alpm(&config)
         {
             self.alpm_handle = handle;
         }
         self.installed_names = Arc::new(installed_names(&self.alpm_handle));
+        for result in self.results.iter_mut() {
+            result.installed = self.installed_names.contains(&result.name);
+        }
+        cx.emit(SessionEvent::SearchUpdated);
         self.refresh_detail_installed(cx);
+        cx.notify();
     }
 
     fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Option<usize> {
