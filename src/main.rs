@@ -17,6 +17,7 @@ mod lookup;
 mod package;
 mod package_detail;
 mod pacman;
+mod pacman_watch;
 mod question;
 mod remove;
 mod resolve;

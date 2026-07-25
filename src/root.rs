@@ -58,6 +58,7 @@ impl PakajoRoot {
         aur_client: AurClient,
     ) -> Self {
         let session = cx.new(|_cx| PakajoSession::new(alpm_handle, aur_client));
+        session.update(cx, |s, cx| s.start_db_lock_watcher(cx));
         let input_window = &mut *window;
         let search_input =
             cx.new(|cx| InputState::new(input_window, cx).placeholder("Search packages…"));

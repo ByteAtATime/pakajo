@@ -17,6 +17,7 @@ use std::{env::current_exe, sync::Arc, time::Duration};
 const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
 const LIVE_DEBOUNCE: Duration = Duration::from_millis(300);
+const LOCK_DEBOUNCE: Duration = Duration::from_millis(300);
 
 #[derive(Clone)]
 #[allow(clippy::large_enum_variant)]
@@ -440,6 +441,24 @@ impl PakajoSession {
         cx.emit(SessionEvent::SearchUpdated);
         self.refresh_detail_installed(cx);
         cx.notify();
+    }
+
+    pub(crate) fn start_db_lock_watcher(&mut self, cx: &mut Context<Self>) {
+        let db_dir = pacmanconf::Config::new()
+            .ok()
+            .map(|c| std::path::PathBuf::from(c.db_path))
+            .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/pacman"));
+        let (tx, mut rx) = futures::channel::mpsc::channel::<()>(16);
+        crate::pacman_watch::spawn_db_lock_watcher(db_dir, tx);
+        cx.spawn(async move |this, cx| {
+            use futures::FutureExt as _;
+            while let Some(()) = rx.next().await {
+                while rx.next().now_or_never().is_some() {}
+                cx.background_executor().timer(LOCK_DEBOUNCE).await;
+                let _ = this.update(cx, |s, cx| s.refresh_installed_state(cx));
+            }
+        })
+        .detach();
     }
 
     fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Option<usize> {
