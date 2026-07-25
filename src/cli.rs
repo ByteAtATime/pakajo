@@ -693,7 +693,6 @@ fn exit_with_result(result: anyhow::Result<()>) -> ! {
 }
 
 pub(crate) struct ConsoleSink {
-    to_build: usize,
     last_progress: Option<(ProgressPhase, String, i32)>,
     hooks_header_done: bool,
 }
@@ -701,7 +700,6 @@ pub(crate) struct ConsoleSink {
 impl ConsoleSink {
     pub(crate) fn new() -> Self {
         Self {
-            to_build: 0,
             last_progress: None,
             hooks_header_done: false,
         }
@@ -802,30 +800,11 @@ impl ConsoleSink {
                 println!(":: resolving dependencies for {target}...");
             }
             InstallEvent::AurDepResolved { .. } => {}
-            InstallEvent::ResolutionComplete { aur_packages, .. } => {
-                self.to_build = *aur_packages;
-            }
-            InstallEvent::CloningRepo { package } => {
-                println!(":: retrieving build files for {package}...");
-            }
-            InstallEvent::BuildStarted { package } => {
-                println!(":: building {package}...");
-            }
-            InstallEvent::BuildOutput { package, line } => {
-                if self.to_build > 1 {
-                    println!("  [{package}] {line}");
-                } else {
-                    println!("  {line}");
-                }
-            }
-            InstallEvent::BuildCompleted {
-                package,
-                version,
-                ..
-            } => match version {
-                Some(version) => println!(":: built {package} {version}"),
-                None => println!(":: built {package}"),
-            },
+            InstallEvent::ResolutionComplete { .. } => {}
+            InstallEvent::CloningRepo { .. } => {}
+            InstallEvent::BuildStarted { .. } => {}
+            InstallEvent::BuildOutput { line, .. } => println!("{line}"),
+            InstallEvent::BuildCompleted { .. } => {}
             InstallEvent::LayerBoundary { .. } => {}
             InstallEvent::SysupgradeAurCandidates { candidates } => {
                 if candidates.is_empty() {
