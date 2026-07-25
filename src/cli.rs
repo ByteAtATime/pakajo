@@ -782,9 +782,15 @@ impl ConsoleSink {
                     println!(":: Running post-transaction hooks...");
                 }
                 let label = desc.as_deref().unwrap_or(name);
-                println!("({position}/{total}) {label}...");
+                println!("({position}/{total}) {label}");
             }
-            InstallEvent::ScriptletInfo { line } => println!("{line}"),
+            InstallEvent::ScriptletInfo { line } => {
+                if line.ends_with('\n') {
+                    print!("{line}");
+                } else {
+                    println!("{line}");
+                }
+            }
             InstallEvent::Log { level, message } => match level {
                 LogLevel::Error => eprint!("error: {message}"),
                 LogLevel::Warning => eprint!("warning: {message}"),
@@ -881,7 +887,12 @@ impl InstallSink for EscalatedSink {
     fn event(&mut self, event: InstallEvent) {
         match event {
             InstallEvent::TransactionSummary(s) => {
-                eprint!("{}", render_summary(&s));
+                if s.packages.is_empty() {
+                    eprintln!(" nothing to do");
+                } else {
+                    eprint!("{}", render_summary(&s));
+                }
+                return;
             }
             other => {
                 if let Ok(line) = serde_json::to_string(&other) {
