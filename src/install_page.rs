@@ -47,6 +47,7 @@ enum RepoStage {
 struct RepoState {
     manifest: Option<TransactionSummary>,
     stage: RepoStage,
+    scroll: ScrollHandle,
 }
 
 pub struct InstallPage {
@@ -73,6 +74,7 @@ impl InstallPage {
             PackageSource::Repo => PageMode::Repo(RepoState {
                 manifest: None,
                 stage: RepoStage::Resolve,
+                scroll: ScrollHandle::new(),
             }),
             PackageSource::Aur => PageMode::Aur,
         };
@@ -457,6 +459,15 @@ impl InstallPage {
 
     fn render_repo(&self, cx: &mut Context<Self>) -> Div {
         let on_back = self.on_back.clone();
+        let PageMode::Repo(state) = &self.mode else {
+            return div();
+        };
+        let offset = state.scroll.offset();
+        let max = state.scroll.max_offset();
+        let at_bottom = offset.y <= -max.y + px(6.);
+        if at_bottom {
+            state.scroll.scroll_to_bottom();
+        }
         v_flex()
             .size_full()
             .min_h_0()
@@ -488,6 +499,7 @@ impl InstallPage {
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
+                            .track_scroll(&state.scroll)
                             .v_flex()
                             .gap_1()
                             .p_3()
