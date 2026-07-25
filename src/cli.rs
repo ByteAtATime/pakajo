@@ -20,6 +20,10 @@ use self::sinks::{EscalatedSink, JsonSink};
 mod privs;
 use self::privs::{is_root, stdin_is_tty};
 
+mod escalate;
+use self::escalate::{escalate, escalate_remove, escalate_result, escalate_upgrade};
+pub(crate) use self::escalate::escalation_command;
+
 pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
     let mut args = args;
     let mut json = false;
@@ -328,76 +332,6 @@ pub(crate) fn upgrade_subcommand(args: impl Iterator<Item = String>) -> ! {
     std::process::exit(exit_code);
 }
 
-fn escalate_remove(targets: &[String], json: bool) -> ! {
-    let mut child = match crate::remove::spawn_remove_child(targets) {
-        Ok(child) => child,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    };
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut sink: Box<dyn InstallSink> = if json {
-        Box::new(JsonSink::new())
-    } else {
-        Box::new(ConsoleSink::new())
-    };
-    crate::events::read_event_stream(std::io::BufReader::new(stdout), &mut *sink);
-    let status = match child.wait() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    };
-    std::process::exit(status.code().unwrap_or(1));
-}
-
-fn escalate_upgrade(no_refresh: bool, ignores: &[String], json: bool) -> i32 {
-    let mut child = match spawn_upgrade_child(no_refresh, ignores) {
-        Ok(child) => child,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    };
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut sink: Box<dyn InstallSink> = if json {
-        Box::new(JsonSink::new())
-    } else {
-        Box::new(ConsoleSink::new())
-    };
-    crate::events::read_event_stream(std::io::BufReader::new(stdout), &mut *sink);
-    let status = match child.wait() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    };
-    status.code().unwrap_or(1)
-}
-
-fn spawn_upgrade_child(
-    no_refresh: bool,
-    ignores: &[String],
-) -> anyhow::Result<std::process::Child> {
-    use std::process::Stdio;
-    let exe = std::env::current_exe().context("failed to determine executable path")?;
-    let mut cmd = escalation_command(&exe.to_string_lossy());
-    cmd.arg("upgrade").arg("--json").arg("--repo-only");
-    if no_refresh {
-        cmd.arg("--no-refresh");
-    }
-    for name in ignores {
-        cmd.arg("--ignore").arg(name);
-    }
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    cmd.spawn().context("failed to spawn upgrade child")
-}
-
 fn alpm_handle() -> anyhow::Result<alpm::Alpm> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     crate::pacman::init_alpm(&config)
@@ -615,45 +549,11 @@ fn root_install(
     }
 }
 
-fn escalate(targets: &[String], as_deps: bool, json: bool) -> ! {
-    let code = match escalate_result(targets, as_deps, json) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    };
-    std::process::exit(code);
-}
-
-fn escalate_result(targets: &[String], as_deps: bool, json: bool) -> anyhow::Result<i32> {
-    let mut child = crate::build::spawn_install_child(targets, as_deps, None)?;
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut sink: Box<dyn InstallSink> = if json {
-        Box::new(JsonSink::new())
-    } else {
-        Box::new(ConsoleSink::new())
-    };
-    crate::events::read_event_stream(std::io::BufReader::new(stdout), &mut *sink);
-    let status = child.wait()?;
-    Ok(status.code().unwrap_or(1))
-}
-
 fn sink_for(json: bool) -> Box<dyn InstallSink> {
     if json {
         Box::new(JsonSink::new())
     } else {
         Box::new(ConsoleSink::new())
-    }
-}
-
-pub(crate) fn escalation_command(exe: &str) -> std::process::Command {
-    if is_root() {
-        std::process::Command::new(exe)
-    } else {
-        let mut command = std::process::Command::new("pkexec");
-        command.arg(exe);
-        command
     }
 }
 
