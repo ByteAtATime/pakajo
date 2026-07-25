@@ -283,15 +283,19 @@ pub(crate) fn build_summary(handle: &alpm::Alpm) -> TransactionSummary {
     let mut total_removed_size = 0;
     for pkg in handle.trans_add().iter() {
         let name = pkg.name().to_string();
-        let old_version = handle
+        let (old_version, old_installed_size) = handle
             .localdb()
             .pkg(name.as_str())
             .ok()
-            .map(|p| p.version().to_string());
+            .map(|p| (Some(p.version().to_string()), p.isize()))
+            .unwrap_or((None, 0));
         let download_size = pkg.download_size();
         let installed_size = pkg.isize();
         total_download_size += download_size;
         total_installed_size += installed_size;
+        if old_installed_size > 0 {
+            total_removed_size += old_installed_size;
+        }
         packages.push(SummaryPackage {
             repository: pkg.db().map(|d| d.name().to_string()),
             new_version: pkg.version().to_string(),
@@ -299,6 +303,7 @@ pub(crate) fn build_summary(handle: &alpm::Alpm) -> TransactionSummary {
             old_version,
             download_size,
             installed_size,
+            old_installed_size,
             is_removal: false,
         });
     }
@@ -314,6 +319,7 @@ pub(crate) fn build_summary(handle: &alpm::Alpm) -> TransactionSummary {
             old_version: Some(old_version),
             download_size: 0,
             installed_size,
+            old_installed_size: 0,
             is_removal: true,
         });
     }

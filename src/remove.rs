@@ -113,6 +113,7 @@ fn build_remove_summary(handle: &alpm::Alpm) -> TransactionSummary {
             old_version: Some(old_version),
             download_size: 0,
             installed_size,
+            old_installed_size: 0,
             is_removal: true,
         });
     }

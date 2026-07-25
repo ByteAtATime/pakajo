@@ -121,6 +121,8 @@ pub struct SummaryPackage {
     pub download_size: i64,
     pub installed_size: i64,
     #[serde(default)]
+    pub old_installed_size: i64,
+    #[serde(default)]
     pub is_removal: bool,
 }
 

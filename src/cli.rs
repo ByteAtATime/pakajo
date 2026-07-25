@@ -976,7 +976,7 @@ fn render_summary(summary: &TransactionSummary) -> String {
             let net = if p.is_removal {
                 -p.installed_size
             } else {
-                p.installed_size
+                p.installed_size - p.old_installed_size
             };
             let dl = if p.download_size > 0 {
                 format_mib(p.download_size)
@@ -1180,6 +1180,7 @@ mod tests {
                     old_version: None,
                     download_size: 0,
                     installed_size: installed,
+                    old_installed_size: 0,
                     is_removal: false,
                 },
                 SummaryPackage {
@@ -1189,6 +1190,7 @@ mod tests {
                     old_version: Some("r1162.4b12c2b-1".to_string()),
                     download_size: 0,
                     installed_size: removed,
+                    old_installed_size: 0,
                     is_removal: true,
                 },
             ],
@@ -1206,6 +1208,42 @@ mod tests {
             "",
             "Total Installed Size:   0.19 MiB",
             "Net Upgrade Size:      -0.04 MiB",
+        ]
+        .join("\n")
+            + "\n";
+
+        let actual = render_summary(&summary);
+        assert_eq!(actual, expected, "rendered summary table mismatch");
+    }
+
+    #[test]
+    fn render_summary_matches_pacman_upgrade_case() {
+        let new_isize = 1048576;
+        let old_isize = 786432;
+        let summary = TransactionSummary {
+            packages: vec![SummaryPackage {
+                name: "foo".to_string(),
+                repository: Some("extra".to_string()),
+                new_version: "2.0-1".to_string(),
+                old_version: Some("1.0-1".to_string()),
+                download_size: 0,
+                installed_size: new_isize,
+                old_installed_size: old_isize,
+                is_removal: false,
+            }],
+            total_download_size: 0,
+            total_installed_size: new_isize,
+            total_removed_size: old_isize,
+        };
+
+        let expected = [
+            "",
+            "Package (1)  Old Version  New Version  Net Change",
+            "",
+            "extra/foo    1.0-1        2.0-1          0.25 MiB",
+            "",
+            "Total Installed Size:  1.00 MiB",
+            "Net Upgrade Size:      0.25 MiB",
         ]
         .join("\n")
             + "\n";
