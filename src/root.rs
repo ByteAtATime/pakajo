@@ -4,6 +4,7 @@ use crate::{
     install::InstallProgress,
     install_log_page::InstallLogPage,
     install_review_dialog::{self, InstallReviewDialog},
+    package::PackageSource,
     package_detail::{DetailIntent, PackageDetail},
     question::QuestionSet,
     search_view::{SearchView, centered},
@@ -84,8 +85,8 @@ impl PakajoRoot {
                     this.on_install_progress_changed(progress.clone(), cx)
                 }
                 SessionEvent::InstallLog(ev) => this.on_install_log(ev.clone(), cx),
-                SessionEvent::InstallLogsOpened { kind, name } => {
-                    this.on_install_logs_opened(kind.clone(), name.clone(), window, cx)
+                SessionEvent::InstallLogsOpened { kind, source, name } => {
+                    this.on_install_logs_opened(kind.clone(), *source, name.clone(), window, cx)
                 }
                 SessionEvent::ReviewRequired { qs, name } => {
                     this.on_review_required(qs.clone(), name.clone(), window, cx)
@@ -279,6 +280,7 @@ impl PakajoRoot {
     fn on_install_logs_opened(
         &mut self,
         kind: InstallKind,
+        source: PackageSource,
         name: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -293,7 +295,7 @@ impl PakajoRoot {
         });
         let current_progress = self.install_progress.clone();
         let page = cx.new(|_| {
-            let mut page = InstallLogPage::new(kind, name, on_back);
+            let mut page = InstallLogPage::new(kind, source, name, on_back);
             page.status = current_progress;
             page
         });

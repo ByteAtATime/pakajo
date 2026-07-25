@@ -2,6 +2,7 @@ use crate::color;
 use crate::events::{DownloadResult, InstallEvent, LogLevel, PackageOp, ProgressPhase};
 use crate::icon::PakajoIcon;
 use crate::install::InstallProgress;
+use crate::package::PackageSource;
 use crate::session::InstallKind;
 use crate::utils::format_bytes;
 use gpui::*;
@@ -27,6 +28,8 @@ struct FileDownload {
 
 pub struct InstallLogPage {
     pub kind: InstallKind,
+    #[allow(dead_code)]
+    pub source: PackageSource,
     pub name: String,
     pub logs: Vec<InstallEvent>,
     pub status: InstallProgress,
@@ -40,11 +43,13 @@ pub struct InstallLogPage {
 impl InstallLogPage {
     pub fn new(
         kind: InstallKind,
+        source: PackageSource,
         name: String,
         on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static>,
     ) -> Self {
         Self {
             kind,
+            source,
             name,
             logs: Vec::new(),
             status: InstallProgress::Idle,

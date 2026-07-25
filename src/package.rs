@@ -10,7 +10,6 @@ pub struct OptDependency {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageSource {
     Repo,
-    #[allow(dead_code)]
     Aur,
 }
 

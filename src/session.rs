@@ -46,7 +46,7 @@ pub(crate) enum SessionEvent {
     SearchUpdated,
     InstallProgressChanged(InstallProgress),
     InstallLog(InstallEvent),
-    InstallLogsOpened { kind: InstallKind, name: String },
+    InstallLogsOpened { kind: InstallKind, source: PackageSource, name: String },
     ReviewRequired { qs: QuestionSet, name: String },
 }
 
@@ -54,6 +54,7 @@ impl EventEmitter<SessionEvent> for PakajoSession {}
 
 struct PendingInstall {
     name: String,
+    source: PackageSource,
 }
 
 pub(crate) struct PakajoSession {
@@ -261,6 +262,7 @@ impl PakajoSession {
     pub(crate) fn spawn_install_subprocess(
         &mut self,
         name: String,
+        source: PackageSource,
         approvals_b64: Option<String>,
         cx: &mut Context<Self>,
     ) {
@@ -278,6 +280,7 @@ impl PakajoSession {
         };
         cx.emit(SessionEvent::InstallLogsOpened {
             kind: InstallKind::Install,
+            source,
             name: name.clone(),
         });
         let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
@@ -295,6 +298,7 @@ impl PakajoSession {
     pub(crate) fn spawn_remove_subprocess(
         &mut self,
         name: String,
+        source: PackageSource,
         cx: &mut Context<Self>,
     ) {
         let exe = match current_exe() {
@@ -311,6 +315,7 @@ impl PakajoSession {
         };
         cx.emit(SessionEvent::InstallLogsOpened {
             kind: InstallKind::Remove,
+            source,
             name: name.clone(),
         });
         let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
@@ -336,6 +341,7 @@ impl PakajoSession {
 
         self.pending_install = Some(PendingInstall {
             name: name.clone(),
+            source,
         });
 
         let (mut dry_tx, mut dry_rx) =
@@ -368,12 +374,12 @@ impl PakajoSession {
                     cx.emit(SessionEvent::ReviewRequired { qs, name: name.clone() });
                 }
                 Ok(_) => {
-                    this.spawn_install_subprocess(name.clone(), None, cx);
+                    this.spawn_install_subprocess(name.clone(), source, None, cx);
                     this.pending_install.take();
                 }
                 Err(err) => {
                     eprintln!("dry-run failed, proceeding with install: {err:#}");
-                    this.spawn_install_subprocess(name.clone(), None, cx);
+                    this.spawn_install_subprocess(name.clone(), source, None, cx);
                     this.pending_install.take();
                 }
             });
@@ -385,15 +391,15 @@ impl PakajoSession {
         if matches!(self.install_progress, InstallProgress::Running) {
             return;
         }
-        let name = match &self.detail {
-            DetailData::Ready { pkg, .. } => pkg.name.clone(),
+        let (name, source) = match &self.detail {
+            DetailData::Ready { pkg, .. } => (pkg.name.clone(), pkg.source),
             _ => return,
         };
         if !is_installed(&self.alpm_handle, &name) {
             return;
         }
         self.set_progress(InstallProgress::Running, cx);
-        self.spawn_remove_subprocess(name, cx);
+        self.spawn_remove_subprocess(name, source, cx);
     }
 
     pub(crate) fn confirm_install(
@@ -405,6 +411,7 @@ impl PakajoSession {
             return;
         };
         let name = pending.name;
+        let source = pending.source;
         match encode_approvals(&approvals) {
             Err(error) => {
                 self.set_progress(
@@ -414,7 +421,7 @@ impl PakajoSession {
             }
             Ok(b64) => {
                 self.set_progress(InstallProgress::Running, cx);
-                self.spawn_install_subprocess(name, Some(b64), cx);
+                self.spawn_install_subprocess(name, source, Some(b64), cx);
             }
         }
     }
