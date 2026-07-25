@@ -175,6 +175,18 @@ pub(super) fn decode_approvals(b64: &str) -> anyhow::Result<crate::question::App
     serde_json::from_slice(&bytes).context("--approvals is not valid JSON")
 }
 
+pub(super) fn answerer_for(
+    approvals: Option<crate::question::Approvals>,
+) -> Box<dyn crate::answerer::QuestionAnswerer> {
+    if let Some(appr) = approvals {
+        Box::new(crate::answerer::ApprovalsAnswerer::new(appr))
+    } else if stdin_is_tty() {
+        Box::new(crate::answerer::StdioAnswerer::new())
+    } else {
+        Box::new(crate::answerer::NonInteractiveAnswerer)
+    }
+}
+
 pub(super) fn root_install(
     positionals: &[String],
     as_deps: bool,
@@ -197,13 +209,7 @@ pub(super) fn root_install(
         }
     }
     let interactive = approvals.is_none() && stdin_is_tty();
-    let answerer: Box<dyn crate::answerer::QuestionAnswerer> = if let Some(appr) = approvals {
-        Box::new(crate::answerer::ApprovalsAnswerer::new(appr))
-    } else if stdin_is_tty() {
-        Box::new(crate::answerer::StdioAnswerer::new())
-    } else {
-        Box::new(crate::answerer::NonInteractiveAnswerer)
-    };
+    let answerer = answerer_for(approvals);
     if json {
         if interactive {
             install::run_install(

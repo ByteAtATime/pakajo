@@ -15,14 +15,14 @@ pub(crate) use self::sinks::ConsoleSink;
 use self::sinks::JsonSink;
 
 mod privs;
-use self::privs::{is_root, stdin_is_tty};
+use self::privs::is_root;
 
 mod escalate;
 use self::escalate::{escalate, escalate_remove, escalate_result, escalate_upgrade};
 pub(crate) use self::escalate::escalation_command;
 
 mod commands;
-use self::commands::{alpm_handle, decode_approvals, root_install, run_aur_sync, run_gendb, run_search};
+use self::commands::{answerer_for, alpm_handle, decode_approvals, root_install, run_aur_sync, run_gendb, run_search};
 
 pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
     let args = InstallArgs::parse(args);
@@ -73,25 +73,15 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
         escalate(&positionals, args.as_deps, args.json);
     } else if repo_or_file.is_empty() {
         let mut sink: Box<dyn InstallSink> = sink_for(args.json);
-        if args.json {
-            exit_with_result(crate::build::run_build(
-                &aur,
-                false,
-                args.as_deps,
-                &mut *sink,
-                |_| true,
-                args.approvals_b64.as_deref(),
-            ));
-        } else {
-            exit_with_result(crate::build::run_build(
-                &aur,
-                false,
-                args.as_deps,
-                &mut *sink,
-                confirm_build,
-                args.approvals_b64.as_deref(),
-            ));
-        }
+        let callback: fn(&crate::resolve::BuildPlan) -> bool = if args.json { |_| true } else { confirm_build };
+        exit_with_result(crate::build::run_build(
+            &aur,
+            false,
+            args.as_deps,
+            &mut *sink,
+            callback,
+            args.approvals_b64.as_deref(),
+        ));
     } else {
         if !args.json {
             print_sync_preamble(&handle, &repo_or_file);
@@ -105,25 +95,15 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
             }
         }
         let mut sink: Box<dyn InstallSink> = sink_for(args.json);
-        let result = if args.json {
-            crate::build::run_build(
-                &aur,
-                false,
-                args.as_deps,
-                &mut *sink,
-                |_| true,
-                args.approvals_b64.as_deref(),
-            )
-        } else {
-            crate::build::run_build(
-                &aur,
-                false,
-                args.as_deps,
-                &mut *sink,
-                confirm_build,
-                args.approvals_b64.as_deref(),
-            )
-        };
+        let callback: fn(&crate::resolve::BuildPlan) -> bool = if args.json { |_| true } else { confirm_build };
+        let result = crate::build::run_build(
+            &aur,
+            false,
+            args.as_deps,
+            &mut *sink,
+            callback,
+            args.approvals_b64.as_deref(),
+        );
         if let Err(e) = &result {
             eprintln!("warning: repo packages installed; AUR phase failed: {e:#}");
         }
@@ -172,12 +152,7 @@ pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
     }
 
     if is_root() {
-        let answerer: Box<dyn crate::answerer::QuestionAnswerer> =
-            if stdin_is_tty() {
-                Box::new(crate::answerer::StdioAnswerer::new())
-            } else {
-                Box::new(crate::answerer::NonInteractiveAnswerer)
-            };
+        let answerer = answerer_for(None);
         if args.json {
             exit_with_result(crate::remove::run_remove(
                 &positionals,
@@ -202,12 +177,7 @@ pub(crate) fn upgrade_subcommand(args: impl Iterator<Item = String>) -> ! {
     let args = UpgradeArgs::parse(args);
 
     if args.repo_only {
-        let answerer: Box<dyn crate::answerer::QuestionAnswerer> =
-            if stdin_is_tty() {
-                Box::new(crate::answerer::StdioAnswerer::new())
-            } else {
-                Box::new(crate::answerer::NonInteractiveAnswerer)
-            };
+        let answerer = answerer_for(None);
         if args.json {
             exit_with_result(crate::upgrade::run_repo_sysupgrade(
                 args.no_refresh,
@@ -250,18 +220,15 @@ pub(crate) fn upgrade_subcommand(args: impl Iterator<Item = String>) -> ! {
     if exit_code == 0 && !aur_targets.is_empty() {
         let aur_names: Vec<String> = aur_targets.iter().map(|c| c.name.clone()).collect();
         let mut build_sink: Box<dyn InstallSink> = sink_for(args.json);
-        let result = if args.json {
-            crate::build::run_build(&aur_names, false, false, &mut *build_sink, |_| true, None)
-        } else {
-            crate::build::run_build(
-                &aur_names,
-                false,
-                false,
-                &mut *build_sink,
-                confirm_build,
-                None,
-            )
-        };
+        let callback: fn(&crate::resolve::BuildPlan) -> bool = if args.json { |_| true } else { confirm_build };
+        let result = crate::build::run_build(
+            &aur_names,
+            false,
+            false,
+            &mut *build_sink,
+            callback,
+            None,
+        );
         if let Err(e) = &result {
             eprintln!("warning: repo packages upgraded; AUR phase failed: {e:#}");
         }
