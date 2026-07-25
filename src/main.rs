@@ -35,17 +35,15 @@ use gpui::*;
 use gpui_component::*;
 
 fn main() -> anyhow::Result<()> {
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
-        Some("install") | Some("add") | Some("-S") => cli::install_subcommand(args),
-        Some("search") => cli::search_subcommand(args),
-        Some("aur-sync") => cli::aur_sync_subcommand(args),
-        Some("gendb") => cli::gendb_subcommand(args),
-        Some("remove") | Some("uninstall") | Some("rm") | Some("-R") => {
-            cli::remove_subcommand(args)
-        }
-        Some("upgrade") => cli::upgrade_subcommand(args),
-        _ => {}
+    let cli = cli::parse();
+    match cli.command {
+        Some(cli::Command::Install(a)) => cli::install_subcommand(a),
+        Some(cli::Command::Remove(a)) => cli::remove_subcommand(a),
+        Some(cli::Command::Upgrade(a)) => cli::upgrade_subcommand(a),
+        Some(cli::Command::Search(a)) => cli::search_subcommand(a),
+        Some(cli::Command::AurSync) => cli::aur_sync_subcommand(),
+        Some(cli::Command::Gendb) => cli::gendb_subcommand(),
+        None => {}
     }
 
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;

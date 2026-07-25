@@ -1,9 +1,11 @@
 use crate::color;
 use crate::events::{InstallEvent, InstallSink};
 use crate::install::InstallTarget;
+use clap::Parser;
 
 mod args;
-use self::args::{InstallArgs, RemoveArgs, UpgradeArgs};
+pub(crate) use self::args::{Cli, Command};
+use self::args::{InstallArgs, RemoveArgs, SearchArgs, UpgradeArgs};
 
 mod summary;
 
@@ -24,9 +26,17 @@ pub(crate) use self::escalate::escalation_command;
 mod commands;
 use self::commands::{answerer_for, alpm_handle, decode_approvals, root_install, run_aur_sync, run_gendb, run_search};
 
-pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
-    let args = InstallArgs::parse(args);
+pub(crate) fn parse() -> Cli {
+    let mut argv: Vec<String> = std::env::args().collect();
+    match argv.get(1).map(String::as_str) {
+        Some("-S") => argv[1] = "install".to_string(),
+        Some("-R") => argv[1] = "remove".to_string(),
+        _ => {}
+    }
+    Cli::parse_from(argv)
+}
 
+pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
     let positionals = dedup_positionals(args.positionals);
 
     if positionals.is_empty() {
@@ -111,39 +121,24 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
     }
 }
 
-pub(crate) fn search_subcommand(args: impl Iterator<Item = String>) -> ! {
-    let positionals: Vec<String> = args.filter(|s| !s.starts_with('-')).collect();
-    if positionals.is_empty() {
+pub(crate) fn search_subcommand(args: SearchArgs) -> ! {
+    if args.query.is_empty() {
         eprintln!("usage: pakajo search <query>");
         std::process::exit(2);
     }
-    let query = positionals.join(" ");
+    let query = args.query.join(" ");
     exit_with_result(run_search(&query));
 }
 
-pub(crate) fn aur_sync_subcommand(args: impl Iterator<Item = String>) -> ! {
-    for s in args {
-        if s.starts_with('-') {
-            eprintln!("usage: pakajo aur-sync");
-            std::process::exit(2);
-        }
-    }
+pub(crate) fn aur_sync_subcommand() -> ! {
     exit_with_result(run_aur_sync());
 }
 
-pub(crate) fn gendb_subcommand(args: impl Iterator<Item = String>) -> ! {
-    for s in args {
-        if s.starts_with('-') {
-            eprintln!("usage: pakajo gendb");
-            std::process::exit(2);
-        }
-    }
+pub(crate) fn gendb_subcommand() -> ! {
     exit_with_result(run_gendb());
 }
 
-pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
-    let args = RemoveArgs::parse(args);
-
+pub(crate) fn remove_subcommand(args: RemoveArgs) -> ! {
     let positionals = dedup_positionals(args.positionals);
 
     if positionals.is_empty() {
@@ -173,9 +168,7 @@ pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
     escalate_remove(&positionals, args.json);
 }
 
-pub(crate) fn upgrade_subcommand(args: impl Iterator<Item = String>) -> ! {
-    let args = UpgradeArgs::parse(args);
-
+pub(crate) fn upgrade_subcommand(args: UpgradeArgs) -> ! {
     if args.repo_only {
         let answerer = answerer_for(None);
         if args.json {
