@@ -2,6 +2,9 @@ use crate::color;
 use crate::events::{InstallEvent, InstallSink};
 use crate::install::InstallTarget;
 
+mod args;
+use self::args::{InstallArgs, RemoveArgs, UpgradeArgs};
+
 mod summary;
 
 mod prompts;
@@ -22,47 +25,23 @@ mod commands;
 use self::commands::{alpm_handle, decode_approvals, root_install, run_aur_sync, run_gendb, run_search};
 
 pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
-    let mut args = args;
-    let mut json = false;
-    let mut as_deps = false;
-    let mut approvals_b64: Option<String> = None;
-    let mut positionals: Vec<String> = Vec::new();
-    while let Some(s) = args.next() {
-        if s == "--json" {
-            json = true;
-        } else if s == "--asdeps" {
-            as_deps = true;
-        } else if s == "--approvals" {
-            let v = args.next().unwrap_or_else(|| {
-                eprintln!("--approvals requires a value");
-                std::process::exit(2);
-            });
-            approvals_b64 = Some(v);
-        } else if let Some(rest) = s.strip_prefix("--approvals=") {
-            approvals_b64 = Some(rest.to_string());
-        } else if s.starts_with('-') {
-            eprintln!("unknown flag: {s}");
-            std::process::exit(2);
-        } else {
-            positionals.push(s);
-        }
-    }
+    let args = InstallArgs::parse(args);
 
-    let positionals = dedup_positionals(positionals);
+    let positionals = dedup_positionals(args.positionals);
 
     if positionals.is_empty() {
         usage_error();
     }
 
     if is_root() {
-        let approvals = match approvals_b64.as_deref().map(decode_approvals).transpose() {
+        let approvals = match args.approvals_b64.as_deref().map(decode_approvals).transpose() {
             Ok(opt) => opt,
             Err(e) => {
                 eprintln!("{e:#}");
                 std::process::exit(1);
             }
         };
-        exit_with_result(root_install(&positionals, as_deps, json, approvals));
+        exit_with_result(root_install(&positionals, args.as_deps, args.json, approvals));
     }
 
     let mut repo_or_file: Vec<String> = Vec::new();
@@ -88,36 +67,36 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
     }
 
     if aur.is_empty() {
-        if !json {
+        if !args.json {
             print_sync_preamble(&handle, &positionals);
         }
-        escalate(&positionals, as_deps, json);
+        escalate(&positionals, args.as_deps, args.json);
     } else if repo_or_file.is_empty() {
-        let mut sink: Box<dyn InstallSink> = sink_for(json);
-        if json {
+        let mut sink: Box<dyn InstallSink> = sink_for(args.json);
+        if args.json {
             exit_with_result(crate::build::run_build(
                 &aur,
                 false,
-                as_deps,
+                args.as_deps,
                 &mut *sink,
                 |_| true,
-                approvals_b64.as_deref(),
+                args.approvals_b64.as_deref(),
             ));
         } else {
             exit_with_result(crate::build::run_build(
                 &aur,
                 false,
-                as_deps,
+                args.as_deps,
                 &mut *sink,
                 confirm_build,
-                approvals_b64.as_deref(),
+                args.approvals_b64.as_deref(),
             ));
         }
     } else {
-        if !json {
+        if !args.json {
             print_sync_preamble(&handle, &repo_or_file);
         }
-        match escalate_result(&repo_or_file, as_deps, json) {
+        match escalate_result(&repo_or_file, args.as_deps, args.json) {
             Ok(0) => {}
             Ok(code) => std::process::exit(code),
             Err(e) => {
@@ -125,24 +104,24 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
                 std::process::exit(1);
             }
         }
-        let mut sink: Box<dyn InstallSink> = sink_for(json);
-        let result = if json {
+        let mut sink: Box<dyn InstallSink> = sink_for(args.json);
+        let result = if args.json {
             crate::build::run_build(
                 &aur,
                 false,
-                as_deps,
+                args.as_deps,
                 &mut *sink,
                 |_| true,
-                approvals_b64.as_deref(),
+                args.approvals_b64.as_deref(),
             )
         } else {
             crate::build::run_build(
                 &aur,
                 false,
-                as_deps,
+                args.as_deps,
                 &mut *sink,
                 confirm_build,
-                approvals_b64.as_deref(),
+                args.approvals_b64.as_deref(),
             )
         };
         if let Err(e) = &result {
@@ -183,20 +162,9 @@ pub(crate) fn gendb_subcommand(args: impl Iterator<Item = String>) -> ! {
 }
 
 pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
-    let mut json = false;
-    let mut positionals: Vec<String> = Vec::new();
-    for s in args {
-        if s == "--json" {
-            json = true;
-        } else if s.starts_with('-') {
-            eprintln!("unknown flag: {s}");
-            std::process::exit(2);
-        } else {
-            positionals.push(s);
-        }
-    }
+    let args = RemoveArgs::parse(args);
 
-    let positionals = dedup_positionals(positionals);
+    let positionals = dedup_positionals(args.positionals);
 
     if positionals.is_empty() {
         eprintln!("usage: pakajo remove [--json] <package>...");
@@ -210,7 +178,7 @@ pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
             } else {
                 Box::new(crate::answerer::NonInteractiveAnswerer)
             };
-        if json {
+        if args.json {
             exit_with_result(crate::remove::run_remove(
                 &positionals,
                 JsonSink::new(),
@@ -227,57 +195,30 @@ pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
         }
     }
 
-    escalate_remove(&positionals, json);
+    escalate_remove(&positionals, args.json);
 }
 
 pub(crate) fn upgrade_subcommand(args: impl Iterator<Item = String>) -> ! {
-    let mut args = args;
-    let mut json = false;
-    let mut no_refresh = false;
-    let mut repo_only = false;
-    let mut ignores: Vec<String> = Vec::new();
-    while let Some(s) = args.next() {
-        if s == "--json" {
-            json = true;
-        } else if s == "--no-refresh" {
-            no_refresh = true;
-        } else if s == "--repo-only" {
-            repo_only = true;
-        } else if s == "--ignore" {
-            let v = args.next().unwrap_or_else(|| {
-                eprintln!("--ignore requires a value");
-                std::process::exit(2);
-            });
-            ignores.push(v);
-        } else if let Some(rest) = s.strip_prefix("--ignore=") {
-            ignores.push(rest.to_string());
-        } else if s.starts_with('-') {
-            eprintln!("unknown flag: {s}");
-            std::process::exit(2);
-        } else {
-            eprintln!("usage: pakajo upgrade [--json] [--no-refresh]");
-            std::process::exit(2);
-        }
-    }
+    let args = UpgradeArgs::parse(args);
 
-    if repo_only {
+    if args.repo_only {
         let answerer: Box<dyn crate::answerer::QuestionAnswerer> =
             if stdin_is_tty() {
                 Box::new(crate::answerer::StdioAnswerer::new())
             } else {
                 Box::new(crate::answerer::NonInteractiveAnswerer)
             };
-        if json {
+        if args.json {
             exit_with_result(crate::upgrade::run_repo_sysupgrade(
-                no_refresh,
-                &ignores,
+                args.no_refresh,
+                &args.ignores,
                 JsonSink::new(),
                 answerer,
             ));
         } else {
             exit_with_result(crate::upgrade::run_repo_sysupgrade(
-                no_refresh,
-                &ignores,
+                args.no_refresh,
+                &args.ignores,
                 ConsoleSink::new(),
                 answerer,
             ));
@@ -299,17 +240,17 @@ pub(crate) fn upgrade_subcommand(args: impl Iterator<Item = String>) -> ! {
             vec![]
         }
     };
-    aur_targets.retain(|c| !ignores.contains(&c.name));
-    let mut sink = sink_for(json);
+    aur_targets.retain(|c| !args.ignores.contains(&c.name));
+    let mut sink = sink_for(args.json);
     sink.event(InstallEvent::SysupgradeAurCandidates {
         candidates: aur_targets.clone(),
     });
 
-    let exit_code = escalate_upgrade(no_refresh, &ignores, json);
+    let exit_code = escalate_upgrade(args.no_refresh, &args.ignores, args.json);
     if exit_code == 0 && !aur_targets.is_empty() {
         let aur_names: Vec<String> = aur_targets.iter().map(|c| c.name.clone()).collect();
-        let mut build_sink: Box<dyn InstallSink> = sink_for(json);
-        let result = if json {
+        let mut build_sink: Box<dyn InstallSink> = sink_for(args.json);
+        let result = if args.json {
             crate::build::run_build(&aur_names, false, false, &mut *build_sink, |_| true, None)
         } else {
             crate::build::run_build(
