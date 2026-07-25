@@ -576,6 +576,7 @@ fn root_install(
             }
         }
     }
+    let interactive = approvals.is_none() && unsafe { libc::isatty(0) } == 1;
     let answerer: Box<dyn crate::answerer::QuestionAnswerer> = if let Some(appr) = approvals {
         Box::new(crate::answerer::ApprovalsAnswerer::new(appr))
     } else if unsafe { libc::isatty(0) } == 1 {
@@ -584,7 +585,17 @@ fn root_install(
         Box::new(crate::answerer::NonInteractiveAnswerer)
     };
     if json {
-        install::run_install(&targets, as_deps, JsonSink::new(), || true, answerer)
+        if interactive {
+            install::run_install(
+                &targets,
+                as_deps,
+                EscalatedSink::new(),
+                confirm_install_stderr,
+                answerer,
+            )
+        } else {
+            install::run_install(&targets, as_deps, JsonSink::new(), || true, answerer)
+        }
     } else {
         install::run_install(
             &targets,
@@ -858,6 +869,29 @@ impl InstallSink for JsonSink {
     }
 }
 
+struct EscalatedSink;
+
+impl EscalatedSink {
+    fn new() -> Self {
+        EscalatedSink
+    }
+}
+
+impl InstallSink for EscalatedSink {
+    fn event(&mut self, event: InstallEvent) {
+        match event {
+            InstallEvent::TransactionSummary(s) => {
+                eprint!("{}", render_summary(&s));
+            }
+            other => {
+                if let Ok(line) = serde_json::to_string(&other) {
+                    println!("{line}");
+                }
+            }
+        }
+    }
+}
+
 fn confirm_install() -> bool {
     confirm_yes("\n:: Proceed with installation?")
 }
@@ -931,6 +965,14 @@ pub(crate) fn confirm_build(plan: &crate::resolve::BuildPlan) -> bool {
 fn confirm_yes(prompt: &str) -> bool {
     print!("{prompt} [Y/n] ");
     let _ = std::io::stdout().flush();
+    let mut input = String::new();
+    let _ = std::io::stdin().read_line(&mut input);
+    matches!(input.trim().to_lowercase().as_str(), "" | "y" | "yes")
+}
+
+fn confirm_install_stderr() -> bool {
+    eprint!("\n:: Proceed with installation? [Y/n] ");
+    let _ = std::io::stderr().flush();
     let mut input = String::new();
     let _ = std::io::stdin().read_line(&mut input);
     matches!(input.trim().to_lowercase().as_str(), "" | "y" | "yes")
