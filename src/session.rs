@@ -331,11 +331,7 @@ impl PakajoSession {
             _ => return,
         };
         self.set_progress(InstallProgress::Running, cx);
-
-        if matches!(source, PackageSource::Repo) {
-            self.spawn_install_subprocess(name, None, cx);
-            return;
-        }
+        let is_repo = matches!(source, PackageSource::Repo);
 
         self.pending_install = Some(PendingInstall {
             name: name.clone(),
@@ -345,7 +341,11 @@ impl PakajoSession {
             futures::channel::mpsc::channel::<anyhow::Result<crate::question::QuestionSet>>(1);
         let name_for_dry_run = name.clone();
         std::thread::spawn(move || {
-            let result = crate::dry_run::dry_run_for_target(&name_for_dry_run);
+            let result = if is_repo {
+                crate::dry_run::dry_run_for_repo_target(&name_for_dry_run)
+            } else {
+                crate::dry_run::dry_run_for_target(&name_for_dry_run)
+            };
             let _ = dry_tx.try_send(result);
         });
 

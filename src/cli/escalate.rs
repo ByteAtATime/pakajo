@@ -14,13 +14,23 @@ fn run_escalated_child(mut child: Child, json: bool) -> anyhow::Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
-pub(super) fn escalate_result(targets: &[String], as_deps: bool, json: bool) -> anyhow::Result<i32> {
-    let child = crate::build::spawn_install_child(targets, as_deps, None)?;
+pub(super) fn escalate_result(
+    targets: &[String],
+    as_deps: bool,
+    json: bool,
+    approvals_b64: Option<&str>,
+) -> anyhow::Result<i32> {
+    let child = crate::build::spawn_install_child(targets, as_deps, approvals_b64)?;
     run_escalated_child(child, json)
 }
 
-pub(super) fn escalate(targets: &[String], as_deps: bool, json: bool) -> ! {
-    let code = match escalate_result(targets, as_deps, json) {
+pub(super) fn escalate(
+    targets: &[String],
+    as_deps: bool,
+    json: bool,
+    approvals_b64: Option<&str>,
+) -> ! {
+    let code = match escalate_result(targets, as_deps, json, approvals_b64) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("{e:#}");

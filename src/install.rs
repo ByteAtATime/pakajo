@@ -722,6 +722,69 @@ mod tests {
 
     #[test]
     #[ignore]
+    fn dry_run_captures_installed_repo_conflict() {
+        let mut handle = setup_fake_root("dryrun_repo_conflict");
+        let cava_git = AurInfo {
+            id: 1,
+            name: "cava-git".into(),
+            package_base_id: 2,
+            package_base: "cava-git".into(),
+            version: "0.10.4-1".into(),
+            description: Some("console-based audio visualizer".into()),
+            url: None,
+            num_votes: 100,
+            popularity: 5.0,
+            out_of_date: None,
+            maintainer: Some("someone".into()),
+            first_submitted: 0,
+            last_modified: 0,
+            url_path: None,
+            submitter: None,
+            depends: vec![],
+            make_depends: vec![],
+            check_depends: vec![],
+            opt_depends: vec![],
+            conflicts: vec!["cava".into()],
+            provides: vec![],
+            replaces: vec![],
+            groups: vec![],
+            license: vec![],
+            keywords: vec![],
+            co_maintainers: vec![],
+        };
+
+        use crate::stub_pkg::build_stub_pkg;
+        let stub_dir = tempfile::tempdir().unwrap();
+        let stub = build_stub_pkg(&cava_git, stub_dir.path()).unwrap();
+        handle.trans_init(alpm::TransFlag::NONE).unwrap();
+        let loaded = handle
+            .pkg_load(
+                stub.to_string_lossy().as_ref(),
+                false,
+                alpm::SigLevel::NONE,
+            )
+            .unwrap();
+        handle.trans_add_pkg(loaded).unwrap();
+        handle.trans_prepare().unwrap();
+        handle.trans_commit().unwrap();
+        handle.trans_release().unwrap();
+        handle
+            .localdb()
+            .pkg("cava-git")
+            .expect("cava-git should be installed in localdb after seeding");
+
+        let qs = crate::dry_run::repo_dry_run(&mut handle, "cava")
+            .expect("repo dry-run should succeed");
+        assert!(
+            qs.conflicts
+                .iter()
+                .any(|c| c.incoming == "cava" && c.removable == "cava-git"),
+            "should capture the cava vs cava-git conflict; got {qs:?}"
+        );
+    }
+
+    #[test]
+    #[ignore]
     fn test_provider_surfaces_choice() {
         use std::sync::{Arc, Mutex};
 

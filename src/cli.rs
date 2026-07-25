@@ -80,7 +80,7 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
         if !args.json {
             print_sync_preamble(&handle, &positionals);
         }
-        escalate(&positionals, args.as_deps, args.json);
+        escalate(&positionals, args.as_deps, args.json, args.approvals_b64.as_deref());
     } else if repo_or_file.is_empty() {
         let mut sink: Box<dyn InstallSink> = sink_for(args.json);
         let callback: fn(&crate::resolve::BuildPlan) -> bool = if args.json { |_| true } else { confirm_build };
@@ -96,7 +96,7 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
         if !args.json {
             print_sync_preamble(&handle, &repo_or_file);
         }
-        match escalate_result(&repo_or_file, args.as_deps, args.json) {
+        match escalate_result(&repo_or_file, args.as_deps, args.json, args.approvals_b64.as_deref()) {
             Ok(0) => {}
             Ok(code) => std::process::exit(code),
             Err(e) => {
