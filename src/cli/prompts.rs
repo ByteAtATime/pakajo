@@ -2,14 +2,44 @@ use std::io::Write as _;
 
 use crate::{color, resolve::BuildPlan};
 
+enum PromptStream {
+    Stdout,
+    Stderr,
+}
+
+fn read_confirmation(message: &str, stream: PromptStream) -> bool {
+    let c = match stream {
+        PromptStream::Stdout => color::stdout_color(),
+        PromptStream::Stderr => color::stderr_color(),
+    };
+    let line = format!(
+        "{} {} ",
+        color::colon(c, message),
+        color::paint(c, color::BOLD, "[Y/n]")
+    );
+    match stream {
+        PromptStream::Stdout => {
+            print!("{line}");
+            let _ = std::io::stdout().flush();
+        }
+        PromptStream::Stderr => {
+            eprint!("{line}");
+            let _ = std::io::stderr().flush();
+        }
+    }
+    let mut input = String::new();
+    let _ = std::io::stdin().read_line(&mut input);
+    matches!(input.trim().to_lowercase().as_str(), "" | "y" | "yes")
+}
+
 pub(super) fn confirm_install() -> bool {
     print!("\n");
-    confirm_yes("Proceed with installation?")
+    read_confirmation("Proceed with installation?", PromptStream::Stdout)
 }
 
 pub(super) fn confirm_remove() -> bool {
     print!("\n");
-    confirm_yes("Proceed with removal?")
+    read_confirmation("Proceed with removal?", PromptStream::Stdout)
 }
 
 pub(super) fn confirm_build(plan: &BuildPlan) -> bool {
@@ -83,31 +113,10 @@ pub(super) fn confirm_build(plan: &BuildPlan) -> bool {
             color::colon(c, &format!("{aur_count} {aur_word} to build"))
         );
     }
-    confirm_yes("Proceed with build?")
-}
-
-fn confirm_yes(message: &str) -> bool {
-    let c = color::stdout_color();
-    print!(
-        "{} {} ",
-        color::colon(c, message),
-        color::paint(c, color::BOLD, "[Y/n]")
-    );
-    let _ = std::io::stdout().flush();
-    let mut input = String::new();
-    let _ = std::io::stdin().read_line(&mut input);
-    matches!(input.trim().to_lowercase().as_str(), "" | "y" | "yes")
+    read_confirmation("Proceed with build?", PromptStream::Stdout)
 }
 
 pub(super) fn confirm_install_stderr() -> bool {
-    let c = color::stderr_color();
-    eprint!(
-        "\n{} {} ",
-        color::colon(c, "Proceed with installation?"),
-        color::paint(c, color::BOLD, "[Y/n]")
-    );
-    let _ = std::io::stderr().flush();
-    let mut input = String::new();
-    let _ = std::io::stdin().read_line(&mut input);
-    matches!(input.trim().to_lowercase().as_str(), "" | "y" | "yes")
+    eprint!("\n");
+    read_confirmation("Proceed with installation?", PromptStream::Stderr)
 }
