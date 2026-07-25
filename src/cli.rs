@@ -17,6 +17,9 @@ mod sinks;
 pub(crate) use self::sinks::ConsoleSink;
 use self::sinks::{EscalatedSink, JsonSink};
 
+mod privs;
+use self::privs::{is_root, stdin_is_tty};
+
 pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
     let mut args = args;
     let mut json = false;
@@ -50,7 +53,7 @@ pub(crate) fn install_subcommand(args: impl Iterator<Item = String>) -> ! {
         usage_error();
     }
 
-    if unsafe { libc::geteuid() } == 0 {
+    if is_root() {
         let approvals = match approvals_b64.as_deref().map(decode_approvals).transpose() {
             Ok(opt) => opt,
             Err(e) => {
@@ -199,9 +202,9 @@ pub(crate) fn remove_subcommand(args: impl Iterator<Item = String>) -> ! {
         std::process::exit(2);
     }
 
-    if unsafe { libc::geteuid() } == 0 {
+    if is_root() {
         let answerer: Box<dyn crate::answerer::QuestionAnswerer> =
-            if unsafe { libc::isatty(0) } == 1 {
+            if stdin_is_tty() {
                 Box::new(crate::answerer::StdioAnswerer::new())
             } else {
                 Box::new(crate::answerer::NonInteractiveAnswerer)
@@ -258,7 +261,7 @@ pub(crate) fn upgrade_subcommand(args: impl Iterator<Item = String>) -> ! {
 
     if repo_only {
         let answerer: Box<dyn crate::answerer::QuestionAnswerer> =
-            if unsafe { libc::isatty(0) } == 1 {
+            if stdin_is_tty() {
                 Box::new(crate::answerer::StdioAnswerer::new())
             } else {
                 Box::new(crate::answerer::NonInteractiveAnswerer)
@@ -581,10 +584,10 @@ fn root_install(
             }
         }
     }
-    let interactive = approvals.is_none() && unsafe { libc::isatty(0) } == 1;
+    let interactive = approvals.is_none() && stdin_is_tty();
     let answerer: Box<dyn crate::answerer::QuestionAnswerer> = if let Some(appr) = approvals {
         Box::new(crate::answerer::ApprovalsAnswerer::new(appr))
-    } else if unsafe { libc::isatty(0) } == 1 {
+    } else if stdin_is_tty() {
         Box::new(crate::answerer::StdioAnswerer::new())
     } else {
         Box::new(crate::answerer::NonInteractiveAnswerer)
@@ -645,7 +648,7 @@ fn sink_for(json: bool) -> Box<dyn InstallSink> {
 }
 
 pub(crate) fn escalation_command(exe: &str) -> std::process::Command {
-    if unsafe { libc::geteuid() } == 0 {
+    if is_root() {
         std::process::Command::new(exe)
     } else {
         let mut command = std::process::Command::new("pkexec");
