@@ -239,7 +239,7 @@ impl InstallLogPage {
             InstallEvent::CheckingFileConflicts => ":: checking for file conflicts...".to_string(),
             InstallEvent::CheckingIntegrity => ":: checking package integrity...".to_string(),
             InstallEvent::CheckingDiskSpace => ":: checking available disk space...".to_string(),
-            InstallEvent::LoadingPackages => ":: loading package files...".to_string(),
+            InstallEvent::LoadingPackages => "loading packages...".to_string(),
             InstallEvent::KeyringStart => ":: checking keyring...".to_string(),
             InstallEvent::RetrievingPackages { num, total_bytes } => {
                 format!(":: retrieving {num} packages ({})", format_bytes(*total_bytes))

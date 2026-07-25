@@ -712,7 +712,7 @@ impl ConsoleSink {
             InstallEvent::CheckingFileConflicts => {},
             InstallEvent::CheckingIntegrity => {},
             InstallEvent::CheckingDiskSpace => {},
-            InstallEvent::LoadingPackages => {},
+            InstallEvent::LoadingPackages => println!("loading packages..."),
             InstallEvent::KeyringStart => {},
             InstallEvent::RetrievingPackages { .. } => {
                 println!(":: Retrieving packages...");

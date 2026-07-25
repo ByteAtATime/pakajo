@@ -216,6 +216,10 @@ fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
         .trans_init(alpm::TransFlag::NONE)
         .context("failed to initialize transaction")?;
 
+    if targets.iter().any(|t| matches!(t, InstallTarget::File(_))) {
+        sink.borrow_mut().event(InstallEvent::LoadingPackages);
+    }
+
     let mut added_names: Vec<String> = Vec::with_capacity(targets.len());
     for target in targets {
         match target {
@@ -345,7 +349,6 @@ fn convert_event(any_event: alpm::AnyEvent) -> Option<InstallEvent> {
         alpm::Event::FileConflictsStart => Some(InstallEvent::CheckingFileConflicts),
         alpm::Event::IntegrityStart => Some(InstallEvent::CheckingIntegrity),
         alpm::Event::DiskSpaceStart => Some(InstallEvent::CheckingDiskSpace),
-        alpm::Event::LoadStart => Some(InstallEvent::LoadingPackages),
         alpm::Event::KeyringStart => Some(InstallEvent::KeyringStart),
         alpm::Event::PkgRetrieveStart(e) => Some(InstallEvent::RetrievingPackages {
             num: e.num(),
