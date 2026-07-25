@@ -879,7 +879,7 @@ impl InstallSink for EscalatedSink {
                 if s.packages.is_empty() {
                     eprintln!(" nothing to do");
                 } else {
-                    eprint!("{}", render_summary(&s));
+                    eprint!("{}", render_summary(&s, color::stderr_color()));
                 }
                 return;
             }
@@ -988,7 +988,7 @@ fn print_summary(summary: &TransactionSummary) {
         println!(" nothing to do");
         return;
     }
-    print!("{}", render_summary(summary));
+    print!("{}", render_summary(summary, color::stdout_color()));
 }
 
 struct SummaryColumn {
@@ -1011,7 +1011,7 @@ fn append_table_line(out: &mut String, cells: &[String], right_align: &[bool], w
     out.push('\n');
 }
 
-fn render_summary(summary: &TransactionSummary) -> String {
+fn render_summary(summary: &TransactionSummary, colored: bool) -> String {
     let count = summary.packages.len();
 
     let mut ordered: Vec<&SummaryPackage> = summary.packages.iter().collect();
@@ -1092,7 +1092,10 @@ fn render_summary(summary: &TransactionSummary) -> String {
     let mut out = String::new();
 
     out.push('\n');
-    let header_cells: Vec<String> = columns.iter().map(|c| c.header.clone()).collect();
+    let header_cells: Vec<String> = columns
+        .iter()
+        .map(|c| color::paint(colored, color::BOLD, &c.header))
+        .collect();
     let header_align: Vec<bool> = columns.iter().map(|_| false).collect();
     append_table_line(&mut out, &header_cells, &header_align, &widths);
     out.push('\n');
@@ -1103,29 +1106,38 @@ fn render_summary(summary: &TransactionSummary) -> String {
     }
     out.push('\n');
 
-    append_footer(&mut out, summary);
+    append_footer(&mut out, summary, colored);
 
     out
 }
 
-fn append_footer(out: &mut String, summary: &TransactionSummary) {
+fn append_footer(out: &mut String, summary: &TransactionSummary, colored: bool) {
     let dlsize = summary.total_download_size;
     let isize = summary.total_installed_size;
     let rsize = summary.total_removed_size;
 
     let mut rows: Vec<(String, String)> = Vec::new();
     if dlsize > 0 {
-        rows.push(("Total Download Size:".to_string(), format_mib(dlsize)));
+        rows.push((
+            color::paint(colored, color::BOLD, "Total Download Size:"),
+            format_mib(dlsize),
+        ));
     }
     if isize > 0 {
-        rows.push(("Total Installed Size:".to_string(), format_mib(isize)));
+        rows.push((
+            color::paint(colored, color::BOLD, "Total Installed Size:"),
+            format_mib(isize),
+        ));
     }
     if rsize > 0 && isize == 0 {
-        rows.push(("Total Removed Size:".to_string(), format_mib(rsize)));
+        rows.push((
+            color::paint(colored, color::BOLD, "Total Removed Size:"),
+            format_mib(rsize),
+        ));
     }
     if isize > 0 && rsize > 0 {
         rows.push((
-            "Net Upgrade Size:".to_string(),
+            color::paint(colored, color::BOLD, "Net Upgrade Size:"),
             format_mib(isize - rsize),
         ));
     }
@@ -1259,7 +1271,7 @@ mod tests {
         .join("\n")
             + "\n";
 
-        let actual = render_summary(&summary);
+        let actual = render_summary(&summary, false);
         assert_eq!(actual, expected, "rendered summary table mismatch");
     }
 
@@ -1295,7 +1307,7 @@ mod tests {
         .join("\n")
             + "\n";
 
-        let actual = render_summary(&summary);
+        let actual = render_summary(&summary, false);
         assert_eq!(actual, expected, "rendered summary table mismatch");
     }
 }

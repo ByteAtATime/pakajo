@@ -1,5 +1,6 @@
 use std::io::Write as _;
 
+use crate::color;
 use crate::question::ProviderCandidate;
 
 pub trait QuestionAnswerer {
@@ -41,11 +42,15 @@ fn parse_provider_choice(input: &str, candidate_count: usize) -> ProviderDecisio
     }
 }
 
-pub struct StdioAnswerer;
+pub struct StdioAnswerer {
+    color: bool,
+}
 
 impl StdioAnswerer {
     pub fn new() -> Self {
-        Self
+        Self {
+            color: color::stderr_color(),
+        }
     }
 }
 
@@ -57,10 +62,14 @@ impl QuestionAnswerer for StdioAnswerer {
         removable: &str,
         removable_version: &str,
     ) -> ConflictDecision {
-        eprint!(
-            ":: {}-{} and {}-{} are in conflict. Remove {}? [y/N] ",
-            incoming, incoming_version, removable, removable_version, removable
+        let inc = color::paint(self.color, color::BOLD, incoming);
+        let incv = color::paint(self.color, color::VERSION, incoming_version);
+        let rem = color::paint(self.color, color::BOLD, removable);
+        let remv = color::paint(self.color, color::VERSION, removable_version);
+        let msg = format!(
+            "{inc}-{incv} and {rem}-{remv} are in conflict. Remove {rem}? [y/N]"
         );
+        eprint!("{} ", color::colon(self.color, &msg));
         let _ = std::io::stderr().flush();
         let mut input = String::new();
         if std::io::stdin().read_line(&mut input).is_err() {
@@ -77,9 +86,11 @@ impl QuestionAnswerer for StdioAnswerer {
             return ProviderDecision::Decline;
         }
         eprint!(
-            ":: There are {} providers available for {}:\n",
-            candidates.len(),
-            depend
+            "{}\n",
+            color::colon(
+                self.color,
+                &format!("There are {} providers available for {}:", candidates.len(), depend)
+            )
         );
         for (i, c) in candidates.iter().enumerate() {
             let display = match &c.repo {
@@ -88,7 +99,10 @@ impl QuestionAnswerer for StdioAnswerer {
             };
             eprint!("  [{}] {display}\n", i + 1);
         }
-        eprint!(":: Enter a number (default=1): ");
+        eprint!(
+            "{} ",
+            color::colon(self.color, "Enter a number (default=1):")
+        );
         let _ = std::io::stderr().flush();
         let mut input = String::new();
         if std::io::stdin().read_line(&mut input).is_err() {
