@@ -61,6 +61,7 @@ impl PakajoRoot {
         let input_window = &mut *window;
         let search_input =
             cx.new(|cx| InputState::new(input_window, cx).placeholder("Search packages…"));
+        search_input.focus_handle(cx).focus(window, cx);
         let sub_window = &mut *window;
         let subscription = cx.subscribe_in(
             &search_input,
@@ -359,9 +360,7 @@ impl PakajoRoot {
                 )
                 .children(show_bar.then(|| {
                     if self.status_indeterminate {
-                        Progress::new("install-status")
-                            .loading(true)
-                            .w(px(200.))
+                        Progress::new("install-status").loading(true).w(px(200.))
                     } else {
                         Progress::new("install-status")
                             .value(self.status_overall)
