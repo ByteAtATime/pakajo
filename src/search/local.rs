@@ -25,7 +25,12 @@ impl SearchProvider for LocalSearchProvider {
         let Some(pattern) = build_match(&q.text) else {
             return Ok(Vec::new());
         };
-        let rows = self.index.search(&pattern, dynamic_limit(&q.text))?;
+        let limit = dynamic_limit(&q.text);
+        let rows = if q.text.chars().count() <= 2 {
+            self.index.search_name_prefix_ranked(&q.text, limit)
+        } else {
+            self.index.search(&pattern, limit)
+        }?;
         Ok(rows.into_iter().map(row_to_result).collect())
     }
 }
@@ -247,5 +252,80 @@ mod tests {
     #[test]
     fn build_match_three_char_query_skips_column_filter() {
         assert_eq!(build_match("cav").as_deref(), Some("cav*"));
+    }
+
+    #[test]
+    fn two_char_exact_name_outranks_long_descriptions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let long_desc = "Tool that streams formatted report lines and session output for downstream analysis pipelines";
+        let index = seed(
+            &dir,
+            &[
+                ("sl", Some(long_desc)),
+                ("sls", Some("x")),
+                ("slang", Some("short")),
+                ("slim", Some("short")),
+                ("haskell-slist", Some("short")),
+            ],
+        );
+        let provider = LocalSearchProvider::new(index);
+
+        let rows = provider
+            .search(&SearchQuery::new("sl"))
+            .expect("local search");
+        let got = names(&rows);
+
+        assert!(!got.is_empty(), "sl* query should recall packages");
+        assert_eq!(
+            got[0], "sl",
+            "exact two-char name must rank first despite a long description that buries it under bm25"
+        );
+
+        let haskell_pos = got
+            .iter()
+            .position(|n| *n == "haskell-slist")
+            .expect("token-only-prefix name haskell-slist should be recalled");
+        for expected in ["sl", "sls", "slang", "slim"] {
+            let pos = got
+                .iter()
+                .position(|n| *n == expected)
+                .unwrap_or_else(|| panic!("literal-sl prefix {expected} should be recalled; got {got:?}"));
+            assert!(
+                pos < haskell_pos,
+                "literal-sl prefix {expected} must precede the token-only-prefix name haskell-slist; got {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_char_input_with_fts_special_char_does_not_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = seed(
+            &dir,
+            &[
+                ("apple", Some("a fruit")),
+                ("abc", Some("the alphabet")),
+                ("vim", Some("an editor")),
+            ],
+        );
+        let provider = LocalSearchProvider::new(index);
+
+        let rows = provider
+            .search(&SearchQuery::new("a\""))
+            .expect("local search must not error on a two-char input carrying an FTS-special character");
+        let got = names(&rows);
+        assert!(
+            got.iter().any(|n| *n == "apple" || *n == "abc"),
+            "sanitized token a should recall a* packages; got {got:?}"
+        );
+
+        let empty_rows = provider
+            .search(&SearchQuery::new("@"))
+            .expect("local search must not error on an input that sanitizes to empty");
+        assert!(
+            empty_rows.is_empty(),
+            "input that sanitizes to empty must return no results; got {:?}",
+            names(&empty_rows)
+        );
     }
 }

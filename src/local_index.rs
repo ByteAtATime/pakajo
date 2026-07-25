@@ -156,6 +156,30 @@ impl LocalIndex {
             .map_err(anyhow::Error::from)
     }
 
+    pub fn search_name_prefix_ranked(&self, needle: &str, limit: i64) -> anyhow::Result<Vec<PackageRow>> {
+        let needle: String = needle
+            .chars()
+            .filter_map(|c| c.is_alphanumeric().then(|| c.to_ascii_lowercase()))
+            .collect();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pattern = format!("name:{needle}*");
+        let conn = self.read.lock().expect("read connection poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT p.name, p.description, p.source, p.repo, p.version, p.num_votes, \
+             p.popularity, p.last_update, p.package_base, p.keywords \
+             FROM packages_fts \
+             JOIN packages p ON p.rowid = packages_fts.rowid \
+             WHERE packages_fts MATCH ?1 \
+             ORDER BY (p.name = ?2) DESC, (p.name LIKE ?2 || '%') DESC, length(p.name) ASC, p.name ASC \
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![&pattern, &needle, limit], row_to_package)?;
+        rows.collect::<rusqlite::Result<Vec<PackageRow>>>()
+            .map_err(anyhow::Error::from)
+    }
+
     pub fn search_recent_repo_prefix(
         &self,
         prefix: &str,
