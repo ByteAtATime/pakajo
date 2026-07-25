@@ -11,7 +11,9 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
-    h_flex, progress::Progress, v_flex,
+    h_flex,
+    progress::Progress,
+    v_flex,
 };
 use std::sync::Arc;
 
@@ -33,8 +35,18 @@ enum PageMode {
     Aur,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RepoStage {
+    Resolve,
+    Validate,
+    Download,
+    Install,
+    Finalize,
+}
+
 struct RepoState {
     manifest: Option<TransactionSummary>,
+    stage: RepoStage,
 }
 
 pub struct InstallPage {
@@ -58,7 +70,10 @@ impl InstallPage {
         on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static>,
     ) -> Self {
         let mode = match source {
-            PackageSource::Repo => PageMode::Repo(RepoState { manifest: None }),
+            PackageSource::Repo => PageMode::Repo(RepoState {
+                manifest: None,
+                stage: RepoStage::Resolve,
+            }),
             PackageSource::Aur => PageMode::Aur,
         };
         Self {
@@ -76,6 +91,19 @@ impl InstallPage {
     }
 
     pub fn handle_event(&mut self, ev: InstallEvent, cx: &mut Context<Self>) {
+        if let PageMode::Repo(state) = &mut self.mode
+            && let Some(new_stage) = event_stage(&ev)
+            && new_stage != state.stage
+        {
+            let ordered = ordered_stages(self.kind);
+            let current_idx = ordered.iter().position(|s| *s == state.stage);
+            let new_idx = ordered.iter().position(|s| *s == new_stage);
+            if let (Some(current_idx), Some(new_idx)) = (current_idx, new_idx)
+                && new_idx > current_idx
+            {
+                state.stage = new_stage;
+            }
+        }
         match &ev {
             InstallEvent::DownloadCompleted { filename, .. } => {
                 if self
@@ -201,23 +229,20 @@ impl InstallPage {
         } else {
             Progress::new("install-overall").value(self.overall)
         };
-        let mut section = v_flex()
-            .gap_3()
-            .w_full()
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .h_flex()
-                            .justify_between()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(div().child("Overall"))
-                            .child(div().child(overall_label)),
-                    )
-                    .child(overall_bar),
-            );
+        let mut section = v_flex().gap_3().w_full().child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .h_flex()
+                        .justify_between()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(div().child("Overall"))
+                        .child(div().child(overall_label)),
+                )
+                .child(overall_bar),
+        );
         if let Some(p) = &self.package {
             section = section.child(
                 v_flex()
@@ -267,7 +292,10 @@ impl InstallPage {
             InstallEvent::LoadingPackages => "loading packages...".to_string(),
             InstallEvent::KeyringStart => ":: checking keyring...".to_string(),
             InstallEvent::RetrievingPackages { num, total_bytes } => {
-                format!(":: retrieving {num} packages ({})", format_bytes(*total_bytes))
+                format!(
+                    ":: retrieving {num} packages ({})",
+                    format_bytes(*total_bytes)
+                )
             }
             InstallEvent::PackageOperation {
                 operation,
@@ -376,6 +404,57 @@ impl InstallPage {
             )
     }
 
+    fn render_stages(&self, cx: &mut Context<Self>) -> Div {
+        let PageMode::Repo(state) = &self.mode else {
+            return div();
+        };
+        let ordered = ordered_stages(self.kind);
+        let current_idx = ordered.iter().position(|s| *s == state.stage);
+        let mut card = v_flex()
+            .gap_2()
+            .w(rems(22.))
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .p_4();
+        for (i, stage) in ordered.iter().enumerate() {
+            let is_done = current_idx.is_some_and(|c| i < c);
+            let is_active = current_idx == Some(i);
+            let (glyph, glyph_color, label_color) = if is_done {
+                ("✓", cx.theme().green, cx.theme().muted_foreground)
+            } else if is_active {
+                ("●", cx.theme().blue, cx.theme().foreground)
+            } else {
+                (
+                    "○",
+                    cx.theme().muted_foreground,
+                    cx.theme().muted_foreground,
+                )
+            };
+            let label = match stage {
+                RepoStage::Resolve => "Resolve",
+                RepoStage::Validate => "Validate",
+                RepoStage::Download => "Download",
+                RepoStage::Install => {
+                    if matches!(self.kind, InstallKind::Install) {
+                        "Install"
+                    } else {
+                        "Remove"
+                    }
+                }
+                RepoStage::Finalize => "Finalize",
+            };
+            card = card.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().text_color(glyph_color).child(glyph))
+                    .child(div().text_color(label_color).child(label)),
+            );
+        }
+        card
+    }
+
     fn render_repo(&self, cx: &mut Context<Self>) -> Div {
         let on_back = self.on_back.clone();
         v_flex()
@@ -397,18 +476,26 @@ impl InstallPage {
             )
             .child(self.render_summary(cx))
             .child(
-                div()
-                    .id("install-log-scroll")
+                h_flex()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .v_flex()
-                    .gap_1()
-                    .p_3()
-                    .bg(cx.theme().muted)
-                    .text_color(cx.theme().muted_foreground)
-                    .text_size(rems(0.8))
-                    .children(self.logs.iter().filter_map(InstallPage::render_event)),
+                    .items_stretch()
+                    .gap_4()
+                    .child(self.render_stages(cx))
+                    .child(
+                        div()
+                            .id("install-log-scroll")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .v_flex()
+                            .gap_1()
+                            .p_3()
+                            .bg(cx.theme().muted)
+                            .text_color(cx.theme().muted_foreground)
+                            .text_size(rems(0.8))
+                            .children(self.logs.iter().filter_map(InstallPage::render_event)),
+                    ),
             )
     }
 
@@ -444,10 +531,9 @@ impl InstallPage {
                 let counts_left = segments.join(" · ");
 
                 let download_right = match self.kind {
-                    InstallKind::Install if summary.total_download_size > 0 => Some(format!(
-                        "↓ {}",
-                        format_bytes(summary.total_download_size)
-                    )),
+                    InstallKind::Install if summary.total_download_size > 0 => {
+                        Some(format!("↓ {}", format_bytes(summary.total_download_size)))
+                    }
                     _ => None,
                 };
 
@@ -461,9 +547,10 @@ impl InstallPage {
                             None
                         }
                     }
-                    InstallKind::Remove if summary.total_removed_size > 0 => {
-                        Some(format!("Frees {}", format_bytes(summary.total_removed_size)))
-                    }
+                    InstallKind::Remove if summary.total_removed_size > 0 => Some(format!(
+                        "Frees {}",
+                        format_bytes(summary.total_removed_size)
+                    )),
                     _ => None,
                 };
 
@@ -581,6 +668,48 @@ impl InstallPage {
                     .child(Progress::new("install-summary-prep").loading(true)),
             },
         }
+    }
+}
+
+fn ordered_stages(kind: InstallKind) -> Vec<RepoStage> {
+    use RepoStage::*;
+    match kind {
+        InstallKind::Install => vec![Resolve, Validate, Download, Install, Finalize],
+        InstallKind::Remove => vec![Resolve, Validate, Install, Finalize],
+    }
+}
+
+fn event_stage(ev: &InstallEvent) -> Option<RepoStage> {
+    use InstallEvent::*;
+    use RepoStage::*;
+    match ev {
+        ResolvingDependencies => Some(Resolve),
+        CheckingConflicts
+        | CheckingFileConflicts
+        | CheckingIntegrity
+        | CheckingDiskSpace
+        | LoadingPackages
+        | KeyringStart => Some(Validate),
+        Progress { phase, .. } => match phase {
+            ProgressPhase::Conflicts
+            | ProgressPhase::Diskspace
+            | ProgressPhase::Integrity
+            | ProgressPhase::Load
+            | ProgressPhase::Keyring => Some(Validate),
+            ProgressPhase::Add
+            | ProgressPhase::Upgrade
+            | ProgressPhase::Downgrade
+            | ProgressPhase::Reinstall
+            | ProgressPhase::Remove => Some(Install),
+        },
+        RetrievingPackages { .. }
+        | DownloadInit { .. }
+        | DownloadProgress { .. }
+        | DownloadRetry { .. }
+        | DownloadCompleted { .. } => Some(Download),
+        PackageOperation { .. } => Some(Install),
+        HookRun { .. } | ScriptletInfo { .. } | TransactionDone => Some(Finalize),
+        _ => None,
     }
 }
 
