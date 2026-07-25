@@ -1,6 +1,8 @@
-use std::io::BufRead as _;
+use std::io::Read as _;
+use std::os::unix::io::AsRawFd as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
+use std::time::Duration;
 
 use anyhow::Context as _;
 
@@ -239,9 +241,15 @@ fn run_makepkg_streaming<S: InstallSink + ?Sized>(
     drop(pty.slave);
 
     let package = package.to_string();
-    let reader = std::io::BufReader::new(std::fs::File::from(pty.master));
-    for line in reader.lines() {
-        let mut text = line.context("failed to read makepkg output")?;
+    let mut master = std::fs::File::from(pty.master);
+    set_nonblocking(&master).context("failed to set pty master non-blocking")?;
+
+    let mut buf = [0u8; 4096];
+    let mut pending_line: Vec<u8> = Vec::new();
+    let mut child_gone = false;
+
+    let mut emit = |line: &mut Vec<u8>| {
+        let mut text = String::from_utf8_lossy(line).into_owned();
         if text.ends_with('\r') {
             text.pop();
         }
@@ -249,6 +257,47 @@ fn run_makepkg_streaming<S: InstallSink + ?Sized>(
             package: package.clone(),
             line: text,
         });
+        line.clear();
+    };
+
+    loop {
+        match master.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                for &byte in &buf[..n] {
+                    if byte == b'\n' {
+                        emit(&mut pending_line);
+                    } else {
+                        pending_line.push(byte);
+                    }
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if !child_gone {
+                    match child.try_wait()? {
+                        None => {
+                            std::thread::sleep(Duration::from_millis(5));
+                            continue;
+                        }
+                        Some(_) => child_gone = true,
+                    }
+                }
+                let mut pfd = libc::pollfd {
+                    fd: master.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let ready = unsafe { libc::poll(&mut pfd, 1, 200) };
+                if ready <= 0 {
+                    break;
+                }
+            }
+            Err(e) => return Err(e).context("failed to read makepkg output"),
+        }
+    }
+
+    if !pending_line.is_empty() {
+        emit(&mut pending_line);
     }
 
     let status = child.wait().context("makepkg did not complete")?;
@@ -257,6 +306,19 @@ fn run_makepkg_streaming<S: InstallSink + ?Sized>(
             "makepkg failed for {package} (exit {})",
             status.code().unwrap_or(-1)
         );
+    }
+    Ok(())
+}
+
+fn set_nonblocking(file: &std::fs::File) -> anyhow::Result<()> {
+    let fd = file.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error()).context("fcntl F_GETFL on pty master");
+    }
+    let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    if rc < 0 {
+        return Err(std::io::Error::last_os_error()).context("fcntl F_SETFL on pty master");
     }
     Ok(())
 }
