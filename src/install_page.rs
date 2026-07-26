@@ -373,7 +373,7 @@ impl InstallPage {
             return div();
         };
         let ordered = ordered_stages(self.kind);
-        let current_idx = ordered.iter().position(|s| *s == state.stage);
+        let current_idx = ordered.iter().position(|s| *s == state.stage).unwrap_or(0);
         let mut card = v_flex()
             .gap_2()
             .w(rems(22.))
@@ -382,18 +382,16 @@ impl InstallPage {
             .border_color(cx.theme().border)
             .p_4();
         for (i, stage) in ordered.iter().enumerate() {
-            let is_done = current_idx.is_some_and(|c| i < c);
-            let is_active = current_idx == Some(i);
-            let (glyph, glyph_color, label_color) = if is_done {
-                ("✓", cx.theme().green, cx.theme().muted_foreground)
-            } else if is_active {
-                ("●", cx.theme().blue, cx.theme().foreground)
-            } else {
-                (
+            let (glyph, glyph_color, label_color) = match cell_state(&self.status, current_idx, i)
+            {
+                CellState::Done => ("✓", cx.theme().green, cx.theme().muted_foreground),
+                CellState::Active => ("●", cx.theme().blue, cx.theme().foreground),
+                CellState::Failed => ("✗", cx.theme().danger, cx.theme().danger),
+                CellState::Pending => (
                     "○",
                     cx.theme().muted_foreground,
                     cx.theme().muted_foreground,
-                )
+                ),
             };
             let label = match stage {
                 RepoStage::Resolve => "Resolve",
@@ -416,6 +414,27 @@ impl InstallPage {
                     .child(div().text_color(label_color).child(label)),
             );
         }
+        if let InstallProgress::Failed(message) = &self.status {
+            card = card.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().text_color(cx.theme().danger).child("✗"))
+                    .child(
+                        div()
+                            .text_color(cx.theme().danger)
+                            .child(format!("Failed: {message}")),
+                    ),
+            );
+        } else if matches!(self.status, InstallProgress::Completed) {
+            card = card.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().text_color(cx.theme().green).child("✓"))
+                    .child(div().text_color(cx.theme().green).child("Done")),
+            );
+        }
         card
     }
 
@@ -424,7 +443,7 @@ impl InstallPage {
             return div();
         };
         let ordered = ordered_aur_stages();
-        let current_idx = ordered.iter().position(|s| *s == state.stage);
+        let current_idx = ordered.iter().position(|s| *s == state.stage).unwrap_or(0);
         let mut card = v_flex()
             .gap_2()
             .w(rems(22.))
@@ -433,18 +452,16 @@ impl InstallPage {
             .border_color(cx.theme().border)
             .p_4();
         for (i, stage) in ordered.iter().enumerate() {
-            let is_done = current_idx.is_some_and(|c| i < c);
-            let is_active = current_idx == Some(i);
-            let (glyph, glyph_color, label_color) = if is_done {
-                ("✓", cx.theme().green, cx.theme().muted_foreground)
-            } else if is_active {
-                ("●", cx.theme().blue, cx.theme().foreground)
-            } else {
-                (
+            let (glyph, glyph_color, label_color) = match cell_state(&self.status, current_idx, i)
+            {
+                CellState::Done => ("✓", cx.theme().green, cx.theme().muted_foreground),
+                CellState::Active => ("●", cx.theme().blue, cx.theme().foreground),
+                CellState::Failed => ("✗", cx.theme().danger, cx.theme().danger),
+                CellState::Pending => (
                     "○",
                     cx.theme().muted_foreground,
                     cx.theme().muted_foreground,
-                )
+                ),
             };
             let label = match stage {
                 AurStage::Resolve => "Resolve",
@@ -459,6 +476,27 @@ impl InstallPage {
                     .items_center()
                     .child(div().text_color(glyph_color).child(glyph))
                     .child(div().text_color(label_color).child(label)),
+            );
+        }
+        if let InstallProgress::Failed(message) = &self.status {
+            card = card.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().text_color(cx.theme().danger).child("✗"))
+                    .child(
+                        div()
+                            .text_color(cx.theme().danger)
+                            .child(format!("Failed: {message}")),
+                    ),
+            );
+        } else if matches!(self.status, InstallProgress::Completed) {
+            card = card.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().text_color(cx.theme().green).child("✓"))
+                    .child(div().text_color(cx.theme().green).child("Done")),
             );
         }
         card
@@ -679,6 +717,37 @@ fn ordered_stages(kind: InstallKind) -> Vec<RepoStage> {
     match kind {
         InstallKind::Install => vec![Resolve, Validate, Download, Install, Finalize],
         InstallKind::Remove => vec![Resolve, Validate, Install, Finalize],
+    }
+}
+
+enum CellState {
+    Done,
+    Active,
+    Failed,
+    Pending,
+}
+
+fn cell_state(status: &InstallProgress, current_idx: usize, idx: usize) -> CellState {
+    match status {
+        InstallProgress::Completed => CellState::Done,
+        InstallProgress::Failed(_) => {
+            if idx < current_idx {
+                CellState::Done
+            } else if idx == current_idx {
+                CellState::Failed
+            } else {
+                CellState::Pending
+            }
+        }
+        _ => {
+            if idx < current_idx {
+                CellState::Done
+            } else if idx == current_idx {
+                CellState::Active
+            } else {
+                CellState::Pending
+            }
+        }
     }
 }
 
