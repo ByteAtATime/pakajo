@@ -9,12 +9,19 @@ use anyhow::Context as _;
 use crate::events::{AurDepSource, InstallEvent, InstallSink};
 use crate::resolve::BuildPlan;
 
+pub enum BuildDecision {
+    Proceed,
+    Review,
+    Abort,
+}
+
 pub fn run_build<S: InstallSink + ?Sized>(
     targets: &[String],
     no_check: bool,
     user_as_deps: bool,
     sink: &mut S,
-    confirm: impl FnOnce(&BuildPlan) -> bool,
+    confirm: impl FnOnce(&BuildPlan) -> BuildDecision,
+    review: impl FnOnce(&[crate::pkgbuild::PkgbuildInfo]) -> bool,
     approvals_b64: Option<&str>,
 ) -> anyhow::Result<()> {
     for target in targets {
@@ -50,8 +57,44 @@ pub fn run_build<S: InstallSink + ?Sized>(
         repo_deps,
     });
 
-    if !confirm(&plan) {
+    let decision = confirm(&plan);
+    if matches!(decision, BuildDecision::Abort) {
         anyhow::bail!("build cancelled by user");
+    }
+
+    let pkgbuilds = crate::pkgbuild::collect_for_review(&plan, sink)?;
+    if matches!(decision, BuildDecision::Review) {
+        use crate::events::{InstallEvent, PkgbuildReviewEntry};
+        let to_review: Vec<crate::pkgbuild::PkgbuildInfo> = pkgbuilds
+            .iter()
+            .filter(|p| p.needs_review)
+            .cloned()
+            .collect();
+        if to_review.is_empty() {
+            sink.event(InstallEvent::PkgbuildAllUpToDate {
+                packages: pkgbuilds.iter().map(|p| p.name.clone()).collect(),
+            });
+        } else {
+            sink.event(InstallEvent::PkgbuildReviewStarted {
+                packages: to_review
+                    .iter()
+                    .map(|p| PkgbuildReviewEntry {
+                        name: p.name.clone(),
+                        pkgbase: p.pkgbase.clone(),
+                        is_new: p.is_new,
+                    })
+                    .collect(),
+            });
+            if !review(&to_review) {
+                anyhow::bail!("PKGBUILD review rejected by user");
+            }
+            for pb in &to_review {
+                crate::pkgbuild::mark_seen(&pb.dir)?;
+            }
+            sink.event(InstallEvent::PkgbuildReviewAccepted {
+                packages: to_review.iter().map(|p| p.name.clone()).collect(),
+            });
+        }
     }
 
     let total_layers = plan.layers.len();
@@ -69,11 +112,6 @@ pub fn run_build<S: InstallSink + ?Sized>(
         for info in &layer.aur {
             let pkgbase = &info.package_base;
             let dir = clone_dir(pkgbase)?;
-
-            sink.event(InstallEvent::CloningRepo {
-                package: info.name.clone(),
-            });
-            git_clone_or_pull(&dir, pkgbase)?;
 
             sink.event(InstallEvent::BuildStarted {
                 package: info.name.clone(),

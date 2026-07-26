@@ -138,6 +138,9 @@ impl ConsoleSink {
             }
             InstallEvent::BuildCompleted { .. } => {}
             InstallEvent::LayerBoundary { .. } => {}
+            InstallEvent::PkgbuildReviewStarted { .. }
+            | InstallEvent::PkgbuildReviewAccepted { .. }
+            | InstallEvent::PkgbuildAllUpToDate { .. } => {}
             InstallEvent::SysupgradeAurCandidates { candidates } => {
                 if candidates.is_empty() {
                     return;

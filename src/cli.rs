@@ -10,7 +10,7 @@ use self::args::{CleanArgs, InstallArgs, RemoveArgs, SearchArgs, UpgradeArgs};
 mod summary;
 
 mod prompts;
-use self::prompts::{confirm_build, confirm_remove};
+use self::prompts::confirm_remove;
 
 mod sinks;
 pub(crate) use self::sinks::ConsoleSink;
@@ -83,13 +83,19 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
         escalate(&positionals, args.as_deps, args.json, args.approvals_b64.as_deref());
     } else if repo_or_file.is_empty() {
         let mut sink: Box<dyn InstallSink> = sink_for(args.json);
-        let callback: fn(&crate::resolve::BuildPlan) -> bool = if args.json { |_| true } else { confirm_build };
+        let confirm: fn(&crate::resolve::BuildPlan) -> crate::build::BuildDecision = if args.json {
+            |_| crate::build::BuildDecision::Review
+        } else {
+            |_| crate::build::BuildDecision::Proceed
+        };
+        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = |_| true;
         exit_with_result(crate::build::run_build(
             &aur,
             false,
             args.as_deps,
             &mut *sink,
-            callback,
+            confirm,
+            review,
             args.approvals_b64.as_deref(),
         ));
     } else {
@@ -105,13 +111,19 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
             }
         }
         let mut sink: Box<dyn InstallSink> = sink_for(args.json);
-        let callback: fn(&crate::resolve::BuildPlan) -> bool = if args.json { |_| true } else { confirm_build };
+        let confirm: fn(&crate::resolve::BuildPlan) -> crate::build::BuildDecision = if args.json {
+            |_| crate::build::BuildDecision::Review
+        } else {
+            |_| crate::build::BuildDecision::Proceed
+        };
+        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = |_| true;
         let result = crate::build::run_build(
             &aur,
             false,
             args.as_deps,
             &mut *sink,
-            callback,
+            confirm,
+            review,
             args.approvals_b64.as_deref(),
         );
         if let Err(e) = &result {
@@ -217,13 +229,19 @@ pub(crate) fn upgrade_subcommand(args: UpgradeArgs) -> ! {
     if exit_code == 0 && !aur_targets.is_empty() {
         let aur_names: Vec<String> = aur_targets.iter().map(|c| c.name.clone()).collect();
         let mut build_sink: Box<dyn InstallSink> = sink_for(args.json);
-        let callback: fn(&crate::resolve::BuildPlan) -> bool = if args.json { |_| true } else { confirm_build };
+        let confirm: fn(&crate::resolve::BuildPlan) -> crate::build::BuildDecision = if args.json {
+            |_| crate::build::BuildDecision::Review
+        } else {
+            |_| crate::build::BuildDecision::Proceed
+        };
+        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = |_| true;
         let result = crate::build::run_build(
             &aur_names,
             false,
             false,
             &mut *build_sink,
-            callback,
+            confirm,
+            review,
             None,
         );
         if let Err(e) = &result {

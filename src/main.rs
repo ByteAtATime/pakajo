@@ -18,6 +18,7 @@ mod package;
 mod package_detail;
 mod pacman;
 mod pacman_watch;
+mod pkgbuild;
 mod question;
 mod remove;
 mod resolve;

@@ -7,6 +7,13 @@ pub enum AurDepSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PkgbuildReviewEntry {
+    pub name: String,
+    pub pkgbase: String,
+    pub is_new: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InstallEvent {
     ResolvingDependencies,
     CheckingConflicts,
@@ -101,6 +108,9 @@ pub enum InstallEvent {
     SysupgradeAurCandidates {
         candidates: Vec<crate::upgrade::AurUpgradeCandidate>,
     },
+    PkgbuildReviewStarted { packages: Vec<PkgbuildReviewEntry> },
+    PkgbuildReviewAccepted { packages: Vec<String> },
+    PkgbuildAllUpToDate { packages: Vec<String> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

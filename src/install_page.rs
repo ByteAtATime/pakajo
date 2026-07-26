@@ -49,6 +49,7 @@ struct AurState {
     manifest: Option<TransactionSummary>,
     stage: AurStage,
     building: Option<String>,
+    cloning: Option<String>,
     scroll: ScrollHandle,
 }
 
@@ -80,6 +81,7 @@ impl InstallPage {
                 manifest: None,
                 stage: AurStage::Resolve,
                 building: None,
+                cloning: None,
                 scroll: ScrollHandle::new(),
             }),
         };
@@ -122,8 +124,8 @@ impl InstallPage {
                 }
             }
             match &ev {
-                InstallEvent::CloningRepo { package }
-                | InstallEvent::BuildStarted { package } => state.building = Some(package.clone()),
+                InstallEvent::CloningRepo { package } => state.cloning = Some(package.clone()),
+                InstallEvent::BuildStarted { package } => state.building = Some(package.clone()),
                 InstallEvent::BuildCompleted { .. } => state.building = None,
                 _ => {}
             }
@@ -243,6 +245,9 @@ impl InstallPage {
             | InstallEvent::ResolutionComplete { .. }
             | InstallEvent::LayerBoundary { .. }
             | InstallEvent::SysupgradeAurCandidates { .. }
+            | InstallEvent::PkgbuildReviewStarted { .. }
+            | InstallEvent::PkgbuildReviewAccepted { .. }
+            | InstallEvent::PkgbuildAllUpToDate { .. }
             | InstallEvent::ProcessingChanges => return None,
             InstallEvent::ResolvingAurDependencies { target } => {
                 format!(":: resolving dependencies for {target}...")
