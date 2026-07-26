@@ -32,7 +32,7 @@ struct FileDownload {
 
 enum PageMode {
     Repo(RepoState),
-    Aur,
+    Aur(AurState),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -48,6 +48,10 @@ struct RepoState {
     manifest: Option<TransactionSummary>,
     stage: RepoStage,
     scroll: ScrollHandle,
+}
+
+struct AurState {
+    manifest: Option<TransactionSummary>,
 }
 
 pub struct InstallPage {
@@ -76,7 +80,7 @@ impl InstallPage {
                 stage: RepoStage::Resolve,
                 scroll: ScrollHandle::new(),
             }),
-            PackageSource::Aur => PageMode::Aur,
+            PackageSource::Aur => PageMode::Aur(AurState { manifest: None }),
         };
         Self {
             kind,
@@ -166,11 +170,10 @@ impl InstallPage {
                     total,
                 });
             }
-            InstallEvent::TransactionSummary(summary) => {
-                if let PageMode::Repo(state) = &mut self.mode {
-                    state.manifest = Some(summary);
-                }
-            }
+            InstallEvent::TransactionSummary(summary) => match &mut self.mode {
+                PageMode::Repo(state) => state.manifest = Some(summary),
+                PageMode::Aur(state) => state.manifest = Some(summary),
+            },
             other => {
                 self.logs.push(other);
             }
@@ -371,6 +374,14 @@ impl InstallPage {
 
     fn render_aur(&self, cx: &mut Context<Self>) -> Div {
         let on_back = self.on_back.clone();
+        let manifest_card: Option<Div> = match &self.mode {
+            PageMode::Aur(state) => state
+                .manifest
+                .as_ref()
+                .filter(|s| !s.packages.is_empty())
+                .map(|s| self.render_manifest_card(cx, s)),
+            _ => None,
+        };
         v_flex()
             .size_full()
             .min_h_0()
@@ -388,6 +399,7 @@ impl InstallPage {
                             .on_click(move |_, window, cx| on_back(window, cx)),
                     ),
             )
+            .children(manifest_card)
             .children(self.render_banner(cx))
             .children(self.render_progress(cx))
             .child(
@@ -511,141 +523,145 @@ impl InstallPage {
             )
     }
 
+    fn render_manifest_card(&self, cx: &mut Context<Self>, summary: &TransactionSummary) -> Div {
+        let mut installs = 0u32;
+        let mut upgrades = 0u32;
+        let mut removes = 0u32;
+        for pkg in &summary.packages {
+            if pkg.is_removal {
+                removes += 1;
+            } else if pkg.old_version.is_some() {
+                upgrades += 1;
+            } else {
+                installs += 1;
+            }
+        }
+
+        let mut segments: Vec<String> = Vec::new();
+        if installs > 0 {
+            segments.push(format!("Install {installs}"));
+        }
+        if upgrades > 0 {
+            segments.push(format!("Upgrade {upgrades}"));
+        }
+        if removes > 0 {
+            segments.push(format!("Remove {removes}"));
+        }
+        let counts_left = segments.join(" · ");
+
+        let download_right = match self.kind {
+            InstallKind::Install if summary.total_download_size > 0 => {
+                Some(format!("↓ {}", format_bytes(summary.total_download_size)))
+            }
+            _ => None,
+        };
+
+        let net_text = match self.kind {
+            InstallKind::Install => {
+                let net = summary.total_installed_size - summary.total_removed_size;
+                if net != 0 {
+                    let sign = if net > 0 { "+" } else { "-" };
+                    Some(format!("Net {sign}{}", format_bytes(net.abs())))
+                } else {
+                    None
+                }
+            }
+            InstallKind::Remove if summary.total_removed_size > 0 => Some(format!(
+                "Frees {}",
+                format_bytes(summary.total_removed_size)
+            )),
+            _ => None,
+        };
+
+        let mut card = v_flex()
+            .gap_3()
+            .w_full()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .p_4()
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .child(div().child(counts_left))
+                    .children(download_right.map(|d| div().child(d))),
+            );
+
+        if let Some(net) = net_text {
+            card = card.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(net),
+            );
+        }
+
+        card = card.child(div().h_px().w_full().bg(cx.theme().border));
+
+        let total = summary.packages.len();
+        for pkg in summary.packages.iter().take(6) {
+            let (op_label, op_color, version_text) = if pkg.is_removal {
+                (
+                    "Remove",
+                    cx.theme().danger,
+                    pkg.old_version.clone().unwrap_or_default(),
+                )
+            } else if pkg.old_version.is_some() {
+                (
+                    "Upgrade",
+                    cx.theme().blue,
+                    format!(
+                        "{} → {}",
+                        pkg.old_version.as_deref().unwrap_or("?"),
+                        pkg.new_version,
+                    ),
+                )
+            } else {
+                ("Install", cx.theme().green, pkg.new_version.clone())
+            };
+            card = card.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().child(pkg.name.clone()))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(version_text),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(op_color)
+                            .bg(op_color.opacity(0.1))
+                            .px_2()
+                            .child(op_label),
+                    ),
+            );
+        }
+
+        let extra = total.saturating_sub(6);
+        if extra > 0 {
+            card = card.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("+{extra} more")),
+            );
+        }
+
+        card
+    }
+
     fn render_summary(&self, cx: &mut Context<Self>) -> Div {
         let PageMode::Repo(state) = &self.mode else {
             return div();
         };
         match &state.manifest {
             Some(summary) if !summary.packages.is_empty() => {
-                let mut installs = 0u32;
-                let mut upgrades = 0u32;
-                let mut removes = 0u32;
-                for pkg in &summary.packages {
-                    if pkg.is_removal {
-                        removes += 1;
-                    } else if pkg.old_version.is_some() {
-                        upgrades += 1;
-                    } else {
-                        installs += 1;
-                    }
-                }
-
-                let mut segments: Vec<String> = Vec::new();
-                if installs > 0 {
-                    segments.push(format!("Install {installs}"));
-                }
-                if upgrades > 0 {
-                    segments.push(format!("Upgrade {upgrades}"));
-                }
-                if removes > 0 {
-                    segments.push(format!("Remove {removes}"));
-                }
-                let counts_left = segments.join(" · ");
-
-                let download_right = match self.kind {
-                    InstallKind::Install if summary.total_download_size > 0 => {
-                        Some(format!("↓ {}", format_bytes(summary.total_download_size)))
-                    }
-                    _ => None,
-                };
-
-                let net_text = match self.kind {
-                    InstallKind::Install => {
-                        let net = summary.total_installed_size - summary.total_removed_size;
-                        if net != 0 {
-                            let sign = if net > 0 { "+" } else { "-" };
-                            Some(format!("Net {sign}{}", format_bytes(net.abs())))
-                        } else {
-                            None
-                        }
-                    }
-                    InstallKind::Remove if summary.total_removed_size > 0 => Some(format!(
-                        "Frees {}",
-                        format_bytes(summary.total_removed_size)
-                    )),
-                    _ => None,
-                };
-
-                let mut card = v_flex()
-                    .gap_3()
-                    .w_full()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .p_4()
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .justify_between()
-                            .child(div().child(counts_left))
-                            .children(download_right.map(|d| div().child(d))),
-                    );
-
-                if let Some(net) = net_text {
-                    card = card.child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(net),
-                    );
-                }
-
-                card = card.child(div().h_px().w_full().bg(cx.theme().border));
-
-                let total = summary.packages.len();
-                for pkg in summary.packages.iter().take(6) {
-                    let (op_label, op_color, version_text) = if pkg.is_removal {
-                        (
-                            "Remove",
-                            cx.theme().danger,
-                            pkg.old_version.clone().unwrap_or_default(),
-                        )
-                    } else if pkg.old_version.is_some() {
-                        (
-                            "Upgrade",
-                            cx.theme().blue,
-                            format!(
-                                "{} → {}",
-                                pkg.old_version.as_deref().unwrap_or("?"),
-                                pkg.new_version,
-                            ),
-                        )
-                    } else {
-                        ("Install", cx.theme().green, pkg.new_version.clone())
-                    };
-                    card = card.child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(div().flex_1().child(pkg.name.clone()))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(version_text),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(op_color)
-                                    .bg(op_color.opacity(0.1))
-                                    .px_2()
-                                    .child(op_label),
-                            ),
-                    );
-                }
-
-                let extra = total.saturating_sub(6);
-                if extra > 0 {
-                    card = card.child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("+{extra} more")),
-                    );
-                }
-
-                card
+                self.render_manifest_card(cx, summary)
             }
             Some(_) => v_flex()
                 .w_full()
@@ -744,7 +760,7 @@ fn format_package_operation(
 
 impl Render for InstallPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if matches!(self.mode, PageMode::Aur) {
+        if matches!(self.mode, PageMode::Aur(_)) {
             self.render_aur(cx)
         } else {
             self.render_repo(cx)
