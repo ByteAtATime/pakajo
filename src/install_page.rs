@@ -48,6 +48,7 @@ struct RepoState {
 struct AurState {
     manifest: Option<TransactionSummary>,
     stage: AurStage,
+    building: Option<String>,
     scroll: ScrollHandle,
 }
 
@@ -78,6 +79,7 @@ impl InstallPage {
             PackageSource::Aur => PageMode::Aur(AurState {
                 manifest: None,
                 stage: AurStage::Resolve,
+                building: None,
                 scroll: ScrollHandle::new(),
             }),
         };
@@ -106,17 +108,24 @@ impl InstallPage {
             {
                 state.stage = new_stage;
             }
-        } else if let PageMode::Aur(state) = &mut self.mode
-            && let Some(new_stage) = aur_event_stage(&ev)
-            && new_stage != state.stage
-        {
-            let ordered = ordered_aur_stages();
-            let current_idx = ordered.iter().position(|s| *s == state.stage);
-            let new_idx = ordered.iter().position(|s| *s == new_stage);
-            if let (Some(current_idx), Some(new_idx)) = (current_idx, new_idx)
-                && new_idx > current_idx
+        } else if let PageMode::Aur(state) = &mut self.mode {
+            if let Some(new_stage) = aur_event_stage(&ev)
+                && new_stage != state.stage
             {
-                state.stage = new_stage;
+                let ordered = ordered_aur_stages();
+                let current_idx = ordered.iter().position(|s| *s == state.stage);
+                let new_idx = ordered.iter().position(|s| *s == new_stage);
+                if let (Some(current_idx), Some(new_idx)) = (current_idx, new_idx)
+                    && new_idx > current_idx
+                {
+                    state.stage = new_stage;
+                }
+            }
+            match &ev {
+                InstallEvent::CloningRepo { package }
+                | InstallEvent::BuildStarted { package } => state.building = Some(package.clone()),
+                InstallEvent::BuildCompleted { .. } => state.building = None,
+                _ => {}
             }
         }
         match &ev {
@@ -282,11 +291,6 @@ impl InstallPage {
         let PageMode::Aur(state) = &self.mode else {
             return div();
         };
-        let manifest_card = state
-            .manifest
-            .as_ref()
-            .filter(|s| !s.packages.is_empty())
-            .map(|s| self.render_manifest_card(cx, s));
         v_flex()
             .size_full()
             .min_h_0()
@@ -304,7 +308,7 @@ impl InstallPage {
                             .on_click(move |_, window, cx| on_back(window, cx)),
                     ),
             )
-            .children(manifest_card)
+            .child(self.render_aur_top(cx))
             .child(
                 h_flex()
                     .flex_1()
@@ -314,6 +318,54 @@ impl InstallPage {
                     .child(self.render_aur_stages(cx))
                     .child(self.render_terminal(cx, &state.scroll)),
             )
+    }
+
+    fn render_aur_top(&self, cx: &mut Context<Self>) -> Div {
+        let PageMode::Aur(state) = &self.mode else {
+            return div();
+        };
+        if let Some(summary) = state
+            .manifest
+            .as_ref()
+            .filter(|s| !s.packages.is_empty())
+        {
+            return self.render_manifest_card(cx, summary);
+        }
+        match &self.status {
+            InstallProgress::Failed(message) => v_flex()
+                .w_full()
+                .rounded_md()
+                .border_1()
+                .border_color(cx.theme().border)
+                .p_4()
+                .text_color(cx.theme().danger)
+                .child(format!("Transaction failed: {message}")),
+            _ => {
+                let label = match state.stage {
+                    AurStage::Resolve => "Resolving AUR dependencies…".to_string(),
+                    AurStage::Build => state
+                        .building
+                        .as_deref()
+                        .map(|p| format!("Building {p}…"))
+                        .unwrap_or_else(|| "Building…".to_string()),
+                    _ => "Preparing transaction…".to_string(),
+                };
+                v_flex()
+                    .gap_2()
+                    .w_full()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .p_4()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(label),
+                    )
+                    .child(Progress::new("aur-top-prep").loading(true))
+            }
+        }
     }
 
     fn render_stages(&self, cx: &mut Context<Self>) -> Div {
