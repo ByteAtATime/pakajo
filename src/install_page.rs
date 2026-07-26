@@ -2,7 +2,6 @@ use crate::color;
 use crate::events::{
     DownloadResult, InstallEvent, LogLevel, PackageOp, ProgressPhase, TransactionSummary,
 };
-use crate::icon::PakajoIcon;
 use crate::install::InstallProgress;
 use crate::package::PackageSource;
 use crate::session::InstallKind;
@@ -16,19 +15,6 @@ use gpui_component::{
     v_flex,
 };
 use std::sync::Arc;
-
-struct PkgProgress {
-    package: String,
-    percent: i32,
-    current: usize,
-    total: usize,
-}
-
-struct FileDownload {
-    filename: String,
-    downloaded: i64,
-    total: i64,
-}
 
 enum PageMode {
     Repo(RepoState),
@@ -70,8 +56,6 @@ pub struct InstallPage {
     pub name: String,
     pub logs: Vec<InstallEvent>,
     pub status: InstallProgress,
-    package: Option<PkgProgress>,
-    download: Option<FileDownload>,
     pub overall: f32,
     pub indeterminate: bool,
     mode: PageMode,
@@ -102,8 +86,6 @@ impl InstallPage {
             name,
             logs: Vec::new(),
             status: InstallProgress::Idle,
-            package: None,
-            download: None,
             overall: 0.0,
             indeterminate: true,
             on_back,
@@ -138,29 +120,18 @@ impl InstallPage {
             }
         }
         match &ev {
-            InstallEvent::DownloadCompleted { filename, .. } => {
-                if self
-                    .download
-                    .as_ref()
-                    .map_or(false, |d| d.filename == *filename)
-                {
-                    self.download = None;
-                }
-            }
             InstallEvent::BuildStarted { .. } => {
                 self.indeterminate = true;
-                self.package = None;
-                self.download = None;
             }
             _ => {}
         }
         match ev {
             InstallEvent::Progress {
                 phase,
-                package,
                 percent,
                 current,
                 total,
+                ..
             } => {
                 let is_op = matches!(
                     phase,
@@ -176,27 +147,11 @@ impl InstallPage {
                         / total as f32
                         * 100.0)
                         .min(100.0);
-                    self.package = Some(PkgProgress {
-                        package,
-                        percent: percent.clamp(0, 100),
-                        current,
-                        total,
-                    });
                 } else {
                     self.indeterminate = true;
                 }
             }
-            InstallEvent::DownloadProgress {
-                filename,
-                downloaded,
-                total,
-            } => {
-                self.download = Some(FileDownload {
-                    filename,
-                    downloaded,
-                    total,
-                });
-            }
+            InstallEvent::DownloadProgress { .. } => {}
             InstallEvent::TransactionSummary(summary) => match &mut self.mode {
                 PageMode::Repo(state) => state.manifest = Some(summary),
                 PageMode::Aur(state) => state.manifest = Some(summary),
@@ -213,105 +168,6 @@ impl InstallPage {
             InstallKind::Install => format!("Installing {}", self.name),
             InstallKind::Remove => format!("Removing {}", self.name),
         }
-    }
-
-    fn render_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let past = match self.kind {
-            InstallKind::Install => "Install",
-            InstallKind::Remove => "Remove",
-        };
-        let (label, color): (String, Hsla) = match &self.status {
-            InstallProgress::Completed => (format!("{past} complete"), cx.theme().green),
-            InstallProgress::Failed(message) => {
-                (format!("{past} failed: {message}"), cx.theme().danger)
-            }
-            InstallProgress::Cancelled => ("Cancelled".to_string(), cx.theme().muted_foreground),
-            InstallProgress::Running
-            | InstallProgress::Idle
-            | InstallProgress::ConflictReview(_) => return None,
-        };
-        Some(
-            div()
-                .h_flex()
-                .items_center()
-                .gap_2()
-                .w_full()
-                .px_3()
-                .py_2()
-                .rounded_md()
-                .bg(cx.theme().title_bar)
-                .text_color(color)
-                .child(PakajoIcon::PackageCheck)
-                .child(div().text_sm().child(label))
-                .into_any_element(),
-        )
-    }
-
-    fn render_progress(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !matches!(self.status, InstallProgress::Running) {
-            return None;
-        }
-        let overall_label = if self.indeterminate {
-            "Working…".to_string()
-        } else {
-            format!("{:.0}%", self.overall)
-        };
-        let overall_bar = if self.indeterminate {
-            Progress::new("install-overall").loading(true)
-        } else {
-            Progress::new("install-overall").value(self.overall)
-        };
-        let mut section = v_flex().gap_3().w_full().child(
-            v_flex()
-                .gap_1()
-                .child(
-                    div()
-                        .h_flex()
-                        .justify_between()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(div().child("Overall"))
-                        .child(div().child(overall_label)),
-                )
-                .child(overall_bar),
-        );
-        if let Some(p) = &self.package {
-            section = section.child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("{} ({}/{})", p.package, p.current, p.total)),
-                    )
-                    .child(Progress::new("install-pkg").value(p.percent as f32)),
-            );
-        }
-        if let Some(d) = &self.download {
-            let pct = if d.total > 0 {
-                (d.downloaded as f32 / d.total as f32 * 100.0).min(100.0)
-            } else {
-                0.0
-            };
-            section = section.child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} ({} / {})",
-                                d.filename,
-                                format_bytes(d.downloaded),
-                                format_bytes(d.total)
-                            )),
-                    )
-                    .child(Progress::new("install-dl").value(pct)),
-            );
-        }
-        Some(section.into_any_element())
     }
 
     fn render_event(ev: &InstallEvent) -> Option<Div> {
@@ -449,10 +305,15 @@ impl InstallPage {
                     ),
             )
             .children(manifest_card)
-            .children(self.render_banner(cx))
-            .children(self.render_progress(cx))
-            .child(self.render_aur_stages(cx))
-            .child(self.render_terminal(cx, &state.scroll))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .items_stretch()
+                    .gap_4()
+                    .child(self.render_aur_stages(cx))
+                    .child(self.render_terminal(cx, &state.scroll)),
+            )
     }
 
     fn render_stages(&self, cx: &mut Context<Self>) -> Div {
