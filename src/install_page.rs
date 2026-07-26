@@ -52,6 +52,7 @@ struct RepoState {
 
 struct AurState {
     manifest: Option<TransactionSummary>,
+    scroll: ScrollHandle,
 }
 
 pub struct InstallPage {
@@ -80,7 +81,10 @@ impl InstallPage {
                 stage: RepoStage::Resolve,
                 scroll: ScrollHandle::new(),
             }),
-            PackageSource::Aur => PageMode::Aur(AurState { manifest: None }),
+            PackageSource::Aur => PageMode::Aur(AurState {
+                manifest: None,
+                scroll: ScrollHandle::new(),
+            }),
         };
         Self {
             kind,
@@ -372,16 +376,38 @@ impl InstallPage {
         Some(div().child(text))
     }
 
+    fn render_terminal(&self, cx: &mut Context<Self>, scroll: &ScrollHandle) -> Stateful<Div> {
+        let offset = scroll.offset();
+        let max = scroll.max_offset();
+        let at_bottom = offset.y <= -max.y + px(6.);
+        if at_bottom {
+            scroll.scroll_to_bottom();
+        }
+        div()
+            .id("install-log-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(scroll)
+            .v_flex()
+            .gap_1()
+            .p_3()
+            .bg(cx.theme().muted)
+            .text_color(cx.theme().muted_foreground)
+            .text_size(rems(0.8))
+            .children(self.logs.iter().filter_map(InstallPage::render_event))
+    }
+
     fn render_aur(&self, cx: &mut Context<Self>) -> Div {
         let on_back = self.on_back.clone();
-        let manifest_card: Option<Div> = match &self.mode {
-            PageMode::Aur(state) => state
-                .manifest
-                .as_ref()
-                .filter(|s| !s.packages.is_empty())
-                .map(|s| self.render_manifest_card(cx, s)),
-            _ => None,
+        let PageMode::Aur(state) = &self.mode else {
+            return div();
         };
+        let manifest_card = state
+            .manifest
+            .as_ref()
+            .filter(|s| !s.packages.is_empty())
+            .map(|s| self.render_manifest_card(cx, s));
         v_flex()
             .size_full()
             .min_h_0()
@@ -402,20 +428,7 @@ impl InstallPage {
             .children(manifest_card)
             .children(self.render_banner(cx))
             .children(self.render_progress(cx))
-            .child(
-                div()
-                    .id("install-log-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .v_flex()
-                    .gap_1()
-                    .p_3()
-                    .bg(cx.theme().muted)
-                    .text_color(cx.theme().muted_foreground)
-                    .text_size(rems(0.8))
-                    .children(self.logs.iter().filter_map(InstallPage::render_event)),
-            )
+            .child(self.render_terminal(cx, &state.scroll))
     }
 
     fn render_stages(&self, cx: &mut Context<Self>) -> Div {
@@ -474,12 +487,6 @@ impl InstallPage {
         let PageMode::Repo(state) = &self.mode else {
             return div();
         };
-        let offset = state.scroll.offset();
-        let max = state.scroll.max_offset();
-        let at_bottom = offset.y <= -max.y + px(6.);
-        if at_bottom {
-            state.scroll.scroll_to_bottom();
-        }
         v_flex()
             .size_full()
             .min_h_0()
@@ -505,21 +512,7 @@ impl InstallPage {
                     .items_stretch()
                     .gap_4()
                     .child(self.render_stages(cx))
-                    .child(
-                        div()
-                            .id("install-log-scroll")
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .track_scroll(&state.scroll)
-                            .v_flex()
-                            .gap_1()
-                            .p_3()
-                            .bg(cx.theme().muted)
-                            .text_color(cx.theme().muted_foreground)
-                            .text_size(rems(0.8))
-                            .children(self.logs.iter().filter_map(InstallPage::render_event)),
-                    ),
+                    .child(self.render_terminal(cx, &state.scroll)),
             )
     }
 
