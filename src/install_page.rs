@@ -44,6 +44,15 @@ enum RepoStage {
     Finalize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AurStage {
+    Resolve,
+    Build,
+    Validate,
+    Install,
+    Finalize,
+}
+
 struct RepoState {
     manifest: Option<TransactionSummary>,
     stage: RepoStage,
@@ -52,6 +61,7 @@ struct RepoState {
 
 struct AurState {
     manifest: Option<TransactionSummary>,
+    stage: AurStage,
     scroll: ScrollHandle,
 }
 
@@ -83,6 +93,7 @@ impl InstallPage {
             }),
             PackageSource::Aur => PageMode::Aur(AurState {
                 manifest: None,
+                stage: AurStage::Resolve,
                 scroll: ScrollHandle::new(),
             }),
         };
@@ -106,6 +117,18 @@ impl InstallPage {
             && new_stage != state.stage
         {
             let ordered = ordered_stages(self.kind);
+            let current_idx = ordered.iter().position(|s| *s == state.stage);
+            let new_idx = ordered.iter().position(|s| *s == new_stage);
+            if let (Some(current_idx), Some(new_idx)) = (current_idx, new_idx)
+                && new_idx > current_idx
+            {
+                state.stage = new_stage;
+            }
+        } else if let PageMode::Aur(state) = &mut self.mode
+            && let Some(new_stage) = aur_event_stage(&ev)
+            && new_stage != state.stage
+        {
+            let ordered = ordered_aur_stages();
             let current_idx = ordered.iter().position(|s| *s == state.stage);
             let new_idx = ordered.iter().position(|s| *s == new_stage);
             if let (Some(current_idx), Some(new_idx)) = (current_idx, new_idx)
@@ -428,6 +451,7 @@ impl InstallPage {
             .children(manifest_card)
             .children(self.render_banner(cx))
             .children(self.render_progress(cx))
+            .child(self.render_aur_stages(cx))
             .child(self.render_terminal(cx, &state.scroll))
     }
 
@@ -470,6 +494,51 @@ impl InstallPage {
                     }
                 }
                 RepoStage::Finalize => "Finalize",
+            };
+            card = card.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().text_color(glyph_color).child(glyph))
+                    .child(div().text_color(label_color).child(label)),
+            );
+        }
+        card
+    }
+
+    fn render_aur_stages(&self, cx: &mut Context<Self>) -> Div {
+        let PageMode::Aur(state) = &self.mode else {
+            return div();
+        };
+        let ordered = ordered_aur_stages();
+        let current_idx = ordered.iter().position(|s| *s == state.stage);
+        let mut card = v_flex()
+            .gap_2()
+            .w(rems(22.))
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .p_4();
+        for (i, stage) in ordered.iter().enumerate() {
+            let is_done = current_idx.is_some_and(|c| i < c);
+            let is_active = current_idx == Some(i);
+            let (glyph, glyph_color, label_color) = if is_done {
+                ("✓", cx.theme().green, cx.theme().muted_foreground)
+            } else if is_active {
+                ("●", cx.theme().blue, cx.theme().foreground)
+            } else {
+                (
+                    "○",
+                    cx.theme().muted_foreground,
+                    cx.theme().muted_foreground,
+                )
+            };
+            let label = match stage {
+                AurStage::Resolve => "Resolve",
+                AurStage::Build => "Build",
+                AurStage::Validate => "Validate",
+                AurStage::Install => "Install",
+                AurStage::Finalize => "Finalize",
             };
             card = card.child(
                 h_flex()
@@ -730,6 +799,48 @@ fn event_stage(ev: &InstallEvent) -> Option<RepoStage> {
         | DownloadCompleted { .. } => Some(Download),
         PackageOperation { .. } => Some(Install),
         HookRun { .. } | ScriptletInfo { .. } | TransactionDone => Some(Finalize),
+        _ => None,
+    }
+}
+
+fn ordered_aur_stages() -> &'static [AurStage] {
+    use AurStage::*;
+    &[Resolve, Build, Validate, Install, Finalize]
+}
+
+fn aur_event_stage(ev: &InstallEvent) -> Option<AurStage> {
+    use AurStage::*;
+    use InstallEvent::*;
+    match ev {
+        ResolvingAurDependencies { .. }
+        | AurDepResolved { .. }
+        | ResolutionComplete { .. }
+        | LayerBoundary { .. } => Some(Resolve),
+        CloningRepo { .. }
+        | BuildStarted { .. }
+        | BuildOutput { .. }
+        | BuildCompleted { .. } => Some(Build),
+        LoadingPackages
+        | ResolvingDependencies
+        | CheckingConflicts
+        | CheckingFileConflicts
+        | CheckingIntegrity
+        | CheckingDiskSpace
+        | KeyringStart => Some(Validate),
+        ProcessingChanges | PackageOperation { .. } => Some(Install),
+        Progress { phase, .. } => match phase {
+            ProgressPhase::Conflicts
+            | ProgressPhase::Diskspace
+            | ProgressPhase::Integrity
+            | ProgressPhase::Load
+            | ProgressPhase::Keyring => Some(Validate),
+            ProgressPhase::Add
+            | ProgressPhase::Upgrade
+            | ProgressPhase::Downgrade
+            | ProgressPhase::Reinstall
+            | ProgressPhase::Remove => Some(Install),
+        },
+        TransactionDone | HookRun { .. } | ScriptletInfo { .. } => Some(Finalize),
         _ => None,
     }
 }
