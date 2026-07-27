@@ -120,3 +120,8 @@ pub(super) fn confirm_install_stderr() -> bool {
     eprint!("\n");
     read_confirmation("Proceed with installation?", PromptStream::Stderr)
 }
+
+pub(super) fn confirm_review_accept() -> bool {
+    println!();
+    read_confirmation("Accept changes?", PromptStream::Stdout)
+}

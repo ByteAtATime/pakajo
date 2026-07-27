@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::Context as _;
 
@@ -21,6 +21,8 @@ pub fn has_seen_ref(dir: &Path) -> bool {
         .arg("--verify")
         .arg("--quiet")
         .arg("AUR_SEEN")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
@@ -59,6 +61,8 @@ pub fn mark_seen(dir: &Path) -> anyhow::Result<()> {
         .arg("update-ref")
         .arg("AUR_SEEN")
         .arg("HEAD")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .context("failed to run git update-ref")?;
     if !status.success() {
@@ -105,6 +109,34 @@ pub fn collect_for_review<S: crate::events::InstallSink + ?Sized>(
         });
     }
     Ok(result)
+}
+
+const EMPTY_TREE_HASH: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+pub fn compute_diff(dir: &Path, is_new: bool, use_color: bool) -> anyhow::Result<String> {
+    let baseline = if is_new {
+        EMPTY_TREE_HASH
+    } else {
+        "AUR_SEEN"
+    };
+    let color_arg = if use_color { "--color=always" } else { "--color=never" };
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .arg("--no-pager")
+        .arg("diff")
+        .arg(color_arg)
+        .arg(format!("{baseline}..HEAD"))
+        .arg("--")
+        .arg(".")
+        .arg(":(exclude).SRCINFO")
+        .output()
+        .context("failed to run git diff")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git diff failed in {}: {}", dir.display(), stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 #[cfg(test)]
@@ -175,5 +207,38 @@ mod tests {
 
         assert!(!has_seen_ref(path));
         assert!(has_diff(path));
+    }
+
+    #[test]
+    fn test_compute_diff_shows_full_content_for_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        init_repo(path);
+        fs::write(path.join("PKGBUILD"), "pkgname=foo\npkgver=1\n").unwrap();
+        fs::write(path.join(".SRCINFO"), "should be excluded\n").unwrap();
+        commit_all(path, "init");
+
+        assert!(!has_seen_ref(path));
+        let diff = compute_diff(path, true, false).unwrap();
+        assert!(diff.contains("pkgname=foo"), "diff should contain PKGBUILD content");
+        assert!(diff.contains("pkgver=1"), "diff should contain pkgver");
+        assert!(!diff.contains("should be excluded"), ".SRCINFO must be excluded");
+    }
+
+    #[test]
+    fn test_compute_diff_shows_changes_after_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        init_repo(path);
+        fs::write(path.join("PKGBUILD"), "pkgver=1\n").unwrap();
+        commit_all(path, "init");
+        mark_seen(path).unwrap();
+
+        fs::write(path.join("PKGBUILD"), "pkgver=2\n").unwrap();
+        commit_all(path, "bump");
+
+        let diff = compute_diff(path, false, false).unwrap();
+        assert!(diff.contains("pkgver=1"), "diff should show old version being removed");
+        assert!(diff.contains("pkgver=2"), "diff should show new version being added");
     }
 }

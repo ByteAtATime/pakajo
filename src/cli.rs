@@ -12,6 +12,8 @@ mod summary;
 mod prompts;
 use self::prompts::confirm_remove;
 
+mod review;
+
 mod sinks;
 pub(crate) use self::sinks::ConsoleSink;
 use self::sinks::JsonSink;
@@ -88,7 +90,11 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
         } else {
             |_| crate::build::BuildDecision::Proceed
         };
-        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = |_| true;
+        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if args.json {
+            |_| true
+        } else {
+            self::review::review_pkgbuilds
+        };
         exit_with_result(crate::build::run_build(
             &aur,
             false,
@@ -116,7 +122,11 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
         } else {
             |_| crate::build::BuildDecision::Proceed
         };
-        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = |_| true;
+        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if args.json {
+            |_| true
+        } else {
+            self::review::review_pkgbuilds
+        };
         let result = crate::build::run_build(
             &aur,
             false,
@@ -234,7 +244,11 @@ pub(crate) fn upgrade_subcommand(args: UpgradeArgs) -> ! {
         } else {
             |_| crate::build::BuildDecision::Proceed
         };
-        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = |_| true;
+        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if args.json {
+            |_| true
+        } else {
+            self::review::review_pkgbuilds
+        };
         let result = crate::build::run_build(
             &aur_names,
             false,
