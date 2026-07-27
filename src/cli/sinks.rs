@@ -139,8 +139,27 @@ impl ConsoleSink {
             InstallEvent::BuildCompleted { .. } => {}
             InstallEvent::LayerBoundary { .. } => {}
             InstallEvent::PkgbuildReviewStarted { .. }
-            | InstallEvent::PkgbuildReviewAccepted { .. }
-            | InstallEvent::PkgbuildAllUpToDate { .. } => {}
+            | InstallEvent::PkgbuildReviewAccepted { .. } => {}
+            InstallEvent::PkgbuildAllUpToDate { packages } => {
+                let c = crate::color::stdout_color();
+                if packages.len() == 1 {
+                    println!(
+                        "{}",
+                        color::colon(
+                            c,
+                            &format!("{}: already reviewed, no changes", packages[0])
+                        )
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        color::colon(
+                            c,
+                            &format!("{} packages already reviewed, no changes", packages.len())
+                        )
+                    );
+                }
+            }
             InstallEvent::SysupgradeAurCandidates { candidates } => {
                 if candidates.is_empty() {
                     return;

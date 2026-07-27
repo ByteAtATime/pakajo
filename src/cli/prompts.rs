@@ -1,6 +1,6 @@
 use std::io::Write as _;
 
-use crate::{color, resolve::BuildPlan};
+use crate::{build::BuildDecision, color, resolve::BuildPlan};
 
 enum PromptStream {
     Stdout,
@@ -42,7 +42,7 @@ pub(super) fn confirm_remove() -> bool {
     read_confirmation("Proceed with removal?", PromptStream::Stdout)
 }
 
-pub(super) fn confirm_build(plan: &BuildPlan) -> bool {
+fn print_plan_summary(plan: &BuildPlan) {
     let rows: Vec<(&str, &str, Option<&str>)> = plan
         .layers
         .iter()
@@ -113,7 +113,32 @@ pub(super) fn confirm_build(plan: &BuildPlan) -> bool {
             color::colon(c, &format!("{aur_count} {aur_word} to build"))
         );
     }
-    read_confirmation("Proceed with build?", PromptStream::Stdout)
+}
+
+pub(super) fn confirm_build(plan: &BuildPlan) -> BuildDecision {
+    print_plan_summary(plan);
+    let c = color::stdout_color();
+    print!(
+        "{} {} ",
+        color::colon(c, "Proceed with build?"),
+        color::paint(c, color::BOLD, "[Y/n]")
+    );
+    let _ = std::io::stdout().flush();
+    let mut input = String::new();
+    let _ = std::io::stdin().read_line(&mut input);
+    match input.trim().to_lowercase().as_str() {
+        "" | "y" | "yes" => BuildDecision::Proceed,
+        _ => BuildDecision::Abort,
+    }
+}
+
+pub(super) fn confirm_proceed_to_review(plan: &BuildPlan) -> BuildDecision {
+    print_plan_summary(plan);
+    if read_confirmation("Proceed to review?", PromptStream::Stdout) {
+        BuildDecision::Review
+    } else {
+        BuildDecision::Abort
+    }
 }
 
 pub(super) fn confirm_install_stderr() -> bool {

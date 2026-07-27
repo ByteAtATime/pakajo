@@ -10,7 +10,7 @@ use self::args::{CleanArgs, InstallArgs, RemoveArgs, SearchArgs, UpgradeArgs};
 mod summary;
 
 mod prompts;
-use self::prompts::confirm_remove;
+use self::prompts::{confirm_build, confirm_proceed_to_review, confirm_remove};
 
 mod review;
 
@@ -85,12 +85,18 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
         escalate(&positionals, args.as_deps, args.json, args.approvals_b64.as_deref());
     } else if repo_or_file.is_empty() {
         let mut sink: Box<dyn InstallSink> = sink_for(args.json);
-        let confirm: fn(&crate::resolve::BuildPlan) -> crate::build::BuildDecision = if args.json {
-            |_| crate::build::BuildDecision::Review
-        } else {
-            |_| crate::build::BuildDecision::Proceed
+        let json = args.json;
+        let skip_review = args.skip_review;
+        let confirm = move |plan: &crate::resolve::BuildPlan| -> crate::build::BuildDecision {
+            if json {
+                crate::build::BuildDecision::Review
+            } else if skip_review {
+                confirm_build(plan)
+            } else {
+                confirm_proceed_to_review(plan)
+            }
         };
-        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if args.json {
+        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if json {
             |_| true
         } else {
             self::review::review_pkgbuilds
@@ -117,12 +123,18 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
             }
         }
         let mut sink: Box<dyn InstallSink> = sink_for(args.json);
-        let confirm: fn(&crate::resolve::BuildPlan) -> crate::build::BuildDecision = if args.json {
-            |_| crate::build::BuildDecision::Review
-        } else {
-            |_| crate::build::BuildDecision::Proceed
+        let json = args.json;
+        let skip_review = args.skip_review;
+        let confirm = move |plan: &crate::resolve::BuildPlan| -> crate::build::BuildDecision {
+            if json {
+                crate::build::BuildDecision::Review
+            } else if skip_review {
+                confirm_build(plan)
+            } else {
+                confirm_proceed_to_review(plan)
+            }
         };
-        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if args.json {
+        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if json {
             |_| true
         } else {
             self::review::review_pkgbuilds
@@ -239,12 +251,18 @@ pub(crate) fn upgrade_subcommand(args: UpgradeArgs) -> ! {
     if exit_code == 0 && !aur_targets.is_empty() {
         let aur_names: Vec<String> = aur_targets.iter().map(|c| c.name.clone()).collect();
         let mut build_sink: Box<dyn InstallSink> = sink_for(args.json);
-        let confirm: fn(&crate::resolve::BuildPlan) -> crate::build::BuildDecision = if args.json {
-            |_| crate::build::BuildDecision::Review
-        } else {
-            |_| crate::build::BuildDecision::Proceed
+        let json = args.json;
+        let skip_review = args.skip_review;
+        let confirm = move |plan: &crate::resolve::BuildPlan| -> crate::build::BuildDecision {
+            if json {
+                crate::build::BuildDecision::Review
+            } else if skip_review {
+                confirm_build(plan)
+            } else {
+                confirm_proceed_to_review(plan)
+            }
         };
-        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if args.json {
+        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if json {
             |_| true
         } else {
             self::review::review_pkgbuilds

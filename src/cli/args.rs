@@ -28,6 +28,8 @@ pub(crate) struct InstallArgs {
     pub(super) as_deps: bool,
     #[arg(long = "approvals")]
     pub(super) approvals_b64: Option<String>,
+    #[arg(long = "skip-review")]
+    pub(super) skip_review: bool,
     pub(super) positionals: Vec<String>,
 }
 
@@ -48,6 +50,8 @@ pub(crate) struct UpgradeArgs {
     pub(super) repo_only: bool,
     #[arg(long = "ignore")]
     pub(super) ignores: Vec<String>,
+    #[arg(long = "skip-review")]
+    pub(super) skip_review: bool,
 }
 
 #[derive(Args)]
