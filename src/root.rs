@@ -6,6 +6,8 @@ use crate::{
     install_review_dialog::{self, InstallReviewDialog},
     package::PackageSource,
     package_detail::{DetailIntent, PackageDetail},
+    pkgbuild::PkgbuildDiff,
+    pkgbuild_review_dialog::PkgbuildReviewFlow,
     question::QuestionSet,
     search_view::{SearchView, centered},
     session::{DetailData, InstallKind, PakajoSession, SearchState, SessionEvent},
@@ -49,6 +51,7 @@ pub struct PakajoRoot {
     search_view: SearchView,
     page: Page,
     install_page: Option<Entity<InstallPage>>,
+    review_flow: PkgbuildReviewFlow,
 }
 
 impl PakajoRoot {
@@ -82,7 +85,7 @@ impl PakajoRoot {
                 SessionEvent::DetailUpdated => this.on_detail_updated(cx),
                 SessionEvent::SearchUpdated => this.on_search_updated(cx),
                 SessionEvent::InstallProgressChanged(progress) => {
-                    this.on_install_progress_changed(progress.clone(), cx)
+                    this.on_install_progress_changed(progress.clone(), window, cx)
                 }
                 SessionEvent::InstallLog(ev) => this.on_install_log(ev.clone(), cx),
                 SessionEvent::InstallLogsOpened { kind, source, name } => {
@@ -91,10 +94,8 @@ impl PakajoRoot {
                 SessionEvent::ReviewRequired { qs, name } => {
                     this.on_review_required(qs.clone(), name.clone(), window, cx)
                 }
-                SessionEvent::PkgbuildReviewRequired { diffs: _ } => {
-                    eprintln!(":: insert pkgbuild here or something idk");
-                    this.session
-                        .update(cx, |s, cx| s.confirm_pkgbuild_review(cx));
+                SessionEvent::PkgbuildReviewRequired { diffs } => {
+                    this.on_pkgbuild_review_required(diffs.clone(), window, cx)
                 }
             },
         );
@@ -112,6 +113,7 @@ impl PakajoRoot {
             search_view: SearchView::new(),
             page: Page::Main,
             install_page: None,
+            review_flow: PkgbuildReviewFlow::new(),
         }
     }
 
@@ -186,7 +188,12 @@ impl PakajoRoot {
         }
     }
 
-    fn on_install_progress_changed(&mut self, progress: InstallProgress, cx: &mut Context<Self>) {
+    fn on_install_progress_changed(
+        &mut self,
+        progress: InstallProgress,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let DetailPane::Ready(entity) = &self.detail {
             entity.update(cx, |detail, cx| {
                 detail.install_progress = progress.clone();
@@ -199,6 +206,45 @@ impl PakajoRoot {
                 cx.notify();
             });
         }
+
+        let was_conflict = matches!(self.install_progress, InstallProgress::ConflictReview(_));
+        let is_pkgbuild_review = matches!(progress, InstallProgress::PkgbuildReview);
+
+        if is_pkgbuild_review && !self.review_flow.is_active() {
+            if was_conflict {
+                window.close_dialog(cx);
+            }
+
+            let root_for_complete = cx.weak_entity();
+            let on_complete = Box::new(move |window: &mut Window, cx: &mut App| {
+                let Some(root) = root_for_complete.upgrade() else {
+                    return;
+                };
+                root.update(cx, |this, cx| {
+                    this.session.update(cx, |s, cx| s.confirm_pkgbuild_review(cx));
+                    this.review_flow.end(window, cx);
+                });
+            });
+
+            let root_for_cancel = cx.weak_entity();
+            let on_cancel = std::sync::Arc::new(move |window: &mut Window, cx: &mut App| {
+                let Some(root) = root_for_cancel.upgrade() else {
+                    return;
+                };
+                root.update(cx, |this, cx| {
+                    this.session.update(cx, |s, cx| s.cancel_pkgbuild_review(cx));
+                    this.review_flow.end(window, cx);
+                });
+            }) as std::sync::Arc<dyn Fn(&mut Window, &mut App) + 'static>;
+
+            self.review_flow
+                .begin(on_complete, on_cancel, window, cx);
+        }
+
+        if self.review_flow.is_active() && !matches!(progress, InstallProgress::PkgbuildReview) {
+            self.review_flow.end(window, cx);
+        }
+
         self.install_progress = progress;
         cx.notify();
     }
@@ -280,6 +326,15 @@ impl PakajoRoot {
                 })
                 .content(move |content, _window, _cx| content.child(review_for_content.clone()))
         });
+    }
+
+    fn on_pkgbuild_review_required(
+        &mut self,
+        diffs: Vec<PkgbuildDiff>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.review_flow.show_review(diffs, cx);
     }
 
     fn on_install_logs_opened(

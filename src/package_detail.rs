@@ -221,7 +221,9 @@ impl PackageDetail {
             }
 
             let aside: Option<AnyElement> = match &install_progress {
-                InstallProgress::Running => Some(Spinner::new().into_any_element()),
+                InstallProgress::Running | InstallProgress::PkgbuildReview => {
+                    Some(Spinner::new().into_any_element())
+                }
                 InstallProgress::Failed(message) => Some(
                     div()
                         .text_color(cx.theme().danger)

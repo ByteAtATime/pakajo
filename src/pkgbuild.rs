@@ -8,15 +8,14 @@ pub struct PkgbuildInfo {
     pub name: String,
     pub pkgbase: String,
     pub dir: PathBuf,
-    pub commit: String,
     pub is_new: bool,
     pub needs_review: bool,
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct PkgbuildDiff {
     pub name: String,
+    #[allow(dead_code)]
     pub pkgbase: String,
     pub dir: PathBuf,
     pub is_new: bool,
@@ -29,7 +28,6 @@ impl crate::events::InstallSink for NullSink {
 }
 
 pub fn prepare_pkgbuild_diffs(target: &str) -> anyhow::Result<Vec<PkgbuildDiff>> {
-    eprintln!(":: preparing pkgbuild review for {target}…");
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let alpm = crate::pacman::init_alpm(&config)?;
     let aur = crate::aur::AurClient::new();
@@ -39,8 +37,6 @@ pub fn prepare_pkgbuild_diffs(target: &str) -> anyhow::Result<Vec<PkgbuildDiff>>
         &[target.to_string()],
         false,
     )?;
-    let aur_count: usize = plan.layers.iter().map(|l| l.aur.len()).sum();
-    eprintln!(":: resolved {aur_count} AUR packages");
     let mut sink = NullSink;
     let pkgbuilds = collect_for_review(&plan, &mut sink)?;
     let diffs: Vec<PkgbuildDiff> = pkgbuilds
@@ -60,11 +56,6 @@ pub fn prepare_pkgbuild_diffs(target: &str) -> anyhow::Result<Vec<PkgbuildDiff>>
             })
         })
         .collect();
-    if diffs.is_empty() {
-        eprintln!(":: all packages up to date");
-    } else {
-        eprintln!(":: {} packages need review", diffs.len());
-    }
     Ok(diffs)
 }
 
@@ -126,20 +117,6 @@ pub fn mark_seen(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn current_commit(dir: &Path) -> anyhow::Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .arg("rev-parse")
-        .arg("HEAD")
-        .output()
-        .context("failed to run git rev-parse HEAD")?;
-    if !output.status.success() {
-        anyhow::bail!("git rev-parse HEAD failed");
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
 pub fn collect_for_review<S: crate::events::InstallSink + ?Sized>(
     plan: &crate::resolve::BuildPlan,
     sink: &mut S,
@@ -151,14 +128,12 @@ pub fn collect_for_review<S: crate::events::InstallSink + ?Sized>(
             package: info.name.clone(),
         });
         crate::build::git_clone_or_pull(&dir, &info.package_base)?;
-        let commit = current_commit(&dir).unwrap_or_default();
         let is_new = !has_seen_ref(&dir);
         let needs_review = has_diff(&dir);
         result.push(PkgbuildInfo {
             name: info.name.clone(),
             pkgbase: info.package_base.clone(),
             dir,
-            commit,
             is_new,
             needs_review,
         });

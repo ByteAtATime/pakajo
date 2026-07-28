@@ -49,7 +49,6 @@ pub(crate) enum SessionEvent {
     InstallLog(InstallEvent),
     InstallLogsOpened { kind: InstallKind, source: PackageSource, name: String },
     ReviewRequired { qs: QuestionSet, name: String },
-    #[allow(dead_code)]
     PkgbuildReviewRequired { diffs: Vec<PkgbuildDiff> },
 }
 
@@ -464,15 +463,12 @@ impl PakajoSession {
             };
             let _ = this.update(cx, |this, cx| match result {
                 Ok(diffs) if !diffs.is_empty() => {
-                    eprintln!(":: pkgbuild review prepared: {} packages with diffs", diffs.len());
                     cx.emit(SessionEvent::PkgbuildReviewRequired { diffs });
                 }
                 Ok(_) => {
-                    eprintln!(":: no pkgbuild changes, proceeding to install");
                     this.confirm_pkgbuild_review(cx);
                 }
                 Err(err) => {
-                    eprintln!(":: pkgbuild review failed: {err:#}");
                     this.pending_install.take();
                     this.set_progress(
                         InstallProgress::Failed(format!("pkgbuild review failed: {err:#}")),
@@ -488,7 +484,6 @@ impl PakajoSession {
         let Some(pending) = self.pending_install.take() else {
             return;
         };
-        eprintln!(":: pkgbuild review confirmed, spawning install subprocess");
         self.set_progress(InstallProgress::Running, cx);
         self.spawn_install_subprocess(pending.name, pending.source, pending.approvals_b64, cx);
     }
