@@ -91,6 +91,11 @@ impl PakajoRoot {
                 SessionEvent::ReviewRequired { qs, name } => {
                     this.on_review_required(qs.clone(), name.clone(), window, cx)
                 }
+                SessionEvent::PkgbuildReviewRequired { diffs: _ } => {
+                    eprintln!(":: insert pkgbuild here or something idk");
+                    this.session
+                        .update(cx, |s, cx| s.confirm_pkgbuild_review(cx));
+                }
             },
         );
 
@@ -326,7 +331,9 @@ impl PakajoRoot {
             InstallProgress::Failed(_) => (format!("{past} failed"), cx.theme().danger),
             InstallProgress::Completed => (format!("{past} complete"), cx.theme().green),
             InstallProgress::Cancelled => ("Cancelled".to_string(), cx.theme().muted_foreground),
-            InstallProgress::Idle | InstallProgress::ConflictReview(_) => return None,
+            InstallProgress::Idle
+            | InstallProgress::ConflictReview(_)
+            | InstallProgress::PkgbuildReview => return None,
         };
         let show_bar = matches!(self.install_progress, InstallProgress::Running);
         let terminal = matches!(

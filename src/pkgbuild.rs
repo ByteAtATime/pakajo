@@ -13,6 +13,61 @@ pub struct PkgbuildInfo {
     pub needs_review: bool,
 }
 
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct PkgbuildDiff {
+    pub name: String,
+    pub pkgbase: String,
+    pub dir: PathBuf,
+    pub is_new: bool,
+    pub diff: String,
+}
+
+struct NullSink;
+impl crate::events::InstallSink for NullSink {
+    fn event(&mut self, _event: crate::events::InstallEvent) {}
+}
+
+pub fn prepare_pkgbuild_diffs(target: &str) -> anyhow::Result<Vec<PkgbuildDiff>> {
+    eprintln!(":: preparing pkgbuild review for {target}…");
+    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
+    let alpm = crate::pacman::init_alpm(&config)?;
+    let aur = crate::aur::AurClient::new();
+    let plan = crate::resolve::resolve(
+        &crate::resolve::AlpmDb(&alpm),
+        &aur,
+        &[target.to_string()],
+        false,
+    )?;
+    let aur_count: usize = plan.layers.iter().map(|l| l.aur.len()).sum();
+    eprintln!(":: resolved {aur_count} AUR packages");
+    let mut sink = NullSink;
+    let pkgbuilds = collect_for_review(&plan, &mut sink)?;
+    let diffs: Vec<PkgbuildDiff> = pkgbuilds
+        .iter()
+        .filter(|p| p.needs_review)
+        .filter_map(|p| {
+            let diff = compute_diff(&p.dir, p.is_new, false).ok()?;
+            if diff.is_empty() {
+                return None;
+            }
+            Some(PkgbuildDiff {
+                name: p.name.clone(),
+                pkgbase: p.pkgbase.clone(),
+                dir: p.dir.clone(),
+                is_new: p.is_new,
+                diff,
+            })
+        })
+        .collect();
+    if diffs.is_empty() {
+        eprintln!(":: all packages up to date");
+    } else {
+        eprintln!(":: {} packages need review", diffs.len());
+    }
+    Ok(diffs)
+}
+
 pub fn has_seen_ref(dir: &Path) -> bool {
     Command::new("git")
         .arg("-C")

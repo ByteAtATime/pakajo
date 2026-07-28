@@ -5,6 +5,7 @@ use crate::{
     local_index::LocalIndex,
     package::{Package, PackageSource, installed_names, is_installed},
     pacman::{find_pkg, init_alpm},
+    pkgbuild::{PkgbuildDiff, prepare_pkgbuild_diffs},
     question::{QuestionSet, encode_approvals},
     search::{self, AurSearchProvider, RepoSearchIndex, RepoSearchProvider, SearchResult},
 };
@@ -48,6 +49,8 @@ pub(crate) enum SessionEvent {
     InstallLog(InstallEvent),
     InstallLogsOpened { kind: InstallKind, source: PackageSource, name: String },
     ReviewRequired { qs: QuestionSet, name: String },
+    #[allow(dead_code)]
+    PkgbuildReviewRequired { diffs: Vec<PkgbuildDiff> },
 }
 
 impl EventEmitter<SessionEvent> for PakajoSession {}
@@ -55,6 +58,7 @@ impl EventEmitter<SessionEvent> for PakajoSession {}
 struct PendingInstall {
     name: String,
     source: PackageSource,
+    approvals_b64: Option<String>,
 }
 
 pub(crate) struct PakajoSession {
@@ -342,6 +346,7 @@ impl PakajoSession {
         self.pending_install = Some(PendingInstall {
             name: name.clone(),
             source,
+            approvals_b64: None,
         });
 
         let (mut dry_tx, mut dry_rx) =
@@ -374,13 +379,11 @@ impl PakajoSession {
                     cx.emit(SessionEvent::ReviewRequired { qs, name: name.clone() });
                 }
                 Ok(_) => {
-                    this.spawn_install_subprocess(name.clone(), source, None, cx);
-                    this.pending_install.take();
+                    this.proceed_to_install_or_review(cx);
                 }
                 Err(err) => {
                     eprintln!("dry-run failed, proceeding with install: {err:#}");
-                    this.spawn_install_subprocess(name.clone(), source, None, cx);
-                    this.pending_install.take();
+                    this.proceed_to_install_or_review(cx);
                 }
             });
         })
@@ -407,23 +410,92 @@ impl PakajoSession {
         approvals: crate::question::Approvals,
         cx: &mut Context<Self>,
     ) {
-        let Some(pending) = self.pending_install.take() else {
+        let Some(pending) = self.pending_install.as_mut() else {
             return;
         };
-        let name = pending.name;
-        let source = pending.source;
         match encode_approvals(&approvals) {
             Err(error) => {
+                self.pending_install.take();
                 self.set_progress(
                     InstallProgress::Failed(format!("failed to encode approvals: {error}")),
                     cx,
                 );
             }
             Ok(b64) => {
-                self.set_progress(InstallProgress::Running, cx);
-                self.spawn_install_subprocess(name, source, Some(b64), cx);
+                pending.approvals_b64 = Some(b64);
+                self.proceed_to_install_or_review(cx);
             }
         }
+    }
+
+    fn proceed_to_install_or_review(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = &self.pending_install else {
+            return;
+        };
+        if matches!(pending.source, PackageSource::Aur) {
+            self.start_pkgbuild_review(cx);
+        } else {
+            let pending = self.pending_install.take().unwrap();
+            self.set_progress(InstallProgress::Running, cx);
+            self.spawn_install_subprocess(pending.name, pending.source, pending.approvals_b64, cx);
+        }
+    }
+
+    fn start_pkgbuild_review(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = &self.pending_install else {
+            return;
+        };
+        let target = pending.name.clone();
+        self.set_progress(InstallProgress::PkgbuildReview, cx);
+
+        let (mut tx, mut rx) =
+            futures::channel::mpsc::channel::<anyhow::Result<Vec<PkgbuildDiff>>>(1);
+        std::thread::spawn(move || {
+            let result = prepare_pkgbuild_diffs(&target);
+            let _ = tx.try_send(result);
+        });
+
+        cx.spawn(async move |this, cx| {
+            let Some(result) = rx.next().await else {
+                let _ = this.update(cx, |this, cx| {
+                    this.cancel_pkgbuild_review(cx);
+                });
+                return;
+            };
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(diffs) if !diffs.is_empty() => {
+                    eprintln!(":: pkgbuild review prepared: {} packages with diffs", diffs.len());
+                    cx.emit(SessionEvent::PkgbuildReviewRequired { diffs });
+                }
+                Ok(_) => {
+                    eprintln!(":: no pkgbuild changes, proceeding to install");
+                    this.confirm_pkgbuild_review(cx);
+                }
+                Err(err) => {
+                    eprintln!(":: pkgbuild review failed: {err:#}");
+                    this.pending_install.take();
+                    this.set_progress(
+                        InstallProgress::Failed(format!("pkgbuild review failed: {err:#}")),
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn confirm_pkgbuild_review(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_install.take() else {
+            return;
+        };
+        eprintln!(":: pkgbuild review confirmed, spawning install subprocess");
+        self.set_progress(InstallProgress::Running, cx);
+        self.spawn_install_subprocess(pending.name, pending.source, pending.approvals_b64, cx);
+    }
+
+    pub(crate) fn cancel_pkgbuild_review(&mut self, cx: &mut Context<Self>) {
+        self.pending_install.take();
+        self.set_progress(InstallProgress::Idle, cx);
     }
 
     pub(crate) fn cancel_install(&mut self, cx: &mut Context<Self>) {

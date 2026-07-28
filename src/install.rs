@@ -41,6 +41,7 @@ pub enum InstallProgress {
     Running,
     Failed(String),
     ConflictReview(crate::question::QuestionSet),
+    PkgbuildReview,
     Completed,
     Cancelled,
 }
