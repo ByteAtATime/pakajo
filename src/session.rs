@@ -39,7 +39,7 @@ pub(crate) enum SearchState {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UpdatesState {
     Idle,
-    Freshening,
+    Loading,
     Error(String),
 }
 
@@ -560,7 +560,7 @@ impl PakajoSession {
     }
 
     pub(crate) fn start_updates_checker(&mut self, cx: &mut Context<Self>) {
-        self.updates_state = UpdatesState::Freshening;
+        self.updates_state = UpdatesState::Loading;
         let (tx, rx) = futures::channel::oneshot::channel();
         std::thread::spawn(move || {
             let reniced = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) };

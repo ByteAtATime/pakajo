@@ -10,18 +10,20 @@ use crate::{
     pkgbuild_review_dialog::PkgbuildReviewFlow,
     question::QuestionSet,
     search_view::{SearchView, centered},
-    session::{DetailData, InstallKind, PakajoSession, SearchState, SessionEvent},
+    session::{DetailData, InstallKind, PakajoSession, SearchState, SessionEvent, UpdatesState},
 };
 use alpm::Alpm;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _, IconName, Root, StyledExt as _, WindowExt as _,
+    ActiveTheme as _, Icon, IconName, Root, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
+    h_flex,
     input::{Input, InputEvent, InputState},
     progress::Progress,
     spinner::Spinner,
 };
 use std::sync::Arc;
+use std::time::Duration;
 
 actions!(pakajo, [SelectUp, SelectDown]);
 
@@ -36,6 +38,7 @@ enum DetailPane {
 enum Page {
     Main,
     Install,
+    Updates,
 }
 
 pub struct PakajoRoot {
@@ -52,6 +55,9 @@ pub struct PakajoRoot {
     page: Page,
     install_page: Option<Entity<InstallPage>>,
     review_flow: PkgbuildReviewFlow,
+    updates_flash: bool,
+    flash_generation: u64,
+    last_seen_count: u32,
 }
 
 impl PakajoRoot {
@@ -99,7 +105,25 @@ impl PakajoRoot {
                     this.on_pkgbuild_review_required(diffs.clone(), window, cx)
                 }
                 SessionEvent::UpdatesAvailable(n) => {
-                    eprintln!("[pakajo] updates available: {n}");
+                    let increased = *n > this.last_seen_count;
+                    this.last_seen_count = *n;
+                    if increased && *n > 0 {
+                        this.updates_flash = true;
+                        this.flash_generation = this.flash_generation.wrapping_add(1);
+                        let flash_gen = this.flash_generation;
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(700))
+                                .await;
+                            let _ = this.update(cx, |this, cx| {
+                                if this.flash_generation == flash_gen {
+                                    this.updates_flash = false;
+                                    cx.notify();
+                                }
+                            });
+                        })
+                        .detach();
+                    }
                     cx.notify();
                 }
             },
@@ -119,6 +143,9 @@ impl PakajoRoot {
             page: Page::Main,
             install_page: None,
             review_flow: PkgbuildReviewFlow::new(),
+            updates_flash: false,
+            flash_generation: 0,
+            last_seen_count: 0,
         }
     }
 
@@ -226,7 +253,8 @@ impl PakajoRoot {
                     return;
                 };
                 root.update(cx, |this, cx| {
-                    this.session.update(cx, |s, cx| s.confirm_pkgbuild_review(cx));
+                    this.session
+                        .update(cx, |s, cx| s.confirm_pkgbuild_review(cx));
                     this.review_flow.end(window, cx);
                 });
             });
@@ -237,13 +265,14 @@ impl PakajoRoot {
                     return;
                 };
                 root.update(cx, |this, cx| {
-                    this.session.update(cx, |s, cx| s.cancel_pkgbuild_review(cx));
+                    this.session
+                        .update(cx, |s, cx| s.cancel_pkgbuild_review(cx));
                     this.review_flow.end(window, cx);
                 });
-            }) as std::sync::Arc<dyn Fn(&mut Window, &mut App) + 'static>;
+            })
+                as std::sync::Arc<dyn Fn(&mut Window, &mut App) + 'static>;
 
-            self.review_flow
-                .begin(on_complete, on_cancel, window, cx);
+            self.review_flow.begin(on_complete, on_cancel, window, cx);
         }
 
         if self.review_flow.is_active() && !matches!(progress, InstallProgress::PkgbuildReview) {
@@ -448,6 +477,123 @@ impl PakajoRoot {
                 .into_any_element(),
         )
     }
+
+    fn render_updates_badge(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let session = self.session.read(cx);
+        let count = session.pending_count;
+        let theme = cx.theme();
+
+        let flash_bg = Hsla {
+            l: (theme.primary.l + 0.12).min(1.0),
+            ..theme.primary
+        };
+        let primary_bg = if self.updates_flash {
+            flash_bg
+        } else {
+            theme.primary
+        };
+
+        let (bg, fg, extra) = match (&session.updates_state, count) {
+            (UpdatesState::Loading, _) => (
+                theme.accent,
+                theme.muted_foreground,
+                Spinner::new().into_any_element(),
+            ),
+            (UpdatesState::Error(_), _) => (
+                theme.danger,
+                theme.danger_foreground,
+                div().into_any_element(),
+            ),
+            (UpdatesState::Idle, c) if c > 0 => (
+                primary_bg,
+                theme.primary_foreground,
+                c.to_string().into_any_element(),
+            ),
+            _ => (
+                theme.accent,
+                theme.muted_foreground,
+                div().into_any_element(),
+            ),
+        };
+
+        div()
+            .id("updates-badge")
+            .h_flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .h(px(24.))
+            .rounded_full()
+            .bg(bg)
+            .text_color(fg)
+            .text_xs()
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.page = Page::Updates;
+                cx.notify();
+            }))
+            .child(Icon::new(IconName::ArrowDown))
+            .child(extra)
+    }
+
+    fn render_updates_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let session = self.session.read(cx);
+        let count = session.pending_count;
+        let state = session.updates_state.clone();
+        let theme = cx.theme();
+
+        let status = match &state {
+            UpdatesState::Loading => h_flex()
+                .gap_2()
+                .child(Spinner::new())
+                .child(
+                    div()
+                        .text_color(theme.muted_foreground)
+                        .child("Checking for updates…"),
+                )
+                .into_any_element(),
+            UpdatesState::Idle if count > 0 => h_flex()
+                .gap_2()
+                .child(div().text_xl().child(format!("{count} updates available")))
+                .into_any_element(),
+            UpdatesState::Idle => h_flex()
+                .gap_2()
+                .child(Icon::new(IconName::Check).text_color(theme.green))
+                .child(div().text_xl().child("Your system is up to date"))
+                .into_any_element(),
+            UpdatesState::Error(msg) => h_flex()
+                .gap_2()
+                .child(
+                    div()
+                        .text_color(theme.danger_foreground)
+                        .child(if msg.is_empty() {
+                            "Couldn't check for updates".to_string()
+                        } else {
+                            msg.clone()
+                        }),
+                )
+                .into_any_element(),
+        };
+
+        div()
+            .flex_1()
+            .size_full()
+            .v_flex()
+            .items_center()
+            .justify_center()
+            .gap_6()
+            .child(status)
+            .child(
+                Button::new("updates-back")
+                    .ghost()
+                    .icon(IconName::ArrowLeft)
+                    .label("Back")
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        this.page = Page::Main;
+                        cx.notify();
+                    })),
+            )
+    }
 }
 
 impl Render for PakajoRoot {
@@ -466,6 +612,7 @@ impl Render for PakajoRoot {
                 .min_h_0()
                 .child(page.clone())
                 .into_any_element(),
+            (Page::Updates, _) => self.render_updates_page(cx).into_any_element(),
             _ => {
                 let session = self.session.read(cx);
                 if session.results.is_empty() {
@@ -530,7 +677,12 @@ impl Render for PakajoRoot {
             shell.child(body)
         } else {
             shell
-                .child(Input::new(&self.search_input).rounded_none())
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(Input::new(&self.search_input).rounded_none().flex_1())
+                        .child(self.render_updates_badge(cx)),
+                )
                 .child(body)
         };
 
