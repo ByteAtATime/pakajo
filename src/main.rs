@@ -52,24 +52,6 @@ fn main() -> anyhow::Result<()> {
         None => {}
     }
 
-    std::thread::spawn(|| {
-        let reniced = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) };
-        if reniced != 0 {
-            eprintln!(
-                "[pakajo] rootless preview: renice failed: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-        match crate::updates::pending_updates() {
-            Ok(pending) => eprintln!(
-                "[pakajo] rootless preview: {} repo, {} aur upgradable package(s)",
-                pending.repo.len(),
-                pending.aur.len()
-            ),
-            Err(e) => eprintln!("[pakajo] rootless preview failed: {e:#}"),
-        }
-    });
-
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let handle = init_alpm(&config)?;
     let aur_client = crate::aur::AurClient::new();

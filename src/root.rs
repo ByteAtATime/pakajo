@@ -63,6 +63,7 @@ impl PakajoRoot {
     ) -> Self {
         let session = cx.new(|_cx| PakajoSession::new(alpm_handle, aur_client));
         session.update(cx, |s, cx| s.start_db_lock_watcher(cx));
+        session.update(cx, |s, cx| s.start_updates_checker(cx));
         let input_window = &mut *window;
         let search_input =
             cx.new(|cx| InputState::new(input_window, cx).placeholder("Search packages…"));
@@ -96,6 +97,10 @@ impl PakajoRoot {
                 }
                 SessionEvent::PkgbuildReviewRequired { diffs } => {
                     this.on_pkgbuild_review_required(diffs.clone(), window, cx)
+                }
+                SessionEvent::UpdatesAvailable(n) => {
+                    eprintln!("[pakajo] updates available: {n}");
+                    cx.notify();
                 }
             },
         );

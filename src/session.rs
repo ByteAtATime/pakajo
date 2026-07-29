@@ -36,6 +36,13 @@ pub(crate) enum SearchState {
     Done,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum UpdatesState {
+    Idle,
+    Freshening,
+    Error(String),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InstallKind {
     Install,
@@ -50,6 +57,7 @@ pub(crate) enum SessionEvent {
     InstallLogsOpened { kind: InstallKind, source: PackageSource, name: String },
     ReviewRequired { qs: QuestionSet, name: String },
     PkgbuildReviewRequired { diffs: Vec<PkgbuildDiff> },
+    UpdatesAvailable(u32),
 }
 
 impl EventEmitter<SessionEvent> for PakajoSession {}
@@ -75,6 +83,8 @@ pub(crate) struct PakajoSession {
     aur_error: Option<String>,
     install_progress: InstallProgress,
     pending_install: Option<PendingInstall>,
+    pub(crate) pending_count: u32,
+    pub(crate) updates_state: UpdatesState,
 }
 
 impl PakajoSession {
@@ -110,6 +120,8 @@ impl PakajoSession {
             aur_error: None,
             install_progress: InstallProgress::Idle,
             pending_install: None,
+            pending_count: 0,
+            updates_state: UpdatesState::Idle,
         }
     }
 
@@ -533,6 +545,51 @@ impl PakajoSession {
             }
         })
         .detach();
+    }
+
+    pub(crate) fn start_updates_checker(&mut self, cx: &mut Context<Self>) {
+        self.updates_state = UpdatesState::Freshening;
+        let (tx, rx) = futures::channel::oneshot::channel();
+        std::thread::spawn(move || {
+            let reniced = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) };
+            if reniced != 0 {
+                eprintln!(
+                    "[pakajo] failed to renice updates checker: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+            let result = crate::updates::pending_updates();
+            let _ = tx.send(result);
+        });
+        cx.spawn(async move |this, cx| {
+            let result = rx.await;
+            let _ = this.update(cx, |this, cx| this.apply_updates_result(result, cx));
+        })
+        .detach();
+    }
+
+    fn apply_updates_result(
+        &mut self,
+        result: Result<
+            Result<crate::updates::PendingUpdates, anyhow::Error>,
+            futures::channel::oneshot::Canceled,
+        >,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(Ok(pending)) => {
+                self.pending_count = (pending.repo.len() + pending.aur.len()) as u32;
+                self.updates_state = UpdatesState::Idle;
+            }
+            Ok(Err(e)) => {
+                eprintln!("[pakajo] updates checker failed: {e:#}");
+                self.updates_state = UpdatesState::Error(e.to_string());
+            }
+            Err(_) => {
+                self.updates_state = UpdatesState::Error("updates check cancelled".into());
+            }
+        }
+        cx.emit(SessionEvent::UpdatesAvailable(self.pending_count));
     }
 
     fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Option<usize> {
