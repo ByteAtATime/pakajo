@@ -1,4 +1,5 @@
 use alpm::{Alpm, SigLevel};
+use anyhow::Context as _;
 
 fn parse_siglevel(sig_strings: &[String]) -> SigLevel {
     if sig_strings.is_empty() {
@@ -57,6 +58,29 @@ pub fn init_alpm_at(
         let db = handle.register_syncdb_mut(repo.name.clone(), parse_siglevel(&repo.sig_level))?;
         db.set_servers(repo.servers.iter())?;
     }
+    Ok(handle)
+}
+
+pub(crate) fn init_alpm_rootless(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
+    let checkdb = crate::build::cache_root()?.join("checkdb");
+    std::fs::create_dir_all(&checkdb).context("creating checkdb dir")?;
+    let local_link = checkdb.join("local");
+    let expected_local = std::path::Path::new(&config.db_path).join("local");
+    let needs_link = match std::fs::read_link(&local_link) {
+        Ok(target) => target != expected_local,
+        Err(_) => true,
+    };
+    if needs_link {
+        let _ = std::fs::remove_file(&local_link);
+        std::os::unix::fs::symlink(&expected_local, &local_link)
+            .with_context(|| format!("symlinking local db -> {}", expected_local.display()))?;
+    }
+    let checkdb_str = checkdb.to_string_lossy().to_string();
+    let mut handle = init_alpm_at(config, "/", &checkdb_str, &config.cache_dir)
+        .context("initializing rootless alpm handle")?;
+    handle
+        .set_gpgdir(config.gpg_dir.as_str())
+        .context("forwarding gpgdir")?;
     Ok(handle)
 }
 

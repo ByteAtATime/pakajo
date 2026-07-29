@@ -31,6 +31,7 @@ mod srcinfo_io;
 mod stats;
 mod stub_pkg;
 mod upgrade;
+mod updates;
 mod utils;
 
 use crate::{pacman::init_alpm, root::PakajoRoot};
@@ -50,6 +51,20 @@ fn main() -> anyhow::Result<()> {
         Some(cli::Command::Gendb) => cli::gendb_subcommand(),
         None => {}
     }
+
+    std::thread::spawn(|| {
+        let reniced = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) };
+        if reniced != 0 {
+            eprintln!(
+                "[pakajo] rootless preview: renice failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        match crate::updates::rootless_upgradable_count() {
+            Ok(n) => eprintln!("[pakajo] rootless preview: {n} upgradable package(s)"),
+            Err(e) => eprintln!("[pakajo] rootless preview failed: {e:#}"),
+        }
+    });
 
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let handle = init_alpm(&config)?;
