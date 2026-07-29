@@ -94,6 +94,8 @@ pub(crate) struct PakajoSession {
     pending_install: Option<PendingInstall>,
     pub(crate) pending_count: u32,
     pub(crate) updates_state: UpdatesState,
+    pub(crate) pending_updates: crate::updates::PendingUpdates,
+    pub(crate) updates_aur_error: Option<String>,
 }
 
 impl PakajoSession {
@@ -131,6 +133,11 @@ impl PakajoSession {
             pending_install: None,
             pending_count: 0,
             updates_state: UpdatesState::Idle,
+            pending_updates: crate::updates::PendingUpdates {
+                repo: Vec::new(),
+                aur: Vec::new(),
+            },
+            updates_aur_error: None,
         }
     }
 
@@ -583,15 +590,30 @@ impl PakajoSession {
     fn apply_updates_result(
         &mut self,
         result: Result<
-            Result<crate::updates::PendingUpdates, anyhow::Error>,
+            Result<crate::updates::UpdatesFetch, anyhow::Error>,
             futures::channel::oneshot::Canceled,
         >,
         cx: &mut Context<Self>,
     ) {
         match result {
-            Ok(Ok(pending)) => {
-                self.pending_count = (pending.repo.len() + pending.aur.len()) as u32;
+            Ok(Ok(fetch)) => {
+                self.pending_updates = crate::updates::PendingUpdates {
+                    repo: fetch.repo,
+                    aur: fetch.aur,
+                };
+                self.updates_aur_error = fetch.aur_error;
+                self.pending_count =
+                    (self.pending_updates.repo.len() + self.pending_updates.aur.len()) as u32;
                 self.updates_state = UpdatesState::Idle;
+                eprintln!(
+                    "[pakajo] updates: {} repo, {} aur, aur_error={}",
+                    self.pending_updates.repo.len(),
+                    self.pending_updates.aur.len(),
+                    match &self.updates_aur_error {
+                        Some(msg) => format!("Some({msg})"),
+                        None => "None".to_string(),
+                    }
+                );
             }
             Ok(Err(e)) => {
                 eprintln!("[pakajo] updates checker failed: {e:#}");
