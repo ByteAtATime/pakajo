@@ -156,7 +156,11 @@ impl LocalIndex {
             .map_err(anyhow::Error::from)
     }
 
-    pub fn search_name_prefix_ranked(&self, needle: &str, limit: i64) -> anyhow::Result<Vec<PackageRow>> {
+    pub fn search_name_prefix_ranked(
+        &self,
+        needle: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<PackageRow>> {
         let needle: String = needle
             .chars()
             .filter_map(|c| c.is_alphanumeric().then(|| c.to_ascii_lowercase()))

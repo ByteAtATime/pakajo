@@ -286,10 +286,9 @@ mod tests {
             .position(|n| *n == "haskell-slist")
             .expect("token-only-prefix name haskell-slist should be recalled");
         for expected in ["sl", "sls", "slang", "slim"] {
-            let pos = got
-                .iter()
-                .position(|n| *n == expected)
-                .unwrap_or_else(|| panic!("literal-sl prefix {expected} should be recalled; got {got:?}"));
+            let pos = got.iter().position(|n| *n == expected).unwrap_or_else(|| {
+                panic!("literal-sl prefix {expected} should be recalled; got {got:?}")
+            });
             assert!(
                 pos < haskell_pos,
                 "literal-sl prefix {expected} must precede the token-only-prefix name haskell-slist; got {got:?}"
@@ -310,9 +309,9 @@ mod tests {
         );
         let provider = LocalSearchProvider::new(index);
 
-        let rows = provider
-            .search(&SearchQuery::new("a\""))
-            .expect("local search must not error on a two-char input carrying an FTS-special character");
+        let rows = provider.search(&SearchQuery::new("a\"")).expect(
+            "local search must not error on a two-char input carrying an FTS-special character",
+        );
         let got = names(&rows);
         assert!(
             got.iter().any(|n| *n == "apple" || *n == "abc"),

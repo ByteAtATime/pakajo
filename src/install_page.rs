@@ -329,11 +329,7 @@ impl InstallPage {
         let PageMode::Aur(state) = &self.mode else {
             return div();
         };
-        if let Some(summary) = state
-            .manifest
-            .as_ref()
-            .filter(|s| !s.packages.is_empty())
-        {
+        if let Some(summary) = state.manifest.as_ref().filter(|s| !s.packages.is_empty()) {
             return self.render_manifest_card(cx, summary);
         }
         match &self.status {
@@ -387,8 +383,7 @@ impl InstallPage {
             .border_color(cx.theme().border)
             .p_4();
         for (i, stage) in ordered.iter().enumerate() {
-            let (glyph, glyph_color, label_color) = match cell_state(&self.status, current_idx, i)
-            {
+            let (glyph, glyph_color, label_color) = match cell_state(&self.status, current_idx, i) {
                 CellState::Done => ("✓", cx.theme().green, cx.theme().muted_foreground),
                 CellState::Active => ("●", cx.theme().blue, cx.theme().foreground),
                 CellState::Failed => ("✗", cx.theme().danger, cx.theme().danger),
@@ -457,8 +452,7 @@ impl InstallPage {
             .border_color(cx.theme().border)
             .p_4();
         for (i, stage) in ordered.iter().enumerate() {
-            let (glyph, glyph_color, label_color) = match cell_state(&self.status, current_idx, i)
-            {
+            let (glyph, glyph_color, label_color) = match cell_state(&self.status, current_idx, i) {
                 CellState::Done => ("✓", cx.theme().green, cx.theme().muted_foreground),
                 CellState::Active => ("●", cx.theme().blue, cx.theme().foreground),
                 CellState::Failed => ("✗", cx.theme().danger, cx.theme().danger),
@@ -678,9 +672,7 @@ impl InstallPage {
             return div();
         };
         match &state.manifest {
-            Some(summary) if !summary.packages.is_empty() => {
-                self.render_manifest_card(cx, summary)
-            }
+            Some(summary) if !summary.packages.is_empty() => self.render_manifest_card(cx, summary),
             Some(_) => v_flex()
                 .w_full()
                 .rounded_md()
@@ -803,10 +795,9 @@ fn aur_event_stage(ev: &InstallEvent) -> Option<AurStage> {
         | AurDepResolved { .. }
         | ResolutionComplete { .. }
         | LayerBoundary { .. } => Some(Resolve),
-        CloningRepo { .. }
-        | BuildStarted { .. }
-        | BuildOutput { .. }
-        | BuildCompleted { .. } => Some(Build),
+        CloningRepo { .. } | BuildStarted { .. } | BuildOutput { .. } | BuildCompleted { .. } => {
+            Some(Build)
+        }
         LoadingPackages
         | ResolvingDependencies
         | CheckingConflicts

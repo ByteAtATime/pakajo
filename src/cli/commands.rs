@@ -105,10 +105,7 @@ pub(super) fn run_gendb() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn fetch_base_devel_info(
-    base: &str,
-    arch: &str,
-) -> anyhow::Result<Option<crate::devel::PkgInfo>> {
+fn fetch_base_devel_info(base: &str, arch: &str) -> anyhow::Result<Option<crate::devel::PkgInfo>> {
     let dir = crate::build::clone_dir(base)?;
     crate::build::git_clone_or_pull(&dir, base)?;
     let srcinfo = if dir.join(".SRCINFO").exists() {

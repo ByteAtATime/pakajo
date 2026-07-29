@@ -4,8 +4,8 @@ use crate::install::InstallTarget;
 use clap::Parser;
 
 mod args;
-pub(crate) use self::args::{Cli, Command};
 use self::args::{CleanArgs, InstallArgs, RemoveArgs, SearchArgs, UpgradeArgs};
+pub(crate) use self::args::{Cli, Command};
 
 mod summary;
 
@@ -22,11 +22,13 @@ mod privs;
 use self::privs::is_root;
 
 mod escalate;
-use self::escalate::{escalate, escalate_remove, escalate_result, escalate_upgrade};
 pub(crate) use self::escalate::escalation_command;
+use self::escalate::{escalate, escalate_remove, escalate_result, escalate_upgrade};
 
 mod commands;
-use self::commands::{answerer_for, alpm_handle, decode_approvals, root_install, run_aur_sync, run_gendb, run_search};
+use self::commands::{
+    alpm_handle, answerer_for, decode_approvals, root_install, run_aur_sync, run_gendb, run_search,
+};
 
 pub(crate) fn parse() -> Cli {
     let mut argv: Vec<String> = std::env::args().collect();
@@ -46,14 +48,24 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
     }
 
     if is_root() {
-        let approvals = match args.approvals_b64.as_deref().map(decode_approvals).transpose() {
+        let approvals = match args
+            .approvals_b64
+            .as_deref()
+            .map(decode_approvals)
+            .transpose()
+        {
             Ok(opt) => opt,
             Err(e) => {
                 eprintln!("{e:#}");
                 std::process::exit(1);
             }
         };
-        exit_with_result(root_install(&positionals, args.as_deps, args.json, approvals));
+        exit_with_result(root_install(
+            &positionals,
+            args.as_deps,
+            args.json,
+            approvals,
+        ));
     }
 
     let mut repo_or_file: Vec<String> = Vec::new();
@@ -82,7 +94,12 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
         if !args.json {
             print_sync_preamble(&handle, &positionals);
         }
-        escalate(&positionals, args.as_deps, args.json, args.approvals_b64.as_deref());
+        escalate(
+            &positionals,
+            args.as_deps,
+            args.json,
+            args.approvals_b64.as_deref(),
+        );
     } else if repo_or_file.is_empty() {
         let mut sink: Box<dyn InstallSink> = sink_for(args.json);
         let json = args.json;
@@ -114,7 +131,12 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
         if !args.json {
             print_sync_preamble(&handle, &repo_or_file);
         }
-        match escalate_result(&repo_or_file, args.as_deps, args.json, args.approvals_b64.as_deref()) {
+        match escalate_result(
+            &repo_or_file,
+            args.as_deps,
+            args.json,
+            args.approvals_b64.as_deref(),
+        ) {
             Ok(0) => {}
             Ok(code) => std::process::exit(code),
             Err(e) => {
@@ -312,7 +334,11 @@ fn print_sync_preamble(handle: &alpm::Alpm, targets: &[String]) {
     let c = color::stdout_color();
     println!(
         "{} {}",
-        color::paint(c, color::BOLD, &format!("Sync Explicit ({}):", targets.len())),
+        color::paint(
+            c,
+            color::BOLD,
+            &format!("Sync Explicit ({}):", targets.len())
+        ),
         color::paint(c, color::CYAN, &labeled.join(", "))
     );
 }

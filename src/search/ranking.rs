@@ -43,10 +43,7 @@ pub fn scored_candidates(candidates: Vec<SearchResult>, needle: &str) -> Vec<Sco
         .into_iter()
         .map(|result| {
             let name_score = match_field(&result.name);
-            let desc_score = result
-                .description
-                .as_ref()
-                .and_then(|d| match_field(d));
+            let desc_score = result.description.as_ref().and_then(|d| match_field(d));
             let keyword_score = if result.keywords.is_empty() {
                 None
             } else {
@@ -201,7 +198,12 @@ fn composite(
         0.0
     };
 
-    W_NAME * text + W_RECENCY * recency + W_POP * norm_pop + repo_bonus + installed_bonus + prefix_bonus
+    W_NAME * text
+        + W_RECENCY * recency
+        + W_POP * norm_pop
+        + repo_bonus
+        + installed_bonus
+        + prefix_bonus
 }
 
 fn now_secs() -> f64 {
@@ -527,10 +529,8 @@ mod tests {
 
     #[test]
     fn multiword_query_requires_every_token_to_match() {
-        let scored = scored_candidates(
-            vec![row("python-google-auth-httplib2", None)],
-            "google chr",
-        );
+        let scored =
+            scored_candidates(vec![row("python-google-auth-httplib2", None)], "google chr");
         assert_eq!(scored.len(), 1);
         assert!(
             scored[0].name_score.is_none(),
@@ -566,8 +566,18 @@ mod tests {
     fn cava_g_prefers_git_even_when_bg_more_popular() {
         let e = HashSet::new();
         let candidates = vec![
-            pkg("cava-bg", PackageSource::Aur, Some(1_730_000_000), Some(20.0)),
-            pkg("cava-git", PackageSource::Aur, Some(1_730_000_000), Some(0.0)),
+            pkg(
+                "cava-bg",
+                PackageSource::Aur,
+                Some(1_730_000_000),
+                Some(20.0),
+            ),
+            pkg(
+                "cava-git",
+                PackageSource::Aur,
+                Some(1_730_000_000),
+                Some(0.0),
+            ),
         ];
         let results = score(candidates, &SearchQuery::new("cava-g"), &e);
         assert!(!results.is_empty());

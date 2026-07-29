@@ -17,10 +17,7 @@ pub(crate) fn run_clean(remove: bool) -> anyhow::Result<()> {
     }
     let mut count = 0usize;
     for dir in &clones {
-        let name = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
+        let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
         if remove {
             match fs::remove_dir_all(dir) {
                 Ok(()) => {
@@ -90,7 +87,11 @@ mod tests {
 
         let result = collect_clone_dirs(root_path).unwrap();
 
-        assert_eq!(result.len(), 1, "expected exactly one clone, got {result:?}");
+        assert_eq!(
+            result.len(),
+            1,
+            "expected exactly one clone, got {result:?}"
+        );
         assert!(
             result[0].ends_with("foo"),
             "expected path ending in foo, got {}",

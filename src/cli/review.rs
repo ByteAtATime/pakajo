@@ -5,7 +5,7 @@ use anyhow::Context as _;
 
 use crate::cli::prompts::confirm_review_accept;
 use crate::color;
-use crate::pkgbuild::{compute_diff, PkgbuildInfo};
+use crate::pkgbuild::{PkgbuildInfo, compute_diff};
 
 pub(super) fn review_pkgbuilds(pkgbuilds: &[PkgbuildInfo]) -> bool {
     let use_color = color::stdout_color();

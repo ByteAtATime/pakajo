@@ -81,13 +81,7 @@ fn print_plan_summary(plan: &BuildPlan) {
                 nw = name_width,
                 vw = vw,
             ),
-            None => println!(
-                "  {:<nw$}  {:<vw$}",
-                name,
-                v,
-                nw = name_width,
-                vw = vw,
-            ),
+            None => println!("  {:<nw$}  {:<vw$}", name, v, nw = name_width, vw = vw,),
         }
     }
     println!();

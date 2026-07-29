@@ -759,11 +759,7 @@ mod tests {
         let stub = build_stub_pkg(&cava_git, stub_dir.path()).unwrap();
         handle.trans_init(alpm::TransFlag::NONE).unwrap();
         let loaded = handle
-            .pkg_load(
-                stub.to_string_lossy().as_ref(),
-                false,
-                alpm::SigLevel::NONE,
-            )
+            .pkg_load(stub.to_string_lossy().as_ref(), false, alpm::SigLevel::NONE)
             .unwrap();
         handle.trans_add_pkg(loaded).unwrap();
         handle.trans_prepare().unwrap();
@@ -774,8 +770,8 @@ mod tests {
             .pkg("cava-git")
             .expect("cava-git should be installed in localdb after seeding");
 
-        let qs = crate::dry_run::repo_dry_run(&mut handle, "cava")
-            .expect("repo dry-run should succeed");
+        let qs =
+            crate::dry_run::repo_dry_run(&mut handle, "cava").expect("repo dry-run should succeed");
         assert!(
             qs.conflicts
                 .iter()

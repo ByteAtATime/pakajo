@@ -54,9 +54,18 @@ pub(crate) enum SessionEvent {
     SearchUpdated,
     InstallProgressChanged(InstallProgress),
     InstallLog(InstallEvent),
-    InstallLogsOpened { kind: InstallKind, source: PackageSource, name: String },
-    ReviewRequired { qs: QuestionSet, name: String },
-    PkgbuildReviewRequired { diffs: Vec<PkgbuildDiff> },
+    InstallLogsOpened {
+        kind: InstallKind,
+        source: PackageSource,
+        name: String,
+    },
+    ReviewRequired {
+        qs: QuestionSet,
+        name: String,
+    },
+    PkgbuildReviewRequired {
+        diffs: Vec<PkgbuildDiff>,
+    },
     UpdatesAvailable(u32),
 }
 
@@ -387,7 +396,10 @@ impl PakajoSession {
                         || qs.had_unsupported_question =>
                 {
                     this.set_progress(InstallProgress::ConflictReview(qs.clone()), cx);
-                    cx.emit(SessionEvent::ReviewRequired { qs, name: name.clone() });
+                    cx.emit(SessionEvent::ReviewRequired {
+                        qs,
+                        name: name.clone(),
+                    });
                 }
                 Ok(_) => {
                     this.proceed_to_install_or_review(cx);
@@ -623,11 +635,7 @@ impl PakajoSession {
         let aur_client = self.aur_client.clone();
         let local_index = self.local_index.clone();
         let installed = self.installed_names.clone();
-        let debounce = if self
-            .local_index
-            .as_ref()
-            .is_some_and(|i| i.is_populated())
-        {
+        let debounce = if self.local_index.as_ref().is_some_and(|i| i.is_populated()) {
             Duration::ZERO
         } else {
             LIVE_DEBOUNCE
@@ -677,10 +685,8 @@ impl PakajoSession {
         };
         cx.emit(SessionEvent::SearchUpdated);
         if let Some(first) = self.results.first() {
-            let unchanged = matches!(
-                self.detail,
-                DetailData::Loading | DetailData::Ready { .. }
-            ) && prev_selected.as_deref() == Some(first.name.as_str());
+            let unchanged = matches!(self.detail, DetailData::Loading | DetailData::Ready { .. })
+                && prev_selected.as_deref() == Some(first.name.as_str());
             if !unchanged {
                 let name = first.name.clone();
                 let source = first.source;
@@ -700,8 +706,7 @@ impl PakajoSession {
     }
 
     pub(crate) fn select_delta(&mut self, delta: i32, cx: &mut Context<Self>) {
-        let Some(index) =
-            Self::next_selected_index(self.results.len(), self.selected_index, delta)
+        let Some(index) = Self::next_selected_index(self.results.len(), self.selected_index, delta)
         else {
             return;
         };

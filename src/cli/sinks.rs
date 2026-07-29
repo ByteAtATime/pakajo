@@ -1,9 +1,7 @@
 use std::io::Write as _;
 
 use super::summary::{print_summary, render_summary};
-use crate::events::{
-    DownloadResult, InstallEvent, InstallSink, LogLevel, ProgressPhase,
-};
+use crate::events::{DownloadResult, InstallEvent, InstallSink, LogLevel, ProgressPhase};
 use crate::{color, utils::format_bytes};
 
 pub(crate) struct ConsoleSink {
@@ -27,18 +25,21 @@ impl ConsoleSink {
         match event {
             InstallEvent::ResolvingDependencies => println!("resolving dependencies..."),
             InstallEvent::CheckingConflicts => println!("looking for conflicting packages..."),
-            InstallEvent::CheckingFileConflicts => {},
-            InstallEvent::CheckingIntegrity => {},
-            InstallEvent::CheckingDiskSpace => {},
+            InstallEvent::CheckingFileConflicts => {}
+            InstallEvent::CheckingIntegrity => {}
+            InstallEvent::CheckingDiskSpace => {}
             InstallEvent::LoadingPackages => println!("loading packages..."),
-            InstallEvent::KeyringStart => {},
+            InstallEvent::KeyringStart => {}
             InstallEvent::RetrievingPackages { .. } => {
                 println!("{}", color::colon(self.color, "Retrieving packages..."));
             }
             InstallEvent::ProcessingChanges => {
-                println!("{}", color::colon(self.color, "Processing package changes..."));
+                println!(
+                    "{}",
+                    color::colon(self.color, "Processing package changes...")
+                );
             }
-            InstallEvent::PackageOperation { .. } => {},
+            InstallEvent::PackageOperation { .. } => {}
             InstallEvent::DownloadInit { filename, optional } => {
                 if *optional {
                     println!("  {filename} (optional)");
@@ -97,7 +98,10 @@ impl ConsoleSink {
             } => {
                 if !self.hooks_header_done {
                     self.hooks_header_done = true;
-                    println!("{}", color::colon(self.color, "Running post-transaction hooks..."));
+                    println!(
+                        "{}",
+                        color::colon(self.color, "Running post-transaction hooks...")
+                    );
                 }
                 let label = desc.as_deref().unwrap_or(name);
                 println!("({position}/{total}) {label}");
@@ -110,7 +114,10 @@ impl ConsoleSink {
                 }
             }
             InstallEvent::Log { level, message } => match level {
-                LogLevel::Error => eprint!("{} {message}", color::paint(self.stderr_color, color::RED, "error:")),
+                LogLevel::Error => eprint!(
+                    "{} {message}",
+                    color::paint(self.stderr_color, color::RED, "error:")
+                ),
                 LogLevel::Warning => eprint!(
                     "{} {message}",
                     color::paint(self.stderr_color, color::YELLOW, "warning:")
@@ -122,7 +129,10 @@ impl ConsoleSink {
             InstallEvent::ResolvingAurDependencies { target } => {
                 println!(
                     "{}",
-                    color::colon(self.color, &format!("resolving dependencies for {}...", target))
+                    color::colon(
+                        self.color,
+                        &format!("resolving dependencies for {}...", target)
+                    )
                 );
             }
             InstallEvent::AurDepResolved { .. } => {}
@@ -145,10 +155,7 @@ impl ConsoleSink {
                 if packages.len() == 1 {
                     println!(
                         "{}",
-                        color::colon(
-                            c,
-                            &format!("{}: already reviewed, no changes", packages[0])
-                        )
+                        color::colon(c, &format!("{}: already reviewed, no changes", packages[0]))
                     );
                 } else {
                     println!(

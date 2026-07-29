@@ -52,7 +52,8 @@ fn cache_dir() -> std::path::PathBuf {
     match std::env::var("XDG_CACHE_HOME") {
         Ok(xdg) => std::path::PathBuf::from(xdg),
         Err(_) => {
-            let home = std::env::var("HOME").expect("no cache directory: set XDG_CACHE_HOME or HOME");
+            let home =
+                std::env::var("HOME").expect("no cache directory: set XDG_CACHE_HOME or HOME");
             std::path::PathBuf::from(home).join(".cache")
         }
     }
@@ -86,7 +87,8 @@ fn load_from(path: &std::path::Path) -> DevelInfo {
 }
 
 fn import_yay_from(bytes: &[u8]) -> Option<DevelInfo> {
-    let yay: HashMap<String, HashMap<String, YayOriginInfo>> = serde_json::from_slice(bytes).ok()?;
+    let yay: HashMap<String, HashMap<String, YayOriginInfo>> =
+        serde_json::from_slice(bytes).ok()?;
 
     let mut info: HashMap<String, PkgInfo> = HashMap::new();
     for (pkgname, url_map) in yay {
@@ -133,7 +135,8 @@ fn save_to(info: &DevelInfo, path: &std::path::Path) -> anyhow::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = std::path::PathBuf::from(tmp);
-    let serialized = serde_json::to_string_pretty(info).context("failed to serialize devel info")?;
+    let serialized =
+        serde_json::to_string_pretty(info).context("failed to serialize devel info")?;
     std::fs::write(&tmp, serialized)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
@@ -184,17 +187,19 @@ pub(crate) fn fetch_devel_info(arch: &str, srcinfo: &srcinfo::Srcinfo) -> anyhow
         let handles: Vec<_> = targets
             .iter()
             .map(|(url, branch)| {
-                s.spawn(move || match crate::git::ls_remote(url, branch.as_deref()) {
-                    Ok(commit) => Some(RepoInfo {
-                        url: url.clone(),
-                        branch: branch.clone(),
-                        commit,
-                    }),
-                    Err(e) => {
-                        eprintln!("warning: failed to look up {url}: {e:#}");
-                        None
-                    }
-                })
+                s.spawn(
+                    move || match crate::git::ls_remote(url, branch.as_deref()) {
+                        Ok(commit) => Some(RepoInfo {
+                            url: url.clone(),
+                            branch: branch.clone(),
+                            commit,
+                        }),
+                        Err(e) => {
+                            eprintln!("warning: failed to look up {url}: {e:#}");
+                            None
+                        }
+                    },
+                )
             })
             .collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
@@ -239,13 +244,15 @@ pub(crate) fn possible_devel_updates_from(info: &DevelInfo) -> Vec<String> {
         let handles: Vec<_> = targets
             .iter()
             .map(|(pkgname, repo)| {
-                s.spawn(move || match crate::git::ls_remote(&repo.url, repo.branch.as_deref()) {
-                    Ok(current) => (current != repo.commit).then_some(*pkgname),
-                    Err(e) => {
-                        eprintln!("warning: failed to look up {}: {e:#}", repo.url);
-                        None
-                    }
-                })
+                s.spawn(
+                    move || match crate::git::ls_remote(&repo.url, repo.branch.as_deref()) {
+                        Ok(current) => (current != repo.commit).then_some(*pkgname),
+                        Err(e) => {
+                            eprintln!("warning: failed to look up {}: {e:#}", repo.url);
+                            None
+                        }
+                    },
+                )
             })
             .collect();
         handles
@@ -285,13 +292,19 @@ mod tests {
     fn parses_branch_fragment() {
         assert_eq!(
             parse_url("git+https://example.com/repo.git#branch=main"),
-            Some(("https://example.com/repo.git".to_string(), Some("main".to_string())))
+            Some((
+                "https://example.com/repo.git".to_string(),
+                Some("main".to_string())
+            ))
         );
     }
 
     #[test]
     fn rejects_commit_fragment() {
-        assert_eq!(parse_url("git+https://example.com/repo.git#commit=abc"), None);
+        assert_eq!(
+            parse_url("git+https://example.com/repo.git#commit=abc"),
+            None
+        );
     }
 
     #[test]
@@ -446,7 +459,10 @@ mod tests {
 
         merge_baseline(&mut devel, &srcinfo, fresh);
 
-        let registered = devel.info.get("example-git").expect("package auto-registered");
+        let registered = devel
+            .info
+            .get("example-git")
+            .expect("package auto-registered");
         let repo = registered.repos.iter().next().expect("repo present");
         assert_eq!(repo.commit, "1111111111111111111111111111111111111111");
     }

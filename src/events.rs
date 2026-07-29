@@ -108,9 +108,15 @@ pub enum InstallEvent {
     SysupgradeAurCandidates {
         candidates: Vec<crate::upgrade::AurUpgradeCandidate>,
     },
-    PkgbuildReviewStarted { packages: Vec<PkgbuildReviewEntry> },
-    PkgbuildReviewAccepted { packages: Vec<String> },
-    PkgbuildAllUpToDate { packages: Vec<String> },
+    PkgbuildReviewStarted {
+        packages: Vec<PkgbuildReviewEntry>,
+    },
+    PkgbuildReviewAccepted {
+        packages: Vec<String>,
+    },
+    PkgbuildAllUpToDate {
+        packages: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

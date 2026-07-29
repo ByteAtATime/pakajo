@@ -144,12 +144,12 @@ pub fn collect_for_review<S: crate::events::InstallSink + ?Sized>(
 const EMPTY_TREE_HASH: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 pub fn compute_diff(dir: &Path, is_new: bool, use_color: bool) -> anyhow::Result<String> {
-    let baseline = if is_new {
-        EMPTY_TREE_HASH
+    let baseline = if is_new { EMPTY_TREE_HASH } else { "AUR_SEEN" };
+    let color_arg = if use_color {
+        "--color=always"
     } else {
-        "AUR_SEEN"
+        "--color=never"
     };
-    let color_arg = if use_color { "--color=always" } else { "--color=never" };
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -182,7 +182,12 @@ mod tests {
             .env("GIT_COMMITTER_EMAIL", "test@example.com")
             .env("GIT_COMMITTER_NAME", "Test");
         let status = cmd.status().expect("git command runs");
-        assert!(status.success(), "git {:?} failed in {}", args, dir.display());
+        assert!(
+            status.success(),
+            "git {:?} failed in {}",
+            args,
+            dir.display()
+        );
     }
 
     fn init_repo(dir: &Path) {
@@ -250,9 +255,15 @@ mod tests {
 
         assert!(!has_seen_ref(path));
         let diff = compute_diff(path, true, false).unwrap();
-        assert!(diff.contains("pkgname=foo"), "diff should contain PKGBUILD content");
+        assert!(
+            diff.contains("pkgname=foo"),
+            "diff should contain PKGBUILD content"
+        );
         assert!(diff.contains("pkgver=1"), "diff should contain pkgver");
-        assert!(!diff.contains("should be excluded"), ".SRCINFO must be excluded");
+        assert!(
+            !diff.contains("should be excluded"),
+            ".SRCINFO must be excluded"
+        );
     }
 
     #[test]
@@ -268,7 +279,13 @@ mod tests {
         commit_all(path, "bump");
 
         let diff = compute_diff(path, false, false).unwrap();
-        assert!(diff.contains("pkgver=1"), "diff should show old version being removed");
-        assert!(diff.contains("pkgver=2"), "diff should show new version being added");
+        assert!(
+            diff.contains("pkgver=1"),
+            "diff should show old version being removed"
+        );
+        assert!(
+            diff.contains("pkgver=2"),
+            "diff should show new version being added"
+        );
     }
 }

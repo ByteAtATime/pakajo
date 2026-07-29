@@ -45,12 +45,7 @@ pub(crate) fn ls_remote(url: &str, branch: Option<&str>) -> anyhow::Result<Strin
         .wait_with_output()
         .context("failed to read git ls-remote output")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let sha = stdout
-        .split('\t')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let sha = stdout.split('\t').next().unwrap_or("").trim().to_string();
     if sha.is_empty() {
         anyhow::bail!("git ls-remote returned no sha for {url}");
     }

@@ -1,4 +1,8 @@
-use crate::{color, events::{SummaryPackage, TransactionSummary}, utils::format_mib};
+use crate::{
+    color,
+    events::{SummaryPackage, TransactionSummary},
+    utils::format_mib,
+};
 
 pub(super) fn print_summary(summary: &TransactionSummary) {
     if summary.packages.is_empty() {
@@ -19,7 +23,11 @@ fn append_table_line(out: &mut String, cells: &[String], right_align: &[bool], w
         if i > 0 {
             out.push_str("  ");
         }
-        let target = *width + cell.chars().count().saturating_sub(color::visible_width(cell));
+        let target = *width
+            + cell
+                .chars()
+                .count()
+                .saturating_sub(color::visible_width(cell));
         if right_align[i] {
             out.push_str(&format!("{:>t$}", cell, t = target));
         } else {
@@ -163,11 +171,29 @@ fn append_footer(out: &mut String, summary: &TransactionSummary, colored: bool) 
         return;
     }
 
-    let lw = rows.iter().map(|(label, _)| color::visible_width(label)).max().unwrap_or(0);
-    let vw = rows.iter().map(|(_, value)| color::visible_width(value)).max().unwrap_or(0);
+    let lw = rows
+        .iter()
+        .map(|(label, _)| color::visible_width(label))
+        .max()
+        .unwrap_or(0);
+    let vw = rows
+        .iter()
+        .map(|(_, value)| color::visible_width(value))
+        .max()
+        .unwrap_or(0);
     for (label, value) in &rows {
-        let lwt = lw + label.chars().count().saturating_sub(color::visible_width(label));
-        out.push_str(&format!("{:<lwt$}  {:>vw$}\n", label, value, lwt = lwt, vw = vw));
+        let lwt = lw
+            + label
+                .chars()
+                .count()
+                .saturating_sub(color::visible_width(label));
+        out.push_str(&format!(
+            "{:<lwt$}  {:>vw$}\n",
+            label,
+            value,
+            lwt = lwt,
+            vw = vw
+        ));
     }
 }
 

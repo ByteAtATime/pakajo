@@ -191,9 +191,7 @@ impl PackageDetail {
                 InstallProgress::Running => ("Installing…", true),
                 InstallProgress::ConflictReview(_) => ("Reviewing…", true),
                 InstallProgress::PkgbuildReview => ("Preparing…", true),
-                InstallProgress::Idle
-                | InstallProgress::Completed
-                | InstallProgress::Cancelled
+                InstallProgress::Idle | InstallProgress::Completed | InstallProgress::Cancelled
                     if installed =>
                 {
                     ("Remove", false)

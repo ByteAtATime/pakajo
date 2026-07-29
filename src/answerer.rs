@@ -66,9 +66,7 @@ impl QuestionAnswerer for StdioAnswerer {
         let incv = color::paint(self.color, color::VERSION, incoming_version);
         let rem = color::paint(self.color, color::BOLD, removable);
         let remv = color::paint(self.color, color::VERSION, removable_version);
-        let msg = format!(
-            "{inc}-{incv} and {rem}-{remv} are in conflict. Remove {rem}? [y/N]"
-        );
+        let msg = format!("{inc}-{incv} and {rem}-{remv} are in conflict. Remove {rem}? [y/N]");
         eprint!("{} ", color::colon(self.color, &msg));
         let _ = std::io::stderr().flush();
         let mut input = String::new();
@@ -89,7 +87,11 @@ impl QuestionAnswerer for StdioAnswerer {
             "{}\n",
             color::colon(
                 self.color,
-                &format!("There are {} providers available for {}:", candidates.len(), depend)
+                &format!(
+                    "There are {} providers available for {}:",
+                    candidates.len(),
+                    depend
+                )
             )
         );
         for (i, c) in candidates.iter().enumerate() {

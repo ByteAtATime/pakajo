@@ -30,8 +30,8 @@ mod session;
 mod srcinfo_io;
 mod stats;
 mod stub_pkg;
-mod upgrade;
 mod updates;
+mod upgrade;
 mod utils;
 
 use crate::{pacman::init_alpm, root::PakajoRoot};

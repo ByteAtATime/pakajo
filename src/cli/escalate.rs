@@ -74,10 +74,7 @@ pub(super) fn escalate_upgrade(no_refresh: bool, ignores: &[String], json: bool)
     }
 }
 
-fn spawn_upgrade_child(
-    no_refresh: bool,
-    ignores: &[String],
-) -> anyhow::Result<Child> {
+fn spawn_upgrade_child(no_refresh: bool, ignores: &[String]) -> anyhow::Result<Child> {
     let exe = std::env::current_exe().context("failed to determine executable path")?;
     let mut cmd = escalation_command(&exe.to_string_lossy());
     cmd.arg("upgrade").arg("--json").arg("--repo-only");
