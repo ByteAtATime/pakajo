@@ -60,8 +60,12 @@ fn main() -> anyhow::Result<()> {
                 std::io::Error::last_os_error()
             );
         }
-        match crate::updates::rootless_upgradable_count() {
-            Ok(n) => eprintln!("[pakajo] rootless preview: {n} upgradable package(s)"),
+        match crate::updates::pending_updates() {
+            Ok(pending) => eprintln!(
+                "[pakajo] rootless preview: {} repo, {} aur upgradable package(s)",
+                pending.repo.len(),
+                pending.aur.len()
+            ),
             Err(e) => eprintln!("[pakajo] rootless preview failed: {e:#}"),
         }
     });
