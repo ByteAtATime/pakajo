@@ -31,6 +31,7 @@ mod srcinfo_io;
 mod stats;
 mod stub_pkg;
 mod updates;
+mod updates_view;
 mod upgrade;
 mod utils;
 

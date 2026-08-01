@@ -11,6 +11,7 @@ use crate::{
     question::QuestionSet,
     search_view::{SearchView, centered},
     session::{DetailData, InstallKind, PakajoSession, SearchState, SessionEvent, UpdatesState},
+    updates_view::UpdatesView,
 };
 use alpm::Alpm;
 use gpui::*;
@@ -52,6 +53,7 @@ pub struct PakajoRoot {
     detail: DetailPane,
     detail_subscription: Option<Subscription>,
     search_view: SearchView,
+    updates_view: UpdatesView,
     page: Page,
     install_page: Option<Entity<InstallPage>>,
     review_flow: PkgbuildReviewFlow,
@@ -140,6 +142,7 @@ impl PakajoRoot {
             detail: DetailPane::None,
             detail_subscription: None,
             search_view: SearchView::new(),
+            updates_view: UpdatesView::new(),
             page: Page::Main,
             install_page: None,
             review_flow: PkgbuildReviewFlow::new(),
@@ -538,51 +541,14 @@ impl PakajoRoot {
 
     fn render_updates_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let session = self.session.read(cx);
-        let count = session.pending_count;
+        let updates = session.pending_updates.clone();
         let state = session.updates_state.clone();
-        let theme = cx.theme();
-
-        let status = match &state {
-            UpdatesState::Loading => h_flex()
-                .gap_2()
-                .child(Spinner::new())
-                .child(
-                    div()
-                        .text_color(theme.muted_foreground)
-                        .child("Checking for updates…"),
-                )
-                .into_any_element(),
-            UpdatesState::Idle if count > 0 => h_flex()
-                .gap_2()
-                .child(div().text_xl().child(format!("{count} updates available")))
-                .into_any_element(),
-            UpdatesState::Idle => h_flex()
-                .gap_2()
-                .child(Icon::new(IconName::Check).text_color(theme.green))
-                .child(div().text_xl().child("Your system is up to date"))
-                .into_any_element(),
-            UpdatesState::Error(msg) => h_flex()
-                .gap_2()
-                .child(
-                    div()
-                        .text_color(theme.danger_foreground)
-                        .child(if msg.is_empty() {
-                            "Couldn't check for updates".to_string()
-                        } else {
-                            msg.clone()
-                        }),
-                )
-                .into_any_element(),
-        };
+        let aur_error = session.updates_aur_error.clone();
 
         div()
-            .flex_1()
-            .size_full()
             .v_flex()
-            .items_center()
-            .justify_center()
-            .gap_6()
-            .child(status)
+            .size_full()
+            .gap_2()
             .child(
                 Button::new("updates-back")
                     .ghost()
@@ -592,6 +558,10 @@ impl PakajoRoot {
                         this.page = Page::Main;
                         cx.notify();
                     })),
+            )
+            .child(
+                self.updates_view
+                    .render(&updates, state, aur_error.as_deref(), cx),
             )
     }
 }
