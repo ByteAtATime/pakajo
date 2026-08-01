@@ -330,7 +330,7 @@ impl InstallPage {
             return div();
         };
         if let Some(summary) = state.manifest.as_ref().filter(|s| !s.packages.is_empty()) {
-            return self.render_manifest_card(cx, summary);
+            return Self::render_manifest_card(self.kind, summary, cx);
         }
         match &self.status {
             InstallProgress::Failed(message) => v_flex()
@@ -535,7 +535,11 @@ impl InstallPage {
             )
     }
 
-    fn render_manifest_card(&self, cx: &mut Context<Self>, summary: &TransactionSummary) -> Div {
+    pub(crate) fn render_manifest_card(
+        kind: InstallKind,
+        summary: &TransactionSummary,
+        cx: &App,
+    ) -> Div {
         let mut installs = 0u32;
         let mut upgrades = 0u32;
         let mut removes = 0u32;
@@ -561,14 +565,14 @@ impl InstallPage {
         }
         let counts_left = segments.join(" · ");
 
-        let download_right = match self.kind {
+        let download_right = match kind {
             InstallKind::Install if summary.total_download_size > 0 => {
                 Some(format!("↓ {}", format_bytes(summary.total_download_size)))
             }
             _ => None,
         };
 
-        let net_text = match self.kind {
+        let net_text = match kind {
             InstallKind::Install => {
                 let net = summary.total_installed_size - summary.total_removed_size;
                 if net != 0 {
@@ -672,7 +676,9 @@ impl InstallPage {
             return div();
         };
         match &state.manifest {
-            Some(summary) if !summary.packages.is_empty() => self.render_manifest_card(cx, summary),
+            Some(summary) if !summary.packages.is_empty() => {
+                Self::render_manifest_card(self.kind, summary, cx)
+            }
             Some(_) => v_flex()
                 .w_full()
                 .rounded_md()

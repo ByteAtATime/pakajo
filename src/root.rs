@@ -41,6 +41,7 @@ enum Page {
     Main,
     Install,
     Updates,
+    Confirm,
 }
 
 pub struct PakajoRoot {
@@ -62,6 +63,7 @@ pub struct PakajoRoot {
     flash_generation: u64,
     last_seen_count: u32,
     sysupgrade_preview: Option<crate::dry_run::SysupgradePreview>,
+    sysupgrade_preview_error: Option<String>,
 }
 
 impl PakajoRoot {
@@ -133,29 +135,13 @@ impl PakajoRoot {
                 SessionEvent::SysupgradePreviewReady(result) => {
                     match result {
                         Ok(preview) => {
-                            let count = preview.summary.packages.len();
-                            let conflicts = preview.questions.conflicts.len();
-                            let providers = preview.questions.providers.len();
-                            let incomplete = preview.prepare_error.is_some();
-                            eprintln!(
-                                "[preview] ready: upgrades={count} conflicts={conflicts} providers={providers} incomplete={incomplete}"
-                            );
-                            for pkg in preview.summary.packages.iter().take(3) {
-                                eprintln!(
-                                    "[preview] {} {} -> {}",
-                                    pkg.name,
-                                    pkg.old_version.as_deref().unwrap_or("-"),
-                                    pkg.new_version,
-                                );
-                            }
-                            if let Some(msg) = &preview.prepare_error {
-                                eprintln!("[preview] prepare error (will re-confirm at apply): {msg}");
-                            }
                             this.sysupgrade_preview = Some(preview.clone());
+                            this.sysupgrade_preview_error = None;
+                            this.page = Page::Confirm;
                         }
                         Err(msg) => {
-                            eprintln!("[preview] failed: {msg}");
                             this.sysupgrade_preview = None;
+                            this.sysupgrade_preview_error = Some(msg.clone());
                         }
                     }
                     cx.notify();
@@ -182,6 +168,7 @@ impl PakajoRoot {
             flash_generation: 0,
             last_seen_count: 0,
             sysupgrade_preview: None,
+            sysupgrade_preview_error: None,
         }
     }
 
@@ -651,10 +638,137 @@ impl PakajoRoot {
                     .child(refresh_control)
                     .child(review_control),
             )
+            .children(self.sysupgrade_preview_error.as_ref().map(|msg| {
+                div()
+                    .flex_none()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .text_color(cx.theme().danger_foreground)
+                    .child(format!("Couldn't prepare upgrade: {msg}"))
+            }))
             .child(
                 self.updates_view
                     .render(&updates, state, aur_error.as_deref(), cx),
             )
+    }
+
+    fn render_confirm_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(preview) = &self.sysupgrade_preview else {
+            return centered()
+                .text_color(cx.theme().muted_foreground)
+                .child("No preview available")
+                .into_any_element();
+        };
+
+        let warn = Hsla {
+            h: 38.0 / 360.0,
+            s: 0.78,
+            l: 0.55,
+            a: 1.0,
+        };
+
+        let top_bar = h_flex()
+            .items_center()
+            .gap_2()
+            .child(
+                Button::new("confirm-back")
+                    .ghost()
+                    .icon(IconName::ArrowLeft)
+                    .label("Back")
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        this.page = Page::Updates;
+                        cx.notify();
+                    })),
+            )
+            .child(div().text_lg().font_semibold().child("Review upgrade"))
+            .child(div().flex_1());
+
+        let manifest =
+            InstallPage::render_manifest_card(InstallKind::Install, &preview.summary, cx);
+
+        let questions = Self::render_confirm_questions(&preview.questions, warn, cx);
+
+        div()
+            .v_flex()
+            .size_full()
+            .gap_3()
+            .min_h_0()
+            .child(top_bar)
+            .child(
+                div()
+                    .id("confirm-scroll")
+                    .overflow_y_scroll()
+                    .v_flex()
+                    .gap_3()
+                    .flex_1()
+                    .min_h_0()
+                    .child(manifest)
+                    .child(questions),
+            )
+            .into_any_element()
+    }
+
+    fn render_confirm_questions(qs: &QuestionSet, warn: Hsla, cx: &App) -> Div {
+        if qs.conflicts.is_empty() && qs.providers.is_empty() {
+            return div();
+        }
+        let mut section = div()
+            .v_flex()
+            .gap_2()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .p_3()
+            .child(
+                h_flex().child(
+                    div()
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("POTENTIAL CHANGES"),
+                ),
+            )
+            .child(div().h_px().w_full().bg(cx.theme().border));
+        for conflict in &qs.conflicts {
+            section = section.child(
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().child(format!(
+                        "{} replaces {}",
+                        conflict.incoming, conflict.removable
+                    )))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().danger)
+                            .child("remove"),
+                    ),
+            );
+        }
+        for prompt in &qs.providers {
+            let candidates = prompt
+                .candidates
+                .iter()
+                .map(|c| c.name.clone())
+                .collect::<Vec<_>>()
+                .join(" / ");
+            section = section.child(
+                div()
+                    .v_flex()
+                    .gap_1()
+                    .child(div().font_semibold().child(prompt.depend.clone()))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(candidates),
+                    ),
+            );
+        }
+        section
     }
 }
 
@@ -675,6 +789,7 @@ impl Render for PakajoRoot {
                 .child(page.clone())
                 .into_any_element(),
             (Page::Updates, _) => self.render_updates_page(cx).into_any_element(),
+            (Page::Confirm, _) => self.render_confirm_page(cx),
             _ => {
                 let session = self.session.read(cx);
                 if session.results.is_empty() {
