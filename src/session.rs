@@ -605,15 +605,6 @@ impl PakajoSession {
                 self.pending_count =
                     (self.pending_updates.repo.len() + self.pending_updates.aur.len()) as u32;
                 self.updates_state = UpdatesState::Idle;
-                eprintln!(
-                    "[pakajo] updates: {} repo, {} aur, aur_error={}",
-                    self.pending_updates.repo.len(),
-                    self.pending_updates.aur.len(),
-                    match &self.updates_aur_error {
-                        Some(msg) => format!("Some({msg})"),
-                        None => "None".to_string(),
-                    }
-                );
             }
             Ok(Err(e)) => {
                 eprintln!("[pakajo] updates checker failed: {e:#}");
