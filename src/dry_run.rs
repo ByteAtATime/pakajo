@@ -46,7 +46,19 @@ pub(crate) fn repo_dry_run(handle: &mut alpm::Alpm, target: &str) -> anyhow::Res
 pub(crate) struct SysupgradePreview {
     pub(crate) summary: TransactionSummary,
     pub(crate) questions: QuestionSet,
-    pub(crate) prepare_error: Option<String>,
+    pub(crate) prepare_error: Option<PrepareFailure>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum PrepareFailure {
+    Unsatisfied(Vec<UnsatisfiedDep>),
+    Other(String),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct UnsatisfiedDep {
+    pub(crate) depend: String,
+    pub(crate) target: String,
 }
 
 pub(crate) fn compute_sysupgrade_preview(
@@ -70,10 +82,7 @@ fn run_sysupgrade_preview(
     handle
         .sync_sysupgrade(false)
         .context("sync_sysupgrade failed to resolve upgrade targets")?;
-    let prepare_error = handle
-        .trans_prepare()
-        .err()
-        .map(|err| format!("{}", classify_prepare_error(err)));
+    let prepare_error = handle.trans_prepare().err().map(extract_prepare_failure);
     let questions = snapshot(state);
     let summary = crate::install::build_summary(handle);
     Ok(SysupgradePreview {
@@ -81,6 +90,21 @@ fn run_sysupgrade_preview(
         questions,
         prepare_error,
     })
+}
+
+fn extract_prepare_failure(err: alpm::PrepareError) -> PrepareFailure {
+    match err.data() {
+        Some(alpm::PrepareData::UnsatisfiedDeps(list)) => PrepareFailure::Unsatisfied(
+            list.iter()
+                .map(|d| UnsatisfiedDep {
+                    depend: d.depend().name().to_string(),
+                    target: d.target().to_string(),
+                })
+                .collect(),
+        ),
+        Some(other) => PrepareFailure::Other(format!("{other:?}")),
+        None => PrepareFailure::Other(format!("{}", err.error())),
+    }
 }
 
 fn attach_recorder(handle: &mut alpm::Alpm) -> Rc<RefCell<RecorderState>> {

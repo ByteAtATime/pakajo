@@ -689,6 +689,11 @@ impl PakajoRoot {
 
         let questions = Self::render_confirm_questions(&preview.questions, warn, cx);
 
+        let blocked_banner = preview
+            .prepare_error
+            .as_ref()
+            .map(|failure| Self::render_blocked_banner(failure, warn, cx));
+
         div()
             .v_flex()
             .size_full()
@@ -703,10 +708,68 @@ impl PakajoRoot {
                     .gap_3()
                     .flex_1()
                     .min_h_0()
+                    .children(blocked_banner)
                     .child(manifest)
                     .child(questions),
             )
             .into_any_element()
+    }
+
+    fn render_blocked_banner(
+        failure: &crate::dry_run::PrepareFailure,
+        warn: Hsla,
+        cx: &App,
+    ) -> Div {
+        let foreground = cx.theme().foreground;
+        let muted = cx.theme().muted_foreground;
+
+        let mut banner = div()
+            .v_flex()
+            .gap_1()
+            .rounded_md()
+            .border_1()
+            .border_color(warn)
+            .bg(warn.opacity(0.12))
+            .p_3()
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(Icon::new(IconName::TriangleAlert).text_color(warn))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_semibold()
+                            .text_color(warn)
+                            .child("Cannot complete this upgrade"),
+                    ),
+            );
+
+        match failure {
+            crate::dry_run::PrepareFailure::Unsatisfied(deps) => {
+                for d in deps {
+                    banner = banner.child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .text_sm()
+                            .child(
+                                div()
+                                    .font_semibold()
+                                    .text_color(foreground)
+                                    .child(d.depend.clone()),
+                            )
+                            .child(div().text_color(muted).child("required by"))
+                            .child(div().text_color(foreground).child(d.target.clone())),
+                    );
+                }
+            }
+            crate::dry_run::PrepareFailure::Other(msg) => {
+                banner = banner.child(div().text_sm().text_color(muted).child(msg.clone()));
+            }
+        }
+
+        banner
     }
 
     fn render_confirm_questions(qs: &QuestionSet, warn: Hsla, cx: &App) -> Div {
