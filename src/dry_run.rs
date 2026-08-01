@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use anyhow::Context as _;
 
+use crate::events::TransactionSummary;
 use crate::question::{Conflict, ProviderCandidate, ProviderPrompt, QuestionSet};
 use crate::resolve::BuildPlan;
 use crate::stub_pkg::build_stub_pkg;
@@ -39,6 +40,47 @@ pub(crate) fn repo_dry_run(handle: &mut alpm::Alpm, target: &str) -> anyhow::Res
     let outcome = run_repo_dry_run_transaction(handle, target, &state);
     let _ = handle.trans_release();
     outcome
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SysupgradePreview {
+    pub(crate) summary: TransactionSummary,
+    pub(crate) questions: QuestionSet,
+    pub(crate) prepare_error: Option<String>,
+}
+
+pub(crate) fn compute_sysupgrade_preview(
+    handle: &mut alpm::Alpm,
+    config: &pacmanconf::Config,
+) -> anyhow::Result<SysupgradePreview> {
+    crate::upgrade::apply_ignores(handle, config, &[]);
+    let state = attach_recorder(handle);
+    let result = run_sysupgrade_preview(handle, &state);
+    let _ = handle.trans_release();
+    result
+}
+
+fn run_sysupgrade_preview(
+    handle: &mut alpm::Alpm,
+    state: &Rc<RefCell<RecorderState>>,
+) -> anyhow::Result<SysupgradePreview> {
+    handle
+        .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
+        .context("failed to init sysupgrade preview transaction")?;
+    handle
+        .sync_sysupgrade(false)
+        .context("sync_sysupgrade failed to resolve upgrade targets")?;
+    let prepare_error = handle
+        .trans_prepare()
+        .err()
+        .map(|err| format!("{}", classify_prepare_error(err)));
+    let questions = snapshot(state);
+    let summary = crate::install::build_summary(handle);
+    Ok(SysupgradePreview {
+        summary,
+        questions,
+        prepare_error,
+    })
 }
 
 fn attach_recorder(handle: &mut alpm::Alpm) -> Rc<RefCell<RecorderState>> {
@@ -284,5 +326,27 @@ mod tests {
             "every upgrade the manual vercmp sees (same checkdb data) must also be resolved by \
              rootless sync_sysupgrade. missing from spike: {missing:?}"
         );
+
+        let preview = crate::dry_run::compute_sysupgrade_preview(&mut handle, &config)
+            .expect("compute_sysupgrade_preview should succeed");
+        assert!(
+            !preview.summary.packages.is_empty(),
+            "preview summary must list the direct upgrade set"
+        );
+        eprintln!(
+            "[preview] upgrades={} conflicts={} providers={} prepare_error={:?}",
+            preview.summary.packages.len(),
+            preview.questions.conflicts.len(),
+            preview.questions.providers.len(),
+            preview.prepare_error,
+        );
+        for pkg in preview.summary.packages.iter().take(3) {
+            eprintln!(
+                "[preview] {} {} -> {}",
+                pkg.name,
+                pkg.old_version.as_deref().unwrap_or("-"),
+                pkg.new_version,
+            );
+        }
     }
 }

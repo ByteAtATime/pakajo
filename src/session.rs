@@ -67,6 +67,7 @@ pub(crate) enum SessionEvent {
         diffs: Vec<PkgbuildDiff>,
     },
     UpdatesAvailable(u32),
+    SysupgradePreviewReady(Result<crate::dry_run::SysupgradePreview, String>),
 }
 
 impl EventEmitter<SessionEvent> for PakajoSession {}
@@ -96,6 +97,7 @@ pub(crate) struct PakajoSession {
     pub(crate) updates_state: UpdatesState,
     pub(crate) pending_updates: crate::updates::PendingUpdates,
     pub(crate) updates_aur_error: Option<String>,
+    pub(crate) sysupgrade_preview_in_flight: bool,
 }
 
 impl PakajoSession {
@@ -138,6 +140,7 @@ impl PakajoSession {
                 aur: Vec::new(),
             },
             updates_aur_error: None,
+            sysupgrade_preview_in_flight: false,
         }
     }
 
@@ -618,6 +621,46 @@ impl PakajoSession {
             }
         }
         cx.emit(SessionEvent::UpdatesAvailable(self.pending_count));
+    }
+
+    pub(crate) fn start_sysupgrade_preview(&mut self, cx: &mut Context<Self>) {
+        if self.sysupgrade_preview_in_flight {
+            return;
+        }
+        self.sysupgrade_preview_in_flight = true;
+        let (tx, rx) = futures::channel::oneshot::channel();
+        std::thread::spawn(move || {
+            let reniced = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) };
+            if reniced != 0 {
+                eprintln!(
+                    "[pakajo] failed to renice sysupgrade preview: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+            let result = (|| -> anyhow::Result<crate::dry_run::SysupgradePreview> {
+                let config = pacmanconf::Config::new().context("failed to read pacman config")?;
+                let mut handle = crate::pacman::init_alpm_rootless(&config)?;
+                handle
+                    .syncdbs_mut()
+                    .update(false)
+                    .context("failed to refresh checkdb sync DBs rootless")?;
+                crate::dry_run::compute_sysupgrade_preview(&mut handle, &config)
+            })();
+            let _ = tx.send(result.map_err(|e| format!("{e:#}")));
+        });
+        cx.spawn(async move |this, cx| {
+            let result = rx.await;
+            let _ = this.update(cx, |this, cx| {
+                this.sysupgrade_preview_in_flight = false;
+                let outcome = match result {
+                    Ok(Ok(preview)) => Ok(preview),
+                    Ok(Err(msg)) => Err(msg),
+                    Err(_) => Err("sysupgrade preview cancelled".to_string()),
+                };
+                cx.emit(SessionEvent::SysupgradePreviewReady(outcome));
+            });
+        })
+        .detach();
     }
 
     fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Option<usize> {

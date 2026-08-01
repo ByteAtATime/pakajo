@@ -61,6 +61,7 @@ pub struct PakajoRoot {
     updates_flash: bool,
     flash_generation: u64,
     last_seen_count: u32,
+    sysupgrade_preview: Option<crate::dry_run::SysupgradePreview>,
 }
 
 impl PakajoRoot {
@@ -129,6 +130,36 @@ impl PakajoRoot {
                     }
                     cx.notify();
                 }
+                SessionEvent::SysupgradePreviewReady(result) => {
+                    match result {
+                        Ok(preview) => {
+                            let count = preview.summary.packages.len();
+                            let conflicts = preview.questions.conflicts.len();
+                            let providers = preview.questions.providers.len();
+                            let incomplete = preview.prepare_error.is_some();
+                            eprintln!(
+                                "[preview] ready: upgrades={count} conflicts={conflicts} providers={providers} incomplete={incomplete}"
+                            );
+                            for pkg in preview.summary.packages.iter().take(3) {
+                                eprintln!(
+                                    "[preview] {} {} -> {}",
+                                    pkg.name,
+                                    pkg.old_version.as_deref().unwrap_or("-"),
+                                    pkg.new_version,
+                                );
+                            }
+                            if let Some(msg) = &preview.prepare_error {
+                                eprintln!("[preview] prepare error (will re-confirm at apply): {msg}");
+                            }
+                            this.sysupgrade_preview = Some(preview.clone());
+                        }
+                        Err(msg) => {
+                            eprintln!("[preview] failed: {msg}");
+                            this.sysupgrade_preview = None;
+                        }
+                    }
+                    cx.notify();
+                }
             },
         );
 
@@ -150,6 +181,7 @@ impl PakajoRoot {
             updates_flash: false,
             flash_generation: 0,
             last_seen_count: 0,
+            sysupgrade_preview: None,
         }
     }
 
@@ -546,6 +578,7 @@ impl PakajoRoot {
         let state = session.updates_state.clone();
         let aur_error = session.updates_aur_error.clone();
         let is_loading = matches!(state, UpdatesState::Loading);
+        let preview_in_flight = session.sysupgrade_preview_in_flight;
 
         let refresh_control: AnyElement = if is_loading {
             div()
@@ -571,6 +604,31 @@ impl PakajoRoot {
                 .into_any_element()
         };
 
+        let review_control: AnyElement = if preview_in_flight {
+            div()
+                .h_flex()
+                .items_center()
+                .gap_1p5()
+                .px_3()
+                .child(Spinner::new())
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Reviewing"),
+                )
+                .into_any_element()
+        } else {
+            Button::new("updates-review")
+                .ghost()
+                .icon(PakajoIcon::PackageCheck)
+                .label("Review")
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.session
+                        .update(cx, |s, cx| s.start_sysupgrade_preview(cx));
+                }))
+                .into_any_element()
+        };
+
         div()
             .v_flex()
             .size_full()
@@ -590,7 +648,8 @@ impl PakajoRoot {
                             })),
                     )
                     .child(div().flex_1())
-                    .child(refresh_control),
+                    .child(refresh_control)
+                    .child(review_control),
             )
             .child(
                 self.updates_view
