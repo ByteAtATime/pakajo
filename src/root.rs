@@ -1,6 +1,7 @@
 use crate::{
     aur::AurClient,
     events::InstallEvent,
+    icon::PakajoIcon,
     install::InstallProgress,
     install_page::InstallPage,
     install_review_dialog::{self, InstallReviewDialog},
@@ -544,20 +545,52 @@ impl PakajoRoot {
         let updates = session.pending_updates.clone();
         let state = session.updates_state.clone();
         let aur_error = session.updates_aur_error.clone();
+        let is_loading = matches!(state, UpdatesState::Loading);
+
+        let refresh_control: AnyElement = if is_loading {
+            div()
+                .h_flex()
+                .items_center()
+                .gap_1p5()
+                .px_3()
+                .child(Spinner::new())
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Refreshing"),
+                )
+                .into_any_element()
+        } else {
+            Button::new("updates-refresh")
+                .ghost()
+                .icon(PakajoIcon::RefreshCw)
+                .label("Refresh")
+                .on_click(cx.listener(|this, _ev, _window, cx| {
+                    this.session.update(cx, |s, cx| s.start_updates_checker(cx));
+                }))
+                .into_any_element()
+        };
 
         div()
             .v_flex()
             .size_full()
             .gap_2()
             .child(
-                Button::new("updates-back")
-                    .ghost()
-                    .icon(IconName::ArrowLeft)
-                    .label("Back")
-                    .on_click(cx.listener(|this, _ev, _window, cx| {
-                        this.page = Page::Main;
-                        cx.notify();
-                    })),
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("updates-back")
+                            .ghost()
+                            .icon(IconName::ArrowLeft)
+                            .label("Back")
+                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                                this.page = Page::Main;
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().flex_1())
+                    .child(refresh_control),
             )
             .child(
                 self.updates_view

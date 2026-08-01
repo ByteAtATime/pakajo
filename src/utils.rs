@@ -19,3 +19,55 @@ pub fn format_mib(bytes: i64) -> String {
     }
     format!("{val:.2} MiB")
 }
+
+pub(crate) fn version_diff(old: &str, new: &str) -> (String, String, String) {
+    let mut split = old.len().min(new.len());
+    for ((oi, oc), (_, nc)) in old.char_indices().zip(new.char_indices()) {
+        if oc != nc {
+            split = oi;
+            break;
+        }
+    }
+    (
+        old[..split].to_string(),
+        old[split..].to_string(),
+        new[split..].to_string(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_diff_identical_returns_whole_common() {
+        let (common, old_suffix, new_suffix) = version_diff("1.2.3", "1.2.3");
+        assert_eq!(common, "1.2.3");
+        assert_eq!(old_suffix, "");
+        assert_eq!(new_suffix, "");
+    }
+
+    #[test]
+    fn version_diff_real_upgrade_splits_at_divergence() {
+        let (common, old_suffix, new_suffix) = version_diff("1.2.3", "1.2.4");
+        assert_eq!(common, "1.2.");
+        assert_eq!(old_suffix, "3");
+        assert_eq!(new_suffix, "4");
+    }
+
+    #[test]
+    fn version_diff_suffix_divergence_highlights_tail() {
+        let (common, old_suffix, new_suffix) = version_diff("10.2.3", "11.2.3");
+        assert_eq!(common, "1");
+        assert_eq!(old_suffix, "0.2.3");
+        assert_eq!(new_suffix, "1.2.3");
+    }
+
+    #[test]
+    fn version_diff_strict_prefix_empties_shorter_suffix() {
+        let (common, old_suffix, new_suffix) = version_diff("1.2", "1.2.3");
+        assert_eq!(common, "1.2");
+        assert_eq!(old_suffix, "");
+        assert_eq!(new_suffix, ".3");
+    }
+}

@@ -14,6 +14,8 @@ pub enum PakajoIcon {
     Star,
     PackageCheck,
     CircleCheck,
+    RefreshCw,
+    ArrowRight,
 }
 
 impl IconNamed for PakajoIcon {
@@ -27,6 +29,8 @@ impl IconNamed for PakajoIcon {
             PakajoIcon::Star => "icons/star.svg",
             PakajoIcon::PackageCheck => "icons/package-check.svg",
             PakajoIcon::CircleCheck => "icons/circle-check.svg",
+            PakajoIcon::RefreshCw => "icons/refresh-cw.svg",
+            PakajoIcon::ArrowRight => "icons/arrow-right.svg",
         }
         .into()
     }

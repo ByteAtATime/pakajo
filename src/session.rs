@@ -567,6 +567,9 @@ impl PakajoSession {
     }
 
     pub(crate) fn start_updates_checker(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.updates_state, UpdatesState::Loading) {
+            return;
+        }
         self.updates_state = UpdatesState::Loading;
         let (tx, rx) = futures::channel::oneshot::channel();
         std::thread::spawn(move || {
