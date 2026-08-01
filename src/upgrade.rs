@@ -107,8 +107,12 @@ pub(crate) fn compute_aur_upgrades(
 
     let devel_updates = crate::devel::possible_devel_updates();
     let devel_names: HashSet<String> = devel_updates.into_iter().collect();
-    candidates.retain(|c| !devel_names.contains(&c.name));
-    for name in &devel_names {
+    let stale_devel_names: Vec<String> = devel_names
+        .iter()
+        .filter(|name| !candidates.iter().any(|c| &c.name == *name))
+        .cloned()
+        .collect();
+    for name in &stale_devel_names {
         let pkg = match handle.localdb().pkg(name.as_str()) {
             Ok(pkg) => pkg,
             Err(_) => continue,
