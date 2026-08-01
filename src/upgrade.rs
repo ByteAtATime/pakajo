@@ -27,7 +27,11 @@ pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
     repo_sysupgrade_into(&mut handle, sink, answerer)
 }
 
-fn apply_ignores(handle: &mut alpm::Alpm, config: &pacmanconf::Config, extra: &[String]) {
+pub(crate) fn apply_ignores(
+    handle: &mut alpm::Alpm,
+    config: &pacmanconf::Config,
+    extra: &[String],
+) {
     for name in &config.ignore_pkg {
         let _ = handle.add_ignorepkg(name.as_str());
     }
