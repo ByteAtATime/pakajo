@@ -4,6 +4,8 @@ use std::sync::Arc;
 use crate::local_index::LocalIndex;
 use crate::package::PackageSource;
 
+use engine::SearchEngine;
+
 pub mod aur;
 pub mod engine;
 pub mod fuzzy;
@@ -91,6 +93,23 @@ pub(crate) fn execute_search(
 }
 
 pub(crate) fn dispatch_search(
+    engine: &SearchEngine,
+    sqlite: &LocalIndex,
+    installed: &HashSet<String>,
+    text: &str,
+) -> Vec<SearchResult> {
+    let ids = engine.search(text);
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let rows = match sqlite.hydrate_by_ids(&ids) {
+        Ok(rows) => rows,
+        Err(_) => return Vec::new(),
+    };
+    hydrate::to_search_results(&rows, &ids, installed)
+}
+
+pub(crate) fn legacy_dispatch_search(
     local: Option<Arc<LocalIndex>>,
     repo: &RepoSearchProvider,
     aur: &AurSearchProvider,
@@ -371,7 +390,7 @@ mod tests {
             RepoSearchProvider::new(Arc::new(RepoSearchIndex::from_entries(Vec::new())));
         let aur_provider = AurSearchProvider::new(Arc::new(crate::aur::AurClient::new()));
 
-        let outcome = dispatch_search(
+        let outcome = legacy_dispatch_search(
             Some(index.clone()),
             &repo_provider,
             &aur_provider,
@@ -431,7 +450,7 @@ mod tests {
             RepoSearchProvider::new(Arc::new(RepoSearchIndex::from_entries(Vec::new())));
         let aur_provider = AurSearchProvider::new(Arc::new(crate::aur::AurClient::new()));
 
-        let outcome = dispatch_search(
+        let outcome = legacy_dispatch_search(
             Some(index.clone()),
             &repo_provider,
             &aur_provider,
@@ -486,7 +505,7 @@ mod tests {
             RepoSearchProvider::new(Arc::new(RepoSearchIndex::from_entries(Vec::new())));
         let aur_provider = AurSearchProvider::new(Arc::new(crate::aur::AurClient::new()));
 
-        let outcome = dispatch_search(
+        let outcome = legacy_dispatch_search(
             Some(index.clone()),
             &repo_provider,
             &aur_provider,
@@ -525,7 +544,7 @@ mod tests {
             RepoSearchProvider::new(Arc::new(RepoSearchIndex::from_entries(Vec::new())));
         let aur_provider = AurSearchProvider::new(Arc::new(crate::aur::AurClient::new()));
 
-        let outcome = dispatch_search(
+        let outcome = legacy_dispatch_search(
             Some(index),
             &repo_provider,
             &aur_provider,

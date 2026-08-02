@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use anyhow::Context as _;
 use base64::Engine as _;
 
@@ -9,7 +7,7 @@ use super::prompts::{confirm_install, confirm_install_stderr};
 use super::sinks::{ConsoleSink, EscalatedSink, JsonSink};
 use crate::aur::AurClient;
 use crate::install::{self, InstallTarget};
-use crate::search::{AurSearchProvider, RepoSearchIndex, RepoSearchProvider, SearchResult};
+use crate::search::SearchResult;
 
 pub(super) fn alpm_handle() -> anyhow::Result<alpm::Alpm> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
@@ -121,63 +119,14 @@ fn fetch_base_devel_info(base: &str, arch: &str) -> anyhow::Result<Option<crate:
 }
 
 pub(super) fn run_search(query: &str) -> anyhow::Result<()> {
-    if crate::search::perf::SEARCH_PERF_LOG {
-        if let Ok(sqlite_path) = crate::local_index::LocalIndex::db_path() {
-            let _load = crate::search::perf::PerfSpan::new("index load");
-            match crate::search::engine::SearchEngine::new(sqlite_path.clone()) {
-                Ok(engine) => {
-                    let _ = engine.ensure_fresh();
-                    drop(_load);
-                    let _search = crate::search::perf::PerfSpan::new("search");
-                    let ids = engine.search(query);
-                    drop(_search);
-                    let _hydrate = crate::search::perf::PerfSpan::new("hydrate");
-                    match crate::local_index::LocalIndex::open(&sqlite_path) {
-                        Ok(local) => match local.hydrate_by_ids(&ids) {
-                            Ok(rows) => {
-                                let installed = std::collections::HashSet::new();
-                                let results = crate::search::hydrate::to_search_results(
-                                    &rows, &ids, &installed,
-                                );
-                                let top5: Vec<&str> =
-                                    results.iter().take(5).map(|r| r.name.as_str()).collect();
-                                eprintln!(
-                                    "[search] hydrated {} results; top5: {:?}",
-                                    results.len(),
-                                    top5
-                                );
-                            }
-                            Err(e) => eprintln!("[search] hydrate failed: {e}"),
-                        },
-                        Err(e) => eprintln!("[search] hydrate failed: {e}"),
-                    }
-                }
-                Err(e) => {
-                    eprintln!("[search] engine load failed: {e}");
-                }
-            }
-        }
-    }
+    let sqlite_path = crate::local_index::LocalIndex::db_path()?;
+    let local = crate::local_index::LocalIndex::open(&sqlite_path)?;
+    let engine = crate::search::engine::SearchEngine::new(sqlite_path)?;
     let handle = alpm_handle()?;
     let installed = crate::package::installed_names(&handle);
-    let local_index = crate::local_index::LocalIndex::db_path()
-        .ok()
-        .and_then(|p| crate::local_index::LocalIndex::open(&p).ok())
-        .map(Arc::new);
-    let index = RepoSearchIndex::from_alpm(&handle);
-    let repo_provider = RepoSearchProvider::new(Arc::new(index));
-    let aur_provider = AurSearchProvider::new(Arc::new(AurClient::new()));
-    let outcome = crate::search::dispatch_search(
-        local_index,
-        &repo_provider,
-        &aur_provider,
-        &installed,
-        query,
-    );
-    print_search_results(&outcome.results);
-    if let Some(err) = &outcome.aur_error {
-        eprintln!("  aur: {err}");
-    }
+    let _span = crate::search::perf::PerfSpan::new("search");
+    let results = crate::search::dispatch_search(&engine, &local, &installed, query);
+    print_search_results(&results);
     Ok(())
 }
 

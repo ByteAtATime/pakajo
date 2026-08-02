@@ -7,7 +7,8 @@ use crate::{
     pacman::{find_pkg, init_alpm},
     pkgbuild::{PkgbuildDiff, prepare_pkgbuild_diffs},
     question::{QuestionSet, encode_approvals},
-    search::{self, AurSearchProvider, RepoSearchIndex, RepoSearchProvider, SearchResult},
+    search::{self, SearchResult},
+    search::engine::SearchEngine,
 };
 use alpm::Alpm;
 use anyhow::Context as _;
@@ -17,7 +18,6 @@ use std::{env::current_exe, sync::Arc, time::Duration};
 
 const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
-const LIVE_DEBOUNCE: Duration = Duration::from_millis(300);
 const LOCK_DEBOUNCE: Duration = Duration::from_millis(300);
 
 #[derive(Clone)]
@@ -81,7 +81,7 @@ struct PendingInstall {
 pub(crate) struct PakajoSession {
     pub(crate) alpm_handle: Alpm,
     pub(crate) aur_client: Arc<AurClient>,
-    pub(crate) repo_index: Arc<RepoSearchIndex>,
+    pub(crate) search_engine: Option<Arc<SearchEngine>>,
     pub(crate) local_index: Option<Arc<LocalIndex>>,
     pub(crate) installed_names: Arc<std::collections::HashSet<String>>,
     pub(crate) detail: DetailData,
@@ -90,7 +90,6 @@ pub(crate) struct PakajoSession {
     pub(crate) selected_index: Option<usize>,
     search_seq: u64,
     pub(crate) search_state: SearchState,
-    aur_error: Option<String>,
     install_progress: InstallProgress,
     pending_install: Option<PendingInstall>,
     pub(crate) pending_count: u32,
@@ -102,7 +101,10 @@ pub(crate) struct PakajoSession {
 
 impl PakajoSession {
     pub(crate) fn new(alpm_handle: Alpm, aur_client: AurClient) -> Self {
-        let repo_index = Arc::new(RepoSearchIndex::from_alpm(&alpm_handle));
+        let search_engine = LocalIndex::db_path()
+            .ok()
+            .and_then(|p| SearchEngine::new(p).ok())
+            .map(Arc::new);
         let local_index = LocalIndex::db_path()
             .ok()
             .and_then(|p| {
@@ -116,12 +118,12 @@ impl PakajoSession {
         let installed_names = Arc::new(installed_names(&alpm_handle));
         let aur_client = Arc::new(aur_client);
         if let Some(index) = &local_index {
-            begin_aur_sync_in_background(index.clone());
+            begin_aur_sync_in_background(index.clone(), search_engine.clone());
         }
         Self {
             alpm_handle,
             aur_client,
-            repo_index,
+            search_engine,
             local_index,
             installed_names,
             detail: DetailData::None,
@@ -130,7 +132,6 @@ impl PakajoSession {
             selected_index: None,
             search_seq: 0,
             search_state: SearchState::Idle,
-            aur_error: None,
             install_progress: InstallProgress::Idle,
             pending_install: None,
             pending_count: 0,
@@ -680,30 +681,18 @@ impl PakajoSession {
 
         if text.trim().is_empty() {
             self.clear(cx);
-            self.aur_error = None;
             self.search_state = SearchState::Idle;
             cx.notify();
             return;
         }
 
         self.search_state = SearchState::Searching;
-        self.aur_error = None;
         cx.notify();
 
-        let repo_index = self.repo_index.clone();
-        let aur_client = self.aur_client.clone();
+        let search_engine = self.search_engine.clone();
         let local_index = self.local_index.clone();
         let installed = self.installed_names.clone();
-        let debounce = if self.local_index.as_ref().is_some_and(|i| i.is_populated()) {
-            Duration::ZERO
-        } else {
-            LIVE_DEBOUNCE
-        };
         cx.spawn(async move |this, cx| {
-            if !debounce.is_zero() {
-                cx.background_executor().timer(debounce).await;
-            }
-
             let still_valid = this
                 .update(cx, |this, _cx| this.search_seq == seq)
                 .unwrap_or(false);
@@ -714,7 +703,7 @@ impl PakajoSession {
             let outcome = cx
                 .background_executor()
                 .spawn(async move {
-                    execute_search_for(local_index, &repo_index, &aur_client, installed, &text)
+                    execute_search_for(search_engine, local_index, installed, text)
                 })
                 .await;
 
@@ -722,12 +711,8 @@ impl PakajoSession {
                 if this.search_seq != seq {
                     return;
                 }
-                this.aur_error = outcome.aur_error;
                 this.search_state = SearchState::Done;
-                if let Some(err) = &this.aur_error {
-                    eprintln!("  aur: {err}");
-                }
-                this.set_results(outcome.results, cx);
+                this.set_results(outcome, cx);
                 cx.notify();
             });
         })
@@ -787,18 +772,21 @@ impl PakajoSession {
 }
 
 pub(crate) fn execute_search_for(
+    search_engine: Option<Arc<SearchEngine>>,
     local_index: Option<Arc<LocalIndex>>,
-    repo_index: &Arc<RepoSearchIndex>,
-    aur_client: &Arc<AurClient>,
     installed: Arc<std::collections::HashSet<String>>,
-    text: &str,
-) -> search::SearchOutcome {
-    let repo_provider = RepoSearchProvider::new(repo_index.clone());
-    let aur_provider = AurSearchProvider::new(aur_client.clone());
-    search::dispatch_search(local_index, &repo_provider, &aur_provider, &installed, text)
+    text: String,
+) -> Vec<SearchResult> {
+    let (Some(engine), Some(local)) = (search_engine.as_ref(), local_index.as_ref()) else {
+        return Vec::new();
+    };
+    search::dispatch_search(engine, local, &installed, &text)
 }
 
-pub(crate) fn begin_aur_sync_in_background(local_index: Arc<LocalIndex>) {
+pub(crate) fn begin_aur_sync_in_background(
+    local_index: Arc<LocalIndex>,
+    search_engine: Option<Arc<SearchEngine>>,
+) {
     std::thread::spawn(move || {
         let reniced = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) };
         if reniced != 0 {
@@ -841,6 +829,9 @@ pub(crate) fn begin_aur_sync_in_background(local_index: Arc<LocalIndex>) {
                 eprintln!(
                     "[pakajo] indexed {aur_count} aur + {repo_count} repo packages (skipped {skipped})"
                 );
+                if let Some(engine) = search_engine.as_ref() {
+                    let _ = engine.ensure_fresh();
+                }
             }
             Err(e) => {
                 eprintln!("[pakajo] aur background sync failed: {e:#}");
