@@ -38,23 +38,34 @@ pub fn keyword(pkg: &IndexedPackage, q: &str) -> bool {
     pkg.keywords.iter().any(|k| k.contains(q))
 }
 
-pub fn best_concrete_tier(pkg: &IndexedPackage, q: &str) -> Option<Tier> {
-    if exact_name(pkg, q) {
+pub fn best_concrete_tier_in(
+    pkg: &IndexedPackage,
+    q: &str,
+    allowed: &[Tier],
+    qmask: u64,
+) -> Option<Tier> {
+    if allowed.contains(&Tier::ExactName) && exact_name(pkg, q) {
         return Some(Tier::ExactName);
     }
-    if exact_token(pkg, q) {
+    if allowed.contains(&Tier::ExactToken) && exact_token(pkg, q) {
         return Some(Tier::ExactToken);
     }
-    if prefix_name(pkg, q) {
+    if allowed.contains(&Tier::PrefixName) && prefix_name(pkg, q) {
         return Some(Tier::PrefixName);
     }
-    if prefix_token(pkg, q) {
+    if allowed.contains(&Tier::PrefixToken) && prefix_token(pkg, q) {
         return Some(Tier::PrefixToken);
     }
-    if substring(pkg, q) {
+    if allowed.contains(&Tier::Substring)
+        && (qmask & !pkg.name_mask) == 0
+        && substring(pkg, q)
+    {
         return Some(Tier::Substring);
     }
-    if keyword(pkg, q) {
+    if allowed.contains(&Tier::Keyword)
+        && (qmask & !pkg.kw_mask) == 0
+        && keyword(pkg, q)
+    {
         return Some(Tier::Keyword);
     }
     None
@@ -78,6 +89,7 @@ pub fn candidate_ordering(a: &Candidate<'_>, b: &Candidate<'_>) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::index::byte_mask;
 
     fn mk(
         id: u32,
@@ -87,13 +99,22 @@ mod tests {
         popularity: u16,
         is_repo: bool,
     ) -> IndexedPackage {
+        let tokens: Vec<String> = tokens.iter().map(|t| t.to_string()).collect();
+        let keywords: Vec<String> = keywords.iter().map(|k| k.to_string()).collect();
+        let name_mask = byte_mask(name.as_bytes());
+        let kw_mask = keywords
+            .iter()
+            .map(|k| byte_mask(k.as_bytes()))
+            .fold(0u64, |acc, m| acc | m);
         IndexedPackage {
             id,
             name: name.to_string(),
-            tokens: tokens.iter().map(|t| t.to_string()).collect(),
-            keywords: keywords.iter().map(|k| k.to_string()).collect(),
+            tokens,
+            keywords,
             popularity,
             is_repo,
+            name_mask,
+            kw_mask,
         }
     }
 
@@ -134,11 +155,31 @@ mod tests {
 
     #[test]
     fn best_concrete_tier_chooses_lowest_ordinal_match() {
+        const ALL_CONCRETE: &[Tier] = &[
+            Tier::ExactName,
+            Tier::ExactToken,
+            Tier::PrefixName,
+            Tier::PrefixToken,
+            Tier::Substring,
+            Tier::Keyword,
+        ];
         let pkg = chrome();
-        assert_eq!(best_concrete_tier(&pkg, "google-chrome"), Some(Tier::ExactName));
-        assert_eq!(best_concrete_tier(&pkg, "chrome"), Some(Tier::ExactToken));
-        assert_eq!(best_concrete_tier(&pkg, "chrom"), Some(Tier::PrefixToken));
-        assert_eq!(best_concrete_tier(&pkg, "xyz"), None);
+        assert_eq!(
+            best_concrete_tier_in(&pkg, "google-chrome", ALL_CONCRETE, byte_mask(b"google-chrome")),
+            Some(Tier::ExactName),
+        );
+        assert_eq!(
+            best_concrete_tier_in(&pkg, "chrome", ALL_CONCRETE, byte_mask(b"chrome")),
+            Some(Tier::ExactToken),
+        );
+        assert_eq!(
+            best_concrete_tier_in(&pkg, "chrom", ALL_CONCRETE, byte_mask(b"chrom")),
+            Some(Tier::PrefixToken),
+        );
+        assert_eq!(
+            best_concrete_tier_in(&pkg, "xyz", ALL_CONCRETE, byte_mask(b"xyz")),
+            None,
+        );
     }
 
     #[test]

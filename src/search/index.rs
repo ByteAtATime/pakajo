@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const POP_NORM_MAX: f64 = 100.0;
+const INDEX_MAGIC: [u8; 4] = *b"PKJ1";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct IndexedPackage {
@@ -11,6 +12,28 @@ pub struct IndexedPackage {
     pub keywords: Vec<String>,
     pub popularity: u16,
     pub is_repo: bool,
+    pub name_mask: u64,
+    pub kw_mask: u64,
+}
+
+pub fn byte_mask(bytes: &[u8]) -> u64 {
+    let mut m: u64 = 0;
+    for &b in bytes {
+        m |= char_bit(b);
+    }
+    m
+}
+
+fn char_bit(b: u8) -> u64 {
+    match b {
+        b'a'..=b'z' => 1u64 << (b - b'a'),
+        b'0'..=b'9' => 1u64 << (b - b'0' + 26),
+        b'-' => 1u64 << 36,
+        b'_' => 1u64 << 37,
+        b'.' => 1u64 << 38,
+        b'+' => 1u64 << 39,
+        _ => 0,
+    }
 }
 
 pub struct IndexRow {
@@ -100,13 +123,23 @@ pub fn build_from_rows(rows: Vec<IndexRow>) -> PackageIndex {
         .into_iter()
         .map(|row| {
             let is_repo = row.source == "repo";
+            let name = row.name.to_lowercase();
+            let tokens = tokenize(&row.name);
+            let keywords = parse_keywords(row.keywords);
+            let name_mask = byte_mask(name.as_bytes());
+            let kw_mask = keywords
+                .iter()
+                .map(|k| byte_mask(k.as_bytes()))
+                .fold(0u64, |acc, m| acc | m);
             IndexedPackage {
                 id: row.id,
-                name: row.name.to_lowercase(),
-                tokens: tokenize(&row.name),
-                keywords: parse_keywords(row.keywords),
+                name,
+                tokens,
+                keywords,
                 popularity: normalize_popularity(row.popularity, is_repo),
                 is_repo,
+                name_mask,
+                kw_mask,
             }
         })
         .collect();
@@ -123,15 +156,23 @@ pub fn build_from_rows(rows: Vec<IndexRow>) -> PackageIndex {
 
 impl PackageIndex {
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        let bytes = bincode::serde::encode_to_vec(self, bincode::config::standard())?;
+        let mut bytes = INDEX_MAGIC.to_vec();
+        bytes.extend_from_slice(&bincode::serde::encode_to_vec(
+            self,
+            bincode::config::standard(),
+        )?);
         std::fs::write(path, bytes)?;
         Ok(())
     }
 
     pub fn load(path: &Path) -> anyhow::Result<PackageIndex> {
         let bytes = std::fs::read(path)?;
+        if bytes.len() < INDEX_MAGIC.len() || bytes[..INDEX_MAGIC.len()] != INDEX_MAGIC {
+            let _ = std::fs::remove_file(path);
+            anyhow::bail!("index magic mismatch");
+        }
         match bincode::serde::decode_from_slice::<PackageIndex, _>(
-            &bytes,
+            &bytes[INDEX_MAGIC.len()..],
             bincode::config::standard(),
         ) {
             Ok((pkg, _)) => Ok(pkg),
@@ -209,6 +250,8 @@ mod tests {
                 keywords: vec!["browser".to_string()],
                 popularity: 32768,
                 is_repo: false,
+                name_mask: byte_mask("google-chrome".as_bytes()),
+                kw_mask: byte_mask("browser".as_bytes()),
             }],
             version: 1,
             built_at: 12345,
@@ -228,5 +271,7 @@ mod tests {
         assert_eq!(got.keywords, want.keywords);
         assert_eq!(got.popularity, want.popularity);
         assert_eq!(got.is_repo, want.is_repo);
+        assert_eq!(got.name_mask, want.name_mask);
+        assert_eq!(got.kw_mask, want.kw_mask);
     }
 }

@@ -2,10 +2,10 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use crate::search::fuzzy::typo_tier;
-use crate::search::index::{needs_rebuild, PackageIndex};
+use crate::search::fuzzy::{TypoMatcher, MAX_EDIT_DISTANCE};
+use crate::search::index::{byte_mask, needs_rebuild, PackageIndex};
 use crate::search::query::{parse_query, ParsedQuery};
-use crate::search::tiers::{best_concrete_tier, candidate_ordering, Candidate, Tier};
+use crate::search::tiers::{best_concrete_tier_in, candidate_ordering, Candidate, Tier};
 
 const RESULT_LIMIT: usize = 30;
 const TYPO_GATE: usize = 5;
@@ -72,11 +72,12 @@ impl SearchEngine {
 }
 
 fn concrete_in<'a>(index: &'a PackageIndex, q: &str, allowed: &[Tier]) -> Vec<Candidate<'a>> {
+    let qmask = byte_mask(q.as_bytes());
     index
         .packages
         .iter()
-        .filter_map(|p| match best_concrete_tier(p, q) {
-            Some(tier) if allowed.contains(&tier) => Some(Candidate { pkg: p, tier }),
+        .filter_map(|p| match best_concrete_tier_in(p, q, allowed, qmask) {
+            Some(tier) => Some(Candidate { pkg: p, tier }),
             _ => None,
         })
         .collect()
@@ -101,11 +102,16 @@ fn append_typo_fallback<'a>(
     mut cands: Vec<Candidate<'a>>,
 ) -> Vec<Candidate<'a>> {
     let present: HashSet<u32> = cands.iter().map(|c| c.pkg.id).collect();
+    let mut matcher = TypoMatcher::new(q.as_bytes());
     for p in &index.packages {
         if present.contains(&p.id) {
             continue;
         }
-        if typo_tier(p, q).is_some() {
+        let matched = matcher.within(p.name.as_bytes(), p.name_mask, MAX_EDIT_DISTANCE)
+            || p.tokens.iter().any(|t| {
+                matcher.within(t.as_bytes(), byte_mask(t.as_bytes()), MAX_EDIT_DISTANCE)
+            });
+        if matched {
             cands.push(Candidate {
                 pkg: p,
                 tier: Tier::Typo,
@@ -127,13 +133,17 @@ mod tests {
     use crate::search::index::{tokenize, IndexedPackage};
 
     fn pkg(id: u32, name: &str, is_repo: bool, popularity: u16) -> IndexedPackage {
+        let tokens = tokenize(name);
+        let name_mask = byte_mask(name.as_bytes());
         IndexedPackage {
             id,
             name: name.to_string(),
-            tokens: tokenize(name),
+            tokens,
             keywords: Vec::new(),
             popularity,
             is_repo,
+            name_mask,
+            kw_mask: 0,
         }
     }
 
@@ -228,6 +238,23 @@ mod tests {
         let index = index_with(packages);
         let ids = search_index(&index, "prefix");
         assert_eq!(ids.len(), 30);
+    }
+
+    #[test]
+    fn truncation_excludes_substring_only_when_limit_full() {
+        let mut packages: Vec<IndexedPackage> = (1u32..=RESULT_LIMIT as u32)
+            .map(|i| pkg(i, &format!("xxx-{i:03}"), false, 0))
+            .collect();
+        packages.push(pkg(999, "zzxxxzz", false, 0));
+        let index = index_with(packages);
+
+        let ids = search_index(&index, "xxx");
+
+        assert_eq!(ids.len(), RESULT_LIMIT);
+        assert!(
+            !ids.contains(&999),
+            "substring-only package must be dropped once the limit is full"
+        );
     }
 }
 
