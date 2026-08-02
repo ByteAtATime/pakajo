@@ -354,24 +354,6 @@ fn apply_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
            name TEXT PRIMARY KEY, source TEXT, repo TEXT, version TEXT, description TEXT,\
            num_votes INTEGER, popularity REAL, last_update INTEGER, package_base TEXT,\
            detail_json TEXT, keywords TEXT);\
-         CREATE VIRTUAL TABLE IF NOT EXISTS packages_fts USING fts5(\
-           name, description, keywords,\
-           content='packages', content_rowid=rowid,\
-           tokenize = 'unicode61 remove_diacritics 2');\
-         CREATE TRIGGER IF NOT EXISTS packages_ai AFTER INSERT ON packages BEGIN \
-           INSERT INTO packages_fts(rowid, name, description, keywords) \
-             VALUES (new.rowid, new.name, new.description, new.keywords); \
-         END;\
-         CREATE TRIGGER IF NOT EXISTS packages_ad AFTER DELETE ON packages BEGIN \
-           INSERT INTO packages_fts(packages_fts, rowid, name, description, keywords) \
-             VALUES('delete', old.rowid, old.name, old.description, old.keywords); \
-         END;\
-         CREATE TRIGGER IF NOT EXISTS packages_au AFTER UPDATE ON packages BEGIN \
-           INSERT INTO packages_fts(packages_fts, rowid, name, description, keywords) \
-             VALUES('delete', old.rowid, old.name, old.description, old.keywords); \
-           INSERT INTO packages_fts(rowid, name, description, keywords) \
-             VALUES (new.rowid, new.name, new.description, new.keywords); \
-         END;\
          CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);",
     )?;
     Ok(())
