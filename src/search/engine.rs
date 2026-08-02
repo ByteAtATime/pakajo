@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use crate::search::fuzzy::{TypoMatcher, MAX_EDIT_DISTANCE};
-use crate::search::index::{byte_mask, needs_rebuild, PackageIndex};
+use crate::search::index::{byte_mask, needs_rebuild, IndexedPackage, PackageIndex};
 use crate::search::query::{parse_query, ParsedQuery};
 use crate::search::tiers::{best_concrete_tier_in, candidate_ordering, Candidate, Tier};
 
@@ -110,7 +110,7 @@ fn gather_cheap_candidates<'a>(
     for i in idxs {
         let p = &index.packages[i as usize];
         if let Some(tier) = best_concrete_tier_in(p, q, allowed, qmask) {
-            cands.push(Candidate { pkg: p, tier });
+            cands.push(Candidate { pkg: p, tier, distance: 0 });
         }
     }
     cands
@@ -128,10 +128,20 @@ fn expensive_only_pass<'a>(
             continue;
         }
         if let Some(tier) = best_concrete_tier_in(p, q, EXPENSIVE_TIERS, qmask) {
-            cands.push(Candidate { pkg: p, tier });
+            cands.push(Candidate { pkg: p, tier, distance: 0 });
         }
     }
     cands
+}
+
+fn typo_distance_from_seed(matcher: &mut TypoMatcher, p: &IndexedPackage, mut best: u8) -> u8 {
+    for t in &p.tokens {
+        let tmask = byte_mask(t.as_bytes());
+        if let Some(d) = matcher.within_distance(t.as_bytes(), tmask, MAX_EDIT_DISTANCE) {
+            best = best.min(d as u8);
+        }
+    }
+    best
 }
 
 fn fused_expensive_typo_pass<'a>(
@@ -156,7 +166,7 @@ fn fused_expensive_typo_pass<'a>(
         if (name_missing == 0 || (qmask & !p.kw_mask) == 0)
             && let Some(tier) = best_concrete_tier_in(p, q, EXPENSIVE_TIERS, qmask)
         {
-            cands.push(Candidate { pkg: p, tier });
+            cands.push(Candidate { pkg: p, tier, distance: 0 });
             placed.insert(idx);
             continue;
         }
@@ -165,8 +175,11 @@ fn fused_expensive_typo_pass<'a>(
         }
         let name_len_ok = !(q_ascii && p.name.is_ascii())
             || p.name.len().abs_diff(q.len()) <= MAX_EDIT_DISTANCE;
-        if name_len_ok && matcher.within(p.name.as_bytes(), p.name_mask, MAX_EDIT_DISTANCE) {
-            typo_buf.push(Candidate { pkg: p, tier: Tier::Typo });
+        if name_len_ok
+            && let Some(name_d) = matcher.within_distance(p.name.as_bytes(), p.name_mask, MAX_EDIT_DISTANCE)
+        {
+            let distance = typo_distance_from_seed(&mut matcher, p, name_d as u8);
+            typo_buf.push(Candidate { pkg: p, tier: Tier::Typo, distance });
             placed.insert(idx);
         }
     }
@@ -178,18 +191,18 @@ fn fused_expensive_typo_pass<'a>(
         if q_ascii && token.is_ascii() && token.len().abs_diff(q.len()) > MAX_EDIT_DISTANCE {
             continue;
         }
-        if !matcher.within(token.as_bytes(), *token_mask, MAX_EDIT_DISTANCE) {
+        let Some(tok_d) = matcher.within_distance(token.as_bytes(), *token_mask, MAX_EDIT_DISTANCE)
+        else {
             continue;
-        }
+        };
         for i in index.exact_token_range(token.as_bytes()) {
             let pkg_idx = index.tokens_sorted[i].0;
             if placed.contains(&pkg_idx) {
                 continue;
             }
-            typo_buf.push(Candidate {
-                pkg: &index.packages[pkg_idx as usize],
-                tier: Tier::Typo,
-            });
+            let p = &index.packages[pkg_idx as usize];
+            let distance = typo_distance_from_seed(&mut matcher, p, tok_d as u8);
+            typo_buf.push(Candidate { pkg: p, tier: Tier::Typo, distance });
             placed.insert(pkg_idx);
         }
     }
@@ -208,6 +221,7 @@ fn quoted_ids(index: &PackageIndex, q: &str) -> Vec<u32> {
         .map(|p| Candidate {
             pkg: p,
             tier: Tier::Substring,
+            distance: 0,
         })
         .collect();
     to_sorted_ids(cands)

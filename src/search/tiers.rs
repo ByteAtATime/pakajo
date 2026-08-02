@@ -74,11 +74,16 @@ pub fn best_concrete_tier_in(
 pub struct Candidate<'a> {
     pub pkg: &'a IndexedPackage,
     pub tier: Tier,
+    pub distance: u8,
 }
 
 pub fn candidate_ordering(a: &Candidate<'_>, b: &Candidate<'_>) -> Ordering {
     a.tier
         .cmp(&b.tier)
+        .then_with(|| match (a.tier, b.tier) {
+            (Tier::Typo, Tier::Typo) => a.distance.cmp(&b.distance),
+            _ => std::cmp::Ordering::Equal,
+        })
         .then_with(|| a.pkg.name.chars().count().cmp(&b.pkg.name.chars().count()))
         .then_with(|| b.pkg.is_repo.cmp(&a.pkg.is_repo))
         .then_with(|| b.pkg.popularity.cmp(&a.pkg.popularity))
@@ -123,7 +128,7 @@ mod tests {
     }
 
     fn cand(pkg: &IndexedPackage, tier: Tier) -> Candidate<'_> {
-        Candidate { pkg, tier }
+        Candidate { pkg, tier, distance: 0 }
     }
 
     #[test]
@@ -198,6 +203,16 @@ mod tests {
         let b = mk(2, "vim-plugins", &[], &[], 0, false);
         let ca = cand(&a, Tier::Substring);
         let cb = cand(&b, Tier::Substring);
+        assert_eq!(candidate_ordering(&ca, &cb), Ordering::Less);
+        assert_eq!(candidate_ordering(&cb, &ca), Ordering::Greater);
+    }
+
+    #[test]
+    fn candidate_ordering_typo_lower_distance_first() {
+        let a = mk(1, "alpha", &[], &[], 0, false);
+        let b = mk(2, "alpha", &[], &[], 0, false);
+        let ca = Candidate { pkg: &a, tier: Tier::Typo, distance: 1 };
+        let cb = Candidate { pkg: &b, tier: Tier::Typo, distance: 2 };
         assert_eq!(candidate_ordering(&ca, &cb), Ordering::Less);
         assert_eq!(candidate_ordering(&cb, &ca), Ordering::Greater);
     }

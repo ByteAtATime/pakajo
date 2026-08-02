@@ -26,26 +26,26 @@ impl<'q> TypoMatcher<'q> {
         }
     }
 
-    pub fn within(&mut self, cand: &[u8], cmask: u64, max: usize) -> bool {
+    pub fn within_distance(&mut self, cand: &[u8], cmask: u64, max: usize) -> Option<usize> {
         if cand == self.q {
-            return true;
+            return Some(0);
         }
         let both_ascii = self.q.is_ascii() && cand.is_ascii();
         if both_ascii && cand.len().abs_diff(self.q.len()) > max {
-            return false;
+            return None;
         }
         if (self.qmask & !cmask).count_ones() as usize > max {
-            return false;
+            return None;
         }
         if both_ascii {
-            return self.within_ascii(cand, max);
+            return self.within_ascii_dist(cand, max);
         }
         let q_str = std::str::from_utf8(self.q).expect("query bytes are valid utf-8");
         let cand_str = std::str::from_utf8(cand).expect("candidate bytes are valid utf-8");
         edit_distance_chars(cand_str, q_str, max)
     }
 
-    fn within_ascii(&mut self, cand: &[u8], max: usize) -> bool {
+    fn within_ascii_dist(&mut self, cand: &[u8], max: usize) -> Option<usize> {
         let q = self.q;
         let n = cand.len();
         let m = q.len();
@@ -69,21 +69,22 @@ impl<'q> TypoMatcher<'q> {
                 }
             }
             if row_min > max {
-                return false;
+                return None;
             }
             std::mem::swap(&mut self.prev_prev, &mut self.prev);
             std::mem::swap(&mut self.prev, &mut self.cur);
         }
-        self.prev[m] <= max
+        let d = self.prev[m];
+        (d <= max).then_some(d)
     }
 }
 
-fn edit_distance_chars(a: &str, b: &str, max: usize) -> bool {
+fn edit_distance_chars(a: &str, b: &str, max: usize) -> Option<usize> {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let (n, m) = (a.len(), b.len());
     if n.abs_diff(m) > max {
-        return false;
+        return None;
     }
     let mut prev_prev: Vec<usize> = vec![0usize; m + 1];
     let mut prev: Vec<usize> = (0..=m).collect();
@@ -105,12 +106,13 @@ fn edit_distance_chars(a: &str, b: &str, max: usize) -> bool {
             }
         }
         if row_min > max {
-            return false;
+            return None;
         }
         std::mem::swap(&mut prev_prev, &mut prev);
         std::mem::swap(&mut prev, &mut cur);
     }
-    prev[m] <= max
+    let d = prev[m];
+    (d <= max).then_some(d)
 }
 
 #[allow(dead_code)]
@@ -119,11 +121,16 @@ pub fn typo_tier(pkg: &IndexedPackage, q: &str) -> Option<Tier> {
         return None;
     }
     let mut matcher = TypoMatcher::new(q.as_bytes());
-    if matcher.within(pkg.name.as_bytes(), pkg.name_mask, MAX_EDIT_DISTANCE) {
+    if matcher
+        .within_distance(pkg.name.as_bytes(), pkg.name_mask, MAX_EDIT_DISTANCE)
+        .is_some()
+    {
         return Some(Tier::Typo);
     }
     if pkg.tokens.iter().any(|t| {
-        matcher.within(t.as_bytes(), byte_mask(t.as_bytes()), MAX_EDIT_DISTANCE)
+        matcher
+            .within_distance(t.as_bytes(), byte_mask(t.as_bytes()), MAX_EDIT_DISTANCE)
+            .is_some()
     }) {
         return Some(Tier::Typo);
     }
@@ -163,7 +170,9 @@ mod tests {
     }
 
     fn within(a: &str, b: &str, max: usize) -> bool {
-        TypoMatcher::new(b.as_bytes()).within(a.as_bytes(), byte_mask(a.as_bytes()), max)
+        TypoMatcher::new(b.as_bytes())
+            .within_distance(a.as_bytes(), byte_mask(a.as_bytes()), max)
+            .is_some()
     }
 
     #[test]
