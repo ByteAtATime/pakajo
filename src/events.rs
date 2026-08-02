@@ -142,6 +142,61 @@ pub struct SummaryPackage {
     pub is_removal: bool,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum SummaryAction {
+    Install,
+    Upgrade,
+    Downgrade,
+    Reinstall,
+    Remove,
+}
+
+#[allow(dead_code)]
+pub(crate) fn classify_action(pkg: &SummaryPackage) -> SummaryAction {
+    if pkg.is_removal {
+        return SummaryAction::Remove;
+    }
+    let Some(old) = pkg.old_version.as_deref() else {
+        return SummaryAction::Install;
+    };
+    match alpm::vercmp(pkg.new_version.clone(), old.to_string()) {
+        std::cmp::Ordering::Greater => SummaryAction::Upgrade,
+        std::cmp::Ordering::Less => SummaryAction::Downgrade,
+        std::cmp::Ordering::Equal => SummaryAction::Reinstall,
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn target_version(pkg: &SummaryPackage) -> &str {
+    if pkg.is_removal {
+        return pkg.old_version.as_deref().unwrap_or("");
+    }
+    &pkg.new_version
+}
+
+#[allow(dead_code)]
+pub(crate) fn summary_fingerprint(
+    summary: &TransactionSummary,
+) -> std::collections::BTreeSet<(String, SummaryAction, String)> {
+    summary
+        .packages
+        .iter()
+        .map(|pkg| {
+            (
+                pkg.name.clone(),
+                classify_action(pkg),
+                target_version(pkg).to_string(),
+            )
+        })
+        .collect()
+}
+
+#[allow(dead_code)]
+pub(crate) fn summaries_match(prev: &TransactionSummary, cur: &TransactionSummary) -> bool {
+    summary_fingerprint(prev) == summary_fingerprint(cur)
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum PackageOp {
     Install,
@@ -220,5 +275,123 @@ mod tests {
             }
             _ => panic!("wrong variant after round-trip"),
         }
+    }
+}
+
+#[cfg(test)]
+mod drift_tests {
+    use super::*;
+
+    fn pkg(name: &str, old: Option<&str>, new: &str, is_removal: bool) -> SummaryPackage {
+        SummaryPackage {
+            name: name.to_string(),
+            repository: None,
+            new_version: new.to_string(),
+            old_version: old.map(str::to_string),
+            download_size: 0,
+            installed_size: 0,
+            old_installed_size: 0,
+            is_removal,
+        }
+    }
+
+    fn summary(packages: Vec<SummaryPackage>) -> TransactionSummary {
+        TransactionSummary {
+            packages,
+            total_download_size: 0,
+            total_installed_size: 0,
+            total_removed_size: 0,
+        }
+    }
+
+    #[test]
+    fn identical_summaries_match() {
+        let prev = summary(vec![
+            pkg("alpha", None, "1.0", false),
+            pkg("beta", Some("2.0"), "2.1", false),
+        ]);
+        let cur = summary(vec![
+            pkg("alpha", None, "1.0", false),
+            pkg("beta", Some("2.0"), "2.1", false),
+        ]);
+        assert!(summaries_match(&prev, &cur));
+    }
+
+    #[test]
+    fn reordered_summaries_match() {
+        let prev = summary(vec![
+            pkg("alpha", None, "1.0", false),
+            pkg("beta", Some("2.0"), "2.1", false),
+        ]);
+        let cur = summary(vec![
+            pkg("beta", Some("2.0"), "2.1", false),
+            pkg("alpha", None, "1.0", false),
+        ]);
+        assert!(summaries_match(&prev, &cur));
+    }
+
+    #[test]
+    fn changed_target_version_does_not_match() {
+        let prev = summary(vec![pkg("alpha", Some("1.0"), "2.0", false)]);
+        let cur = summary(vec![pkg("alpha", Some("1.0"), "2.1", false)]);
+        assert!(!summaries_match(&prev, &cur));
+    }
+
+    #[test]
+    fn added_package_does_not_match() {
+        let prev = summary(vec![pkg("alpha", None, "1.0", false)]);
+        let cur = summary(vec![
+            pkg("alpha", None, "1.0", false),
+            pkg("beta", None, "3.0", false),
+        ]);
+        assert!(!summaries_match(&prev, &cur));
+    }
+
+    #[test]
+    fn removed_package_does_not_match() {
+        let prev = summary(vec![
+            pkg("alpha", None, "1.0", false),
+            pkg("beta", None, "3.0", false),
+        ]);
+        let cur = summary(vec![pkg("alpha", None, "1.0", false)]);
+        assert!(!summaries_match(&prev, &cur));
+    }
+
+    #[test]
+    fn size_changes_ignored_when_operation_identical() {
+        let prev = TransactionSummary {
+            packages: vec![pkg("alpha", Some("1.0"), "2.0", false)],
+            total_download_size: 100,
+            total_installed_size: 500,
+            total_removed_size: 0,
+        };
+        let cur = TransactionSummary {
+            packages: vec![pkg("alpha", Some("1.0"), "2.0", false)],
+            total_download_size: 999,
+            total_installed_size: 9999,
+            total_removed_size: 50,
+        };
+        assert!(summaries_match(&prev, &cur));
+    }
+
+    #[test]
+    fn action_change_does_not_match() {
+        let prev = summary(vec![pkg("alpha", None, "1.0", false)]);
+        let cur = summary(vec![pkg("alpha", Some("1.0"), "", true)]);
+        assert!(!summaries_match(&prev, &cur));
+    }
+
+    #[test]
+    fn upgrade_vs_downgrade_does_not_match() {
+        let prev = summary(vec![pkg("alpha", Some("1.0"), "2.0", false)]);
+        let cur = summary(vec![pkg("alpha", Some("1.0"), "0.9", false)]);
+        assert!(!summaries_match(&prev, &cur));
+    }
+
+    #[test]
+    fn removal_version_change_does_not_match() {
+        let prev = summary(vec![pkg("alpha", Some("1.0"), "", true)]);
+        let cur = summary(vec![pkg("alpha", Some("2.0"), "", true)]);
+        assert!(!summaries_match(&prev, &cur));
     }
 }
