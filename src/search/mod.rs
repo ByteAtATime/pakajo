@@ -8,6 +8,7 @@ pub mod aur;
 pub mod index;
 pub mod local;
 pub mod perf;
+pub mod query;
 pub mod ranking;
 pub mod repo;
 

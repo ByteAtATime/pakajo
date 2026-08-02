@@ -138,6 +138,13 @@ pub(super) fn run_search(query: &str) -> anyhow::Result<()> {
             }
         }
     }
+    if crate::search::perf::SEARCH_PERF_LOG {
+        if let Some(pq) = crate::search::query::parse_query(query) {
+            eprintln!("[search] parsed query: {pq:?}");
+        } else {
+            eprintln!("[search] parsed query: None");
+        }
+    }
     let handle = alpm_handle()?;
     let installed = crate::package::installed_names(&handle);
     let local_index = crate::local_index::LocalIndex::db_path()
