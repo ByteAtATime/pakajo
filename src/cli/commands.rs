@@ -167,6 +167,25 @@ pub(super) fn run_search(query: &str) -> anyhow::Result<()> {
                     cands.len(),
                     top
                 );
+                if cands.len() < 5 {
+                    let mut typos: Vec<crate::search::tiers::Candidate> = idx
+                        .packages
+                        .iter()
+                        .filter(|p| crate::search::tiers::best_concrete_tier(p, q).is_none())
+                        .filter_map(|p| {
+                            crate::search::fuzzy::typo_tier(p, q)
+                                .map(|t| crate::search::tiers::Candidate { pkg: p, tier: t })
+                        })
+                        .collect();
+                    typos.sort_by(crate::search::tiers::candidate_ordering);
+                    let top: Vec<&str> =
+                        typos.iter().take(5).map(|c| c.pkg.name.as_str()).collect();
+                    eprintln!(
+                        "[search] typo fallback: {} matched; top5: {:?}",
+                        typos.len(),
+                        top
+                    );
+                }
             }
         }
     }

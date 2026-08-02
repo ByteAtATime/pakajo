@@ -11,7 +11,6 @@ pub enum Tier {
     PrefixToken = 3,
     Substring = 4,
     Keyword = 5,
-    #[allow(dead_code)]
     Typo = 6,
 }
 
