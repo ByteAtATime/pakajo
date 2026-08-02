@@ -110,7 +110,7 @@ fn gather_cheap_candidates<'a>(
     for i in idxs {
         let p = &index.packages[i as usize];
         if let Some(tier) = best_concrete_tier_in(p, q, allowed, qmask) {
-            cands.push(Candidate { pkg: p, tier, distance: 0 });
+            cands.push(Candidate { pkg: p, tier, distance: 0, first_letter_match: false });
         }
     }
     cands
@@ -128,20 +128,31 @@ fn expensive_only_pass<'a>(
             continue;
         }
         if let Some(tier) = best_concrete_tier_in(p, q, EXPENSIVE_TIERS, qmask) {
-            cands.push(Candidate { pkg: p, tier, distance: 0 });
+            cands.push(Candidate { pkg: p, tier, distance: 0, first_letter_match: false });
         }
     }
     cands
 }
 
-fn typo_distance_from_seed(matcher: &mut TypoMatcher, p: &IndexedPackage, mut best: u8) -> u8 {
+fn typo_score_from_seed(
+    matcher: &mut TypoMatcher,
+    p: &IndexedPackage,
+    seed_distance: u8,
+    seed_first_letter: bool,
+    q_first: Option<char>,
+) -> (u8, bool) {
+    let mut distance = seed_distance;
+    let mut first_letter_match = seed_first_letter;
     for t in &p.tokens {
         let tmask = byte_mask(t.as_bytes());
         if let Some(d) = matcher.within_distance(t.as_bytes(), tmask, MAX_EDIT_DISTANCE) {
-            best = best.min(d as u8);
+            distance = distance.min(d as u8);
+            if !first_letter_match && t.chars().next() == q_first {
+                first_letter_match = true;
+            }
         }
     }
-    best
+    (distance, first_letter_match)
 }
 
 fn fused_expensive_typo_pass<'a>(
@@ -152,6 +163,7 @@ fn fused_expensive_typo_pass<'a>(
 ) -> Vec<Candidate<'a>> {
     let qmask = byte_mask(q.as_bytes());
     let q_ascii = q.is_ascii();
+    let q_first = q.chars().next();
     let mut matcher = TypoMatcher::new(q.as_bytes());
     let mut typo_buf: Vec<Candidate<'a>> = Vec::new();
     let mut placed: HashSet<u32> = HashSet::new();
@@ -166,7 +178,7 @@ fn fused_expensive_typo_pass<'a>(
         if (name_missing == 0 || (qmask & !p.kw_mask) == 0)
             && let Some(tier) = best_concrete_tier_in(p, q, EXPENSIVE_TIERS, qmask)
         {
-            cands.push(Candidate { pkg: p, tier, distance: 0 });
+            cands.push(Candidate { pkg: p, tier, distance: 0, first_letter_match: false });
             placed.insert(idx);
             continue;
         }
@@ -178,8 +190,15 @@ fn fused_expensive_typo_pass<'a>(
         if name_len_ok
             && let Some(name_d) = matcher.within_distance(p.name.as_bytes(), p.name_mask, MAX_EDIT_DISTANCE)
         {
-            let distance = typo_distance_from_seed(&mut matcher, p, name_d as u8);
-            typo_buf.push(Candidate { pkg: p, tier: Tier::Typo, distance });
+            let seed_first_letter = p.name.chars().next() == q_first;
+            let (distance, first_letter_match) =
+                typo_score_from_seed(&mut matcher, p, name_d as u8, seed_first_letter, q_first);
+            typo_buf.push(Candidate {
+                pkg: p,
+                tier: Tier::Typo,
+                distance,
+                first_letter_match,
+            });
             placed.insert(idx);
         }
     }
@@ -201,8 +220,15 @@ fn fused_expensive_typo_pass<'a>(
                 continue;
             }
             let p = &index.packages[pkg_idx as usize];
-            let distance = typo_distance_from_seed(&mut matcher, p, tok_d as u8);
-            typo_buf.push(Candidate { pkg: p, tier: Tier::Typo, distance });
+            let seed_first_letter = token.chars().next() == q_first;
+            let (distance, first_letter_match) =
+                typo_score_from_seed(&mut matcher, p, tok_d as u8, seed_first_letter, q_first);
+            typo_buf.push(Candidate {
+                pkg: p,
+                tier: Tier::Typo,
+                distance,
+                first_letter_match,
+            });
             placed.insert(pkg_idx);
         }
     }
@@ -222,6 +248,7 @@ fn quoted_ids(index: &PackageIndex, q: &str) -> Vec<u32> {
             pkg: p,
             tier: Tier::Substring,
             distance: 0,
+            first_letter_match: false,
         })
         .collect();
     to_sorted_ids(cands)

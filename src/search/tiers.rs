@@ -75,6 +75,7 @@ pub struct Candidate<'a> {
     pub pkg: &'a IndexedPackage,
     pub tier: Tier,
     pub distance: u8,
+    pub first_letter_match: bool,
 }
 
 pub fn candidate_ordering(a: &Candidate<'_>, b: &Candidate<'_>) -> Ordering {
@@ -82,6 +83,10 @@ pub fn candidate_ordering(a: &Candidate<'_>, b: &Candidate<'_>) -> Ordering {
         .cmp(&b.tier)
         .then_with(|| match (a.tier, b.tier) {
             (Tier::Typo, Tier::Typo) => a.distance.cmp(&b.distance),
+            _ => std::cmp::Ordering::Equal,
+        })
+        .then_with(|| match (a.tier, b.tier) {
+            (Tier::Typo, Tier::Typo) => b.first_letter_match.cmp(&a.first_letter_match),
             _ => std::cmp::Ordering::Equal,
         })
         .then_with(|| a.pkg.name.chars().count().cmp(&b.pkg.name.chars().count()))
@@ -128,7 +133,7 @@ mod tests {
     }
 
     fn cand(pkg: &IndexedPackage, tier: Tier) -> Candidate<'_> {
-        Candidate { pkg, tier, distance: 0 }
+        Candidate { pkg, tier, distance: 0, first_letter_match: false }
     }
 
     #[test]
@@ -211,8 +216,38 @@ mod tests {
     fn candidate_ordering_typo_lower_distance_first() {
         let a = mk(1, "alpha", &[], &[], 0, false);
         let b = mk(2, "alpha", &[], &[], 0, false);
-        let ca = Candidate { pkg: &a, tier: Tier::Typo, distance: 1 };
-        let cb = Candidate { pkg: &b, tier: Tier::Typo, distance: 2 };
+        let ca = Candidate {
+            pkg: &a,
+            tier: Tier::Typo,
+            distance: 1,
+            first_letter_match: false,
+        };
+        let cb = Candidate {
+            pkg: &b,
+            tier: Tier::Typo,
+            distance: 2,
+            first_letter_match: false,
+        };
+        assert_eq!(candidate_ordering(&ca, &cb), Ordering::Less);
+        assert_eq!(candidate_ordering(&cb, &ca), Ordering::Greater);
+    }
+
+    #[test]
+    fn candidate_ordering_typo_first_letter_uses_matching_token() {
+        let token_match = mk(1, "alpha-beta", &["chrome"], &[], 0, false);
+        let token_miss = mk(2, "cedar-delta", &["zhrom"], &[], 0, false);
+        let ca = Candidate {
+            pkg: &token_match,
+            tier: Tier::Typo,
+            distance: 1,
+            first_letter_match: true,
+        };
+        let cb = Candidate {
+            pkg: &token_miss,
+            tier: Tier::Typo,
+            distance: 1,
+            first_letter_match: false,
+        };
         assert_eq!(candidate_ordering(&ca, &cb), Ordering::Less);
         assert_eq!(candidate_ordering(&cb, &ca), Ordering::Greater);
     }
