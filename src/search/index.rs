@@ -1,8 +1,19 @@
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const POP_NORM_MAX: f64 = 100.0;
-const INDEX_MAGIC: [u8; 4] = *b"PKJ1";
+const INDEX_MAGIC: [u8; 4] = *b"PKJ2";
+
+fn next_prefix_bound(q: &[u8]) -> Option<Vec<u8>> {
+    let last = q.len() - 1;
+    if q[last] == 0xFF {
+        return None;
+    }
+    let mut upper = q.to_vec();
+    upper[last] += 1;
+    Some(upper)
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct IndexedPackage {
@@ -47,6 +58,9 @@ pub struct IndexRow {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct PackageIndex {
     pub packages: Vec<IndexedPackage>,
+    pub names_sorted: Vec<u32>,
+    pub tokens_sorted: Vec<(u32, u32)>,
+    pub unique_tokens: Vec<(String, u64)>,
     pub version: u32,
     pub built_at: u64,
 }
@@ -147,14 +161,123 @@ pub fn build_from_rows(rows: Vec<IndexRow>) -> PackageIndex {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    PackageIndex {
+    let mut index = PackageIndex {
         packages,
+        names_sorted: Vec::new(),
+        tokens_sorted: Vec::new(),
+        unique_tokens: Vec::new(),
         version: 1,
         built_at,
-    }
+    };
+    index.build_inverted();
+    index
 }
 
 impl PackageIndex {
+    pub fn build_inverted(&mut self) {
+        let pkgs = &self.packages;
+        let mut names_sorted: Vec<u32> = (0..pkgs.len() as u32).collect();
+        names_sorted.sort_by(|&a, &b| {
+            pkgs[a as usize]
+                .name
+                .cmp(&pkgs[b as usize].name)
+                .then(a.cmp(&b))
+        });
+
+        let mut tokens_sorted: Vec<(u32, u32)> = Vec::new();
+        for (pi, p) in pkgs.iter().enumerate() {
+            for ti in 0..p.tokens.len() {
+                tokens_sorted.push((pi as u32, ti as u32));
+            }
+        }
+        tokens_sorted.sort_by(|&(pa, ta), &(pb, tb)| {
+            let sa = pkgs[pa as usize].tokens[ta as usize].as_bytes();
+            let sb = pkgs[pb as usize].tokens[tb as usize].as_bytes();
+            sa.cmp(sb).then((pa, ta).cmp(&(pb, tb)))
+        });
+
+        let mut unique_tokens: Vec<(String, u64)> = Vec::new();
+        for &(p, t) in &tokens_sorted {
+            let s = pkgs[p as usize].tokens[t as usize].as_str();
+            let is_dup = unique_tokens
+                .last()
+                .map(|(ls, _)| ls.as_str() == s)
+                .unwrap_or(false);
+            if is_dup {
+                continue;
+            }
+            unique_tokens.push((s.to_string(), byte_mask(s.as_bytes())));
+        }
+
+        self.names_sorted = names_sorted;
+        self.tokens_sorted = tokens_sorted;
+        self.unique_tokens = unique_tokens;
+    }
+
+    pub fn exact_name_range(&self, q: &[u8]) -> Range<usize> {
+        if q.is_empty() {
+            return 0..0;
+        }
+        let pkgs = &self.packages;
+        let lo = self
+            .names_sorted
+            .partition_point(|&i| pkgs[i as usize].name.as_bytes() < q);
+        let hi = self
+            .names_sorted
+            .partition_point(|&i| pkgs[i as usize].name.as_bytes() <= q);
+        lo..hi
+    }
+
+    pub fn prefix_name_range(&self, q: &[u8]) -> Range<usize> {
+        if q.is_empty() {
+            return 0..0;
+        }
+        let pkgs = &self.packages;
+        let upper = next_prefix_bound(q);
+        let lo = self
+            .names_sorted
+            .partition_point(|&i| pkgs[i as usize].name.as_bytes() < q);
+        let hi = match upper {
+            None => self.names_sorted.len(),
+            Some(u) => self
+                .names_sorted
+                .partition_point(|&i| pkgs[i as usize].name.as_bytes() < u.as_slice()),
+        };
+        lo..hi
+    }
+
+    pub fn exact_token_range(&self, q: &[u8]) -> Range<usize> {
+        if q.is_empty() {
+            return 0..0;
+        }
+        let pkgs = &self.packages;
+        let lo = self
+            .tokens_sorted
+            .partition_point(|&(p, t)| pkgs[p as usize].tokens[t as usize].as_bytes() < q);
+        let hi = self
+            .tokens_sorted
+            .partition_point(|&(p, t)| pkgs[p as usize].tokens[t as usize].as_bytes() <= q);
+        lo..hi
+    }
+
+    pub fn prefix_token_range(&self, q: &[u8]) -> Range<usize> {
+        if q.is_empty() {
+            return 0..0;
+        }
+        let pkgs = &self.packages;
+        let upper = next_prefix_bound(q);
+        let lo = self
+            .tokens_sorted
+            .partition_point(|&(p, t)| pkgs[p as usize].tokens[t as usize].as_bytes() < q);
+        let hi = match upper {
+            None => self.tokens_sorted.len(),
+            Some(u) => self
+                .tokens_sorted
+                .partition_point(|&(p, t)| pkgs[p as usize].tokens[t as usize].as_bytes() < u.as_slice()),
+        };
+        lo..hi
+    }
+
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         let mut bytes = INDEX_MAGIC.to_vec();
         bytes.extend_from_slice(&bincode::serde::encode_to_vec(
@@ -242,7 +365,7 @@ mod tests {
     fn save_and_load_round_trip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("index.bin");
-        let original = PackageIndex {
+        let mut original = PackageIndex {
             packages: vec![IndexedPackage {
                 id: 7,
                 name: "google-chrome".to_string(),
@@ -253,9 +376,13 @@ mod tests {
                 name_mask: byte_mask("google-chrome".as_bytes()),
                 kw_mask: byte_mask("browser".as_bytes()),
             }],
+            names_sorted: Vec::new(),
+            tokens_sorted: Vec::new(),
+            unique_tokens: Vec::new(),
             version: 1,
             built_at: 12345,
         };
+        original.build_inverted();
         original.save(&path).expect("save");
 
         let loaded = PackageIndex::load(&path).expect("load");
@@ -273,5 +400,63 @@ mod tests {
         assert_eq!(got.is_repo, want.is_repo);
         assert_eq!(got.name_mask, want.name_mask);
         assert_eq!(got.kw_mask, want.kw_mask);
+        assert_eq!(loaded.names_sorted, original.names_sorted);
+        assert_eq!(loaded.tokens_sorted, original.tokens_sorted);
+        assert_eq!(loaded.unique_tokens, original.unique_tokens);
+    }
+
+    #[test]
+    fn build_inverted_populates_derived_arrays() {
+        let mut index = PackageIndex {
+            packages: vec![
+                IndexedPackage {
+                    id: 1,
+                    name: "vim".to_string(),
+                    tokens: vec!["vim".to_string()],
+                    keywords: Vec::new(),
+                    popularity: 0,
+                    is_repo: false,
+                    name_mask: byte_mask(b"vim"),
+                    kw_mask: 0,
+                },
+                IndexedPackage {
+                    id: 2,
+                    name: "google-chrome".to_string(),
+                    tokens: vec!["google".to_string(), "chrome".to_string()],
+                    keywords: Vec::new(),
+                    popularity: 0,
+                    is_repo: false,
+                    name_mask: byte_mask(b"google-chrome"),
+                    kw_mask: 0,
+                },
+            ],
+            names_sorted: Vec::new(),
+            tokens_sorted: Vec::new(),
+            unique_tokens: Vec::new(),
+            version: 1,
+            built_at: 0,
+        };
+        index.build_inverted();
+
+        assert_eq!(index.names_sorted, vec![1, 0]);
+        assert_eq!(index.tokens_sorted.len(), 3);
+        assert_eq!(index.tokens_sorted[0].1, 1);
+        assert_eq!(index.packages[index.tokens_sorted[0].0 as usize].tokens[1], "chrome");
+        assert_eq!(
+            index.unique_tokens,
+            vec![
+                ("chrome".to_string(), byte_mask(b"chrome")),
+                ("google".to_string(), byte_mask(b"google")),
+                ("vim".to_string(), byte_mask(b"vim")),
+            ]
+        );
+
+        assert_eq!(index.exact_name_range(b"vim"), 1..2);
+        assert!(index.exact_name_range(b"nope").is_empty());
+        assert_eq!(index.prefix_name_range(b"vim"), 1..2);
+        assert_eq!(index.exact_token_range(b"chrome").len(), 1);
+        assert!(index.exact_token_range(b"nope").is_empty());
+        assert_eq!(index.prefix_token_range(b"ch").len(), 1);
+        assert!(index.prefix_token_range(b"zz").is_empty());
     }
 }

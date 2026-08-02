@@ -11,14 +11,13 @@ const RESULT_LIMIT: usize = 30;
 const TYPO_GATE: usize = 5;
 
 const SHORT_TIERS: &[Tier] = &[Tier::ExactName, Tier::ExactToken, Tier::PrefixName];
-const ALL_CONCRETE_TIERS: &[Tier] = &[
+const CHEAP_TIERS_ALL: &[Tier] = &[
     Tier::ExactName,
     Tier::ExactToken,
     Tier::PrefixName,
     Tier::PrefixToken,
-    Tier::Substring,
-    Tier::Keyword,
 ];
+const EXPENSIVE_TIERS: &[Tier] = &[Tier::Substring, Tier::Keyword];
 
 pub fn search_index(index: &PackageIndex, text: &str) -> Vec<u32> {
     let Some(pq) = parse_query(text) else {
@@ -27,13 +26,18 @@ pub fn search_index(index: &PackageIndex, text: &str) -> Vec<u32> {
     let q = pq.text();
     match &pq {
         ParsedQuery::Quoted(_) => quoted_ids(index, q),
-        ParsedQuery::Short(_) => to_sorted_ids(concrete_in(index, q, SHORT_TIERS)),
+        ParsedQuery::Short(_) => to_sorted_ids(gather_cheap_candidates(index, q, SHORT_TIERS)),
         ParsedQuery::Normal(_) => {
-            let cands = concrete_in(index, q, ALL_CONCRETE_TIERS);
-            if cands.len() >= TYPO_GATE {
-                return to_sorted_ids(cands);
+            let cheap = gather_cheap_candidates(index, q, CHEAP_TIERS_ALL);
+            if cheap.len() >= RESULT_LIMIT {
+                return to_sorted_ids(cheap);
             }
-            to_sorted_ids(append_typo_fallback(index, q, cands))
+            let mut cands = cheap;
+            cands.extend(concrete_in(index, q, EXPENSIVE_TIERS));
+            if cands.len() < TYPO_GATE {
+                cands = append_typo_fallback(index, q, cands);
+            }
+            to_sorted_ids(cands)
         }
     }
 }
@@ -69,6 +73,46 @@ impl SearchEngine {
         *guard = Arc::new(rebuilt);
         Ok(())
     }
+}
+
+fn gather_cheap_candidates<'a>(
+    index: &'a PackageIndex,
+    q: &str,
+    allowed: &[Tier],
+) -> Vec<Candidate<'a>> {
+    let qmask = byte_mask(q.as_bytes());
+    let q_bytes = q.as_bytes();
+    let mut idxs: Vec<u32> = Vec::new();
+    if allowed.contains(&Tier::ExactName) {
+        for i in index.exact_name_range(q_bytes) {
+            idxs.push(index.names_sorted[i]);
+        }
+    }
+    if allowed.contains(&Tier::ExactToken) {
+        for i in index.exact_token_range(q_bytes) {
+            idxs.push(index.tokens_sorted[i].0);
+        }
+    }
+    if allowed.contains(&Tier::PrefixName) {
+        for i in index.prefix_name_range(q_bytes) {
+            idxs.push(index.names_sorted[i]);
+        }
+    }
+    if allowed.contains(&Tier::PrefixToken) {
+        for i in index.prefix_token_range(q_bytes) {
+            idxs.push(index.tokens_sorted[i].0);
+        }
+    }
+    idxs.sort_unstable();
+    idxs.dedup();
+    let mut cands: Vec<Candidate<'a>> = Vec::with_capacity(idxs.len());
+    for i in idxs {
+        let p = &index.packages[i as usize];
+        if let Some(tier) = best_concrete_tier_in(p, q, allowed, qmask) {
+            cands.push(Candidate { pkg: p, tier });
+        }
+    }
+    cands
 }
 
 fn concrete_in<'a>(index: &'a PackageIndex, q: &str, allowed: &[Tier]) -> Vec<Candidate<'a>> {
@@ -148,11 +192,49 @@ mod tests {
     }
 
     fn index_with(packages: Vec<IndexedPackage>) -> PackageIndex {
-        PackageIndex {
+        let mut index = PackageIndex {
             packages,
+            names_sorted: Vec::new(),
+            tokens_sorted: Vec::new(),
+            unique_tokens: Vec::new(),
             version: 1,
             built_at: 0,
-        }
+        };
+        index.build_inverted();
+        index
+    }
+
+    #[test]
+    fn gather_cheap_candidates_uses_inverted_ranges() {
+        let index = index_with(vec![
+            pkg(1, "vim", false, 0),
+            pkg(2, "vim-plugins", false, 0),
+            pkg(3, "recycle-bin", false, 0),
+            pkg(4, "binary", false, 0),
+            pkg(5, "visual-vim", false, 0),
+        ]);
+
+        let exact_name = gather_cheap_candidates(&index, "vim", &[Tier::ExactName]);
+        assert_eq!(ids_of(&exact_name), vec![1]);
+
+        let exact_token = gather_cheap_candidates(&index, "bin", &[Tier::ExactToken]);
+        assert_eq!(ids_of(&exact_token), vec![3]);
+
+        let prefix_name = gather_cheap_candidates(&index, "vim", &[Tier::PrefixName]);
+        assert_eq!(ids_of(&prefix_name), vec![1, 2]);
+
+        let prefix_token = gather_cheap_candidates(&index, "vi", &[Tier::PrefixToken]);
+        assert_eq!(ids_of(&prefix_token), vec![1, 2, 5]);
+
+        let all_cheap = gather_cheap_candidates(&index, "vim", CHEAP_TIERS_ALL);
+        assert_eq!(ids_of(&all_cheap), vec![1, 2, 5]);
+        assert!(all_cheap.iter().all(|c| c.tier != Tier::Substring));
+    }
+
+    fn ids_of(cands: &[Candidate]) -> Vec<u32> {
+        let mut v: Vec<u32> = cands.iter().map(|c| c.pkg.id).collect();
+        v.sort();
+        v
     }
 
     #[test]
