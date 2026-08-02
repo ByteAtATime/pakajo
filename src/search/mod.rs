@@ -30,6 +30,7 @@ pub(crate) fn dispatch_search(
     installed: &HashSet<String>,
     text: &str,
 ) -> Vec<SearchResult> {
+    let _span = perf::PerfSpan::new("search");
     let ids = engine.search(text);
     if ids.is_empty() {
         return Vec::new();

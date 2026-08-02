@@ -123,7 +123,6 @@ pub(super) fn run_search(query: &str) -> anyhow::Result<()> {
     let engine = crate::search::engine::SearchEngine::new(sqlite_path)?;
     let handle = alpm_handle()?;
     let installed = crate::package::installed_names(&handle);
-    let _span = crate::search::perf::PerfSpan::new("search");
     let results = crate::search::dispatch_search(&engine, &local, &installed, query);
     print_search_results(&results);
     Ok(())
