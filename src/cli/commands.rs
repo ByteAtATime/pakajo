@@ -145,6 +145,31 @@ pub(super) fn run_search(query: &str) -> anyhow::Result<()> {
             eprintln!("[search] parsed query: None");
         }
     }
+    if crate::search::perf::SEARCH_PERF_LOG {
+        if let Some(pq) = crate::search::query::parse_query(query) {
+            let q = pq.text();
+            if let Ok(sqlite_path) = crate::local_index::LocalIndex::db_path()
+                && let Ok(idx) = crate::search::index::PackageIndex::load_or_build(&sqlite_path)
+            {
+                let mut cands: Vec<crate::search::tiers::Candidate> = idx
+                    .packages
+                    .iter()
+                    .filter_map(|p| {
+                        crate::search::tiers::best_concrete_tier(p, q)
+                            .map(|t| crate::search::tiers::Candidate { pkg: p, tier: t })
+                    })
+                    .collect();
+                cands.sort_by(crate::search::tiers::candidate_ordering);
+                let top: Vec<&str> =
+                    cands.iter().take(5).map(|c| c.pkg.name.as_str()).collect();
+                eprintln!(
+                    "[search] tier scan: {} matched; top5: {:?}",
+                    cands.len(),
+                    top
+                );
+            }
+        }
+    }
     let handle = alpm_handle()?;
     let installed = crate::package::installed_names(&handle);
     let local_index = crate::local_index::LocalIndex::db_path()

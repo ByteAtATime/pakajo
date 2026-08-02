@@ -11,6 +11,7 @@ pub mod perf;
 pub mod query;
 pub mod ranking;
 pub mod repo;
+pub mod tiers;
 
 pub use aur::AurSearchProvider;
 #[allow(unused_imports)]

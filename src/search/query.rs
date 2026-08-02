@@ -5,6 +5,14 @@ pub enum ParsedQuery {
     Normal(String),
 }
 
+impl ParsedQuery {
+    pub fn text(&self) -> &str {
+        match self {
+            ParsedQuery::Short(s) | ParsedQuery::Quoted(s) | ParsedQuery::Normal(s) => s,
+        }
+    }
+}
+
 pub fn parse_query(text: &str) -> Option<ParsedQuery> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
