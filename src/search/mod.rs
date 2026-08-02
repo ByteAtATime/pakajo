@@ -5,6 +5,7 @@ use crate::local_index::LocalIndex;
 use crate::package::PackageSource;
 
 pub mod aur;
+pub mod engine;
 pub mod fuzzy;
 pub mod index;
 pub mod local;

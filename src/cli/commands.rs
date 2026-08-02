@@ -121,71 +121,34 @@ fn fetch_base_devel_info(base: &str, arch: &str) -> anyhow::Result<Option<crate:
 }
 
 pub(super) fn run_search(query: &str) -> anyhow::Result<()> {
-    {
-        let _ = crate::search::perf::PerfSpan::new("index load");
-        if let Ok(sqlite_path) = crate::local_index::LocalIndex::db_path() {
-            match crate::search::index::PackageIndex::load_or_build(&sqlite_path) {
-                Ok(idx) => {
-                    if crate::search::perf::SEARCH_PERF_LOG {
-                        eprintln!("[search] indexed {} pkgs", idx.packages.len());
-                    }
-                }
-                Err(e) => {
-                    if crate::search::perf::SEARCH_PERF_LOG {
-                        eprintln!("[search] index warm failed: {e}");
-                    }
-                }
-            }
-        }
-    }
     if crate::search::perf::SEARCH_PERF_LOG {
-        if let Some(pq) = crate::search::query::parse_query(query) {
-            eprintln!("[search] parsed query: {pq:?}");
-        } else {
-            eprintln!("[search] parsed query: None");
-        }
-    }
-    if crate::search::perf::SEARCH_PERF_LOG {
-        if let Some(pq) = crate::search::query::parse_query(query) {
-            let q = pq.text();
-            if let Ok(sqlite_path) = crate::local_index::LocalIndex::db_path()
-                && let Ok(idx) = crate::search::index::PackageIndex::load_or_build(&sqlite_path)
-            {
-                let mut cands: Vec<crate::search::tiers::Candidate> = idx
+        let _load = crate::search::perf::PerfSpan::new("index load");
+        let loaded = crate::local_index::LocalIndex::db_path().and_then(|sqlite_path| {
+            crate::search::index::PackageIndex::load_or_build(&sqlite_path)
+        });
+        match loaded {
+            Ok(idx) => {
+                let names: std::collections::HashMap<u32, &str> = idx
                     .packages
                     .iter()
-                    .filter_map(|p| {
-                        crate::search::tiers::best_concrete_tier(p, q)
-                            .map(|t| crate::search::tiers::Candidate { pkg: p, tier: t })
-                    })
+                    .map(|p| (p.id, p.name.as_str()))
                     .collect();
-                cands.sort_by(crate::search::tiers::candidate_ordering);
-                let top: Vec<&str> =
-                    cands.iter().take(5).map(|c| c.pkg.name.as_str()).collect();
+                drop(_load);
+                let _search = crate::search::perf::PerfSpan::new("search");
+                let ids = crate::search::engine::search_index(&idx, query);
+                let top5: Vec<&str> = ids
+                    .iter()
+                    .take(5)
+                    .filter_map(|id| names.get(id).copied())
+                    .collect();
                 eprintln!(
-                    "[search] tier scan: {} matched; top5: {:?}",
-                    cands.len(),
-                    top
+                    "[search] engine: {} results; top5: {:?}",
+                    ids.len(),
+                    top5
                 );
-                if cands.len() < 5 {
-                    let mut typos: Vec<crate::search::tiers::Candidate> = idx
-                        .packages
-                        .iter()
-                        .filter(|p| crate::search::tiers::best_concrete_tier(p, q).is_none())
-                        .filter_map(|p| {
-                            crate::search::fuzzy::typo_tier(p, q)
-                                .map(|t| crate::search::tiers::Candidate { pkg: p, tier: t })
-                        })
-                        .collect();
-                    typos.sort_by(crate::search::tiers::candidate_ordering);
-                    let top: Vec<&str> =
-                        typos.iter().take(5).map(|c| c.pkg.name.as_str()).collect();
-                    eprintln!(
-                        "[search] typo fallback: {} matched; top5: {:?}",
-                        typos.len(),
-                        top
-                    );
-                }
+            }
+            Err(e) => {
+                eprintln!("[search] index load failed: {e}");
             }
         }
     }
