@@ -6,6 +6,7 @@ pub const MAX_EDIT_DISTANCE: usize = 2;
 pub struct TypoMatcher<'q> {
     q: &'q [u8],
     qmask: u64,
+    prev_prev: Vec<usize>,
     prev: Vec<usize>,
     cur: Vec<usize>,
 }
@@ -13,11 +14,13 @@ pub struct TypoMatcher<'q> {
 impl<'q> TypoMatcher<'q> {
     pub fn new(q: &'q [u8]) -> Self {
         let m = q.len();
+        let prev_prev: Vec<usize> = vec![0usize; m + 1];
         let prev: Vec<usize> = (0..=m).collect();
         let cur: Vec<usize> = vec![0usize; m + 1];
         Self {
             q,
             qmask: byte_mask(q),
+            prev_prev,
             prev,
             cur,
         }
@@ -58,6 +61,9 @@ impl<'q> TypoMatcher<'q> {
                 let ins = self.cur[j - 1] + 1;
                 let sub = self.prev[j - 1] + cost;
                 self.cur[j] = del.min(ins).min(sub);
+                if i >= 2 && j >= 2 && cand[i - 1] == q[j - 2] && cand[i - 2] == q[j - 1] {
+                    self.cur[j] = self.cur[j].min(self.prev_prev[j - 2] + 1);
+                }
                 if self.cur[j] < row_min {
                     row_min = self.cur[j];
                 }
@@ -65,6 +71,7 @@ impl<'q> TypoMatcher<'q> {
             if row_min > max {
                 return false;
             }
+            std::mem::swap(&mut self.prev_prev, &mut self.prev);
             std::mem::swap(&mut self.prev, &mut self.cur);
         }
         self.prev[m] <= max
@@ -78,6 +85,7 @@ fn edit_distance_chars(a: &str, b: &str, max: usize) -> bool {
     if n.abs_diff(m) > max {
         return false;
     }
+    let mut prev_prev: Vec<usize> = vec![0usize; m + 1];
     let mut prev: Vec<usize> = (0..=m).collect();
     let mut cur: Vec<usize> = vec![0usize; m + 1];
     for i in 1..=n {
@@ -89,6 +97,9 @@ fn edit_distance_chars(a: &str, b: &str, max: usize) -> bool {
             let ins = cur[j - 1] + 1;
             let sub = prev[j - 1] + cost;
             cur[j] = del.min(ins).min(sub);
+            if i >= 2 && j >= 2 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                cur[j] = cur[j].min(prev_prev[j - 2] + 1);
+            }
             if cur[j] < row_min {
                 row_min = cur[j];
             }
@@ -96,6 +107,7 @@ fn edit_distance_chars(a: &str, b: &str, max: usize) -> bool {
         if row_min > max {
             return false;
         }
+        std::mem::swap(&mut prev_prev, &mut prev);
         std::mem::swap(&mut prev, &mut cur);
     }
     prev[m] <= max
@@ -162,6 +174,11 @@ mod tests {
     #[test]
     fn edit_distance_transposition_caught() {
         assert!(within("chrome", "chroem", 2));
+    }
+
+    #[test]
+    fn damerau_counts_transposition_as_one() {
+        assert!(within("chrome", "chroem", 1));
     }
 
     #[test]
