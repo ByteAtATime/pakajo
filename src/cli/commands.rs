@@ -121,6 +121,23 @@ fn fetch_base_devel_info(base: &str, arch: &str) -> anyhow::Result<Option<crate:
 }
 
 pub(super) fn run_search(query: &str) -> anyhow::Result<()> {
+    {
+        let _ = crate::search::perf::PerfSpan::new("index load");
+        if let Ok(sqlite_path) = crate::local_index::LocalIndex::db_path() {
+            match crate::search::index::PackageIndex::load_or_build(&sqlite_path) {
+                Ok(idx) => {
+                    if crate::search::perf::SEARCH_PERF_LOG {
+                        eprintln!("[search] indexed {} pkgs", idx.packages.len());
+                    }
+                }
+                Err(e) => {
+                    if crate::search::perf::SEARCH_PERF_LOG {
+                        eprintln!("[search] index warm failed: {e}");
+                    }
+                }
+            }
+        }
+    }
     let handle = alpm_handle()?;
     let installed = crate::package::installed_names(&handle);
     let local_index = crate::local_index::LocalIndex::db_path()

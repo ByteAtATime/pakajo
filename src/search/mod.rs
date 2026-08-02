@@ -5,7 +5,9 @@ use crate::local_index::LocalIndex;
 use crate::package::PackageSource;
 
 pub mod aur;
+pub mod index;
 pub mod local;
+pub mod perf;
 pub mod ranking;
 pub mod repo;
 
