@@ -3,7 +3,7 @@ use crate::search::tiers::Tier;
 
 pub const MAX_EDIT_DISTANCE: usize = 2;
 
-pub struct TypoMatcher<'q> {
+pub struct FuzzyMatcher<'q> {
     q: &'q [u8],
     qmask: u64,
     prev_prev: Vec<usize>,
@@ -11,7 +11,7 @@ pub struct TypoMatcher<'q> {
     cur: Vec<usize>,
 }
 
-impl<'q> TypoMatcher<'q> {
+impl<'q> FuzzyMatcher<'q> {
     pub fn new(q: &'q [u8]) -> Self {
         let m = q.len();
         let prev_prev: Vec<usize> = vec![0usize; m + 1];
@@ -116,23 +116,23 @@ fn edit_distance_chars(a: &str, b: &str, max: usize) -> Option<usize> {
 }
 
 #[allow(dead_code)]
-pub fn typo_tier(pkg: &IndexedPackage, q: &str) -> Option<Tier> {
+pub fn fuzzy_tier(pkg: &IndexedPackage, q: &str) -> Option<Tier> {
     if q.is_empty() {
         return None;
     }
-    let mut matcher = TypoMatcher::new(q.as_bytes());
+    let mut matcher = FuzzyMatcher::new(q.as_bytes());
     if matcher
         .within_distance(pkg.name.as_bytes(), pkg.name_mask, MAX_EDIT_DISTANCE)
         .is_some()
     {
-        return Some(Tier::Typo);
+        return Some(Tier::Fuzzy);
     }
     if pkg.tokens.iter().any(|t| {
         matcher
             .within_distance(t.as_bytes(), byte_mask(t.as_bytes()), MAX_EDIT_DISTANCE)
             .is_some()
     }) {
-        return Some(Tier::Typo);
+        return Some(Tier::Fuzzy);
     }
     None
 }
@@ -170,7 +170,7 @@ mod tests {
     }
 
     fn within(a: &str, b: &str, max: usize) -> bool {
-        TypoMatcher::new(b.as_bytes())
+        FuzzyMatcher::new(b.as_bytes())
             .within_distance(a.as_bytes(), byte_mask(a.as_bytes()), max)
             .is_some()
     }
@@ -211,26 +211,26 @@ mod tests {
     }
 
     #[test]
-    fn typo_tier_via_token_transposition() {
+    fn fuzzy_tier_via_token_transposition() {
         let pkg = mk(1, "google-chrome", &["google", "chrome"], &[], 0, false);
-        assert_eq!(typo_tier(&pkg, "chroem"), Some(Tier::Typo));
+        assert_eq!(fuzzy_tier(&pkg, "chroem"), Some(Tier::Fuzzy));
     }
 
     #[test]
-    fn typo_tier_via_name() {
+    fn fuzzy_tier_via_name() {
         let pkg = mk(1, "vim", &[], &[], 0, false);
-        assert_eq!(typo_tier(&pkg, "vom"), Some(Tier::Typo));
+        assert_eq!(fuzzy_tier(&pkg, "vom"), Some(Tier::Fuzzy));
     }
 
     #[test]
-    fn typo_tier_none() {
+    fn fuzzy_tier_none() {
         let pkg = mk(1, "google-chrome", &["google", "chrome"], &[], 0, false);
-        assert_eq!(typo_tier(&pkg, "xyz123"), None);
+        assert_eq!(fuzzy_tier(&pkg, "xyz123"), None);
     }
 
     #[test]
-    fn typo_tier_empty_query() {
+    fn fuzzy_tier_empty_query() {
         let pkg = mk(1, "google-chrome", &["google", "chrome"], &[], 0, false);
-        assert_eq!(typo_tier(&pkg, ""), None);
+        assert_eq!(fuzzy_tier(&pkg, ""), None);
     }
 }

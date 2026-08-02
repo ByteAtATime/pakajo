@@ -11,7 +11,7 @@ pub enum Tier {
     PrefixToken = 3,
     Substring = 4,
     Keyword = 5,
-    Typo = 6,
+    Fuzzy = 6,
 }
 
 pub fn exact_name(pkg: &IndexedPackage, q: &str) -> bool {
@@ -82,11 +82,11 @@ pub fn candidate_ordering(a: &Candidate<'_>, b: &Candidate<'_>) -> Ordering {
     a.tier
         .cmp(&b.tier)
         .then_with(|| match (a.tier, b.tier) {
-            (Tier::Typo, Tier::Typo) => a.distance.cmp(&b.distance),
+            (Tier::Fuzzy, Tier::Fuzzy) => a.distance.cmp(&b.distance),
             _ => std::cmp::Ordering::Equal,
         })
         .then_with(|| match (a.tier, b.tier) {
-            (Tier::Typo, Tier::Typo) => b.first_letter_match.cmp(&a.first_letter_match),
+            (Tier::Fuzzy, Tier::Fuzzy) => b.first_letter_match.cmp(&a.first_letter_match),
             _ => std::cmp::Ordering::Equal,
         })
         .then_with(|| a.pkg.name.chars().count().cmp(&b.pkg.name.chars().count()))
@@ -143,7 +143,7 @@ mod tests {
         assert!(Tier::PrefixName < Tier::PrefixToken);
         assert!(Tier::PrefixToken < Tier::Substring);
         assert!(Tier::Substring < Tier::Keyword);
-        assert!(Tier::Keyword < Tier::Typo);
+        assert!(Tier::Keyword < Tier::Fuzzy);
     }
 
     #[test]
@@ -213,18 +213,18 @@ mod tests {
     }
 
     #[test]
-    fn candidate_ordering_typo_lower_distance_first() {
+    fn candidate_ordering_fuzzy_lower_distance_first() {
         let a = mk(1, "alpha", &[], &[], 0, false);
         let b = mk(2, "alpha", &[], &[], 0, false);
         let ca = Candidate {
             pkg: &a,
-            tier: Tier::Typo,
+            tier: Tier::Fuzzy,
             distance: 1,
             first_letter_match: false,
         };
         let cb = Candidate {
             pkg: &b,
-            tier: Tier::Typo,
+            tier: Tier::Fuzzy,
             distance: 2,
             first_letter_match: false,
         };
@@ -233,18 +233,18 @@ mod tests {
     }
 
     #[test]
-    fn candidate_ordering_typo_first_letter_uses_matching_token() {
+    fn candidate_ordering_fuzzy_first_letter_uses_matching_token() {
         let token_match = mk(1, "alpha-beta", &["chrome"], &[], 0, false);
         let token_miss = mk(2, "cedar-delta", &["zhrom"], &[], 0, false);
         let ca = Candidate {
             pkg: &token_match,
-            tier: Tier::Typo,
+            tier: Tier::Fuzzy,
             distance: 1,
             first_letter_match: true,
         };
         let cb = Candidate {
             pkg: &token_miss,
-            tier: Tier::Typo,
+            tier: Tier::Fuzzy,
             distance: 1,
             first_letter_match: false,
         };

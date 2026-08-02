@@ -2,13 +2,13 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use crate::search::fuzzy::{TypoMatcher, MAX_EDIT_DISTANCE};
+use crate::search::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE};
 use crate::search::index::{byte_mask, needs_rebuild, IndexedPackage, PackageIndex};
 use crate::search::query::{parse_query, ParsedQuery};
 use crate::search::tiers::{best_concrete_tier_in, candidate_ordering, Candidate, Tier};
 
 const RESULT_LIMIT: usize = 30;
-const TYPO_GATE: usize = 5;
+const FUZZY_GATE: usize = 5;
 
 const SHORT_TIERS: &[Tier] = &[Tier::ExactName, Tier::ExactToken, Tier::PrefixName];
 const CHEAP_TIERS_ALL: &[Tier] = &[
@@ -33,10 +33,10 @@ pub fn search_index(index: &PackageIndex, text: &str) -> Vec<u32> {
                 return to_sorted_ids(cheap);
             }
             let seen: HashSet<u32> = cheap.iter().map(|c| c.pkg.id).collect();
-            let cands = if cheap.len() >= TYPO_GATE {
+            let cands = if cheap.len() >= FUZZY_GATE {
                 expensive_only_pass(index, q, cheap, &seen)
             } else {
-                fused_expensive_typo_pass(index, q, cheap, &seen)
+                fused_expensive_fuzzy_pass(index, q, cheap, &seen)
             };
             to_sorted_ids(cands)
         }
@@ -134,8 +134,8 @@ fn expensive_only_pass<'a>(
     cands
 }
 
-fn typo_score_from_seed(
-    matcher: &mut TypoMatcher,
+fn fuzzy_score_from_seed(
+    matcher: &mut FuzzyMatcher,
     p: &IndexedPackage,
     seed_distance: u8,
     seed_first_letter: bool,
@@ -155,7 +155,7 @@ fn typo_score_from_seed(
     (distance, first_letter_match)
 }
 
-fn fused_expensive_typo_pass<'a>(
+fn fused_expensive_fuzzy_pass<'a>(
     index: &'a PackageIndex,
     q: &str,
     mut cands: Vec<Candidate<'a>>,
@@ -164,8 +164,8 @@ fn fused_expensive_typo_pass<'a>(
     let qmask = byte_mask(q.as_bytes());
     let q_ascii = q.is_ascii();
     let q_first = q.chars().next();
-    let mut matcher = TypoMatcher::new(q.as_bytes());
-    let mut typo_buf: Vec<Candidate<'a>> = Vec::new();
+    let mut matcher = FuzzyMatcher::new(q.as_bytes());
+    let mut fuzzy_buf: Vec<Candidate<'a>> = Vec::new();
     let mut placed: HashSet<u32> = HashSet::new();
 
     for (i, p) in index.packages.iter().enumerate() {
@@ -192,10 +192,10 @@ fn fused_expensive_typo_pass<'a>(
         {
             let seed_first_letter = p.name.chars().next() == q_first;
             let (distance, first_letter_match) =
-                typo_score_from_seed(&mut matcher, p, name_d as u8, seed_first_letter, q_first);
-            typo_buf.push(Candidate {
+                fuzzy_score_from_seed(&mut matcher, p, name_d as u8, seed_first_letter, q_first);
+            fuzzy_buf.push(Candidate {
                 pkg: p,
-                tier: Tier::Typo,
+                tier: Tier::Fuzzy,
                 distance,
                 first_letter_match,
             });
@@ -222,10 +222,10 @@ fn fused_expensive_typo_pass<'a>(
             let p = &index.packages[pkg_idx as usize];
             let seed_first_letter = token.chars().next() == q_first;
             let (distance, first_letter_match) =
-                typo_score_from_seed(&mut matcher, p, tok_d as u8, seed_first_letter, q_first);
-            typo_buf.push(Candidate {
+                fuzzy_score_from_seed(&mut matcher, p, tok_d as u8, seed_first_letter, q_first);
+            fuzzy_buf.push(Candidate {
                 pkg: p,
-                tier: Tier::Typo,
+                tier: Tier::Fuzzy,
                 distance,
                 first_letter_match,
             });
@@ -233,8 +233,8 @@ fn fused_expensive_typo_pass<'a>(
         }
     }
 
-    if cands.len() < TYPO_GATE {
-        cands.append(&mut typo_buf);
+    if cands.len() < FUZZY_GATE {
+        cands.append(&mut fuzzy_buf);
     }
     cands
 }
@@ -384,14 +384,14 @@ mod tests {
     }
 
     #[test]
-    fn normal_typo_fallback_runs_when_concrete_sparse() {
+    fn normal_fuzzy_fallback_runs_when_concrete_sparse() {
         let index = index_with(vec![pkg(1, "google-chrome", false, 0)]);
         let ids = search_index(&index, "chroem");
         assert!(ids.contains(&1));
     }
 
     #[test]
-    fn normal_typo_skipped_when_concrete_plentiful() {
+    fn normal_fuzzy_skipped_when_concrete_plentiful() {
         let index = index_with(vec![
             pkg(1, "cava", false, 0),
             pkg(2, "cava-foo", false, 0),
