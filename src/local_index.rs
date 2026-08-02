@@ -204,6 +204,31 @@ impl LocalIndex {
             .map_err(anyhow::Error::from)
     }
 
+    pub fn hydrate_by_ids(
+        &self,
+        ids: &[u32],
+    ) -> anyhow::Result<std::collections::HashMap<u32, PackageRow>> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT name, description, source, repo, version, num_votes, \
+             popularity, last_update, package_base, keywords, rowid \
+             FROM packages WHERE rowid IN ({placeholders})"
+        );
+        let conn = self.read.lock().expect("read connection poisoned");
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<i64> = ids.iter().map(|&id| id as i64).collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            let pkg = row_to_package(row)?;
+            let rowid: i64 = row.get(10)?;
+            Ok((rowid as u32, pkg))
+        })?;
+        rows.collect::<rusqlite::Result<std::collections::HashMap<u32, PackageRow>>>()
+            .map_err(anyhow::Error::from)
+    }
+
     pub fn detail(&self, name: &str) -> anyhow::Result<Option<crate::aur::AurInfo>> {
         use rusqlite::OptionalExtension;
         let conn = self.read.lock().expect("read connection poisoned");
@@ -834,6 +859,70 @@ mod tests {
         assert_eq!(rows.len(), 5);
         assert_eq!(rows[0].name, "c09");
         assert_eq!(rows[4].name, "c05");
+    }
+
+    #[test]
+    fn hydrate_by_ids_empty_returns_empty_map() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+        let rows = index.hydrate_by_ids(&[]).expect("hydrate");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn hydrate_by_ids_returns_rows_keyed_by_rowid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("aur-meta.sqlite");
+        let index = LocalIndex::open(&path).expect("open");
+        let conn = rusqlite::Connection::open(&path).expect("seed");
+        conn.execute(
+            "INSERT INTO packages \
+             (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
+             VALUES ('alpha','desc a','aur','aur','1.0-1',10,1.5,100,'alpha')",
+            [],
+        )
+        .expect("seed alpha");
+        conn.execute(
+            "INSERT INTO packages \
+             (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
+             VALUES ('beta','desc b','repo','core','2.0-1',NULL,NULL,200,'beta')",
+            [],
+        )
+        .expect("seed beta");
+        drop(conn);
+
+        let rows = index.hydrate_by_ids(&[1, 2]).expect("hydrate");
+        assert_eq!(rows.len(), 2);
+        let alpha = rows.get(&1).expect("rowid 1 present");
+        assert_eq!(alpha.name, "alpha");
+        assert_eq!(alpha.source, "aur");
+        assert_eq!(alpha.num_votes, Some(10));
+        assert_eq!(alpha.popularity, Some(1.5));
+        let beta = rows.get(&2).expect("rowid 2 present");
+        assert_eq!(beta.name, "beta");
+        assert_eq!(beta.source, "repo");
+        assert_eq!(beta.num_votes, None);
+    }
+
+    #[test]
+    fn hydrate_by_ids_skips_unknown_rowids() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("aur-meta.sqlite");
+        let index = LocalIndex::open(&path).expect("open");
+        let conn = rusqlite::Connection::open(&path).expect("seed");
+        conn.execute(
+            "INSERT INTO packages \
+             (name,description,source,repo,version,num_votes,popularity,last_update,package_base) \
+             VALUES ('alpha','desc a','aur','aur','1.0-1',NULL,NULL,NULL,'alpha')",
+            [],
+        )
+        .expect("seed alpha");
+        drop(conn);
+
+        let rows = index.hydrate_by_ids(&[1, 99]).expect("hydrate");
+        assert_eq!(rows.len(), 1);
+        assert!(rows.contains_key(&1));
+        assert!(rows.get(&99).is_none());
     }
 
     #[test]

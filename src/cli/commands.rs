@@ -122,33 +122,39 @@ fn fetch_base_devel_info(base: &str, arch: &str) -> anyhow::Result<Option<crate:
 
 pub(super) fn run_search(query: &str) -> anyhow::Result<()> {
     if crate::search::perf::SEARCH_PERF_LOG {
-        let _load = crate::search::perf::PerfSpan::new("index load");
-        let loaded = crate::local_index::LocalIndex::db_path().and_then(|sqlite_path| {
-            crate::search::index::PackageIndex::load_or_build(&sqlite_path)
-        });
-        match loaded {
-            Ok(idx) => {
-                let names: std::collections::HashMap<u32, &str> = idx
-                    .packages
-                    .iter()
-                    .map(|p| (p.id, p.name.as_str()))
-                    .collect();
-                drop(_load);
-                let _search = crate::search::perf::PerfSpan::new("search");
-                let ids = crate::search::engine::search_index(&idx, query);
-                let top5: Vec<&str> = ids
-                    .iter()
-                    .take(5)
-                    .filter_map(|id| names.get(id).copied())
-                    .collect();
-                eprintln!(
-                    "[search] engine: {} results; top5: {:?}",
-                    ids.len(),
-                    top5
-                );
-            }
-            Err(e) => {
-                eprintln!("[search] index load failed: {e}");
+        if let Ok(sqlite_path) = crate::local_index::LocalIndex::db_path() {
+            let _load = crate::search::perf::PerfSpan::new("index load");
+            match crate::search::engine::SearchEngine::new(sqlite_path.clone()) {
+                Ok(engine) => {
+                    let _ = engine.ensure_fresh();
+                    drop(_load);
+                    let _search = crate::search::perf::PerfSpan::new("search");
+                    let ids = engine.search(query);
+                    drop(_search);
+                    let _hydrate = crate::search::perf::PerfSpan::new("hydrate");
+                    match crate::local_index::LocalIndex::open(&sqlite_path) {
+                        Ok(local) => match local.hydrate_by_ids(&ids) {
+                            Ok(rows) => {
+                                let installed = std::collections::HashSet::new();
+                                let results = crate::search::hydrate::to_search_results(
+                                    &rows, &ids, &installed,
+                                );
+                                let top5: Vec<&str> =
+                                    results.iter().take(5).map(|r| r.name.as_str()).collect();
+                                eprintln!(
+                                    "[search] hydrated {} results; top5: {:?}",
+                                    results.len(),
+                                    top5
+                                );
+                            }
+                            Err(e) => eprintln!("[search] hydrate failed: {e}"),
+                        },
+                        Err(e) => eprintln!("[search] hydrate failed: {e}"),
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[search] engine load failed: {e}");
+                }
             }
         }
     }

@@ -7,6 +7,7 @@ use crate::package::PackageSource;
 pub mod aur;
 pub mod engine;
 pub mod fuzzy;
+pub mod hydrate;
 pub mod index;
 pub mod local;
 pub mod perf;

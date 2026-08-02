@@ -20,6 +20,9 @@ fn edit_distance_at_most(a: &str, b: &str, max: usize) -> bool {
     if a == b {
         return true;
     }
+    if a.is_ascii() && b.is_ascii() && a.len().abs_diff(b.len()) > max {
+        return false;
+    }
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let (n, m) = (a.len(), b.len());
