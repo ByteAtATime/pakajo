@@ -68,7 +68,6 @@ pub struct AurInfo {
 
 pub struct AurClient {
     agent: ureq::Agent,
-    search_agent: ureq::Agent,
 }
 
 impl AurClient {
@@ -77,14 +76,7 @@ impl AurClient {
             .timeout_global(Some(Duration::from_secs(30)))
             .build()
             .into();
-        let search_agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(8)))
-            .build()
-            .into();
-        Self {
-            agent,
-            search_agent,
-        }
+        Self { agent }
     }
 
     pub fn info(&self, name: &str) -> anyhow::Result<Option<AurInfo>> {
@@ -127,10 +119,6 @@ impl AurClient {
             anyhow::bail!("AUR RPC error: {}", parsed.error.unwrap_or_default());
         }
         Ok(parsed.results)
-    }
-
-    pub fn search(&self, arg: &str, by: &str) -> anyhow::Result<Vec<AurInfo>> {
-        self.rpc_search(&self.search_agent, arg, by)
     }
 
     pub fn search_by_provides(&self, name: &str) -> anyhow::Result<Vec<AurInfo>> {
@@ -231,15 +219,5 @@ mod tests {
         let pkg = &parsed.results[0];
         assert_eq!(pkg.name, "google-chrome");
         assert_eq!(pkg.submitter, None);
-    }
-
-    #[test]
-    #[ignore]
-    fn live_search() {
-        let client = AurClient::new();
-        let results = client
-            .search("google", "name-desc")
-            .expect("AUR search should succeed");
-        assert!(!results.is_empty());
     }
 }

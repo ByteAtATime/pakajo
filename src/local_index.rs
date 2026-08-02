@@ -137,73 +137,6 @@ impl LocalIndex {
         meta_set(&conn, key, value)
     }
 
-    pub fn search(&self, pattern: &str, limit: i64) -> anyhow::Result<Vec<PackageRow>> {
-        if pattern.is_empty() {
-            return Ok(Vec::new());
-        }
-        let conn = self.read.lock().expect("read connection poisoned");
-        let mut stmt = conn.prepare(
-            "SELECT p.name, p.description, p.source, p.repo, p.version, p.num_votes, \
-             p.popularity, p.last_update, p.package_base, p.keywords \
-             FROM packages_fts \
-             JOIN packages p ON p.rowid = packages_fts.rowid \
-             WHERE packages_fts MATCH ?1 \
-             ORDER BY bm25(packages_fts, 10.0, 1.0, 5.0) \
-             LIMIT ?2",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![pattern, limit], row_to_package)?;
-        rows.collect::<rusqlite::Result<Vec<PackageRow>>>()
-            .map_err(anyhow::Error::from)
-    }
-
-    pub fn search_name_prefix_ranked(
-        &self,
-        needle: &str,
-        limit: i64,
-    ) -> anyhow::Result<Vec<PackageRow>> {
-        let needle: String = needle
-            .chars()
-            .filter_map(|c| c.is_alphanumeric().then(|| c.to_ascii_lowercase()))
-            .collect();
-        if needle.is_empty() {
-            return Ok(Vec::new());
-        }
-        let pattern = format!("name:{needle}*");
-        let conn = self.read.lock().expect("read connection poisoned");
-        let mut stmt = conn.prepare(
-            "SELECT p.name, p.description, p.source, p.repo, p.version, p.num_votes, \
-             p.popularity, p.last_update, p.package_base, p.keywords \
-             FROM packages_fts \
-             JOIN packages p ON p.rowid = packages_fts.rowid \
-             WHERE packages_fts MATCH ?1 \
-             ORDER BY (p.name = ?2) DESC, (p.name LIKE ?2 || '%') DESC, length(p.name) ASC, p.name ASC \
-             LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![&pattern, &needle, limit], row_to_package)?;
-        rows.collect::<rusqlite::Result<Vec<PackageRow>>>()
-            .map_err(anyhow::Error::from)
-    }
-
-    pub fn search_recent_repo_prefix(
-        &self,
-        prefix: &str,
-        limit: i64,
-    ) -> anyhow::Result<Vec<PackageRow>> {
-        let pattern = format!("{}*", prefix);
-        let conn = self.read.lock().expect("read connection poisoned");
-        let mut stmt = conn.prepare(
-            "SELECT p.name, p.description, p.source, p.repo, p.version, p.num_votes, \
-             p.popularity, p.last_update, p.package_base, p.keywords \
-             FROM packages p \
-             WHERE p.source = 'repo' AND p.name GLOB ?1 \
-             ORDER BY p.last_update DESC \
-             LIMIT ?2",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![pattern, limit], row_to_package)?;
-        rows.collect::<rusqlite::Result<Vec<PackageRow>>>()
-            .map_err(anyhow::Error::from)
-    }
-
     pub fn hydrate_by_ids(
         &self,
         ids: &[u32],
@@ -213,8 +146,8 @@ impl LocalIndex {
         }
         let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT name, description, source, repo, version, num_votes, \
-             popularity, last_update, package_base, keywords, rowid \
+            "SELECT name, description, source, repo, version, \
+             last_update, package_base, rowid \
              FROM packages WHERE rowid IN ({placeholders})"
         );
         let conn = self.read.lock().expect("read connection poisoned");
@@ -222,7 +155,7 @@ impl LocalIndex {
         let params: Vec<i64> = ids.iter().map(|&id| id as i64).collect();
         let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             let pkg = row_to_package(row)?;
-            let rowid: i64 = row.get(10)?;
+            let rowid: i64 = row.get(7)?;
             Ok((rowid as u32, pkg))
         })?;
         rows.collect::<rusqlite::Result<std::collections::HashMap<u32, PackageRow>>>()
@@ -352,29 +285,20 @@ pub struct PackageRow {
     pub source: String,
     pub repo: Option<String>,
     pub version: String,
-    pub num_votes: Option<i64>,
-    pub popularity: Option<f64>,
     pub last_update: Option<i64>,
     #[allow(dead_code)]
     pub package_base: Option<String>,
-    pub keywords: Vec<String>,
 }
 
 fn row_to_package(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackageRow> {
-    let keywords_raw: Option<String> = row.get(9)?;
     Ok(PackageRow {
         name: row.get(0)?,
         description: row.get(1)?,
         source: row.get(2)?,
         repo: row.get(3)?,
         version: row.get(4)?,
-        num_votes: row.get(5)?,
-        popularity: row.get(6)?,
-        last_update: row.get(7)?,
-        package_base: row.get(8)?,
-        keywords: keywords_raw
-            .map(|s| s.split_whitespace().map(String::from).collect())
-            .unwrap_or_default(),
+        last_update: row.get(5)?,
+        package_base: row.get(6)?,
     })
 }
 
@@ -815,53 +739,6 @@ mod tests {
     }
 
     #[test]
-    fn search_recent_repo_prefix_filters_source_and_sorts_by_recency() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
-        let conn = rusqlite::Connection::open(dir.path().join("aur-meta.sqlite")).expect("seed");
-
-        let insert = |name: &str, source: &str, last_update: i64| {
-            conn.execute(
-                "INSERT INTO packages (name, source, repo, version, description, num_votes, popularity, last_update, package_base) \
-                 VALUES (?, ?, 'repo', '1', NULL, NULL, NULL, ?, NULL)",
-                rusqlite::params![name, source, last_update],
-            )
-            .expect("seed");
-        };
-
-        insert("chromium", "repo", 1000);
-        insert("curl", "repo", 500);
-        insert("cmake", "repo", 200);
-        insert("c-aur-pkg", "aur", 9999);
-        insert("firefox", "repo", 9999);
-
-        let rows = index.search_recent_repo_prefix("c", 50).expect("query");
-        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, vec!["chromium", "curl", "cmake"]);
-        assert!(rows.iter().all(|r| r.source == "repo"));
-    }
-
-    #[test]
-    fn search_recent_repo_prefix_respects_limit() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
-        let conn = rusqlite::Connection::open(dir.path().join("aur-meta.sqlite")).expect("seed");
-        for i in 0..10 {
-            let name = format!("c{i:02}");
-            conn.execute(
-                "INSERT INTO packages (name, source, repo, version, description, num_votes, popularity, last_update, package_base) \
-                 VALUES (?, 'repo', 'repo', '1', NULL, NULL, NULL, ?, NULL)",
-                rusqlite::params![name, i],
-            )
-            .expect("seed");
-        }
-        let rows = index.search_recent_repo_prefix("c", 5).expect("query");
-        assert_eq!(rows.len(), 5);
-        assert_eq!(rows[0].name, "c09");
-        assert_eq!(rows[4].name, "c05");
-    }
-
-    #[test]
     fn hydrate_by_ids_empty_returns_empty_map() {
         let dir = tempfile::tempdir().expect("tempdir");
         let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
@@ -896,12 +773,9 @@ mod tests {
         let alpha = rows.get(&1).expect("rowid 1 present");
         assert_eq!(alpha.name, "alpha");
         assert_eq!(alpha.source, "aur");
-        assert_eq!(alpha.num_votes, Some(10));
-        assert_eq!(alpha.popularity, Some(1.5));
         let beta = rows.get(&2).expect("rowid 2 present");
         assert_eq!(beta.name, "beta");
         assert_eq!(beta.source, "repo");
-        assert_eq!(beta.num_votes, None);
     }
 
     #[test]
@@ -923,37 +797,6 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows.contains_key(&1));
         assert!(rows.get(&99).is_none());
-    }
-
-    #[test]
-    fn bm25_weights_name_above_description() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("aur-meta.sqlite");
-        let index = LocalIndex::open(&path).expect("open");
-        let conn = rusqlite::Connection::open(&path).expect("seed");
-
-        conn.execute(
-            "INSERT INTO packages \
-             (name,description,source,repo,version,num_votes,popularity,last_update,package_base,detail_json,keywords) \
-             VALUES ('gizmo','something else','aur','aur','1',0,0.0,0,NULL,NULL,NULL)",
-            [],
-        )
-        .expect("seed gizmo");
-        conn.execute(
-            "INSERT INTO packages \
-             (name,description,source,repo,version,num_votes,popularity,last_update,package_base,detail_json,keywords) \
-             VALUES ('alpha','gizmo','aur','aur','1',0,0.0,0,NULL,NULL,NULL)",
-            [],
-        )
-        .expect("seed alpha");
-        drop(conn);
-
-        let rows = index.search("gizmo*", 10).expect("search");
-        assert_eq!(rows.len(), 2, "both rows match the gizmo* prefix token");
-        assert_eq!(
-            rows[0].name, "gizmo",
-            "name match must outrank description-only match under bm25 weights"
-        );
     }
 
     #[test]

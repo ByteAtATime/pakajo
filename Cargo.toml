@@ -23,7 +23,6 @@ bincode = { version = "2", features = ["serde"] }
 ureq = { version = "3", features = ["json"] }
 flate2 = "1.0"
 rusqlite = { version = "0.40", features = ["bundled"] }
-nucleo-matcher = "0.3"
 tar = "0.4"
 tempfile = "3"
 srcinfo = "2.1.0"

@@ -5,7 +5,6 @@ use super::classify_target;
 use super::privs::stdin_is_tty;
 use super::prompts::{confirm_install, confirm_install_stderr};
 use super::sinks::{ConsoleSink, EscalatedSink, JsonSink};
-use crate::aur::AurClient;
 use crate::install::{self, InstallTarget};
 use crate::search::SearchResult;
 
