@@ -32,11 +32,12 @@ pub fn search_index(index: &PackageIndex, text: &str) -> Vec<u32> {
             if cheap.len() >= RESULT_LIMIT {
                 return to_sorted_ids(cheap);
             }
-            let mut cands = cheap;
-            cands.extend(concrete_in(index, q, EXPENSIVE_TIERS));
-            if cands.len() < TYPO_GATE {
-                cands = append_typo_fallback(index, q, cands);
-            }
+            let seen: HashSet<u32> = cheap.iter().map(|c| c.pkg.id).collect();
+            let cands = if cheap.len() >= TYPO_GATE {
+                expensive_only_pass(index, q, cheap, &seen)
+            } else {
+                fused_expensive_typo_pass(index, q, cheap, &seen)
+            };
             to_sorted_ids(cands)
         }
     }
@@ -115,16 +116,88 @@ fn gather_cheap_candidates<'a>(
     cands
 }
 
-fn concrete_in<'a>(index: &'a PackageIndex, q: &str, allowed: &[Tier]) -> Vec<Candidate<'a>> {
+fn expensive_only_pass<'a>(
+    index: &'a PackageIndex,
+    q: &str,
+    mut cands: Vec<Candidate<'a>>,
+    seen: &HashSet<u32>,
+) -> Vec<Candidate<'a>> {
     let qmask = byte_mask(q.as_bytes());
-    index
-        .packages
-        .iter()
-        .filter_map(|p| match best_concrete_tier_in(p, q, allowed, qmask) {
-            Some(tier) => Some(Candidate { pkg: p, tier }),
-            _ => None,
-        })
-        .collect()
+    for p in &index.packages {
+        if seen.contains(&p.id) {
+            continue;
+        }
+        if let Some(tier) = best_concrete_tier_in(p, q, EXPENSIVE_TIERS, qmask) {
+            cands.push(Candidate { pkg: p, tier });
+        }
+    }
+    cands
+}
+
+fn fused_expensive_typo_pass<'a>(
+    index: &'a PackageIndex,
+    q: &str,
+    mut cands: Vec<Candidate<'a>>,
+    seen: &HashSet<u32>,
+) -> Vec<Candidate<'a>> {
+    let qmask = byte_mask(q.as_bytes());
+    let q_ascii = q.is_ascii();
+    let mut matcher = TypoMatcher::new(q.as_bytes());
+    let mut typo_buf: Vec<Candidate<'a>> = Vec::new();
+    let mut placed: HashSet<u32> = HashSet::new();
+
+    for (i, p) in index.packages.iter().enumerate() {
+        let idx = i as u32;
+        if seen.contains(&p.id) {
+            placed.insert(idx);
+            continue;
+        }
+        let name_missing = qmask & !p.name_mask;
+        if (name_missing == 0 || (qmask & !p.kw_mask) == 0)
+            && let Some(tier) = best_concrete_tier_in(p, q, EXPENSIVE_TIERS, qmask)
+        {
+            cands.push(Candidate { pkg: p, tier });
+            placed.insert(idx);
+            continue;
+        }
+        if name_missing.count_ones() as usize > MAX_EDIT_DISTANCE {
+            continue;
+        }
+        let name_len_ok = !(q_ascii && p.name.is_ascii())
+            || p.name.len().abs_diff(q.len()) <= MAX_EDIT_DISTANCE;
+        if name_len_ok && matcher.within(p.name.as_bytes(), p.name_mask, MAX_EDIT_DISTANCE) {
+            typo_buf.push(Candidate { pkg: p, tier: Tier::Typo });
+            placed.insert(idx);
+        }
+    }
+
+    for (token, token_mask) in &index.unique_tokens {
+        if (qmask & !token_mask).count_ones() as usize > MAX_EDIT_DISTANCE {
+            continue;
+        }
+        if q_ascii && token.is_ascii() && token.len().abs_diff(q.len()) > MAX_EDIT_DISTANCE {
+            continue;
+        }
+        if !matcher.within(token.as_bytes(), *token_mask, MAX_EDIT_DISTANCE) {
+            continue;
+        }
+        for i in index.exact_token_range(token.as_bytes()) {
+            let pkg_idx = index.tokens_sorted[i].0;
+            if placed.contains(&pkg_idx) {
+                continue;
+            }
+            typo_buf.push(Candidate {
+                pkg: &index.packages[pkg_idx as usize],
+                tier: Tier::Typo,
+            });
+            placed.insert(pkg_idx);
+        }
+    }
+
+    if cands.len() < TYPO_GATE {
+        cands.append(&mut typo_buf);
+    }
+    cands
 }
 
 fn quoted_ids(index: &PackageIndex, q: &str) -> Vec<u32> {
@@ -138,31 +211,6 @@ fn quoted_ids(index: &PackageIndex, q: &str) -> Vec<u32> {
         })
         .collect();
     to_sorted_ids(cands)
-}
-
-fn append_typo_fallback<'a>(
-    index: &'a PackageIndex,
-    q: &str,
-    mut cands: Vec<Candidate<'a>>,
-) -> Vec<Candidate<'a>> {
-    let present: HashSet<u32> = cands.iter().map(|c| c.pkg.id).collect();
-    let mut matcher = TypoMatcher::new(q.as_bytes());
-    for p in &index.packages {
-        if present.contains(&p.id) {
-            continue;
-        }
-        let matched = matcher.within(p.name.as_bytes(), p.name_mask, MAX_EDIT_DISTANCE)
-            || p.tokens.iter().any(|t| {
-                matcher.within(t.as_bytes(), byte_mask(t.as_bytes()), MAX_EDIT_DISTANCE)
-            });
-        if matched {
-            cands.push(Candidate {
-                pkg: p,
-                tier: Tier::Typo,
-            });
-        }
-    }
-    cands
 }
 
 fn to_sorted_ids(mut cands: Vec<Candidate>) -> Vec<u32> {
