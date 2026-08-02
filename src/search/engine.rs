@@ -214,7 +214,12 @@ fn quoted_ids(index: &PackageIndex, q: &str) -> Vec<u32> {
 }
 
 fn to_sorted_ids(mut cands: Vec<Candidate>) -> Vec<u32> {
-    cands.sort_by(candidate_ordering);
+    if cands.len() > RESULT_LIMIT {
+        cands.select_nth_unstable_by(RESULT_LIMIT, candidate_ordering);
+        cands[..RESULT_LIMIT + 1].sort_by(candidate_ordering);
+    } else {
+        cands.sort_by(candidate_ordering);
+    }
     cands.truncate(RESULT_LIMIT);
     cands.iter().map(|c| c.pkg.id).collect()
 }
