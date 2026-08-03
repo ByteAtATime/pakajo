@@ -40,7 +40,13 @@ fn parse_siglevel(sig_strings: &[String]) -> SigLevel {
 }
 
 pub fn init_alpm(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
-    init_alpm_at(config, &config.root_dir, &config.db_path, &config.cache_dir)
+    init_alpm_at(
+        config,
+        &config.root_dir,
+        &config.db_path,
+        &config.cache_dir,
+        true,
+    )
 }
 
 pub fn init_alpm_at(
@@ -48,15 +54,29 @@ pub fn init_alpm_at(
     root: &str,
     db_path: &str,
     cache_dirs: &[String],
+    verify_db_sigs: bool,
 ) -> anyhow::Result<Alpm> {
     let mut handle = Alpm::new(root, db_path)?;
     handle.set_architectures(config.architecture.iter())?;
-    handle.set_default_siglevel(parse_siglevel(&config.sig_level))?;
     for dir in cache_dirs {
         handle.add_cachedir(dir.as_str())?;
     }
+    let inherited = parse_siglevel(&config.sig_level);
     for repo in &config.repos {
-        let db = handle.register_syncdb_mut(repo.name.clone(), parse_siglevel(&repo.sig_level))?;
+        let mut level = if repo.sig_level.is_empty() {
+            inherited
+        } else {
+            parse_siglevel(&repo.sig_level)
+        };
+        if !verify_db_sigs {
+            level.remove(
+                SigLevel::DATABASE
+                    | SigLevel::DATABASE_OPTIONAL
+                    | SigLevel::DATABASE_MARGINAL_OK
+                    | SigLevel::DATABASE_UNKNOWN_OK,
+            );
+        }
+        let db = handle.register_syncdb_mut(repo.name.clone(), level)?;
         db.set_servers(repo.servers.iter())?;
     }
     Ok(handle)
@@ -77,7 +97,7 @@ pub(crate) fn init_alpm_rootless(config: &pacmanconf::Config) -> anyhow::Result<
             .with_context(|| format!("symlinking local db -> {}", expected_local.display()))?;
     }
     let checkdb_str = checkdb.to_string_lossy().to_string();
-    let mut handle = init_alpm_at(config, "/", &checkdb_str, &config.cache_dir)
+    let mut handle = init_alpm_at(config, "/", &checkdb_str, &config.cache_dir, false)
         .context("initializing rootless alpm handle")?;
     handle
         .set_gpgdir(config.gpg_dir.as_str())

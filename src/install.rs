@@ -557,6 +557,7 @@ mod tests {
             &root.to_string_lossy(),
             &db.to_string_lossy(),
             &[cache.to_string_lossy().into_owned()],
+            false,
         )
         .unwrap();
         handle.syncdbs_mut().update(false).unwrap();
