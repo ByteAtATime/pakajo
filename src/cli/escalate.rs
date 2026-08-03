@@ -90,12 +90,36 @@ fn spawn_upgrade_child(no_refresh: bool, ignores: &[String]) -> anyhow::Result<C
     cmd.spawn().context("failed to spawn upgrade child")
 }
 
-pub(crate) fn escalation_command(exe: &str) -> Command {
-    if is_root() {
+pub(crate) trait PrivilegeEscalator {
+    fn build_command(&self, exe: &str) -> Command;
+}
+
+struct Direct;
+
+impl PrivilegeEscalator for Direct {
+    fn build_command(&self, exe: &str) -> Command {
         Command::new(exe)
-    } else {
+    }
+}
+
+struct Pkexec;
+
+impl PrivilegeEscalator for Pkexec {
+    fn build_command(&self, exe: &str) -> Command {
         let mut command = Command::new("pkexec");
         command.arg(exe);
         command
     }
+}
+
+fn select_privilege_escalator(root: bool) -> Box<dyn PrivilegeEscalator> {
+    if root {
+        Box::new(Direct)
+    } else {
+        Box::new(Pkexec)
+    }
+}
+
+pub(crate) fn escalation_command(exe: &str) -> Command {
+    select_privilege_escalator(is_root()).build_command(exe)
 }
