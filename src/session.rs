@@ -367,7 +367,7 @@ impl PakajoSession {
 
     pub(crate) fn spawn_sysupgrade_subprocess(
         &mut self,
-        fingerprint_b64: String,
+        fingerprint_file: String,
         cx: &mut Context<Self>,
     ) {
         let exe = match current_exe() {
@@ -389,7 +389,7 @@ impl PakajoSession {
         });
         let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
         std::thread::spawn(move || {
-            crate::upgrade::run_sysupgrade_process(exe, fingerprint_b64, tx, None)
+            crate::upgrade::run_sysupgrade_process(exe, fingerprint_file, tx, None)
         });
         cx.spawn(async move |this, cx| {
             while let Some(item) = rx.next().await {
@@ -477,14 +477,24 @@ impl PakajoSession {
 
     pub(crate) fn start_sysupgrade_apply(
         &mut self,
-        fingerprint_b64: String,
+        summary_bytes: Vec<u8>,
         cx: &mut Context<Self>,
     ) {
         if matches!(self.install_progress, InstallProgress::Running) {
             return;
         }
+        let fingerprint_file = match crate::upgrade::write_fingerprint_file(&summary_bytes) {
+            Ok(path) => path.to_string_lossy().into_owned(),
+            Err(error) => {
+                self.set_progress(
+                    InstallProgress::Failed(format!("failed to write fingerprint file: {error}")),
+                    cx,
+                );
+                return;
+            }
+        };
         self.set_progress(InstallProgress::Running, cx);
-        self.spawn_sysupgrade_subprocess(fingerprint_b64, cx);
+        self.spawn_sysupgrade_subprocess(fingerprint_file, cx);
     }
 
     pub(crate) fn confirm_install(

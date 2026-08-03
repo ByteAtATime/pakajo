@@ -6,7 +6,6 @@ use std::process::Stdio;
 use std::rc::Rc;
 
 use anyhow::Context as _;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::channel::mpsc;
 
 use crate::aur::AurInfo;
@@ -17,11 +16,19 @@ use crate::install::{
 };
 use crate::resolve::AurQuery;
 
-fn decode_fingerprint(b64: &str) -> anyhow::Result<TransactionSummary> {
-    let bytes = STANDARD
-        .decode(b64)
-        .context("fingerprint is not valid base64")?;
-    serde_json::from_slice(&bytes).context("fingerprint is not valid json")
+pub(crate) fn write_fingerprint_file(summary_bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    let path = std::env::temp_dir().join(format!(
+        "pakajo-sysupgrade-fingerprint-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(&path, summary_bytes)?;
+    Ok(path)
+}
+
+fn read_fingerprint_file(path: &str) -> anyhow::Result<TransactionSummary> {
+    let bytes = std::fs::read(path).context("failed to read fingerprint file")?;
+    let _ = std::fs::remove_file(path);
+    serde_json::from_slice(&bytes).context("fingerprint file is not valid json")
 }
 
 pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
@@ -29,9 +36,9 @@ pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
     extra_ignores: &[String],
     sink: S,
     answerer: Box<dyn crate::answerer::QuestionAnswerer>,
-    fingerprint: Option<&str>,
+    fingerprint_file: Option<&str>,
 ) -> anyhow::Result<()> {
-    let preview = fingerprint.map(decode_fingerprint).transpose()?;
+    let preview = fingerprint_file.map(read_fingerprint_file).transpose()?;
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let mut handle = crate::pacman::init_alpm(&config)?;
     apply_ignores(&mut handle, &config, extra_ignores);
@@ -46,7 +53,7 @@ pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
 
 pub(crate) fn run_sysupgrade_process(
     exe: PathBuf,
-    fingerprint_b64: String,
+    fingerprint_file: String,
     mut tx: mpsc::Sender<StreamItem>,
     approvals_b64: Option<String>,
 ) {
@@ -67,8 +74,8 @@ pub(crate) fn run_sysupgrade_process(
     cmd.arg("upgrade")
         .arg("--json")
         .arg("--repo-only")
-        .arg("--fingerprint")
-        .arg(&fingerprint_b64);
+        .arg("--fingerprint-file")
+        .arg(&fingerprint_file);
     if let Some(b64) = &approvals_b64 {
         cmd.arg("--approvals").arg(b64);
     }
@@ -315,8 +322,10 @@ mod tests {
             total_installed_size: 0,
             total_removed_size: 0,
         };
-        let b64 = STANDARD.encode(serde_json::to_vec(&original).unwrap());
-        let decoded = decode_fingerprint(&b64).expect("decode should succeed");
+        let path =
+            write_fingerprint_file(&serde_json::to_vec(&original).unwrap()).expect("write file");
+        let decoded =
+            read_fingerprint_file(path.to_str().expect("utf8 path")).expect("read should succeed");
         assert!(summaries_match(&original, &decoded));
     }
 

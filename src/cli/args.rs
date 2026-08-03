@@ -52,8 +52,8 @@ pub(crate) struct UpgradeArgs {
     pub(super) ignores: Vec<String>,
     #[arg(long = "skip-review")]
     pub(super) skip_review: bool,
-    #[arg(long = "fingerprint")]
-    pub(super) fingerprint: Option<String>,
+    #[arg(long = "fingerprint-file")]
+    pub(super) fingerprint_file: Option<String>,
 }
 
 #[derive(Args)]

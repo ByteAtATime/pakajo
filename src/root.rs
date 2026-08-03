@@ -15,7 +15,6 @@ use crate::{
     updates_view::UpdatesView,
 };
 use alpm::Alpm;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui::*;
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, StyledExt as _, WindowExt as _,
@@ -682,8 +681,7 @@ impl PakajoRoot {
         let apply_disabled = preview.prepare_error.is_some()
             || preview.summary.packages.is_empty()
             || matches!(self.install_progress, InstallProgress::Running);
-        let fingerprint_b64 =
-            STANDARD.encode(serde_json::to_vec(&preview.summary).unwrap_or_default());
+        let summary_bytes = serde_json::to_vec(&preview.summary).unwrap_or_default();
 
         let top_bar = h_flex()
             .items_center()
@@ -707,7 +705,7 @@ impl PakajoRoot {
                     .disabled(apply_disabled)
                     .on_click(cx.listener(move |this, _ev, _window, cx| {
                         this.session.update(cx, |s, cx| {
-                            s.start_sysupgrade_apply(fingerprint_b64.clone(), cx)
+                            s.start_sysupgrade_apply(summary_bytes.clone(), cx)
                         });
                     })),
             );
