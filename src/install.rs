@@ -355,6 +355,7 @@ fn convert_event(any_event: alpm::AnyEvent) -> Option<InstallEvent> {
     match any_event.event() {
         alpm::Event::ResolveDepsStart => Some(InstallEvent::ResolvingDependencies),
         alpm::Event::InterConflictsStart => Some(InstallEvent::CheckingConflicts),
+        alpm::Event::CheckDepsStart => Some(InstallEvent::CheckingDependencies),
         alpm::Event::FileConflictsStart => Some(InstallEvent::CheckingFileConflicts),
         alpm::Event::IntegrityStart => Some(InstallEvent::CheckingIntegrity),
         alpm::Event::DiskSpaceStart => Some(InstallEvent::CheckingDiskSpace),

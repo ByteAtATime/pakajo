@@ -186,6 +186,7 @@ impl InstallPage {
         let text = match ev {
             InstallEvent::ResolvingDependencies => ":: resolving dependencies...".to_string(),
             InstallEvent::CheckingConflicts => ":: checking for conflicts...".to_string(),
+            InstallEvent::CheckingDependencies => ":: checking dependencies...".to_string(),
             InstallEvent::CheckingFileConflicts => ":: checking for file conflicts...".to_string(),
             InstallEvent::CheckingIntegrity => ":: checking package integrity...".to_string(),
             InstallEvent::CheckingDiskSpace => ":: checking available disk space...".to_string(),

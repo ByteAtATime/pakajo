@@ -17,6 +17,7 @@ pub struct PkgbuildReviewEntry {
 pub enum InstallEvent {
     ResolvingDependencies,
     CheckingConflicts,
+    CheckingDependencies,
     CheckingFileConflicts,
     CheckingIntegrity,
     CheckingDiskSpace,

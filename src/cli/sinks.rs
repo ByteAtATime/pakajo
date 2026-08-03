@@ -25,6 +25,7 @@ impl ConsoleSink {
         match event {
             InstallEvent::ResolvingDependencies => println!("resolving dependencies..."),
             InstallEvent::CheckingConflicts => println!("looking for conflicting packages..."),
+            InstallEvent::CheckingDependencies => println!("checking dependencies..."),
             InstallEvent::CheckingFileConflicts => {}
             InstallEvent::CheckingIntegrity => {}
             InstallEvent::CheckingDiskSpace => {}
