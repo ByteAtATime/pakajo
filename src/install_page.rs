@@ -178,6 +178,7 @@ impl InstallPage {
         match self.kind {
             InstallKind::Install => format!("Installing {}", self.name),
             InstallKind::Remove => format!("Removing {}", self.name),
+            InstallKind::Upgrade => format!("Upgrading {}", self.name),
         }
     }
 
@@ -397,13 +398,11 @@ impl InstallPage {
                 RepoStage::Resolve => "Resolve",
                 RepoStage::Validate => "Validate",
                 RepoStage::Download => "Download",
-                RepoStage::Install => {
-                    if matches!(self.kind, InstallKind::Install) {
-                        "Install"
-                    } else {
-                        "Remove"
-                    }
-                }
+                RepoStage::Install => match self.kind {
+                    InstallKind::Install => "Install",
+                    InstallKind::Remove => "Remove",
+                    InstallKind::Upgrade => "Upgrade",
+                },
                 RepoStage::Finalize => "Finalize",
             };
             card = card.child(
@@ -566,14 +565,15 @@ impl InstallPage {
         let counts_left = segments.join(" · ");
 
         let download_right = match kind {
-            InstallKind::Install if summary.total_download_size > 0 => {
+            InstallKind::Install | InstallKind::Upgrade if summary.total_download_size > 0 => {
                 Some(format!("↓ {}", format_bytes(summary.total_download_size)))
             }
-            _ => None,
+            InstallKind::Install | InstallKind::Upgrade => None,
+            InstallKind::Remove => None,
         };
 
         let net_text = match kind {
-            InstallKind::Install => {
+            InstallKind::Install | InstallKind::Upgrade => {
                 let net = summary.total_installed_size - summary.total_removed_size;
                 if net != 0 {
                     let sign = if net > 0 { "+" } else { "-" };
@@ -586,7 +586,7 @@ impl InstallPage {
                 "Frees {}",
                 format_bytes(summary.total_removed_size)
             )),
-            _ => None,
+            InstallKind::Remove => None,
         };
 
         let mut card = v_flex()
@@ -718,7 +718,9 @@ impl InstallPage {
 fn ordered_stages(kind: InstallKind) -> Vec<RepoStage> {
     use RepoStage::*;
     match kind {
-        InstallKind::Install => vec![Resolve, Validate, Download, Install, Finalize],
+        InstallKind::Install | InstallKind::Upgrade => {
+            vec![Resolve, Validate, Download, Install, Finalize]
+        }
         InstallKind::Remove => vec![Resolve, Validate, Install, Finalize],
     }
 }

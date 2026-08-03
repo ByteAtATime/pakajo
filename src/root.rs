@@ -15,9 +15,10 @@ use crate::{
     updates_view::UpdatesView,
 };
 use alpm::Alpm;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Root, StyledExt as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Root, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -437,6 +438,7 @@ impl PakajoRoot {
         let (present, past) = match self.install_kind {
             InstallKind::Install => ("Installing", "Install"),
             InstallKind::Remove => ("Removing", "Remove"),
+            InstallKind::Upgrade => ("Upgrading", "Upgrade"),
         };
         let (label, color): (String, Hsla) = match &self.install_progress {
             InstallProgress::Running => (format!("{present}…"), cx.theme().muted_foreground),
@@ -668,6 +670,15 @@ impl PakajoRoot {
             a: 1.0,
         };
 
+        let manifest =
+            InstallPage::render_manifest_card(InstallKind::Upgrade, &preview.summary, cx);
+
+        let apply_disabled = preview.prepare_error.is_some()
+            || preview.summary.packages.is_empty()
+            || matches!(self.install_progress, InstallProgress::Running);
+        let fingerprint_b64 =
+            STANDARD.encode(serde_json::to_vec(&preview.summary).unwrap_or_default());
+
         let top_bar = h_flex()
             .items_center()
             .gap_2()
@@ -682,10 +693,18 @@ impl PakajoRoot {
                     })),
             )
             .child(div().text_lg().font_semibold().child("Review upgrade"))
-            .child(div().flex_1());
-
-        let manifest =
-            InstallPage::render_manifest_card(InstallKind::Install, &preview.summary, cx);
+            .child(div().flex_1())
+            .child(
+                Button::new("confirm-apply")
+                    .primary()
+                    .label("Apply")
+                    .disabled(apply_disabled)
+                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                        this.session.update(cx, |s, cx| {
+                            s.start_sysupgrade_apply(fingerprint_b64.clone(), cx)
+                        });
+                    })),
+            );
 
         let questions = Self::render_confirm_questions(&preview.questions, warn, cx);
 

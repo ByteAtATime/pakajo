@@ -7,8 +7,8 @@ use crate::{
     pacman::{find_pkg, init_alpm},
     pkgbuild::{PkgbuildDiff, prepare_pkgbuild_diffs},
     question::{QuestionSet, encode_approvals},
-    search::{self, SearchResult},
     search::engine::SearchEngine,
+    search::{self, SearchResult},
 };
 use alpm::Alpm;
 use anyhow::Context as _;
@@ -47,6 +47,7 @@ pub(crate) enum UpdatesState {
 pub(crate) enum InstallKind {
     Install,
     Remove,
+    Upgrade,
 }
 
 pub(crate) enum SessionEvent {
@@ -363,6 +364,40 @@ impl PakajoSession {
         .detach();
     }
 
+    pub(crate) fn spawn_sysupgrade_subprocess(
+        &mut self,
+        fingerprint_b64: String,
+        cx: &mut Context<Self>,
+    ) {
+        let exe = match current_exe() {
+            Ok(exe) => exe,
+            Err(error) => {
+                self.set_progress(
+                    InstallProgress::Failed(format!(
+                        "failed to determine executable path: {error}"
+                    )),
+                    cx,
+                );
+                return;
+            }
+        };
+        cx.emit(SessionEvent::InstallLogsOpened {
+            kind: InstallKind::Upgrade,
+            source: PackageSource::Repo,
+            name: "system".to_string(),
+        });
+        let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
+        std::thread::spawn(move || {
+            crate::upgrade::run_sysupgrade_process(exe, fingerprint_b64, tx, None)
+        });
+        cx.spawn(async move |this, cx| {
+            while let Some(item) = rx.next().await {
+                let _ = this.update(cx, |this, cx| this.handle_stream_item(item, cx));
+            }
+        })
+        .detach();
+    }
+
     pub(crate) fn start_install(&mut self, cx: &mut Context<Self>) {
         if matches!(self.install_progress, InstallProgress::Running) {
             return;
@@ -437,6 +472,18 @@ impl PakajoSession {
         }
         self.set_progress(InstallProgress::Running, cx);
         self.spawn_remove_subprocess(name, source, cx);
+    }
+
+    pub(crate) fn start_sysupgrade_apply(
+        &mut self,
+        fingerprint_b64: String,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.install_progress, InstallProgress::Running) {
+            return;
+        }
+        self.set_progress(InstallProgress::Running, cx);
+        self.spawn_sysupgrade_subprocess(fingerprint_b64, cx);
     }
 
     pub(crate) fn confirm_install(
@@ -625,6 +672,9 @@ impl PakajoSession {
     }
 
     pub(crate) fn start_sysupgrade_preview(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.install_progress, InstallProgress::Running) {
+            return;
+        }
         if self.sysupgrade_preview_in_flight {
             return;
         }
@@ -702,9 +752,9 @@ impl PakajoSession {
 
             let outcome = cx
                 .background_executor()
-                .spawn(async move {
-                    execute_search_for(search_engine, local_index, installed, text)
-                })
+                .spawn(
+                    async move { execute_search_for(search_engine, local_index, installed, text) },
+                )
                 .await;
 
             let _ = this.update(cx, |this, cx| {
