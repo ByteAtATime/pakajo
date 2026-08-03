@@ -181,6 +181,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpm-utils"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a59a6ffb120311a82dd5569a3bfa0098db8a1c1d8b5ec568e97b61cff3b10729"
+dependencies = [
+ "alpm",
+ "pacmanconf",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4637,6 +4647,7 @@ name = "pakajo"
 version = "0.1.0"
 dependencies = [
  "alpm",
+ "alpm-utils",
  "anyhow",
  "base64",
  "bincode",
