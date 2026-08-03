@@ -94,7 +94,10 @@ mod tests {
 
     #[test]
     fn normal_lowercases_uppercase() {
-        assert_eq!(parse_query("FIRE"), Some(ParsedQuery::Normal("fire".into())));
+        assert_eq!(
+            parse_query("FIRE"),
+            Some(ParsedQuery::Normal("fire".into()))
+        );
     }
 
     #[test]

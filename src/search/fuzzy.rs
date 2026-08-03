@@ -1,4 +1,4 @@
-use crate::search::index::{byte_mask, IndexedPackage};
+use crate::search::index::{IndexedPackage, byte_mask};
 use crate::search::tiers::Tier;
 
 pub const MAX_EDIT_DISTANCE: usize = 2;

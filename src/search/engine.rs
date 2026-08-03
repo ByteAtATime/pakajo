@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use crate::search::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE};
-use crate::search::index::{byte_mask, needs_rebuild, IndexedPackage, PackageIndex};
-use crate::search::query::{parse_query, ParsedQuery};
-use crate::search::tiers::{best_concrete_tier_in, candidate_ordering, Candidate, Tier};
+use crate::search::index::{IndexedPackage, PackageIndex, byte_mask, needs_rebuild};
+use crate::search::query::{ParsedQuery, parse_query};
+use crate::search::tiers::{Candidate, Tier, best_concrete_tier_in, candidate_ordering};
 
 const RESULT_LIMIT: usize = 30;
 const FUZZY_GATE: usize = 5;
@@ -110,7 +110,12 @@ fn gather_cheap_candidates<'a>(
     for i in idxs {
         let p = &index.packages[i as usize];
         if let Some(tier) = best_concrete_tier_in(p, q, allowed, qmask) {
-            cands.push(Candidate { pkg: p, tier, distance: 0, first_letter_match: false });
+            cands.push(Candidate {
+                pkg: p,
+                tier,
+                distance: 0,
+                first_letter_match: false,
+            });
         }
     }
     cands
@@ -128,7 +133,12 @@ fn expensive_only_pass<'a>(
             continue;
         }
         if let Some(tier) = best_concrete_tier_in(p, q, EXPENSIVE_TIERS, qmask) {
-            cands.push(Candidate { pkg: p, tier, distance: 0, first_letter_match: false });
+            cands.push(Candidate {
+                pkg: p,
+                tier,
+                distance: 0,
+                first_letter_match: false,
+            });
         }
     }
     cands
@@ -178,17 +188,23 @@ fn fused_expensive_fuzzy_pass<'a>(
         if (name_missing == 0 || (qmask & !p.kw_mask) == 0)
             && let Some(tier) = best_concrete_tier_in(p, q, EXPENSIVE_TIERS, qmask)
         {
-            cands.push(Candidate { pkg: p, tier, distance: 0, first_letter_match: false });
+            cands.push(Candidate {
+                pkg: p,
+                tier,
+                distance: 0,
+                first_letter_match: false,
+            });
             placed.insert(idx);
             continue;
         }
         if name_missing.count_ones() as usize > MAX_EDIT_DISTANCE {
             continue;
         }
-        let name_len_ok = !(q_ascii && p.name.is_ascii())
-            || p.name.len().abs_diff(q.len()) <= MAX_EDIT_DISTANCE;
+        let name_len_ok =
+            !(q_ascii && p.name.is_ascii()) || p.name.len().abs_diff(q.len()) <= MAX_EDIT_DISTANCE;
         if name_len_ok
-            && let Some(name_d) = matcher.within_distance(p.name.as_bytes(), p.name_mask, MAX_EDIT_DISTANCE)
+            && let Some(name_d) =
+                matcher.within_distance(p.name.as_bytes(), p.name_mask, MAX_EDIT_DISTANCE)
         {
             let seed_first_letter = p.name.chars().next() == q_first;
             let (distance, first_letter_match) =
@@ -268,7 +284,7 @@ fn to_sorted_ids(mut cands: Vec<Candidate>) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::index::{tokenize, IndexedPackage};
+    use crate::search::index::{IndexedPackage, tokenize};
 
     fn pkg(id: u32, name: &str, is_repo: bool, popularity: u16) -> IndexedPackage {
         let tokens = tokenize(name);
@@ -340,7 +356,10 @@ mod tests {
 
     #[test]
     fn exact_name_ranks_first() {
-        let index = index_with(vec![pkg(1, "vim", false, 0), pkg(2, "vim-plugins", false, 0)]);
+        let index = index_with(vec![
+            pkg(1, "vim", false, 0),
+            pkg(2, "vim-plugins", false, 0),
+        ]);
         let ids = search_index(&index, "vim");
         assert_eq!(ids.first().copied(), Some(1));
     }

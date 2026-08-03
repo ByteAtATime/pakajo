@@ -87,10 +87,7 @@ pub fn normalize_popularity(pop: Option<f64>, is_repo: bool) -> u16 {
 fn parse_keywords(kw: Option<String>) -> Vec<String> {
     match kw {
         None => Vec::new(),
-        Some(s) => s
-            .split_whitespace()
-            .map(|w| w.to_lowercase())
-            .collect(),
+        Some(s) => s.split_whitespace().map(|w| w.to_lowercase()).collect(),
     }
 }
 
@@ -271,9 +268,9 @@ impl PackageIndex {
             .partition_point(|&(p, t)| pkgs[p as usize].tokens[t as usize].as_bytes() < q);
         let hi = match upper {
             None => self.tokens_sorted.len(),
-            Some(u) => self
-                .tokens_sorted
-                .partition_point(|&(p, t)| pkgs[p as usize].tokens[t as usize].as_bytes() < u.as_slice()),
+            Some(u) => self.tokens_sorted.partition_point(|&(p, t)| {
+                pkgs[p as usize].tokens[t as usize].as_bytes() < u.as_slice()
+            }),
         };
         lo..hi
     }
@@ -441,7 +438,10 @@ mod tests {
         assert_eq!(index.names_sorted, vec![1, 0]);
         assert_eq!(index.tokens_sorted.len(), 3);
         assert_eq!(index.tokens_sorted[0].1, 1);
-        assert_eq!(index.packages[index.tokens_sorted[0].0 as usize].tokens[1], "chrome");
+        assert_eq!(
+            index.packages[index.tokens_sorted[0].0 as usize].tokens[1],
+            "chrome"
+        );
         assert_eq!(
             index.unique_tokens,
             vec![

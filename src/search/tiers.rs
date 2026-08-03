@@ -56,16 +56,10 @@ pub fn best_concrete_tier_in(
     if allowed.contains(&Tier::PrefixToken) && prefix_token(pkg, q) {
         return Some(Tier::PrefixToken);
     }
-    if allowed.contains(&Tier::Substring)
-        && (qmask & !pkg.name_mask) == 0
-        && substring(pkg, q)
-    {
+    if allowed.contains(&Tier::Substring) && (qmask & !pkg.name_mask) == 0 && substring(pkg, q) {
         return Some(Tier::Substring);
     }
-    if allowed.contains(&Tier::Keyword)
-        && (qmask & !pkg.kw_mask) == 0
-        && keyword(pkg, q)
-    {
+    if allowed.contains(&Tier::Keyword) && (qmask & !pkg.kw_mask) == 0 && keyword(pkg, q) {
         return Some(Tier::Keyword);
     }
     None
@@ -129,11 +123,23 @@ mod tests {
     }
 
     fn chrome() -> IndexedPackage {
-        mk(1, "google-chrome", &["google", "chrome"], &["browser", "web"], 100, false)
+        mk(
+            1,
+            "google-chrome",
+            &["google", "chrome"],
+            &["browser", "web"],
+            100,
+            false,
+        )
     }
 
     fn cand(pkg: &IndexedPackage, tier: Tier) -> Candidate<'_> {
-        Candidate { pkg, tier, distance: 0, first_letter_match: false }
+        Candidate {
+            pkg,
+            tier,
+            distance: 0,
+            first_letter_match: false,
+        }
     }
 
     #[test]
@@ -175,7 +181,12 @@ mod tests {
         ];
         let pkg = chrome();
         assert_eq!(
-            best_concrete_tier_in(&pkg, "google-chrome", ALL_CONCRETE, byte_mask(b"google-chrome")),
+            best_concrete_tier_in(
+                &pkg,
+                "google-chrome",
+                ALL_CONCRETE,
+                byte_mask(b"google-chrome")
+            ),
             Some(Tier::ExactName),
         );
         assert_eq!(
