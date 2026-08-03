@@ -51,6 +51,7 @@ pub fn init_alpm_at(
 ) -> anyhow::Result<Alpm> {
     let mut handle = Alpm::new(root, db_path)?;
     handle.set_architectures(config.architecture.iter())?;
+    handle.set_default_siglevel(parse_siglevel(&config.sig_level))?;
     for dir in cache_dirs {
         handle.add_cachedir(dir.as_str())?;
     }
