@@ -196,9 +196,17 @@ pub(crate) fn register_callbacks<S: InstallSink + 'static>(
         alpm::Question::RemovePkgs(mut rq) => {
             rq.set_skip(false);
         }
-        _ => {
-            s.deny_flag = true;
-            s.detail = "unsupported transaction question".to_string();
+        alpm::Question::Replace(rq) => {
+            rq.set_replace(true);
+        }
+        alpm::Question::Corrupted(mut cq) => {
+            cq.set_remove(true);
+        }
+        alpm::Question::ImportKey(mut iq) => {
+            iq.set_import(false);
+        }
+        alpm::Question::InstallIgnorepkg(mut iq) => {
+            iq.set_install(false);
         }
             }
         },
