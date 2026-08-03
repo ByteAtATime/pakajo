@@ -52,7 +52,6 @@ pub fn init_alpm_at(
     root: &str,
     db_path: &str,
     cache_dirs: &[String],
-    verify_db_sigs: bool,
 ) -> anyhow::Result<Alpm> {
     let mut handle = Alpm::new(root, db_path)?;
     handle.set_architectures(config.architecture.iter())?;
@@ -66,14 +65,12 @@ pub fn init_alpm_at(
         } else {
             parse_siglevel(&repo.sig_level)
         };
-        if !verify_db_sigs {
-            level.remove(
-                SigLevel::DATABASE
-                    | SigLevel::DATABASE_OPTIONAL
-                    | SigLevel::DATABASE_MARGINAL_OK
-                    | SigLevel::DATABASE_UNKNOWN_OK,
-            );
-        }
+        level.remove(
+            SigLevel::DATABASE
+                | SigLevel::DATABASE_OPTIONAL
+                | SigLevel::DATABASE_MARGINAL_OK
+                | SigLevel::DATABASE_UNKNOWN_OK,
+        );
         let db = handle.register_syncdb_mut(repo.name.clone(), level)?;
         db.set_servers(repo.servers.iter())?;
     }
@@ -95,7 +92,7 @@ pub(crate) fn init_alpm_rootless(config: &pacmanconf::Config) -> anyhow::Result<
             .with_context(|| format!("symlinking local db -> {}", expected_local.display()))?;
     }
     let checkdb_str = checkdb.to_string_lossy().to_string();
-    let mut handle = init_alpm_at(config, "/", &checkdb_str, &config.cache_dir, false)
+    let mut handle = init_alpm_at(config, "/", &checkdb_str, &config.cache_dir)
         .context("initializing rootless alpm handle")?;
     handle
         .set_gpgdir(config.gpg_dir.as_str())
