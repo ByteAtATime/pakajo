@@ -182,9 +182,20 @@ impl LocalIndex {
         let conn = self.write.lock().expect("write connection poisoned");
         let json = serde_json::to_string(info)?;
         conn.execute(
-            "INSERT OR REPLACE INTO packages \
+            "INSERT INTO packages \
              (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json,keywords) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+             VALUES (?,?,?,?,?,?,?,?,?,?,?) \
+             ON CONFLICT(name) DO UPDATE SET \
+             source=excluded.source, \
+             repo=excluded.repo, \
+             version=excluded.version, \
+             description=excluded.description, \
+             num_votes=excluded.num_votes, \
+             popularity=excluded.popularity, \
+             last_update=excluded.last_update, \
+             package_base=excluded.package_base, \
+             detail_json=excluded.detail_json, \
+             keywords=excluded.keywords",
             rusqlite::params![
                 &info.name,
                 "aur",
@@ -718,6 +729,51 @@ mod tests {
         );
         assert_eq!(got2.name, "yay");
         assert_eq!(got2.make_depends, vec!["go>=1.24".to_string()]);
+    }
+
+    #[test]
+    fn put_detail_preserves_rowid_on_conflict() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("aur-meta.sqlite");
+        let index = LocalIndex::open(&path).expect("open");
+        let conn = rusqlite::Connection::open(&path).expect("seed");
+
+        conn.execute(
+            "INSERT INTO packages \
+             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json,keywords) \
+             VALUES ('vim','aur','aur','1.0-1','editor',0,0.0,0,'vim',NULL,NULL)",
+            [],
+        )
+        .expect("seed vim");
+
+        let rowid_before: i64 = conn
+            .query_row("SELECT rowid FROM packages WHERE name = 'vim'", [], |row| {
+                row.get(0)
+            })
+            .expect("read rowid before");
+        drop(conn);
+
+        let blob = r#"{"Depends":["pacman>6.1","git"],"Description":"Yet another yogurt.","FirstSubmitted":1475688004,"ID":2131240,"Keywords":["arm"],"LastModified":1781905288,"License":["GPL-3.0-or-later"],"Maintainer":"jguer","MakeDepends":["go>=1.24"],"Name":"vim","NumVotes":2617,"OptDepends":["sudo","doas"],"OutOfDate":null,"PackageBase":"vim","PackageBaseID":115973,"Popularity":40.475635,"Submitter":"jguer","URL":"https://github.com/Jguer/yay","URLPath":"/cgit/aur.git/snapshot/yay.tar.gz","Version":"13.0.1-1"}"#;
+        let info: AurInfo = serde_json::from_str(blob).expect("parse vim");
+
+        index.put_detail(&info).expect("put_detail vim");
+
+        let rowid_after: i64 = {
+            let read = index.read.lock().expect("read connection poisoned");
+            read.query_row("SELECT rowid FROM packages WHERE name = 'vim'", [], |row| {
+                row.get(0)
+            })
+            .expect("read rowid after")
+        };
+
+        assert_eq!(
+            rowid_before, rowid_after,
+            "rowid must be stable across put_detail conflict"
+        );
+        assert!(
+            index.detail("vim").expect("vim query").is_some(),
+            "detail_json must be written after put_detail"
+        );
     }
 
     #[test]
