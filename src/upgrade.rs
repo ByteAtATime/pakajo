@@ -3,18 +3,28 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use anyhow::Context as _;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 use crate::aur::AurInfo;
-use crate::events::{InstallEvent, InstallSink, TransactionSummary};
+use crate::events::{InstallEvent, InstallSink, LogLevel, TransactionSummary, summaries_match};
 use crate::install::{QuestionState, build_summary, register_callbacks};
 use crate::resolve::AurQuery;
+
+fn decode_fingerprint(b64: &str) -> anyhow::Result<TransactionSummary> {
+    let bytes = STANDARD
+        .decode(b64)
+        .context("fingerprint is not valid base64")?;
+    serde_json::from_slice(&bytes).context("fingerprint is not valid json")
+}
 
 pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
     no_refresh: bool,
     extra_ignores: &[String],
     sink: S,
     answerer: Box<dyn crate::answerer::QuestionAnswerer>,
+    fingerprint: Option<&str>,
 ) -> anyhow::Result<()> {
+    let preview = fingerprint.map(decode_fingerprint).transpose()?;
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let mut handle = crate::pacman::init_alpm(&config)?;
     apply_ignores(&mut handle, &config, extra_ignores);
@@ -24,7 +34,7 @@ pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
             .update(false)
             .context("failed to refresh sync DBs")?;
     }
-    repo_sysupgrade_into(&mut handle, sink, answerer)
+    repo_sysupgrade_into(&mut handle, sink, answerer, preview.as_ref())
 }
 
 pub(crate) fn apply_ignores(
@@ -137,11 +147,12 @@ fn repo_sysupgrade_into<S: InstallSink + 'static>(
     handle: &mut alpm::Alpm,
     sink: S,
     answerer: Box<dyn crate::answerer::QuestionAnswerer>,
+    preview: Option<&TransactionSummary>,
 ) -> anyhow::Result<()> {
     let sink = Rc::new(RefCell::new(sink));
     let qstate = Rc::new(RefCell::new(QuestionState::new(answerer)));
     register_callbacks(handle, sink.clone(), qstate.clone());
-    let result = run_sysupgrade_transaction(handle, &sink, &qstate);
+    let result = run_sysupgrade_transaction(handle, &sink, &qstate, preview);
     let _ = handle.trans_release();
     result
 }
@@ -150,6 +161,7 @@ fn run_sysupgrade_transaction<S: InstallSink>(
     handle: &mut alpm::Alpm,
     sink: &Rc<RefCell<S>>,
     qstate: &Rc<RefCell<QuestionState>>,
+    preview: Option<&TransactionSummary>,
 ) -> anyhow::Result<()> {
     handle
         .trans_init(alpm::TransFlag::NONE)
@@ -168,6 +180,15 @@ fn run_sysupgrade_transaction<S: InstallSink>(
     }
 
     let summary: TransactionSummary = build_summary(handle);
+    if let Some(prev) = preview
+        && !summaries_match(prev, &summary)
+    {
+        sink.borrow_mut().event(InstallEvent::Log {
+            level: LogLevel::Error,
+            message: "review is stale; re-review the upgrade".to_string(),
+        });
+        anyhow::bail!("review is stale");
+    }
     sink.borrow_mut()
         .event(InstallEvent::TransactionSummary(summary));
 
@@ -197,8 +218,85 @@ mod tests {
             &mut handle,
             ConsoleSink::new(),
             Box::new(crate::answerer::DenyAllAnswerer),
+            None,
         );
         result.expect("sysupgrade with nothing to do should succeed");
+    }
+
+    fn phantom_pkg(name: &str) -> crate::events::SummaryPackage {
+        crate::events::SummaryPackage {
+            name: name.to_string(),
+            repository: None,
+            new_version: "1.0".to_string(),
+            old_version: None,
+            download_size: 0,
+            installed_size: 0,
+            old_installed_size: 0,
+            is_removal: false,
+        }
+    }
+
+    fn empty_summary() -> TransactionSummary {
+        TransactionSummary {
+            packages: vec![],
+            total_download_size: 0,
+            total_installed_size: 0,
+            total_removed_size: 0,
+        }
+    }
+
+    #[test]
+    fn fingerprint_round_trips() {
+        let original = TransactionSummary {
+            packages: vec![phantom_pkg("ghost")],
+            total_download_size: 0,
+            total_installed_size: 0,
+            total_removed_size: 0,
+        };
+        let b64 = STANDARD.encode(serde_json::to_vec(&original).unwrap());
+        let decoded = decode_fingerprint(&b64).expect("decode should succeed");
+        assert!(summaries_match(&original, &decoded));
+    }
+
+    #[test]
+    #[ignore]
+    fn stale_review_accepts_matching_summary() {
+        let mut handle = setup_fake_root("stale_match");
+        let preview = empty_summary();
+        let res = repo_sysupgrade_into(
+            &mut handle,
+            ConsoleSink::new(),
+            Box::new(crate::answerer::DenyAllAnswerer),
+            Some(&preview),
+        );
+        if let Err(e) = &res {
+            let rendered = format!("{e:#}");
+            assert!(
+                !rendered.contains("stale"),
+                "matching summary must not trip the staleness guard, got: {rendered}",
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn stale_review_rejects_mismatched_summary() {
+        let mut handle = setup_fake_root("stale_mismatch");
+        let phantom = TransactionSummary {
+            packages: vec![phantom_pkg("ghost")],
+            total_download_size: 0,
+            total_installed_size: 0,
+            total_removed_size: 0,
+        };
+        let result = repo_sysupgrade_into(
+            &mut handle,
+            ConsoleSink::new(),
+            Box::new(crate::answerer::DenyAllAnswerer),
+            Some(&phantom),
+        );
+        assert!(result.is_err(), "stale summary should bail before commit");
+        let local_count = handle.localdb().pkgs().iter().count();
+        assert_eq!(local_count, 0, "trans_commit must never have run");
     }
 
     #[test]

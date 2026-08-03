@@ -237,6 +237,7 @@ pub(crate) fn upgrade_subcommand(args: UpgradeArgs) -> ! {
                 &args.ignores,
                 JsonSink::new(),
                 answerer,
+                args.fingerprint.as_deref(),
             ));
         } else {
             exit_with_result(crate::upgrade::run_repo_sysupgrade(
@@ -244,6 +245,7 @@ pub(crate) fn upgrade_subcommand(args: UpgradeArgs) -> ! {
                 &args.ignores,
                 ConsoleSink::new(),
                 answerer,
+                args.fingerprint.as_deref(),
             ));
         }
     }

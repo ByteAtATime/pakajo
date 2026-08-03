@@ -142,7 +142,6 @@ pub struct SummaryPackage {
     pub is_removal: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum SummaryAction {
     Install,
@@ -152,7 +151,6 @@ pub(crate) enum SummaryAction {
     Remove,
 }
 
-#[allow(dead_code)]
 pub(crate) fn classify_action(pkg: &SummaryPackage) -> SummaryAction {
     if pkg.is_removal {
         return SummaryAction::Remove;
@@ -167,7 +165,6 @@ pub(crate) fn classify_action(pkg: &SummaryPackage) -> SummaryAction {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn target_version(pkg: &SummaryPackage) -> &str {
     if pkg.is_removal {
         return pkg.old_version.as_deref().unwrap_or("");
@@ -175,7 +172,6 @@ pub(crate) fn target_version(pkg: &SummaryPackage) -> &str {
     &pkg.new_version
 }
 
-#[allow(dead_code)]
 pub(crate) fn summary_fingerprint(
     summary: &TransactionSummary,
 ) -> std::collections::BTreeSet<(String, SummaryAction, String)> {
@@ -192,7 +188,6 @@ pub(crate) fn summary_fingerprint(
         .collect()
 }
 
-#[allow(dead_code)]
 pub(crate) fn summaries_match(prev: &TransactionSummary, cur: &TransactionSummary) -> bool {
     summary_fingerprint(prev) == summary_fingerprint(cur)
 }
@@ -279,7 +274,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod drift_tests {
+mod staleness_tests {
     use super::*;
 
     fn pkg(name: &str, old: Option<&str>, new: &str, is_removal: bool) -> SummaryPackage {
