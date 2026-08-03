@@ -241,8 +241,20 @@ pub(crate) fn remove_subcommand(args: RemoveArgs) -> ! {
 }
 
 pub(crate) fn upgrade_subcommand(args: UpgradeArgs) -> ! {
+    let approvals = match args
+        .approvals_b64
+        .as_deref()
+        .map(decode_approvals)
+        .transpose()
+    {
+        Ok(opt) => opt,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    };
     if args.repo_only {
-        let answerer = answerer_for(None);
+        let answerer = answerer_for(approvals);
         if args.json {
             exit_with_result(crate::upgrade::run_repo_sysupgrade(
                 args.no_refresh,

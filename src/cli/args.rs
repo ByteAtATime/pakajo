@@ -54,6 +54,8 @@ pub(crate) struct UpgradeArgs {
     pub(super) skip_review: bool,
     #[arg(long = "fingerprint-file")]
     pub(super) fingerprint_file: Option<String>,
+    #[arg(long = "approvals")]
+    pub(super) approvals_b64: Option<String>,
 }
 
 #[derive(Args)]
