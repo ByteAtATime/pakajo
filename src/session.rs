@@ -274,6 +274,7 @@ impl PakajoSession {
             }
             StreamItem::Done(ChildOutcome::Success) => {
                 self.refresh_installed_state(cx);
+                self.start_updates_checker(cx);
                 self.set_progress(InstallProgress::Completed, cx);
             }
             StreamItem::Done(ChildOutcome::Dismissed) => {

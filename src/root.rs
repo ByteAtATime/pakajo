@@ -304,6 +304,12 @@ impl PakajoRoot {
         }
 
         self.install_progress = progress;
+        if matches!(self.install_progress, InstallProgress::Completed)
+            && matches!(self.install_kind, InstallKind::Upgrade)
+        {
+            self.sysupgrade_preview = None;
+            self.sysupgrade_preview_error = None;
+        }
         cx.notify();
     }
 
