@@ -40,13 +40,17 @@ fn parse_siglevel(sig_strings: &[String]) -> SigLevel {
 }
 
 pub fn init_alpm(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
-    init_alpm_at(
+    let mut handle = init_alpm_at(
         config,
         &config.root_dir,
         &config.db_path,
         &config.cache_dir,
         true,
-    )
+    )?;
+    handle
+        .set_gpgdir(config.gpg_dir.as_str())
+        .context("setting alpm gpgdir")?;
+    Ok(handle)
 }
 
 pub fn init_alpm_at(
@@ -97,11 +101,8 @@ pub(crate) fn init_alpm_rootless(config: &pacmanconf::Config) -> anyhow::Result<
             .with_context(|| format!("symlinking local db -> {}", expected_local.display()))?;
     }
     let checkdb_str = checkdb.to_string_lossy().to_string();
-    let mut handle = init_alpm_at(config, "/", &checkdb_str, &config.cache_dir, false)
+    let handle = init_alpm_at(config, "/", &checkdb_str, &config.cache_dir, false)
         .context("initializing rootless alpm handle")?;
-    handle
-        .set_gpgdir(config.gpg_dir.as_str())
-        .context("forwarding gpgdir")?;
     Ok(handle)
 }
 
