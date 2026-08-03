@@ -96,6 +96,12 @@ impl QuestionSet {
     }
 }
 
+pub fn default_approve(qs: &QuestionSet) -> anyhow::Result<Approvals> {
+    let conflicts: Vec<usize> = (0..qs.conflicts.len()).collect();
+    let providers: Vec<(usize, usize)> = (0..qs.providers.len()).map(|i| (i, 0)).collect();
+    qs.approve(&conflicts, &providers)
+}
+
 pub fn encode_approvals(approvals: &Approvals) -> anyhow::Result<String> {
     let bytes = serde_json::to_vec(approvals).context("failed to serialize approvals")?;
     Ok(STANDARD.encode(&bytes))
@@ -211,5 +217,72 @@ mod tests {
         let decoded: Approvals = serde_json::from_str(legacy).expect("decode legacy");
         assert!(decoded.approved_providers.is_empty());
         assert_eq!(decoded.approved_conflicts.len(), 1);
+    }
+
+    #[test]
+    fn default_approve_approves_all_conflicts_and_first_provider() {
+        let qs = QuestionSet {
+            conflicts: vec![
+                Conflict {
+                    incoming: "cava-git".into(),
+                    removable: "cava".into(),
+                },
+                Conflict {
+                    incoming: "nginx-mainline".into(),
+                    removable: "nginx".into(),
+                },
+            ],
+            providers: vec![
+                ProviderPrompt {
+                    depend: "sdl".into(),
+                    candidates: vec![
+                        ProviderCandidate {
+                            name: "sdl12-compat".into(),
+                            repo: Some("extra".into()),
+                            version: Some("1.2.68-2".into()),
+                        },
+                        ProviderCandidate {
+                            name: "sdl2".into(),
+                            repo: Some("extra".into()),
+                            version: Some("2.30.0-1".into()),
+                        },
+                    ],
+                },
+                ProviderPrompt {
+                    depend: "libgl".into(),
+                    candidates: vec![
+                        ProviderCandidate {
+                            name: "libglvnd".into(),
+                            repo: Some("extra".into()),
+                            version: None,
+                        },
+                        ProviderCandidate {
+                            name: "nvidia-utils".into(),
+                            repo: Some("extra".into()),
+                            version: None,
+                        },
+                    ],
+                },
+            ],
+            had_unsupported_question: false,
+            unsupported_summary: String::new(),
+        };
+
+        let approvals = default_approve(&qs).expect("default_approve");
+
+        assert_eq!(approvals.approved_conflicts.len(), 2);
+        assert_eq!(approvals.approved_providers.len(), 2);
+        assert_eq!(
+            approvals.approved_conflicts, qs.conflicts,
+            "default_approve should approve every conflict"
+        );
+        assert_eq!(
+            approvals.approved_providers[0].provider_name, qs.providers[0].candidates[0].name,
+            "provider 0 should resolve to candidate 0"
+        );
+        assert_eq!(
+            approvals.approved_providers[1].provider_name, qs.providers[1].candidates[0].name,
+            "provider 1 should resolve to candidate 0"
+        );
     }
 }

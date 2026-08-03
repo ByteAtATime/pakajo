@@ -368,6 +368,7 @@ impl PakajoSession {
     pub(crate) fn spawn_sysupgrade_subprocess(
         &mut self,
         fingerprint_file: String,
+        approvals_b64: Option<String>,
         cx: &mut Context<Self>,
     ) {
         let exe = match current_exe() {
@@ -389,7 +390,7 @@ impl PakajoSession {
         });
         let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
         std::thread::spawn(move || {
-            crate::upgrade::run_sysupgrade_process(exe, fingerprint_file, tx, None)
+            crate::upgrade::run_sysupgrade_process(exe, fingerprint_file, tx, approvals_b64)
         });
         cx.spawn(async move |this, cx| {
             while let Some(item) = rx.next().await {
@@ -478,6 +479,7 @@ impl PakajoSession {
     pub(crate) fn start_sysupgrade_apply(
         &mut self,
         summary_bytes: Vec<u8>,
+        approvals: crate::question::Approvals,
         cx: &mut Context<Self>,
     ) {
         if matches!(self.install_progress, InstallProgress::Running) {
@@ -493,8 +495,18 @@ impl PakajoSession {
                 return;
             }
         };
-        self.set_progress(InstallProgress::Running, cx);
-        self.spawn_sysupgrade_subprocess(fingerprint_file, cx);
+        match encode_approvals(&approvals) {
+            Ok(b64) => {
+                self.set_progress(InstallProgress::Running, cx);
+                self.spawn_sysupgrade_subprocess(fingerprint_file, Some(b64), cx);
+            }
+            Err(error) => {
+                self.set_progress(
+                    InstallProgress::Failed(format!("failed to encode approvals: {error}")),
+                    cx,
+                );
+            }
+        }
     }
 
     pub(crate) fn confirm_install(

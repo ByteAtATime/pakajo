@@ -682,6 +682,7 @@ impl PakajoRoot {
             || preview.summary.packages.is_empty()
             || matches!(self.install_progress, InstallProgress::Running);
         let summary_bytes = serde_json::to_vec(&preview.summary).unwrap_or_default();
+        let questions = preview.questions.clone();
 
         let top_bar = h_flex()
             .items_center()
@@ -704,8 +705,22 @@ impl PakajoRoot {
                     .label("Apply")
                     .disabled(apply_disabled)
                     .on_click(cx.listener(move |this, _ev, _window, cx| {
+                        let approvals = match crate::question::default_approve(&questions) {
+                            Ok(a) => a,
+                            Err(error) => {
+                                this.session.update(cx, |s, cx| {
+                                    s.set_progress(
+                                        InstallProgress::Failed(format!(
+                                            "failed to compute default approvals: {error}"
+                                        )),
+                                        cx,
+                                    );
+                                });
+                                return;
+                            }
+                        };
                         this.session.update(cx, |s, cx| {
-                            s.start_sysupgrade_apply(summary_bytes.clone(), cx)
+                            s.start_sysupgrade_apply(summary_bytes.clone(), approvals, cx)
                         });
                     })),
             );
