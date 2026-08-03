@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::rc::Rc;
 
 use anyhow::Context as _;
@@ -10,6 +10,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::channel::mpsc;
 
 use crate::aur::AurInfo;
+use crate::cli::escalation_command;
 use crate::events::{InstallEvent, InstallSink, LogLevel, TransactionSummary, summaries_match};
 use crate::install::{
     ChildOutcome, QuestionState, StreamItem, build_summary, map_outcome, register_callbacks,
@@ -62,7 +63,7 @@ pub(crate) fn run_sysupgrade_process(
         }
     };
 
-    let mut cmd = Command::new(&exe);
+    let mut cmd = escalation_command(&exe.to_string_lossy());
     cmd.arg("upgrade")
         .arg("--json")
         .arg("--repo-only")
