@@ -39,7 +39,7 @@ pub(super) fn confirm_install() -> bool {
 
 pub(super) fn confirm_remove() -> bool {
     print!("\n");
-    read_confirmation("Proceed with removal?", PromptStream::Stdout)
+    read_confirmation("Do you want to remove these packages?", PromptStream::Stdout)
 }
 
 fn print_plan_summary(plan: &BuildPlan) {
@@ -138,6 +138,11 @@ pub(super) fn confirm_proceed_to_review(plan: &BuildPlan) -> BuildDecision {
 pub(super) fn confirm_install_stderr() -> bool {
     eprint!("\n");
     read_confirmation("Proceed with installation?", PromptStream::Stderr)
+}
+
+pub(super) fn confirm_remove_stderr() -> bool {
+    eprint!("\n");
+    read_confirmation("Do you want to remove these packages?", PromptStream::Stderr)
 }
 
 pub(super) fn confirm_review_accept() -> bool {

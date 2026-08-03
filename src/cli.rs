@@ -10,16 +10,18 @@ pub(crate) use self::args::{Cli, Command};
 mod summary;
 
 mod prompts;
-use self::prompts::{confirm_build, confirm_proceed_to_review, confirm_remove};
+use self::prompts::{
+    confirm_build, confirm_proceed_to_review, confirm_remove, confirm_remove_stderr,
+};
 
 mod review;
 
 mod sinks;
 pub(crate) use self::sinks::ConsoleSink;
-use self::sinks::JsonSink;
+use self::sinks::{EscalatedSink, JsonSink};
 
 mod privs;
-use self::privs::is_root;
+use self::privs::{is_root, stdin_is_tty};
 
 mod escalate;
 pub(crate) use self::escalate::escalation_command;
@@ -207,14 +209,24 @@ pub(crate) fn remove_subcommand(args: RemoveArgs) -> ! {
     }
 
     if is_root() {
+        let interactive = stdin_is_tty();
         let answerer = answerer_for(None);
         if args.json {
-            exit_with_result(crate::remove::run_remove(
-                &positionals,
-                JsonSink::new(),
-                || true,
-                answerer,
-            ));
+            if interactive {
+                exit_with_result(crate::remove::run_remove(
+                    &positionals,
+                    EscalatedSink::new(),
+                    confirm_remove_stderr,
+                    answerer,
+                ));
+            } else {
+                exit_with_result(crate::remove::run_remove(
+                    &positionals,
+                    JsonSink::new(),
+                    || true,
+                    answerer,
+                ));
+            }
         } else {
             exit_with_result(crate::remove::run_remove(
                 &positionals,
