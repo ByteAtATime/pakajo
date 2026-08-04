@@ -221,6 +221,8 @@ fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
     qstate: &Rc<RefCell<QuestionState>>,
     confirm: F,
 ) -> anyhow::Result<()> {
+    crate::pacman::lock::install_lock_cleanup_on_signal(handle);
+
     handle
         .trans_init(alpm::TransFlag::NONE)
         .context("failed to initialize transaction")?;

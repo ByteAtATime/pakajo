@@ -16,6 +16,7 @@ anyhow = "1.0.103"
 regex = "1.12.4"
 libc = "0.2"
 nix = { version = "0.31", features = ["term"] }
+signal-hook = { version = "0.3", features = ["iterator"] }
 base64 = "0.22"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }

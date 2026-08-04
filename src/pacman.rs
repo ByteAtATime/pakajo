@@ -1,6 +1,8 @@
 use alpm::{Alpm, SigLevel};
 use anyhow::Context as _;
 
+pub(crate) mod lock;
+
 fn parse_siglevel(sig_strings: &[String]) -> SigLevel {
     if sig_strings.is_empty() {
         return SigLevel::USE_DEFAULT;
