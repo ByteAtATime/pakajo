@@ -1,6 +1,9 @@
 use crate::color;
 
 pub(super) fn render(percent: i32, width: usize, colored: bool) -> String {
+    if width == 0 {
+        return String::new();
+    }
     let pct = percent.clamp(0, 100) as usize;
     let hash = pct * width / 100;
     let mut out = String::with_capacity(width * 8 + 2);
@@ -42,5 +45,10 @@ mod tests {
     fn odd_percent_closes_mouth() {
         let bar = render(1, 30, false);
         assert!(bar.contains('c'));
+    }
+
+    #[test]
+    fn zero_width_renders_nothing() {
+        assert_eq!(render(50, 0, false), "");
     }
 }
