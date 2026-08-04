@@ -147,6 +147,10 @@ mod tests {
     #[ignore]
     fn local_group_lists_installed_members() {
         let mut handle = crate::install::setup_fake_root("local_group");
+        assert!(
+            local_group(&handle, "base-devel").is_none(),
+            "local base-devel must be absent before any member is installed"
+        );
         crate::install::install_into(
             &mut handle,
             &[crate::install::InstallTarget::Repo("make".to_string())],
