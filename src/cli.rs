@@ -17,6 +17,7 @@ use self::prompts::{
 mod review;
 
 mod sinks;
+mod chomp;
 pub(crate) use self::sinks::ConsoleSink;
 use self::sinks::{EscalatedSink, JsonSink};
 

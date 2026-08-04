@@ -89,7 +89,7 @@ impl ConsoleSink {
                     return;
                 }
                 self.last_progress = Some(key);
-                print_progress(*phase, package, *percent, *current, *total);
+                print_progress(*phase, package, *percent, *current, *total, self.color);
             }
             InstallEvent::HookRun {
                 position,
@@ -259,18 +259,22 @@ fn clean_pkg_filename(name: &str) -> &str {
     stripped.split(".pkg").next().unwrap_or(stripped)
 }
 
-fn print_progress(phase: ProgressPhase, package: &str, percent: i32, current: usize, total: usize) {
+fn print_progress(
+    phase: ProgressPhase,
+    package: &str,
+    percent: i32,
+    current: usize,
+    total: usize,
+    colored: bool,
+) {
     let label = progress_phase_label(phase);
     let subject = if package.is_empty() {
         label.to_string()
     } else {
         format!("{label} {package}")
     };
-    let bar_width = 30;
-    let filled = (percent as usize * bar_width / 100).min(bar_width);
-    let bar: String = "#".repeat(filled);
-    let spaces = "-".repeat(bar_width - filled);
-    print!("\r({current}/{total}) {subject} [{bar}{spaces}] {percent:>3}%");
+    let bar = super::chomp::render(percent, 30, colored);
+    print!("\r({current}/{total}) {subject} {bar} {percent:>3}%");
     let _ = std::io::stdout().flush();
     if percent >= 100 {
         println!();
