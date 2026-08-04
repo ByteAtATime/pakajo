@@ -1,14 +1,24 @@
+use std::collections::HashMap;
 use std::io::Write as _;
+use std::time::Instant;
 
 use super::summary::{print_summary, render_summary};
 use crate::events::{DownloadResult, InstallEvent, InstallSink, LogLevel, ProgressPhase};
-use crate::{color, utils::format_bytes};
+use crate::{color, utils::{format_bytes, format_eta, format_rate, humanize_size}};
+
+struct DownloadStat {
+    sync_xfered: i64,
+    sync_time: Instant,
+    rate: f64,
+    eta: u64,
+}
 
 pub(crate) struct ConsoleSink {
     last_progress: Option<(ProgressPhase, String, i32)>,
     hooks_header_done: bool,
     color: bool,
     stderr_color: bool,
+    downloads: HashMap<String, DownloadStat>,
 }
 
 impl ConsoleSink {
@@ -18,6 +28,7 @@ impl ConsoleSink {
             hooks_header_done: false,
             color: color::stdout_color(),
             stderr_color: color::stderr_color(),
+            downloads: HashMap::new(),
         }
     }
 
@@ -56,15 +67,42 @@ impl ConsoleSink {
                 } else {
                     100
                 };
+                let now = Instant::now();
+                let stat = self.downloads.entry(filename.clone()).or_insert_with(|| DownloadStat {
+                    sync_xfered: *downloaded,
+                    sync_time: now,
+                    rate: 0.0,
+                    eta: 0,
+                });
+                let timediff = now.duration_since(stat.sync_time).as_millis() as i64;
+                if timediff >= 200 {
+                    let chunk = *downloaded - stat.sync_xfered;
+                    if chunk > 0 {
+                        let chunk_rate = chunk as f64 * 1000.0 / timediff as f64;
+                        stat.rate = (chunk_rate + 2.0 * stat.rate) / 3.0;
+                        if stat.rate > 0.0 && *total > stat.sync_xfered {
+                            stat.eta = ((*total - stat.sync_xfered) as f64 / stat.rate) as u64;
+                        }
+                    }
+                    stat.sync_xfered = *downloaded;
+                    stat.sync_time = now;
+                }
+                let rate = stat.rate;
+                let eta = stat.eta;
                 let cols = crate::utils::terminal_cols();
                 let infolen = (cols * 6 / 10).max(50);
-                let filename_width = infolen.saturating_sub(2 + 20);
+                let filenamelen = infolen.saturating_sub(30);
                 let cell_width = cols.saturating_sub(infolen).saturating_sub(8);
-                let fitted_name = fit_subject(filename, filename_width);
-                let bytes = format!("{}/{}", format_bytes(*downloaded), format_bytes(*total));
+                let fitted_name = fit_subject(clean_pkg_filename(filename), filenamelen);
+                let (xval, xunit) = humanize_size(*downloaded);
+                let (rval, runit) = humanize_size(rate as i64);
+                let rate_str = format_rate(rval);
+                let eta_str = format_eta(eta);
                 let bar = super::chomp::render(percent, cell_width, self.color);
                 let clear = if self.color { "\x1b[K" } else { "" };
-                print!("\r  {fitted_name}{bytes:<20} {bar} {percent:>3}%{clear}");
+                print!(
+                    "\r {fitted_name} {xval:>6.1} {xunit:>3}  {rate_str} {runit:>3}/s {eta_str} {bar} {percent:>3}%{clear}"
+                );
                 let _ = std::io::stdout().flush();
             }
             InstallEvent::DownloadRetry { filename, resume } => {
@@ -75,7 +113,9 @@ impl ConsoleSink {
                 filename,
                 total,
                 result,
-            } => match result {
+            } => {
+                self.downloads.remove(filename);
+                match result {
                 DownloadResult::UpToDate => {
                     println!(" {} is up to date", clean_pkg_filename(filename));
                 }
@@ -86,6 +126,7 @@ impl ConsoleSink {
                 DownloadResult::Failed => {
                     let clear = if self.color { "\x1b[K" } else { "" };
                     println!("\r  {filename}: {} [failed]{clear}", format_bytes(*total));
+                }
                 }
             },
             InstallEvent::Progress {
