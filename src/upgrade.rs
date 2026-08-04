@@ -520,4 +520,175 @@ mod tests {
             "ignore_group from config must be set: {groups:?}"
         );
     }
+
+    #[test]
+    #[ignore = "integration: needs live pacman sync DBs; run with --ignored sysupgrade_apply"]
+    fn sysupgrade_apply_replays_approvals_without_live_write() {
+        use crate::answerer::{
+            ApprovalsAnswerer, ConflictDecision, ProviderDecision, QuestionAnswerer,
+        };
+        use crate::question::{
+            Conflict, ProviderCandidate, ProviderPrompt, QuestionSet, default_approve,
+        };
+        use std::collections::{BTreeMap, BTreeSet};
+        use std::fs;
+        use std::path::Path;
+        use std::time::SystemTime;
+
+        const ROOT_DB_LCK: &str = "/var/lib/pacman/db.lck";
+        const ROOT_SYNC_DIR: &str = "/var/lib/pacman/sync";
+
+        fn sync_db_mtimes() -> BTreeMap<String, SystemTime> {
+            let mut map = BTreeMap::new();
+            let Ok(entries) = fs::read_dir(ROOT_SYNC_DIR) else {
+                return map;
+            };
+            for entry in entries.flatten() {
+                let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                    continue;
+                };
+                if !(name.ends_with(".db") || name.ends_with(".files")) {
+                    continue;
+                }
+                if let Ok(meta) = entry.metadata()
+                    && let Ok(mtime) = meta.modified()
+                {
+                    map.insert(name, mtime);
+                }
+            }
+            map
+        }
+
+        let root_lock = Path::new(ROOT_DB_LCK);
+        assert!(
+            !root_lock.exists(),
+            "pre-existing {ROOT_DB_LCK} blocks a clean spike; remove it first"
+        );
+        if let Ok(checkdb) = crate::build::cache_root() {
+            let _ = std::fs::remove_file(checkdb.join("checkdb").join("db.lck"));
+        }
+        let mtimes_before = sync_db_mtimes();
+
+        let config = pacmanconf::Config::new().expect("failed to read pacman config");
+        let mut handle = crate::pacman::init_alpm_rootless(&config)
+            .expect("failed to build rootless alpm handle");
+        handle
+            .syncdbs_mut()
+            .update(false)
+            .expect("failed to refresh checkdb sync DBs");
+
+        apply_ignores(&mut handle, &config, &[]);
+        handle
+            .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
+            .expect("DB_ONLY|NO_LOCK trans_init failed");
+        handle
+            .sync_sysupgrade(false)
+            .expect("sync_sysupgrade failed under DB_ONLY|NO_LOCK");
+        let preview_names: BTreeSet<String> = handle
+            .trans_add()
+            .iter()
+            .map(|p| p.name().to_string())
+            .collect();
+        let _ = handle.trans_release();
+
+        assert!(
+            !root_lock.exists(),
+            "NOLOCK invariant violated: {ROOT_DB_LCK} was created by the preview transaction"
+        );
+        assert_eq!(
+            sync_db_mtimes(),
+            mtimes_before,
+            "no-write invariant violated: live sync DB mtimes changed"
+        );
+
+        handle
+            .trans_init(alpm::TransFlag::NONE)
+            .expect("NONE trans_init failed");
+        handle
+            .sync_sysupgrade(false)
+            .expect("sync_sysupgrade failed under NONE");
+        let apply_names: BTreeSet<String> = handle
+            .trans_add()
+            .iter()
+            .map(|p| p.name().to_string())
+            .collect();
+        let _ = handle.trans_release();
+
+        eprintln!(
+            "[sysupgrade_apply] preview_targets={} apply_targets={}",
+            preview_names.len(),
+            apply_names.len(),
+        );
+
+        assert_eq!(
+            preview_names, apply_names,
+            "DB_ONLY|NO_LOCK and NONE must resolve the same sysupgrade target names"
+        );
+
+        let qs = QuestionSet {
+            conflicts: vec![Conflict {
+                incoming: "cava-git".into(),
+                removable: "cava".into(),
+            }],
+            providers: vec![ProviderPrompt {
+                depend: "sdl".into(),
+                candidates: vec![
+                    ProviderCandidate {
+                        name: "sdl12-compat".into(),
+                        repo: Some("extra".into()),
+                        version: Some("1.2.68-2".into()),
+                    },
+                    ProviderCandidate {
+                        name: "sdl2".into(),
+                        repo: Some("extra".into()),
+                        version: Some("2.30.0-1".into()),
+                    },
+                ],
+            }],
+            had_unsupported_question: false,
+            unsupported_summary: String::new(),
+        };
+        let approvals = default_approve(&qs).expect("default_approve");
+        assert_eq!(approvals.approved_conflicts.len(), 1);
+        assert_eq!(approvals.approved_providers.len(), 1);
+        assert_eq!(
+            approvals.approved_providers[0].provider_name, "sdl12-compat",
+            "default_approve must select provider candidate 0"
+        );
+
+        let answerer = ApprovalsAnswerer::new(approvals);
+        assert!(matches!(
+            answerer.answer_conflict("cava-git", "1", "cava", "1"),
+            ConflictDecision::Remove
+        ));
+        let reordered = vec![
+            ProviderCandidate {
+                name: "sdl2".into(),
+                repo: Some("extra".into()),
+                version: None,
+            },
+            ProviderCandidate {
+                name: "sdl12-compat".into(),
+                repo: Some("extra".into()),
+                version: None,
+            },
+        ];
+        match answerer.answer_provider("sdl", &reordered) {
+            ProviderDecision::Choose(i) => assert_eq!(
+                i, 1,
+                "approved candidate 0 (sdl12-compat) sits at index 1 when the list is reordered"
+            ),
+            other => panic!("expected Choose, got {other:?}"),
+        }
+
+        assert!(
+            !root_lock.exists(),
+            "NOLOCK invariant violated: {ROOT_DB_LCK} was created by the NONE transaction"
+        );
+        assert_eq!(
+            sync_db_mtimes(),
+            mtimes_before,
+            "no-write invariant violated: live sync DB mtimes changed after NONE transaction"
+        );
+    }
 }
