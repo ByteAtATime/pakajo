@@ -79,6 +79,12 @@ struct PendingInstall {
     approvals_b64: Option<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SysupgradePhase {
+    Repo,
+    Aur,
+}
+
 pub(crate) struct PakajoSession {
     pub(crate) alpm_handle: Alpm,
     pub(crate) aur_client: Arc<AurClient>,
@@ -98,6 +104,8 @@ pub(crate) struct PakajoSession {
     pub(crate) pending_updates: crate::updates::PendingUpdates,
     pub(crate) updates_aur_error: Option<String>,
     pub(crate) sysupgrade_preview_in_flight: bool,
+    active_sysupgrade_phase: Option<SysupgradePhase>,
+    sysupgrade_aur_targets: Vec<String>,
 }
 
 impl PakajoSession {
@@ -143,6 +151,8 @@ impl PakajoSession {
             },
             updates_aur_error: None,
             sysupgrade_preview_in_flight: false,
+            active_sysupgrade_phase: None,
+            sysupgrade_aur_targets: Vec::new(),
         }
     }
 
@@ -272,26 +282,40 @@ impl PakajoSession {
             StreamItem::Event(ev) => {
                 cx.emit(SessionEvent::InstallLog(ev));
             }
-            StreamItem::Done(ChildOutcome::Success) => {
-                self.refresh_installed_state(cx);
-                self.start_updates_checker(cx);
-                self.set_progress(InstallProgress::Completed, cx);
-            }
-            StreamItem::Done(ChildOutcome::Dismissed) => {
-                self.set_progress(InstallProgress::Cancelled, cx);
-            }
-            StreamItem::Done(ChildOutcome::NotFound) => {
-                self.set_progress(
-                    InstallProgress::Failed("install child not found".into()),
-                    cx,
-                );
-            }
-            StreamItem::Done(ChildOutcome::Failed(message)) => {
-                cx.emit(SessionEvent::InstallLog(InstallEvent::Log {
-                    level: LogLevel::Error,
-                    message: message.clone(),
-                }));
-                self.set_progress(InstallProgress::Failed(message), cx);
+            StreamItem::Done(outcome) => {
+                let repo_phase_just_finished =
+                    matches!(self.active_sysupgrade_phase, Some(SysupgradePhase::Repo));
+                if matches!(outcome, ChildOutcome::Success)
+                    && repo_phase_just_finished
+                    && !self.sysupgrade_aur_targets.is_empty()
+                {
+                    self.active_sysupgrade_phase = Some(SysupgradePhase::Aur);
+                    let targets = std::mem::take(&mut self.sysupgrade_aur_targets);
+                    self.refresh_installed_state(cx);
+                    self.start_sysupgrade_aur_build(targets, cx);
+                    return;
+                }
+                match outcome {
+                    ChildOutcome::Success => {
+                        self.refresh_installed_state(cx);
+                        self.start_updates_checker(cx);
+                        self.set_progress(InstallProgress::Completed, cx);
+                    }
+                    ChildOutcome::Dismissed => self.set_progress(InstallProgress::Cancelled, cx),
+                    ChildOutcome::NotFound => self.set_progress(
+                        InstallProgress::Failed("install child not found".into()),
+                        cx,
+                    ),
+                    ChildOutcome::Failed(message) => {
+                        cx.emit(SessionEvent::InstallLog(InstallEvent::Log {
+                            level: LogLevel::Error,
+                            message: message.clone(),
+                        }));
+                        self.set_progress(InstallProgress::Failed(message), cx);
+                    }
+                }
+                self.active_sysupgrade_phase = None;
+                self.sysupgrade_aur_targets.clear();
             }
         }
     }
@@ -383,6 +407,7 @@ impl PakajoSession {
                 return;
             }
         };
+        self.active_sysupgrade_phase = Some(SysupgradePhase::Repo);
         cx.emit(SessionEvent::InstallLogsOpened {
             kind: InstallKind::Upgrade,
             source: PackageSource::Repo,
@@ -391,6 +416,38 @@ impl PakajoSession {
         let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
         std::thread::spawn(move || {
             crate::upgrade::run_sysupgrade_process(exe, fingerprint_file, tx, approvals_b64)
+        });
+        cx.spawn(async move |this, cx| {
+            while let Some(item) = rx.next().await {
+                let _ = this.update(cx, |this, cx| this.handle_stream_item(item, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn start_sysupgrade_aur_build(&mut self, targets: Vec<String>, cx: &mut Context<Self>) {
+        cx.emit(SessionEvent::InstallLogsOpened {
+            kind: InstallKind::Upgrade,
+            source: PackageSource::Aur,
+            name: "system-aur".to_string(),
+        });
+        let (mut tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
+        std::thread::spawn(move || {
+            let mut sink = ChannelSink { tx: tx.clone() };
+            let result = crate::build::run_build(
+                &targets,
+                false,
+                false,
+                &mut sink,
+                |_| crate::build::BuildDecision::Proceed,
+                |_| true,
+                None,
+            );
+            let outcome = match result {
+                Ok(()) => ChildOutcome::Success,
+                Err(e) => ChildOutcome::Failed(format!("{e:#}")),
+            };
+            let _ = tx.try_send(StreamItem::Done(outcome));
         });
         cx.spawn(async move |this, cx| {
             while let Some(item) = rx.next().await {
@@ -727,7 +784,11 @@ impl PakajoSession {
             let _ = this.update(cx, |this, cx| {
                 this.sysupgrade_preview_in_flight = false;
                 let outcome = match result {
-                    Ok(Ok(preview)) => Ok(preview),
+                    Ok(Ok(preview)) => {
+                        this.sysupgrade_aur_targets =
+                            preview.aur.iter().map(|c| c.name.clone()).collect();
+                        Ok(preview)
+                    }
                     Ok(Err(msg)) => Err(msg),
                     Err(_) => Err("sysupgrade preview cancelled".to_string()),
                 };
@@ -911,6 +972,16 @@ pub(crate) fn begin_aur_sync_in_background(
             }
         }
     });
+}
+
+struct ChannelSink {
+    tx: futures::channel::mpsc::Sender<StreamItem>,
+}
+
+impl crate::events::InstallSink for ChannelSink {
+    fn event(&mut self, event: InstallEvent) {
+        let _ = self.tx.try_send(StreamItem::Event(event));
+    }
 }
 
 #[cfg(test)]
