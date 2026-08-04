@@ -24,6 +24,8 @@ pub fn to_search_results(
                 version: row.version.clone(),
                 repo: row.repo.clone(),
                 installed: installed.contains(&row.name),
+                num_votes: row.num_votes,
+                popularity: row.popularity,
                 last_update: row.last_update,
             }
         })
@@ -42,6 +44,8 @@ mod tests {
             repo: Some("core".to_string()),
             version: "1.0-1".to_string(),
             last_update: Some(100),
+            num_votes: None,
+            popularity: None,
             package_base: Some(name.to_string()),
         }
     }

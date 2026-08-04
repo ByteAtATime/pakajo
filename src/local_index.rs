@@ -147,7 +147,7 @@ impl LocalIndex {
         let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
             "SELECT name, description, source, repo, version, \
-             last_update, package_base, rowid \
+             last_update, package_base, num_votes, popularity, rowid \
              FROM packages WHERE rowid IN ({placeholders})"
         );
         let conn = self.read.lock().expect("read connection poisoned");
@@ -155,7 +155,7 @@ impl LocalIndex {
         let params: Vec<i64> = ids.iter().map(|&id| id as i64).collect();
         let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             let pkg = row_to_package(row)?;
-            let rowid: i64 = row.get(7)?;
+            let rowid: i64 = row.get(9)?;
             Ok((rowid as u32, pkg))
         })?;
         rows.collect::<rusqlite::Result<std::collections::HashMap<u32, PackageRow>>>()
@@ -297,6 +297,8 @@ pub struct PackageRow {
     pub repo: Option<String>,
     pub version: String,
     pub last_update: Option<i64>,
+    pub num_votes: Option<i64>,
+    pub popularity: Option<f64>,
     #[allow(dead_code)]
     pub package_base: Option<String>,
 }
@@ -310,6 +312,8 @@ fn row_to_package(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackageRow> {
         version: row.get(4)?,
         last_update: row.get(5)?,
         package_base: row.get(6)?,
+        num_votes: row.get(7)?,
+        popularity: row.get(8)?,
     })
 }
 
