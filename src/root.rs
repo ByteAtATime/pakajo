@@ -46,6 +46,7 @@ enum Page {
     Updates,
     Confirm,
     Resolve,
+    PkgbuildReview,
 }
 
 pub struct PakajoRoot {
@@ -69,6 +70,7 @@ pub struct PakajoRoot {
     last_seen_count: u32,
     sysupgrade_preview: Option<crate::dry_run::SysupgradePreview>,
     sysupgrade_preview_error: Option<String>,
+    pkgbuild_review_index: usize,
     conflict_checks: Vec<bool>,
     provider_choices: HashMap<String, usize>,
 }
@@ -151,12 +153,15 @@ impl PakajoRoot {
                                 .collect();
                             this.sysupgrade_preview = Some(preview.clone());
                             this.sysupgrade_preview_error = None;
-                            this.page = if preview.questions.conflicts.is_empty()
-                                && preview.questions.providers.is_empty()
+                            this.page = if !preview.questions.conflicts.is_empty()
+                                || !preview.questions.providers.is_empty()
                             {
-                                Page::Confirm
-                            } else {
                                 Page::Resolve
+                            } else if !preview.pkgbuild_diffs.is_empty() {
+                                this.pkgbuild_review_index = 0;
+                                Page::PkgbuildReview
+                            } else {
+                                Page::Confirm
                             };
                         }
                         Err(msg) => {
@@ -190,6 +195,7 @@ impl PakajoRoot {
             last_seen_count: 0,
             sysupgrade_preview: None,
             sysupgrade_preview_error: None,
+            pkgbuild_review_index: 0,
             conflict_checks: Vec::new(),
             provider_choices: HashMap::new(),
         }
@@ -735,12 +741,20 @@ impl PakajoRoot {
                     .icon(IconName::ArrowLeft)
                     .label("Back")
                     .on_click(cx.listener(|this, _ev, _window, cx| {
-                        this.page = if this.conflict_checks.is_empty()
-                            && this.provider_choices.is_empty()
+                        let has_diffs = this
+                            .sysupgrade_preview
+                            .as_ref()
+                            .map(|p| !p.pkgbuild_diffs.is_empty())
+                            .unwrap_or(false);
+                        this.page = if has_diffs {
+                            this.pkgbuild_review_index = 0;
+                            Page::PkgbuildReview
+                        } else if !this.conflict_checks.is_empty()
+                            || !this.provider_choices.is_empty()
                         {
-                            Page::Updates
-                        } else {
                             Page::Resolve
+                        } else {
+                            Page::Updates
                         };
                         cx.notify();
                     })),
@@ -848,7 +862,17 @@ impl PakajoRoot {
                     .primary()
                     .label("Continue")
                     .on_click(cx.listener(|this, _ev, _window, cx| {
-                        this.page = Page::Confirm;
+                        let has_diffs = this
+                            .sysupgrade_preview
+                            .as_ref()
+                            .map(|p| !p.pkgbuild_diffs.is_empty())
+                            .unwrap_or(false);
+                        this.page = if has_diffs {
+                            this.pkgbuild_review_index = 0;
+                            Page::PkgbuildReview
+                        } else {
+                            Page::Confirm
+                        };
                         cx.notify();
                     })),
             );
@@ -876,6 +900,199 @@ impl PakajoRoot {
                     .flex_1()
                     .min_h_0()
                     .child(choices),
+            )
+            .into_any_element()
+    }
+
+    fn render_pkgbuild_review_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(preview) = &self.sysupgrade_preview else {
+            return centered()
+                .text_color(cx.theme().muted_foreground)
+                .child("No preview available")
+                .into_any_element();
+        };
+        let diffs = &preview.pkgbuild_diffs;
+        if diffs.is_empty() {
+            return centered()
+                .text_color(cx.theme().muted_foreground)
+                .child("No preview available")
+                .into_any_element();
+        }
+
+        let primary = cx.theme().primary;
+        let muted = cx.theme().muted;
+        let foreground = cx.theme().foreground;
+        let muted_foreground = cx.theme().muted_foreground;
+        let green = cx.theme().green;
+        let danger = cx.theme().danger;
+
+        let has_resolve =
+            !preview.questions.conflicts.is_empty() || !preview.questions.providers.is_empty();
+        let current_index = self.pkgbuild_review_index;
+        let total = diffs.len();
+        let current = diffs[current_index].clone();
+        let is_new = current.is_new;
+        let status_word = if is_new { "new" } else { "updated" };
+
+        let top_bar = h_flex()
+            .items_center()
+            .gap_2()
+            .child(
+                Button::new("pkgbuild-review-back")
+                    .ghost()
+                    .icon(IconName::ArrowLeft)
+                    .label("Back")
+                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                        this.page = if has_resolve {
+                            Page::Resolve
+                        } else {
+                            Page::Updates
+                        };
+                        cx.notify();
+                    })),
+            )
+            .child(div().text_lg().font_semibold().child("Review PKGBUILD"))
+            .child(div().flex_1())
+            .children((total > 1).then(|| {
+                Button::new("pkgbuild-review-accept-all")
+                    .ghost()
+                    .label("Accept all")
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        if let Some(preview) = &this.sysupgrade_preview {
+                            for diff in &preview.pkgbuild_diffs {
+                                let _ = crate::pkgbuild::mark_seen(&diff.dir);
+                            }
+                        }
+                        this.page = Page::Confirm;
+                        cx.notify();
+                    }))
+            }))
+            .child(
+                Button::new("pkgbuild-review-continue")
+                    .primary()
+                    .label("Continue")
+                    .icon(IconName::ArrowRight)
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        let Some(preview) = &this.sysupgrade_preview else {
+                            return;
+                        };
+                        let diffs = &preview.pkgbuild_diffs;
+                        if let Some(diff) = diffs.get(this.pkgbuild_review_index) {
+                            let _ = crate::pkgbuild::mark_seen(&diff.dir);
+                        }
+                        if this.pkgbuild_review_index + 1 < diffs.len() {
+                            this.pkgbuild_review_index += 1;
+                        } else {
+                            this.page = Page::Confirm;
+                        }
+                        cx.notify();
+                    })),
+            );
+
+        let tab_bar = if total > 1 {
+            let tabs = diffs
+                .iter()
+                .enumerate()
+                .map(|(index, diff)| {
+                    let is_active = index == current_index;
+                    let is_passed = index < current_index;
+                    let bg = if is_active {
+                        primary.opacity(0.15)
+                    } else {
+                        muted
+                    };
+                    let fg = if is_active {
+                        foreground
+                    } else {
+                        muted_foreground
+                    };
+                    let mut tab = h_flex()
+                        .id(("pkgbuild-review-tab", index))
+                        .gap_1()
+                        .items_center()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .bg(bg)
+                        .text_color(fg)
+                        .text_sm()
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                            this.pkgbuild_review_index = index;
+                            cx.notify();
+                        }))
+                        .child(div().child(diff.name.clone()));
+                    if is_passed {
+                        tab = tab.child(Icon::new(IconName::Check).text_color(green));
+                    }
+                    tab.into_any_element()
+                })
+                .collect::<Vec<_>>();
+            Some(h_flex().gap_1().children(tabs).into_any_element())
+        } else {
+            None
+        };
+
+        let progress_label = if total > 1 {
+            Some(
+                div()
+                    .text_sm()
+                    .text_color(muted_foreground)
+                    .child(format!(
+                        "Package {} of {} - {} ({})",
+                        current_index + 1,
+                        total,
+                        current.name,
+                        status_word,
+                    ))
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+
+        let diff_lines = current
+            .diff
+            .lines()
+            .map(|line| {
+                let color = crate::pkgbuild_review_dialog::diff_line_color(
+                    line,
+                    primary,
+                    green,
+                    danger,
+                    muted_foreground,
+                );
+                div().text_color(color).child(line.to_string())
+            })
+            .collect::<Vec<_>>();
+
+        div()
+            .v_flex()
+            .size_full()
+            .gap_3()
+            .min_h_0()
+            .child(top_bar)
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(muted_foreground)
+                    .child("Review the following PKGBUILD changes before continuing."),
+            )
+            .children(tab_bar)
+            .children(progress_label)
+            .child(
+                div()
+                    .id("pkgbuild-review-diff-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .bg(muted)
+                    .p_3()
+                    .v_flex()
+                    .gap_0()
+                    .font_family("JetBrains Mono")
+                    .text_size(rems(0.8))
+                    .children(diff_lines),
             )
             .into_any_element()
     }
@@ -1028,6 +1245,7 @@ impl Render for PakajoRoot {
             (Page::Updates, _) => self.render_updates_page(cx).into_any_element(),
             (Page::Confirm, _) => self.render_confirm_page(cx),
             (Page::Resolve, _) => self.render_resolve_page(cx),
+            (Page::PkgbuildReview, _) => self.render_pkgbuild_review_page(cx),
             _ => {
                 let session = self.session.read(cx);
                 if session.results.is_empty() {

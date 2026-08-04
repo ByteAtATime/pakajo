@@ -48,6 +48,7 @@ pub(crate) struct SysupgradePreview {
     pub(crate) questions: QuestionSet,
     pub(crate) prepare_error: Option<PrepareFailure>,
     pub(crate) aur: Vec<crate::upgrade::AurUpgradeCandidate>,
+    pub(crate) pkgbuild_diffs: Vec<crate::pkgbuild::PkgbuildDiff>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +105,7 @@ fn run_sysupgrade_preview(
         questions,
         prepare_error,
         aur: Vec::new(),
+        pkgbuild_diffs: Vec::new(),
     })
 }
 

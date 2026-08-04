@@ -303,7 +303,13 @@ impl PkgbuildReviewDialog {
     }
 }
 
-fn diff_line_color(line: &str, primary: Hsla, green: Hsla, danger: Hsla, muted: Hsla) -> Hsla {
+pub(crate) fn diff_line_color(
+    line: &str,
+    primary: Hsla,
+    green: Hsla,
+    danger: Hsla,
+    muted: Hsla,
+) -> Hsla {
     if line.starts_with('+') {
         green
     } else if line.starts_with('-') {

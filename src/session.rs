@@ -612,7 +612,7 @@ impl PakajoSession {
         let (mut tx, mut rx) =
             futures::channel::mpsc::channel::<anyhow::Result<Vec<PkgbuildDiff>>>(1);
         std::thread::spawn(move || {
-            let result = prepare_pkgbuild_diffs(&target);
+            let result = prepare_pkgbuild_diffs(&[target]);
             let _ = tx.try_send(result);
         });
 
@@ -775,7 +775,15 @@ impl PakajoSession {
                     .syncdbs_mut()
                     .update(false)
                     .context("failed to refresh checkdb sync DBs rootless")?;
-                crate::dry_run::compute_sysupgrade_preview(&mut handle, &config)
+                let mut preview = crate::dry_run::compute_sysupgrade_preview(&mut handle, &config)?;
+                let aur_names: Vec<String> = preview.aur.iter().map(|c| c.name.clone()).collect();
+                if !aur_names.is_empty() {
+                    match prepare_pkgbuild_diffs(&aur_names) {
+                        Ok(diffs) => preview.pkgbuild_diffs = diffs,
+                        Err(e) => eprintln!("[pakajo] pkgbuild diff computation failed: {e:#}"),
+                    }
+                }
+                Ok(preview)
             })();
             let _ = tx.send(result.map_err(|e| format!("{e:#}")));
         });

@@ -27,16 +27,11 @@ impl crate::events::InstallSink for NullSink {
     fn event(&mut self, _event: crate::events::InstallEvent) {}
 }
 
-pub fn prepare_pkgbuild_diffs(target: &str) -> anyhow::Result<Vec<PkgbuildDiff>> {
+pub fn prepare_pkgbuild_diffs(targets: &[String]) -> anyhow::Result<Vec<PkgbuildDiff>> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let alpm = crate::pacman::init_alpm(&config)?;
     let aur = crate::aur::AurClient::new();
-    let plan = crate::resolve::resolve(
-        &crate::resolve::AlpmDb(&alpm),
-        &aur,
-        &[target.to_string()],
-        false,
-    )?;
+    let plan = crate::resolve::resolve(&crate::resolve::AlpmDb(&alpm), &aur, targets, false)?;
     let mut sink = NullSink;
     let pkgbuilds = collect_for_review(&plan, &mut sink)?;
     let diffs: Vec<PkgbuildDiff> = pkgbuilds
