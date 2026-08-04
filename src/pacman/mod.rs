@@ -117,9 +117,14 @@ pub fn find_groups<'a>(
         .collect()
 }
 
+pub fn local_group<'a>(handle: &'a Alpm, name: &str) -> Option<(&'a alpm::Db, &'a alpm::Group)> {
+    let db = handle.localdb();
+    db.group(name).ok().map(|g| (db, g))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::find_groups;
+    use super::{find_groups, local_group};
 
     #[test]
     #[ignore]
@@ -135,6 +140,33 @@ mod tests {
         assert!(
             members.iter().any(|m| m == "make"),
             "base-devel should contain make; got {members:?}"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn local_group_lists_installed_members() {
+        let mut handle = crate::install::setup_fake_root("local_group");
+        crate::install::install_into(
+            &mut handle,
+            &[crate::install::InstallTarget::Repo("make".to_string())],
+            false,
+            crate::cli::ConsoleSink::new(),
+            || true,
+            Box::new(crate::answerer::DenyAllAnswerer),
+        )
+        .expect("make should install first");
+        let (db, group) = local_group(&handle, "base-devel")
+            .expect("base-devel should resolve in localdb after installing make");
+        let _ = db;
+        let members: Vec<String> = group
+            .packages()
+            .iter()
+            .map(|p| p.name().to_string())
+            .collect();
+        assert!(
+            members.iter().any(|m| m == "make"),
+            "local base-devel should contain make; got {members:?}"
         );
     }
 }

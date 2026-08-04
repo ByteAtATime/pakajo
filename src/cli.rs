@@ -205,6 +205,15 @@ pub(crate) fn remove_subcommand(args: RemoveArgs) -> ! {
         std::process::exit(2);
     }
 
+    let handle = match alpm_handle() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    };
+    let positionals = expand_remove_groups(&handle, &positionals, stdin_is_tty() && !args.json);
+
     if is_root() {
         let interactive = stdin_is_tty();
         let answerer = answerer_for(None);
@@ -367,6 +376,44 @@ fn expand_groups(handle: &alpm::Alpm, positionals: &[String], interactive: bool)
             if seen.insert(name.clone()) {
                 out.push(name);
             }
+        }
+    }
+    out
+}
+
+fn expand_remove_groups(
+    handle: &alpm::Alpm,
+    positionals: &[String],
+    interactive: bool,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for s in positionals {
+        if handle.localdb().pkg(s.as_str()).is_ok() {
+            if seen.insert(s.clone()) {
+                out.push(s.clone());
+            }
+            continue;
+        }
+        if let Some((db, group)) = crate::pacman::local_group(handle, s) {
+            let members: Vec<String> = if interactive {
+                self::prompts::select_group_members(s, &[(db, group)])
+            } else {
+                group
+                    .packages()
+                    .iter()
+                    .map(|p| p.name().to_string())
+                    .collect()
+            };
+            for name in members {
+                if seen.insert(name.clone()) {
+                    out.push(name);
+                }
+            }
+            continue;
+        }
+        if seen.insert(s.clone()) {
+            out.push(s.clone());
         }
     }
     out
