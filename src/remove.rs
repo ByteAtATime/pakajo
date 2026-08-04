@@ -40,7 +40,7 @@ fn run_remove_transaction<S: InstallSink, F: FnOnce() -> bool>(
     confirm: F,
 ) -> anyhow::Result<()> {
     handle
-        .trans_init(alpm::TransFlag::RECURSE)
+        .trans_init(alpm::TransFlag::NONE)
         .context("failed to initialize transaction")?;
 
     for name in targets {
