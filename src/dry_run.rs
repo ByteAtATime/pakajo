@@ -66,10 +66,6 @@ pub(crate) fn compute_sysupgrade_preview(
     handle: &mut alpm::Alpm,
     config: &pacmanconf::Config,
 ) -> anyhow::Result<SysupgradePreview> {
-    crate::upgrade::apply_ignores(handle, config, &[]);
-    let state = attach_recorder(handle);
-    let mut preview = run_sysupgrade_preview(handle, &state);
-    let _ = handle.trans_release();
     let aur_client = crate::aur::AurClient::new();
     let aur = match crate::upgrade::compute_aur_upgrades(handle, &aur_client) {
         Ok(v) => v,
@@ -80,6 +76,10 @@ pub(crate) fn compute_sysupgrade_preview(
             Vec::new()
         }
     };
+    crate::upgrade::apply_ignores(handle, config, &[]);
+    let state = attach_recorder(handle);
+    let mut preview = run_sysupgrade_preview(handle, &state);
+    let _ = handle.trans_release();
     if let Ok(p) = &mut preview {
         p.aur = aur;
     }
