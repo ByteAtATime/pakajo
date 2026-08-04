@@ -66,6 +66,7 @@ pub struct InstallPage {
     pub status: InstallProgress,
     pub overall: f32,
     pub indeterminate: bool,
+    pub status_text: Option<String>,
     mode: PageMode,
     on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static>,
 }
@@ -103,12 +104,14 @@ impl InstallPage {
             status: InstallProgress::Idle,
             overall: 0.0,
             indeterminate: true,
+            status_text: None,
             on_back,
             mode,
         }
     }
 
     pub fn handle_event(&mut self, ev: InstallEvent, cx: &mut Context<Self>) {
+        self.status_text = None;
         if let PageMode::Repo(state) = &mut self.mode
             && let Some(new_stage) = event_stage(&ev)
             && new_stage != state.stage
@@ -152,6 +155,11 @@ impl InstallPage {
             self.overall = ((state.download_bytes_done as f32 / state.download_bytes_total as f32)
                 * 100.0)
                 .min(100.0);
+            self.status_text = Some(format!(
+                "{} / {}",
+                format_bytes(state.download_bytes_done),
+                format_bytes(state.download_bytes_total),
+            ));
         }
         match &ev {
             InstallEvent::BuildStarted { .. } => {

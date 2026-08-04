@@ -50,6 +50,7 @@ pub struct PakajoRoot {
     install_kind: InstallKind,
     status_overall: f32,
     status_indeterminate: bool,
+    status_text: Option<String>,
     search_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
     detail: DetailPane,
@@ -155,6 +156,7 @@ impl PakajoRoot {
             install_kind: InstallKind::Install,
             status_overall: 0.0,
             status_indeterminate: true,
+            status_text: None,
             search_input,
             _subscriptions: vec![subscription, session_subscription],
             detail: DetailPane::None,
@@ -317,13 +319,16 @@ impl PakajoRoot {
             page.update(cx, |install_page, cx| {
                 install_page.handle_event(ev, cx);
             });
-            let (overall, indeterminate) = {
+            let (overall, indeterminate, status_text) = {
                 let pg = page.read(cx);
-                (pg.overall, pg.indeterminate)
+                (pg.overall, pg.indeterminate, pg.status_text.clone())
             };
-            if (overall, indeterminate) != (self.status_overall, self.status_indeterminate) {
+            if (overall, indeterminate) != (self.status_overall, self.status_indeterminate)
+                || status_text != self.status_text
+            {
                 self.status_overall = overall;
                 self.status_indeterminate = indeterminate;
+                self.status_text = status_text;
                 cx.notify();
             }
         }
@@ -426,6 +431,7 @@ impl PakajoRoot {
         self.page = Page::Install;
         self.status_overall = 0.0;
         self.status_indeterminate = true;
+        self.status_text = None;
         window.close_all_dialogs(cx);
     }
 
@@ -436,6 +442,7 @@ impl PakajoRoot {
         self.page = Page::Main;
         self.status_overall = 0.0;
         self.status_indeterminate = true;
+        self.status_text = None;
         cx.notify();
     }
 
@@ -486,6 +493,18 @@ impl PakajoRoot {
                                 cx.notify();
                             }
                         })),
+                )
+                .children(
+                    show_bar
+                        .then(|| {
+                            self.status_text.as_deref().map(|text| {
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(text.to_string())
+                            })
+                        })
+                        .flatten(),
                 )
                 .children(show_bar.then(|| {
                     if self.status_indeterminate {
