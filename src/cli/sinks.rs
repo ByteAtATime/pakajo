@@ -51,8 +51,14 @@ impl ConsoleSink {
                 downloaded,
                 total,
             } => {
+                let percent = if *total > 0 {
+                    ((*downloaded * 100 / *total).min(100)) as i32
+                } else {
+                    100
+                };
+                let bar = super::chomp::render(percent, 30, self.color);
                 print!(
-                    "\r  {filename}: {}/{}",
+                    "\r  {filename} {bar} {percent:>3}% {}/{}",
                     format_bytes(*downloaded),
                     format_bytes(*total)
                 );
