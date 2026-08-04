@@ -52,6 +52,27 @@ fn upsert_aur(nodes: &mut HashMap<String, InstallNode>, pkg: AurInfo, reason: Re
     }
 }
 
+fn by_preference(a: &AurInfo, b: &AurInfo) -> Ordering {
+    b.popularity
+        .partial_cmp(&a.popularity)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| b.num_votes.cmp(&a.num_votes))
+        .then_with(|| a.name.cmp(&b.name))
+}
+
+fn resolve_target_provider(aur: &impl AurQuery, target: &str) -> Result<AurInfo> {
+    let mut candidates: Vec<AurInfo> = aur
+        .find_providers(target)?
+        .into_iter()
+        .filter(|p| satisfies_aur(target, p))
+        .collect();
+    candidates.sort_by(by_preference);
+    candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("target not found in AUR: {target}"))
+}
+
 pub fn resolve(
     db: &impl PackageDb,
     aur: &impl AurQuery,
@@ -73,8 +94,9 @@ pub fn resolve(
 
     let found = aur.info_many(targets)?;
     for target in targets {
-        let Some(pkg) = found.iter().find(|p| &p.name == target).cloned() else {
-            anyhow::bail!("target not found in AUR: {target}");
+        let pkg = match found.iter().find(|p| &p.name == target).cloned() {
+            Some(p) => p,
+            None => resolve_target_provider(aur, target)?,
         };
         graph.add_node(&pkg.name);
         for provide in &pkg.provides {
@@ -192,7 +214,7 @@ pub fn resolve(
                     .collect();
                 if candidates.is_empty() {
                     let filtered: Vec<AurInfo> = aur
-                        .search_by_provides(&dep_name)?
+                        .find_providers(&dep_name)?
                         .into_iter()
                         .filter(|p| satisfies_aur(&dep_string, p))
                         .collect();
@@ -202,13 +224,7 @@ pub fn resolve(
                 if candidates.is_empty() {
                     anyhow::bail!("no AUR package found for {dep_string} (required by {parent})");
                 }
-                candidates.sort_by(|a, b| {
-                    b.popularity
-                        .partial_cmp(&a.popularity)
-                        .unwrap_or(Ordering::Equal)
-                        .then_with(|| b.num_votes.cmp(&a.num_votes))
-                        .then_with(|| a.name.cmp(&b.name))
-                });
+                candidates.sort_by(by_preference);
                 let chosen = candidates.into_iter().next().expect("non-empty candidates");
                 graph.add_node(&chosen.name);
                 for provide in &chosen.provides {
@@ -368,6 +384,13 @@ mod tests {
                     p.name == target || p.provides.iter().any(|pr| split_dep(pr).name == target)
                 })
                 .cloned()
+                .map(|mut p| {
+                    p.provides.clear();
+                    p.depends.clear();
+                    p.make_depends.clear();
+                    p.check_depends.clear();
+                    p
+                })
                 .collect())
         }
     }
