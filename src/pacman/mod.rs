@@ -117,6 +117,19 @@ pub fn find_groups<'a>(
         .collect()
 }
 
+pub fn collect_group_index(handle: &Alpm) -> Vec<(String, String)> {
+    handle
+        .syncdbs()
+        .iter()
+        .flat_map(|db| {
+            db.groups()
+                .into_iter()
+                .flatten()
+                .map(|g| (g.name().to_string(), db.name().to_string()))
+        })
+        .collect()
+}
+
 pub fn local_group<'a>(handle: &'a Alpm, name: &str) -> Option<(&'a alpm::Db, &'a alpm::Group)> {
     let db = handle.localdb();
     db.group(name).ok().map(|g| (db, g))
@@ -124,7 +137,7 @@ pub fn local_group<'a>(handle: &'a Alpm, name: &str) -> Option<(&'a alpm::Db, &'
 
 #[cfg(test)]
 mod tests {
-    use super::{find_groups, local_group};
+    use super::{collect_group_index, find_groups, local_group};
 
     #[test]
     #[ignore]
@@ -140,6 +153,17 @@ mod tests {
         assert!(
             members.iter().any(|m| m == "make"),
             "base-devel should contain make; got {members:?}"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn collect_group_index_includes_base_devel() {
+        let handle = crate::install::setup_fake_root("group_index");
+        let index = collect_group_index(&handle);
+        assert!(
+            index.iter().any(|(name, _)| name == "base-devel"),
+            "group index must contain base-devel; got {index:?}"
         );
     }
 

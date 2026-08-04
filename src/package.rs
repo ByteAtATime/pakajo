@@ -11,6 +11,7 @@ pub struct OptDependency {
 pub enum PackageSource {
     Repo,
     Aur,
+    Group,
 }
 
 #[allow(dead_code)]

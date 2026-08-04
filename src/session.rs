@@ -27,6 +27,14 @@ pub(crate) enum DetailData {
     Loading,
     Ready { pkg: Package, installed: bool },
     Error(String),
+    Group { name: String, members: Vec<GroupMember> },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct GroupMember {
+    pub name: String,
+    pub description: Option<String>,
+    pub installed: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -91,6 +99,7 @@ pub(crate) struct PakajoSession {
     pub(crate) search_engine: Option<Arc<SearchEngine>>,
     pub(crate) local_index: Option<Arc<LocalIndex>>,
     pub(crate) installed_names: Arc<std::collections::HashSet<String>>,
+    pub(crate) group_index: Arc<Vec<(String, String)>>,
     pub(crate) detail: DetailData,
     detail_seq: u64,
     pub(crate) results: Vec<SearchResult>,
@@ -125,6 +134,7 @@ impl PakajoSession {
             })
             .map(Arc::new);
         let installed_names = Arc::new(installed_names(&alpm_handle));
+        let group_index = Arc::new(crate::pacman::collect_group_index(&alpm_handle));
         let aur_client = Arc::new(aur_client);
         if let Some(index) = &local_index {
             begin_aur_sync_in_background(index.clone(), search_engine.clone());
@@ -135,6 +145,7 @@ impl PakajoSession {
             search_engine,
             local_index,
             installed_names,
+            group_index,
             detail: DetailData::None,
             detail_seq: 0,
             results: Vec::new(),
@@ -253,6 +264,29 @@ impl PakajoSession {
                     });
                 })
                 .detach();
+            }
+            PackageSource::Group => {
+                match crate::pacman::find_groups(&self.alpm_handle, &name)
+                    .into_iter()
+                    .next()
+                {
+                    Some((_, group)) => {
+                        let members: Vec<GroupMember> = group
+                            .packages()
+                            .iter()
+                            .map(|p| GroupMember {
+                                name: p.name().to_string(),
+                                description: p.desc().map(|d| d.to_string()),
+                                installed: self.installed_names.contains(p.name()),
+                            })
+                            .collect();
+                        self.detail = DetailData::Group { name, members };
+                    }
+                    None => {
+                        self.detail = DetailData::Error(format!("group not found: {name}"));
+                    }
+                }
+                cx.emit(SessionEvent::DetailUpdated);
             }
         }
     }
@@ -834,6 +868,7 @@ impl PakajoSession {
         let search_engine = self.search_engine.clone();
         let local_index = self.local_index.clone();
         let installed = self.installed_names.clone();
+        let group_index = self.group_index.clone();
         cx.spawn(async move |this, cx| {
             let still_valid = this
                 .update(cx, |this, _cx| this.search_seq == seq)
@@ -845,7 +880,9 @@ impl PakajoSession {
             let outcome = cx
                 .background_executor()
                 .spawn(
-                    async move { execute_search_for(search_engine, local_index, installed, text) },
+                    async move {
+                        execute_search_for(search_engine, local_index, group_index, installed, text)
+                    },
                 )
                 .await;
 
@@ -916,13 +953,14 @@ impl PakajoSession {
 pub(crate) fn execute_search_for(
     search_engine: Option<Arc<SearchEngine>>,
     local_index: Option<Arc<LocalIndex>>,
+    group_index: Arc<Vec<(String, String)>>,
     installed: Arc<std::collections::HashSet<String>>,
     text: String,
 ) -> Vec<SearchResult> {
     let (Some(engine), Some(local)) = (search_engine.as_ref(), local_index.as_ref()) else {
         return Vec::new();
     };
-    search::dispatch_search(engine, local, &installed, &text)
+    search::dispatch_search(engine, local, &installed, &text, &group_index)
 }
 
 pub(crate) fn begin_aur_sync_in_background(

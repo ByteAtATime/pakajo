@@ -96,6 +96,7 @@ impl InstallPage {
                 cloning: None,
                 scroll: ScrollHandle::new(),
             }),
+            PackageSource::Group => panic!("group install not implemented until Phase 4"),
         };
         Self {
             kind,

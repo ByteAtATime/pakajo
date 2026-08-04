@@ -19,18 +19,26 @@ const CHEAP_TIERS_ALL: &[Tier] = &[
 ];
 const EXPENSIVE_TIERS: &[Tier] = &[Tier::Substring, Tier::Keyword];
 
+#[cfg(test)]
 pub fn search_index(index: &PackageIndex, text: &str) -> Vec<u32> {
+    search_index_tiered(index, text)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+pub fn search_index_tiered(index: &PackageIndex, text: &str) -> Vec<(u32, Tier)> {
     let Some(pq) = parse_query(text) else {
         return Vec::new();
     };
     let q = pq.text();
     match &pq {
-        ParsedQuery::Quoted(_) => quoted_ids(index, q),
-        ParsedQuery::Short(_) => to_sorted_ids(gather_cheap_candidates(index, q, SHORT_TIERS)),
+        ParsedQuery::Quoted(_) => quoted_pairs(index, q),
+        ParsedQuery::Short(_) => to_sorted_pairs(gather_cheap_candidates(index, q, SHORT_TIERS)),
         ParsedQuery::Normal(_) => {
             let cheap = gather_cheap_candidates(index, q, CHEAP_TIERS_ALL);
             if cheap.len() >= RESULT_LIMIT {
-                return to_sorted_ids(cheap);
+                return to_sorted_pairs(cheap);
             }
             let seen: HashSet<u32> = cheap.iter().map(|c| c.pkg.id).collect();
             let cands = if cheap.len() >= FUZZY_GATE {
@@ -38,7 +46,7 @@ pub fn search_index(index: &PackageIndex, text: &str) -> Vec<u32> {
             } else {
                 fused_expensive_fuzzy_pass(index, q, cheap, &seen)
             };
-            to_sorted_ids(cands)
+            to_sorted_pairs(cands)
         }
     }
 }
@@ -57,9 +65,15 @@ impl SearchEngine {
         })
     }
 
+    #[cfg(test)]
     pub fn search(&self, text: &str) -> Vec<u32> {
         let snapshot = self.index.read().expect("index lock poisoned").clone();
         search_index(&snapshot, text)
+    }
+
+    pub fn search_tiered(&self, text: &str) -> Vec<(u32, Tier)> {
+        let snapshot = self.index.read().expect("index lock poisoned").clone();
+        search_index_tiered(&snapshot, text)
     }
 
     pub fn ensure_fresh(&self) -> anyhow::Result<()> {
@@ -255,8 +269,8 @@ fn fused_expensive_fuzzy_pass<'a>(
     cands
 }
 
-fn quoted_ids(index: &PackageIndex, q: &str) -> Vec<u32> {
-    let cands = index
+fn quoted_pairs(index: &PackageIndex, q: &str) -> Vec<(u32, Tier)> {
+    let cands: Vec<Candidate> = index
         .packages
         .iter()
         .filter(|p| p.name.contains(q))
@@ -267,10 +281,10 @@ fn quoted_ids(index: &PackageIndex, q: &str) -> Vec<u32> {
             first_letter_match: false,
         })
         .collect();
-    to_sorted_ids(cands)
+    to_sorted_pairs(cands)
 }
 
-fn to_sorted_ids(mut cands: Vec<Candidate>) -> Vec<u32> {
+fn to_sorted_pairs(mut cands: Vec<Candidate>) -> Vec<(u32, Tier)> {
     if cands.len() > RESULT_LIMIT {
         cands.select_nth_unstable_by(RESULT_LIMIT, candidate_ordering);
         cands[..RESULT_LIMIT + 1].sort_by(candidate_ordering);
@@ -278,7 +292,7 @@ fn to_sorted_ids(mut cands: Vec<Candidate>) -> Vec<u32> {
         cands.sort_by(candidate_ordering);
     }
     cands.truncate(RESULT_LIMIT);
-    cands.iter().map(|c| c.pkg.id).collect()
+    cands.into_iter().map(|c| (c.pkg.id, c.tier)).collect()
 }
 
 #[cfg(test)]

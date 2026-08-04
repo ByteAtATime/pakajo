@@ -11,7 +11,7 @@ use crate::{
     pkgbuild_review_dialog::PkgbuildReviewFlow,
     question::QuestionSet,
     search_view::{SearchView, centered},
-    session::{DetailData, InstallKind, PakajoSession, SearchState, SessionEvent, UpdatesState},
+    session::{DetailData, GroupMember, InstallKind, PakajoSession, SearchState, SessionEvent, UpdatesState},
     updates_view::{UpdatesView, aur_upgrade_row},
 };
 use alpm::Alpm;
@@ -37,6 +37,7 @@ enum DetailPane {
     Loading,
     Ready(Entity<PackageDetail>),
     Error(String),
+    Group { name: String, members: Vec<GroupMember> },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -268,6 +269,10 @@ impl PakajoRoot {
                         cx.notify();
                     });
                 }
+            }
+            DetailData::Group { name, members } => {
+                self.detail = DetailPane::Group { name, members };
+                cx.notify();
             }
         }
     }
@@ -1273,6 +1278,53 @@ impl Render for PakajoRoot {
                             .flex_1()
                             .size_full()
                             .child(detail_entity.clone())
+                            .into_any_element(),
+                        DetailPane::Group { name, members } => div()
+                            .flex_1()
+                            .size_full()
+                            .v_flex()
+                            .gap_2()
+                            .p_4()
+                            .child(
+                                div().text_xl().font_semibold().child(format!("{name} (group)")),
+                            )
+                            .child(div().h_px().w_full().mt_1().mb_3().bg(cx.theme().border))
+                            .child(
+                                div()
+                                    .v_flex()
+                                    .gap_2()
+                                    .children(members.iter().map(|m| {
+                                        div()
+                                            .h_flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .w_full()
+                                            .px_4()
+                                            .py_3()
+                                            .bg(cx.theme().secondary)
+                                            .child(
+                                                div()
+                                                    .h_flex()
+                                                    .gap_2()
+                                                    .items_center()
+                                                    .child(div().font_bold().child(m.name.clone()))
+                                                    .children(if m.installed {
+                                                        Some(
+                                                            Icon::new(IconName::Check).text_color(
+                                                                cx.theme().green,
+                                                            ),
+                                                        )
+                                                    } else {
+                                                        None
+                                                    }),
+                                            )
+                                            .children(m.description.clone().map(|d| {
+                                                div()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(d)
+                                            }))
+                                    })),
+                            )
                             .into_any_element(),
                     };
 

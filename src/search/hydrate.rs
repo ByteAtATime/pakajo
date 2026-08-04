@@ -1,10 +1,14 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+
+#[cfg(test)]
+use std::collections::HashMap;
 
 use crate::local_index::PackageRow;
 use crate::package::PackageSource;
 
 use super::SearchResult;
 
+#[cfg(test)]
 pub fn to_search_results(
     rows: &HashMap<u32, PackageRow>,
     ids: &[u32],
@@ -12,24 +16,26 @@ pub fn to_search_results(
 ) -> Vec<SearchResult> {
     ids.iter()
         .filter_map(|id| rows.get(id))
-        .map(|row| {
-            let source = match row.source.as_str() {
-                "aur" => PackageSource::Aur,
-                _ => PackageSource::Repo,
-            };
-            SearchResult {
-                name: row.name.clone(),
-                source,
-                description: row.description.clone(),
-                version: row.version.clone(),
-                repo: row.repo.clone(),
-                installed: installed.contains(&row.name),
-                num_votes: row.num_votes,
-                popularity: row.popularity,
-                last_update: row.last_update,
-            }
-        })
+        .map(|row| row_to_result(row, installed))
         .collect()
+}
+
+pub(crate) fn row_to_result(row: &PackageRow, installed: &HashSet<String>) -> SearchResult {
+    let source = match row.source.as_str() {
+        "aur" => PackageSource::Aur,
+        _ => PackageSource::Repo,
+    };
+    SearchResult {
+        name: row.name.clone(),
+        source,
+        description: row.description.clone(),
+        version: row.version.clone(),
+        repo: row.repo.clone(),
+        installed: installed.contains(&row.name),
+        num_votes: row.num_votes,
+        popularity: row.popularity,
+        last_update: row.last_update,
+    }
 }
 
 #[cfg(test)]

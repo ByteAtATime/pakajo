@@ -124,7 +124,8 @@ pub(super) fn run_search(query: &str) -> anyhow::Result<()> {
     let engine = crate::search::engine::SearchEngine::new(sqlite_path)?;
     let handle = alpm_handle()?;
     let installed = crate::package::installed_names(&handle);
-    let results = crate::search::dispatch_search(&engine, &local, &installed, query);
+    let group_index = crate::pacman::collect_group_index(&handle);
+    let results = crate::search::dispatch_search(&engine, &local, &installed, query, &group_index);
     print_search_results(&results);
     Ok(())
 }
@@ -139,6 +140,7 @@ fn print_search_results(rows: &[SearchResult]) {
         let repo_color = match row.source {
             PackageSource::Repo => crate::color::COLON,
             PackageSource::Aur => crate::color::MAGENTA,
+            PackageSource::Group => crate::color::CYAN,
         };
         let repo = crate::color::paint(color, repo_color, repo_raw);
         let name = crate::color::paint(color, crate::color::BOLD, &row.name);
