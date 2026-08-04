@@ -107,6 +107,15 @@ fn run_sysupgrade_preview(
     })
 }
 
+pub(crate) fn default_repo_summary(
+    handle: &mut alpm::Alpm,
+) -> anyhow::Result<crate::events::TransactionSummary> {
+    let state = attach_recorder(handle);
+    let preview = run_sysupgrade_preview(handle, &state);
+    let _ = handle.trans_release();
+    preview.map(|p| p.summary)
+}
+
 fn extract_prepare_failure(err: alpm::PrepareError) -> PrepareFailure {
     match err.data() {
         Some(alpm::PrepareData::UnsatisfiedDeps(list)) => PrepareFailure::Unsatisfied(

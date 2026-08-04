@@ -220,8 +220,19 @@ fn repo_sysupgrade_into<S: InstallSink + 'static>(
 ) -> anyhow::Result<()> {
     let sink = Rc::new(RefCell::new(sink));
     let qstate = Rc::new(RefCell::new(QuestionState::new(answerer)));
+    if let Some(prev) = preview {
+        let dry = crate::dry_run::default_repo_summary(handle)
+            .context("failed to compute staleness check summary")?;
+        if !summaries_match(prev, &dry) {
+            sink.borrow_mut().event(InstallEvent::Log {
+                level: LogLevel::Error,
+                message: "review is stale; re-review the upgrade".to_string(),
+            });
+            anyhow::bail!("review is stale");
+        }
+    }
     register_callbacks(handle, sink.clone(), qstate.clone());
-    let result = run_sysupgrade_transaction(handle, &sink, &qstate, preview);
+    let result = run_sysupgrade_transaction(handle, &sink, &qstate);
     let _ = handle.trans_release();
     result
 }
@@ -230,7 +241,6 @@ fn run_sysupgrade_transaction<S: InstallSink>(
     handle: &mut alpm::Alpm,
     sink: &Rc<RefCell<S>>,
     qstate: &Rc<RefCell<QuestionState>>,
-    preview: Option<&TransactionSummary>,
 ) -> anyhow::Result<()> {
     handle
         .trans_init(alpm::TransFlag::NONE)
@@ -249,15 +259,6 @@ fn run_sysupgrade_transaction<S: InstallSink>(
     }
 
     let summary: TransactionSummary = build_summary(handle);
-    if let Some(prev) = preview
-        && !summaries_match(prev, &summary)
-    {
-        sink.borrow_mut().event(InstallEvent::Log {
-            level: LogLevel::Error,
-            message: "review is stale; re-review the upgrade".to_string(),
-        });
-        anyhow::bail!("review is stale");
-    }
     sink.borrow_mut()
         .event(InstallEvent::TransactionSummary(summary));
 
