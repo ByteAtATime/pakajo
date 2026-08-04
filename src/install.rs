@@ -413,6 +413,9 @@ fn convert_package_operation(
 }
 
 fn convert_download(filename: &str, any_ev: alpm::AnyDownloadEvent) -> Option<InstallEvent> {
+    if filename.ends_with(".sig") {
+        return None;
+    }
     let filename = filename.to_string();
     Some(match any_ev.event() {
         alpm::DownloadEvent::Init(init) => InstallEvent::DownloadInit {

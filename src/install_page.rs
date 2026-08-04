@@ -43,6 +43,8 @@ struct RepoState {
     manifest: Option<TransactionSummary>,
     stage: RepoStage,
     scroll: ScrollHandle,
+    download_total: usize,
+    download_done: usize,
 }
 
 struct AurState {
@@ -76,6 +78,8 @@ impl InstallPage {
                 manifest: None,
                 stage: RepoStage::Resolve,
                 scroll: ScrollHandle::new(),
+                download_total: 0,
+                download_done: 0,
             }),
             PackageSource::Aur => PageMode::Aur(AurState {
                 manifest: None,
@@ -129,6 +133,9 @@ impl InstallPage {
                 InstallEvent::BuildCompleted { .. } => state.building = None,
                 _ => {}
             }
+        }
+        if let PageMode::Repo(state) = &mut self.mode {
+            apply_repo_counters(state, &ev);
         }
         match &ev {
             InstallEvent::BuildStarted { .. } => {
@@ -385,7 +392,8 @@ impl InstallPage {
             .border_color(cx.theme().border)
             .p_4();
         for (i, stage) in ordered.iter().enumerate() {
-            let (glyph, glyph_color, label_color) = match cell_state(&self.status, current_idx, i) {
+            let cell = cell_state(&self.status, current_idx, i);
+            let (glyph, glyph_color, label_color) = match cell {
                 CellState::Done => ("✓", cx.theme().green, cx.theme().muted_foreground),
                 CellState::Active => ("●", cx.theme().blue, cx.theme().foreground),
                 CellState::Failed => ("✗", cx.theme().danger, cx.theme().danger),
@@ -406,12 +414,26 @@ impl InstallPage {
                 },
                 RepoStage::Finalize => "Finalize",
             };
+            let count = if matches!(cell, CellState::Active)
+                && matches!(stage, RepoStage::Download)
+                && state.download_total > 0
+            {
+                Some(format!("{}/{}", state.download_done, state.download_total))
+            } else {
+                None
+            };
             card = card.child(
                 h_flex()
                     .gap_2()
                     .items_center()
                     .child(div().text_color(glyph_color).child(glyph))
-                    .child(div().text_color(label_color).child(label)),
+                    .child(div().text_color(label_color).child(label))
+                    .children(count.map(|c| {
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(c)
+                    })),
             );
         }
         if let InstallProgress::Failed(message) = &self.status {
@@ -754,6 +776,19 @@ fn cell_state(status: &InstallProgress, current_idx: usize, idx: usize) -> CellS
                 CellState::Pending
             }
         }
+    }
+}
+
+fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
+    match ev {
+        InstallEvent::RetrievingPackages { num, .. } => {
+            state.download_total = *num;
+            state.download_done = 0;
+        }
+        InstallEvent::DownloadCompleted { .. } => {
+            state.download_done += 1;
+        }
+        _ => {}
     }
 }
 
