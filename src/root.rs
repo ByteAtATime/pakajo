@@ -23,6 +23,7 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     progress::Progress,
+    radio::RadioGroup,
     spinner::Spinner,
 };
 use std::collections::HashMap;
@@ -898,23 +899,26 @@ impl PakajoRoot {
                     })),
             );
         }
-        for prompt in &qs.providers {
-            let candidates = prompt
-                .candidates
-                .iter()
-                .map(|c| c.name.clone())
-                .collect::<Vec<_>>()
-                .join(" / ");
+        for (index, prompt) in qs.providers.iter().enumerate() {
+            let selected = self
+                .provider_choices
+                .get(&prompt.depend)
+                .copied()
+                .or(Some(0));
+            let depend = prompt.depend.clone();
             section = section.child(
                 div()
                     .v_flex()
-                    .gap_1()
-                    .child(div().font_semibold().child(prompt.depend.clone()))
+                    .gap_2()
+                    .child(div().text_sm().font_semibold().child(prompt.depend.clone()))
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(candidates),
+                        RadioGroup::vertical(("provider", index))
+                            .selected_index(selected)
+                            .children(prompt.candidates.iter().map(candidate_label))
+                            .on_click(cx.listener(move |this, &chosen: &usize, _window, cx| {
+                                this.provider_choices.insert(depend.clone(), chosen);
+                                cx.notify();
+                            })),
                     ),
             );
         }
@@ -1024,4 +1028,15 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("up", SelectUp, Some("PakajoSearch")),
         KeyBinding::new("down", SelectDown, Some("PakajoSearch")),
     ]);
+}
+
+fn candidate_label(candidate: &crate::question::ProviderCandidate) -> String {
+    let qualified_name = match &candidate.repo {
+        Some(repo) => format!("{repo}/{}", candidate.name),
+        None => candidate.name.clone(),
+    };
+    match &candidate.version {
+        Some(version) => format!("{qualified_name}  {version}"),
+        None => qualified_name,
+    }
 }
