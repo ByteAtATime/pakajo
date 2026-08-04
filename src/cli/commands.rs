@@ -169,6 +169,7 @@ pub(super) fn answerer_for(
 }
 
 pub(super) fn root_install(
+    handle: &alpm::Alpm,
     positionals: &[String],
     as_deps: bool,
     json: bool,
@@ -180,10 +181,9 @@ pub(super) fn root_install(
         .collect::<Vec<_>>();
     let needs_lookup = targets.iter().any(|t| matches!(t, InstallTarget::Repo(_)));
     if needs_lookup {
-        let handle = alpm_handle()?;
         for target in &targets {
             if let InstallTarget::Repo(name) = target
-                && crate::pacman::find_pkg(&handle, name).is_none()
+                && crate::pacman::find_pkg(handle, name).is_none()
             {
                 anyhow::bail!("cannot build packages as root; re-run without privilege escalation");
             }

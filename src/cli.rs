@@ -56,7 +56,7 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
             std::process::exit(1);
         }
     };
-    let positionals = expand_groups(&handle, &positionals, stdin_is_tty());
+    let positionals = expand_groups(&handle, &positionals, stdin_is_tty() && !args.json);
 
     if is_root() {
         let approvals = match args
@@ -71,12 +71,7 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
                 std::process::exit(1);
             }
         };
-        exit_with_result(root_install(
-            &positionals,
-            args.as_deps,
-            args.json,
-            approvals,
-        ));
+        exit_with_result(root_install(&handle, &positionals, args.as_deps, args.json, approvals));
     }
 
     let mut repo_or_file: Vec<String> = Vec::new();
