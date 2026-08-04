@@ -263,7 +263,7 @@ fn run_makepkg_streaming<S: InstallSink + ?Sized>(
     package: &str,
     sink: &mut S,
 ) -> anyhow::Result<()> {
-    let win_size = stdout_winsize();
+    let win_size = crate::utils::terminal_winsize();
     let pty = nix::pty::openpty(&win_size, None).context("failed to open pseudoterminal")?;
     let slave_stdout = pty.slave.try_clone().context("failed to clone pty slave")?;
     let slave_stderr = pty.slave.try_clone().context("failed to clone pty slave")?;
@@ -363,22 +363,6 @@ fn set_nonblocking(file: &std::fs::File) -> anyhow::Result<()> {
         return Err(std::io::Error::last_os_error()).context("fcntl F_SETFL on pty master");
     }
     Ok(())
-}
-
-fn stdout_winsize() -> libc::winsize {
-    use std::os::unix::io::AsRawFd as _;
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let fd = std::io::stdout().as_raw_fd();
-    let ok = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0;
-    if ok && ws.ws_col > 0 && ws.ws_row > 0 {
-        return ws;
-    }
-    libc::winsize {
-        ws_row: 24,
-        ws_col: 80,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    }
 }
 
 pub(crate) fn spawn_install_child(

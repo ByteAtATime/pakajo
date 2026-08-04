@@ -16,6 +16,9 @@ pub const CYAN: &str = "\x1b[36m";
 pub const RED: &str = "\x1b[1;31m";
 pub const YELLOW: &str = "\x1b[1;33m";
 pub const WHITE: &str = "\x1b[0;37m";
+pub const MAGENTA: &str = "\x1b[1;35m";
+pub const GREEN: &str = "\x1b[1;32m";
+pub const DIM: &str = "\x1b[38;5;243m";
 pub const RESET: &str = "\x1b[0m";
 
 pub fn stdout_color() -> bool {

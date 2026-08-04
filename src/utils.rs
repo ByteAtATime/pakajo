@@ -20,6 +20,27 @@ pub fn format_mib(bytes: i64) -> String {
     format!("{val:.2} MiB")
 }
 
+pub fn terminal_winsize() -> libc::winsize {
+    use std::os::unix::io::AsRawFd as _;
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let fd = std::io::stdout().as_raw_fd();
+    let ok = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0;
+    if ok && ws.ws_col > 0 && ws.ws_row > 0 {
+        ws
+    } else {
+        libc::winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        }
+    }
+}
+
+pub fn terminal_cols() -> usize {
+    terminal_winsize().ws_col as usize
+}
+
 pub(crate) fn version_diff(old: &str, new: &str) -> (String, String, String) {
     let mut split = old.len().min(new.len());
     for ((oi, oc), (_, nc)) in old.char_indices().zip(new.char_indices()) {
