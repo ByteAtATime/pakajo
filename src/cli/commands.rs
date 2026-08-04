@@ -6,6 +6,7 @@ use super::privs::stdin_is_tty;
 use super::prompts::{confirm_install, confirm_install_stderr};
 use super::sinks::{ConsoleSink, EscalatedSink, JsonSink};
 use crate::install::{self, InstallTarget};
+use crate::package::PackageSource;
 use crate::search::SearchResult;
 
 pub(super) fn alpm_handle() -> anyhow::Result<alpm::Alpm> {
@@ -132,20 +133,47 @@ fn print_search_results(rows: &[SearchResult]) {
     if rows.is_empty() {
         return;
     }
-    let name_width = rows.iter().map(|r| r.name.len()).max().unwrap_or(0);
-    let version_width = rows.iter().map(|r| r.version.len()).max().unwrap_or(0);
+    let color = crate::color::stdout_color();
     for row in rows {
-        let repo = row.repo.as_deref().unwrap_or("-");
+        let repo_raw = row.repo.as_deref().unwrap_or("-");
+        let repo_color = match row.source {
+            PackageSource::Repo => crate::color::COLON,
+            PackageSource::Aur => crate::color::MAGENTA,
+        };
+        let repo = crate::color::paint(color, repo_color, repo_raw);
+        let name = crate::color::paint(color, crate::color::BOLD, &row.name);
+        let version = crate::color::paint(color, crate::color::GREEN, &row.version);
+
+        let mut tokens: Vec<String> = Vec::new();
+        if let Some(v) = row.num_votes {
+            let code = if v >= 10 {
+                crate::color::GREEN
+            } else {
+                crate::color::GRAY
+            };
+            tokens.push(crate::color::paint(color, code, &format!("+{v}")));
+            if let Some(p) = row.popularity {
+                tokens.push(crate::color::paint(color, code, &format!("~{p:.2}")));
+            }
+        }
+        if row.installed {
+            tokens.push(crate::color::paint(
+                color,
+                crate::color::GREEN,
+                "[installed]",
+            ));
+        }
+
+        let metadata_block = if tokens.is_empty() {
+            String::new()
+        } else {
+            let bullet = crate::color::paint(color, crate::color::DIM, "\u{2022}");
+            format!(" {bullet} {}", tokens.join(" "))
+        };
+
         let desc = row.description.as_deref().unwrap_or("-");
-        println!(
-            "  {:<nw$}  {:<vw$}  [{}]  {}",
-            row.name,
-            row.version,
-            repo,
-            desc,
-            nw = name_width,
-            vw = version_width,
-        );
+        println!("{repo}/{name} {version}{metadata_block}");
+        println!("    {desc}");
     }
 }
 
