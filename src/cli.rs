@@ -49,6 +49,15 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
         usage_error();
     }
 
+    let handle = match alpm_handle() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    };
+    let positionals = expand_groups(&handle, &positionals);
+
     if is_root() {
         let approvals = match args
             .approvals_b64
@@ -72,13 +81,6 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
 
     let mut repo_or_file: Vec<String> = Vec::new();
     let mut aur: Vec<String> = Vec::new();
-    let handle = match alpm_handle() {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    };
     for s in &positionals {
         match classify_target(s) {
             InstallTarget::File(_) => repo_or_file.push(s.clone()),
@@ -338,6 +340,35 @@ fn sink_for(json: bool) -> Box<dyn InstallSink> {
     } else {
         Box::new(ConsoleSink::new())
     }
+}
+
+fn expand_groups(handle: &alpm::Alpm, positionals: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for s in positionals {
+        if crate::pacman::find_pkg(handle, s).is_some() {
+            if seen.insert(s.clone()) {
+                out.push(s.clone());
+            }
+            continue;
+        }
+        let groups = crate::pacman::find_groups(handle, s);
+        if groups.is_empty() {
+            if seen.insert(s.clone()) {
+                out.push(s.clone());
+            }
+            continue;
+        }
+        for (_db, group) in groups {
+            for pkg in group.packages().iter() {
+                let name = pkg.name().to_string();
+                if seen.insert(name.clone()) {
+                    out.push(name);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn classify_target(s: &str) -> InstallTarget {

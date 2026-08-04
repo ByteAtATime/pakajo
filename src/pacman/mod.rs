@@ -105,3 +105,36 @@ pub(crate) fn init_alpm_rootless(config: &pacmanconf::Config) -> anyhow::Result<
 pub fn find_pkg<'a>(handle: &'a Alpm, name: &str) -> Option<&'a alpm::Package> {
     handle.syncdbs().iter().find_map(|db| db.pkg(name).ok())
 }
+
+pub fn find_groups<'a>(
+    handle: &'a Alpm,
+    name: &str,
+) -> Vec<(&'a alpm::Db, &'a alpm::Group)> {
+    handle
+        .syncdbs()
+        .iter()
+        .filter_map(|db| db.group(name).ok().map(|g| (db, g)))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_groups;
+
+    #[test]
+    #[ignore]
+    fn find_groups_resolves_base_devel() {
+        let handle = crate::install::setup_fake_root("find_groups");
+        let groups = find_groups(&handle, "base-devel");
+        assert!(!groups.is_empty(), "base-devel group must resolve");
+        let members: Vec<String> = groups
+            .iter()
+            .flat_map(|(_, g)| g.packages().iter())
+            .map(|p| p.name().to_string())
+            .collect();
+        assert!(
+            members.iter().any(|m| m == "make"),
+            "base-devel should contain make; got {members:?}"
+        );
+    }
+}
