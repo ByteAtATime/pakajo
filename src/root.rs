@@ -45,6 +45,7 @@ enum Page {
     Install,
     Updates,
     Confirm,
+    Resolve,
 }
 
 pub struct PakajoRoot {
@@ -150,7 +151,13 @@ impl PakajoRoot {
                                 .collect();
                             this.sysupgrade_preview = Some(preview.clone());
                             this.sysupgrade_preview_error = None;
-                            this.page = Page::Confirm;
+                            this.page = if preview.questions.conflicts.is_empty()
+                                && preview.questions.providers.is_empty()
+                            {
+                                Page::Confirm
+                            } else {
+                                Page::Resolve
+                            };
                         }
                         Err(msg) => {
                             this.sysupgrade_preview = None;
@@ -728,7 +735,13 @@ impl PakajoRoot {
                     .icon(IconName::ArrowLeft)
                     .label("Back")
                     .on_click(cx.listener(|this, _ev, _window, cx| {
-                        this.page = Page::Updates;
+                        this.page = if this.conflict_checks.is_empty()
+                            && this.provider_choices.is_empty()
+                        {
+                            Page::Updates
+                        } else {
+                            Page::Resolve
+                        };
                         cx.notify();
                     })),
             )
@@ -764,8 +777,6 @@ impl PakajoRoot {
                     })),
             );
 
-        let questions = self.render_confirm_questions(&preview.questions, warn, cx);
-
         let blocked_banner = preview
             .prepare_error
             .as_ref()
@@ -786,8 +797,67 @@ impl PakajoRoot {
                     .flex_1()
                     .min_h_0()
                     .children(blocked_banner)
-                    .child(manifest)
-                    .child(questions),
+                    .child(manifest),
+            )
+            .into_any_element()
+    }
+
+    fn render_resolve_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(preview) = &self.sysupgrade_preview else {
+            return centered()
+                .text_color(cx.theme().muted_foreground)
+                .child("No preview available")
+                .into_any_element();
+        };
+
+        let top_bar = h_flex()
+            .items_center()
+            .gap_2()
+            .child(
+                Button::new("resolve-back")
+                    .ghost()
+                    .icon(IconName::ArrowLeft)
+                    .label("Back")
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        this.page = Page::Updates;
+                        cx.notify();
+                    })),
+            )
+            .child(div().text_lg().font_semibold().child("Resolve changes"))
+            .child(div().flex_1())
+            .child(
+                Button::new("resolve-continue")
+                    .primary()
+                    .label("Continue")
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        this.page = Page::Confirm;
+                        cx.notify();
+                    })),
+            );
+
+        let choices = self.render_question_choices(&preview.questions, cx);
+
+        div()
+            .v_flex()
+            .size_full()
+            .gap_3()
+            .min_h_0()
+            .child(top_bar)
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("The following conflicts must be resolved before continuing."),
+            )
+            .child(
+                div()
+                    .id("resolve-scroll")
+                    .overflow_y_scroll()
+                    .v_flex()
+                    .gap_3()
+                    .flex_1()
+                    .min_h_0()
+                    .child(choices),
             )
             .into_any_element()
     }
@@ -849,12 +919,7 @@ impl PakajoRoot {
         banner
     }
 
-    fn render_confirm_questions(
-        &self,
-        qs: &QuestionSet,
-        warn: Hsla,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    fn render_question_choices(&self, qs: &QuestionSet, cx: &mut Context<Self>) -> Div {
         if qs.conflicts.is_empty() && qs.providers.is_empty() {
             return div();
         }
@@ -944,6 +1009,7 @@ impl Render for PakajoRoot {
                 .into_any_element(),
             (Page::Updates, _) => self.render_updates_page(cx).into_any_element(),
             (Page::Confirm, _) => self.render_confirm_page(cx),
+            (Page::Resolve, _) => self.render_resolve_page(cx),
             _ => {
                 let session = self.session.read(cx);
                 if session.results.is_empty() {
