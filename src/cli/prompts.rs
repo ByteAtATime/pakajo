@@ -32,6 +32,67 @@ fn read_confirmation(message: &str, stream: PromptStream) -> bool {
     matches!(input.trim().to_lowercase().as_str(), "" | "y" | "yes")
 }
 
+pub(super) fn select_group_members(
+    group_name: &str,
+    groups: &[(&alpm::Db, &alpm::Group)],
+) -> Vec<String> {
+    let c = color::stdout_color();
+    let flat: Vec<&alpm::Package> = groups
+        .iter()
+        .flat_map(|(_, g)| g.packages().iter())
+        .collect();
+    let total = flat.len();
+    println!(
+        "{}",
+        color::colon(c, &format!("There are {total} members in group {group_name}:"))
+    );
+
+    let mut n = 1usize;
+    let mut current_repo = "";
+    for (db, group) in groups {
+        let db_name = db.name();
+        if db_name != current_repo {
+            current_repo = db_name;
+            println!("{}", color::colon(c, &format!("Repository {db_name}")));
+        }
+        let mut line = String::from("    ");
+        for pkg in group.packages().iter() {
+            line.push_str(&format!("{n}) {}  ", pkg.name()));
+            n += 1;
+        }
+        println!("{}", line.trim_end());
+    }
+
+    loop {
+        print!("\n{}", color::paint(c, color::BOLD, "Enter a selection (default=all):"));
+        print!(" ");
+        let _ = std::io::stdout().flush();
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).is_err() {
+            return flat.iter().map(|p| p.name().to_string()).collect();
+        }
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return flat.iter().map(|p| p.name().to_string()).collect();
+        }
+        let mut picks: Vec<usize> = Vec::new();
+        let mut had_error = false;
+        for tok in trimmed.split_whitespace() {
+            match tok.parse::<usize>() {
+                Ok(num) if num >= 1 && num <= total => picks.push(num - 1),
+                _ => {
+                    println!("error: invalid number: {tok}");
+                    had_error = true;
+                }
+            }
+        }
+        if had_error {
+            continue;
+        }
+        return picks.into_iter().map(|i| flat[i].name().to_string()).collect();
+    }
+}
+
 pub(super) fn confirm_install() -> bool {
     print!("\n");
     read_confirmation("Proceed with installation?", PromptStream::Stdout)

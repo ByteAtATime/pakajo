@@ -56,7 +56,7 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
             std::process::exit(1);
         }
     };
-    let positionals = expand_groups(&handle, &positionals);
+    let positionals = expand_groups(&handle, &positionals, stdin_is_tty());
 
     if is_root() {
         let approvals = match args
@@ -342,7 +342,7 @@ fn sink_for(json: bool) -> Box<dyn InstallSink> {
     }
 }
 
-fn expand_groups(handle: &alpm::Alpm, positionals: &[String]) -> Vec<String> {
+fn expand_groups(handle: &alpm::Alpm, positionals: &[String], interactive: bool) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for s in positionals {
@@ -359,12 +359,18 @@ fn expand_groups(handle: &alpm::Alpm, positionals: &[String]) -> Vec<String> {
             }
             continue;
         }
-        for (_db, group) in groups {
-            for pkg in group.packages().iter() {
-                let name = pkg.name().to_string();
-                if seen.insert(name.clone()) {
-                    out.push(name);
-                }
+        let members: Vec<String> = if interactive {
+            self::prompts::select_group_members(s, &groups)
+        } else {
+            groups
+                .iter()
+                .flat_map(|(_, g)| g.packages().iter())
+                .map(|p| p.name().to_string())
+                .collect()
+        };
+        for name in members {
+            if seen.insert(name.clone()) {
+                out.push(name);
             }
         }
     }
