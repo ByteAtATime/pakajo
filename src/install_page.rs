@@ -14,6 +14,7 @@ use gpui_component::{
     progress::Progress,
     v_flex,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 
 enum PageMode {
@@ -45,6 +46,9 @@ struct RepoState {
     scroll: ScrollHandle,
     download_total: usize,
     download_done: usize,
+    download_bytes_total: i64,
+    download_bytes_done: i64,
+    download_files: HashMap<String, i64>,
 }
 
 struct AurState {
@@ -80,6 +84,9 @@ impl InstallPage {
                 scroll: ScrollHandle::new(),
                 download_total: 0,
                 download_done: 0,
+                download_bytes_total: 0,
+                download_bytes_done: 0,
+                download_files: HashMap::new(),
             }),
             PackageSource::Aur => PageMode::Aur(AurState {
                 manifest: None,
@@ -136,6 +143,15 @@ impl InstallPage {
         }
         if let PageMode::Repo(state) = &mut self.mode {
             apply_repo_counters(state, &ev);
+        }
+        if let PageMode::Repo(state) = &self.mode
+            && state.stage == RepoStage::Download
+            && state.download_bytes_total > 0
+        {
+            self.indeterminate = false;
+            self.overall = ((state.download_bytes_done as f32 / state.download_bytes_total as f32)
+                * 100.0)
+                .min(100.0);
         }
         match &ev {
             InstallEvent::BuildStarted { .. } => {
@@ -781,9 +797,28 @@ fn cell_state(status: &InstallProgress, current_idx: usize, idx: usize) -> CellS
 
 fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
     match ev {
-        InstallEvent::RetrievingPackages { num, .. } => {
+        InstallEvent::RetrievingPackages { num, total_bytes } => {
             state.download_total = *num;
             state.download_done = 0;
+            state.download_bytes_total = *total_bytes;
+            state.download_bytes_done = 0;
+            state.download_files.clear();
+        }
+        InstallEvent::DownloadProgress {
+            filename,
+            downloaded,
+            ..
+        } => {
+            let prev = state
+                .download_files
+                .insert(filename.clone(), *downloaded)
+                .unwrap_or(0);
+            state.download_bytes_done += *downloaded - prev;
+        }
+        InstallEvent::DownloadRetry { filename, resume } => {
+            if !*resume && let Some(prev) = state.download_files.remove(filename) {
+                state.download_bytes_done -= prev;
+            }
         }
         InstallEvent::DownloadCompleted { .. } => {
             state.download_done += 1;
