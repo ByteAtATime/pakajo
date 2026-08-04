@@ -19,11 +19,13 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Root, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState},
     progress::Progress,
     spinner::Spinner,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -65,6 +67,8 @@ pub struct PakajoRoot {
     last_seen_count: u32,
     sysupgrade_preview: Option<crate::dry_run::SysupgradePreview>,
     sysupgrade_preview_error: Option<String>,
+    conflict_checks: Vec<bool>,
+    provider_choices: HashMap<String, usize>,
 }
 
 impl PakajoRoot {
@@ -136,6 +140,13 @@ impl PakajoRoot {
                 SessionEvent::SysupgradePreviewReady(result) => {
                     match result {
                         Ok(preview) => {
+                            this.conflict_checks = vec![true; preview.questions.conflicts.len()];
+                            this.provider_choices = preview
+                                .questions
+                                .providers
+                                .iter()
+                                .map(|prompt| (prompt.depend.clone(), 0))
+                                .collect();
                             this.sysupgrade_preview = Some(preview.clone());
                             this.sysupgrade_preview_error = None;
                             this.page = Page::Confirm;
@@ -171,6 +182,8 @@ impl PakajoRoot {
             last_seen_count: 0,
             sysupgrade_preview: None,
             sysupgrade_preview_error: None,
+            conflict_checks: Vec::new(),
+            provider_choices: HashMap::new(),
         }
     }
 
@@ -310,6 +323,8 @@ impl PakajoRoot {
         {
             self.sysupgrade_preview = None;
             self.sysupgrade_preview_error = None;
+            self.conflict_checks.clear();
+            self.provider_choices.clear();
         }
         cx.notify();
     }
@@ -724,13 +739,17 @@ impl PakajoRoot {
                     .label("Apply")
                     .disabled(apply_disabled)
                     .on_click(cx.listener(move |this, _ev, _window, cx| {
-                        let approvals = match crate::question::default_approve(&questions) {
+                        let approvals = match crate::question::collect_approvals(
+                            &questions,
+                            &this.conflict_checks,
+                            &this.provider_choices,
+                        ) {
                             Ok(a) => a,
                             Err(error) => {
                                 this.session.update(cx, |s, cx| {
                                     s.set_progress(
                                         InstallProgress::Failed(format!(
-                                            "failed to compute default approvals: {error}"
+                                            "failed to collect approvals: {error}"
                                         )),
                                         cx,
                                     );
@@ -744,7 +763,7 @@ impl PakajoRoot {
                     })),
             );
 
-        let questions = Self::render_confirm_questions(&preview.questions, warn, cx);
+        let questions = self.render_confirm_questions(&preview.questions, warn, cx);
 
         let blocked_banner = preview
             .prepare_error
@@ -829,7 +848,12 @@ impl PakajoRoot {
         banner
     }
 
-    fn render_confirm_questions(qs: &QuestionSet, warn: Hsla, cx: &App) -> Div {
+    fn render_confirm_questions(
+        &self,
+        qs: &QuestionSet,
+        warn: Hsla,
+        cx: &mut Context<Self>,
+    ) -> Div {
         if qs.conflicts.is_empty() && qs.providers.is_empty() {
             return div();
         }
@@ -850,22 +874,28 @@ impl PakajoRoot {
                 ),
             )
             .child(div().h_px().w_full().bg(cx.theme().border));
-        for conflict in &qs.conflicts {
+        for (index, conflict) in qs.conflicts.iter().enumerate() {
+            let checked = self.conflict_checks[index];
             section = section.child(
-                div()
-                    .h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().flex_1().child(format!(
-                        "{} replaces {}",
-                        conflict.incoming, conflict.removable
-                    )))
+                Checkbox::new(("conflict", index))
+                    .checked(checked)
+                    .label(format!(
+                        "Replace {} with {}",
+                        conflict.removable, conflict.incoming
+                    ))
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(cx.theme().danger)
-                            .child("remove"),
-                    ),
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{} will be removed", conflict.removable)),
+                    )
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, &next_checked: &bool, _window, cx| {
+                        if let Some(slot) = this.conflict_checks.get_mut(index) {
+                            *slot = next_checked;
+                            cx.notify();
+                        }
+                    })),
             );
         }
         for prompt in &qs.providers {

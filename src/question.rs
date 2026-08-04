@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Context as _, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
@@ -96,10 +98,33 @@ impl QuestionSet {
     }
 }
 
+#[allow(dead_code)]
 pub fn default_approve(qs: &QuestionSet) -> anyhow::Result<Approvals> {
     let conflicts: Vec<usize> = (0..qs.conflicts.len()).collect();
     let providers: Vec<(usize, usize)> = (0..qs.providers.len()).map(|i| (i, 0)).collect();
     qs.approve(&conflicts, &providers)
+}
+
+pub fn collect_approvals(
+    qs: &QuestionSet,
+    conflict_checks: &[bool],
+    provider_choices: &HashMap<String, usize>,
+) -> anyhow::Result<Approvals> {
+    let conflict_selections: Vec<usize> = conflict_checks
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &on)| if on { Some(i) } else { None })
+        .collect();
+    let provider_choices: Vec<(usize, usize)> = qs
+        .providers
+        .iter()
+        .enumerate()
+        .filter_map(|(prompt_index, prompt)| {
+            let &candidate_index = provider_choices.get(&prompt.depend)?;
+            Some((prompt_index, candidate_index))
+        })
+        .collect();
+    qs.approve(&conflict_selections, &provider_choices)
 }
 
 pub fn encode_approvals(approvals: &Approvals) -> anyhow::Result<String> {
@@ -283,6 +308,70 @@ mod tests {
         assert_eq!(
             approvals.approved_providers[1].provider_name, qs.providers[1].candidates[0].name,
             "provider 1 should resolve to candidate 0"
+        );
+    }
+
+    #[test]
+    fn collect_approvals_with_all_checked_matches_default_approve() {
+        let qs = sample_question_set();
+        let conflict_checks = vec![true; qs.conflicts.len()];
+        let provider_choices: HashMap<String, usize> = qs
+            .providers
+            .iter()
+            .map(|prompt| (prompt.depend.clone(), 0))
+            .collect();
+
+        let collected = collect_approvals(&qs, &conflict_checks, &provider_choices)
+            .expect("collect_approvals with all checked");
+        let defaulted = default_approve(&qs).expect("default_approve");
+
+        assert_eq!(collected, defaulted);
+    }
+
+    #[test]
+    fn collect_approvals_with_no_conflicts_emits_empty_conflicts() {
+        let qs = sample_question_set();
+        let provider_choices: HashMap<String, usize> = qs
+            .providers
+            .iter()
+            .map(|prompt| (prompt.depend.clone(), 0))
+            .collect();
+
+        let approvals =
+            collect_approvals(&qs, &[], &provider_choices).expect("collect_approvals empty");
+
+        assert!(
+            approvals.approved_conflicts.is_empty(),
+            "no conflict checks should produce no approved conflicts"
+        );
+        assert_eq!(
+            approvals.approved_providers.len(),
+            qs.providers.len(),
+            "providers should still resolve to their defaults"
+        );
+    }
+
+    #[test]
+    fn collect_approvals_picks_named_provider_candidate() {
+        let qs = sample_question_set();
+        let mut provider_choices: HashMap<String, usize> = qs
+            .providers
+            .iter()
+            .map(|prompt| (prompt.depend.clone(), 0))
+            .collect();
+        provider_choices.insert("sdl".to_string(), 1);
+
+        let approvals = collect_approvals(&qs, &[true], &provider_choices)
+            .expect("collect_approvals with candidate 1");
+
+        let sdl_approval = approvals
+            .approved_providers
+            .iter()
+            .find(|approval| approval.depend == "sdl")
+            .expect("sdl approval should exist");
+        assert_eq!(
+            sdl_approval.provider_name, qs.providers[0].candidates[1].name,
+            "sdl should resolve to candidate index 1"
         );
     }
 }
