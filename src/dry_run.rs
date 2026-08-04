@@ -47,6 +47,7 @@ pub(crate) struct SysupgradePreview {
     pub(crate) summary: TransactionSummary,
     pub(crate) questions: QuestionSet,
     pub(crate) prepare_error: Option<PrepareFailure>,
+    pub(crate) aur: Vec<crate::upgrade::AurUpgradeCandidate>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,9 +68,22 @@ pub(crate) fn compute_sysupgrade_preview(
 ) -> anyhow::Result<SysupgradePreview> {
     crate::upgrade::apply_ignores(handle, config, &[]);
     let state = attach_recorder(handle);
-    let result = run_sysupgrade_preview(handle, &state);
+    let mut preview = run_sysupgrade_preview(handle, &state);
     let _ = handle.trans_release();
-    result
+    let aur_client = crate::aur::AurClient::new();
+    let aur = match crate::upgrade::compute_aur_upgrades(handle, &aur_client) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "[pakajo] aur upgrade check failed, sysupgrade preview shows repo only: {e:#}"
+            );
+            Vec::new()
+        }
+    };
+    if let Ok(p) = &mut preview {
+        p.aur = aur;
+    }
+    preview
 }
 
 fn run_sysupgrade_preview(
@@ -89,6 +103,7 @@ fn run_sysupgrade_preview(
         summary,
         questions,
         prepare_error,
+        aur: Vec::new(),
     })
 }
 

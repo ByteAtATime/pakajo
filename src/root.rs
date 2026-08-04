@@ -12,7 +12,7 @@ use crate::{
     question::QuestionSet,
     search_view::{SearchView, centered},
     session::{DetailData, InstallKind, PakajoSession, SearchState, SessionEvent, UpdatesState},
-    updates_view::UpdatesView,
+    updates_view::{UpdatesView, aur_upgrade_row},
 };
 use alpm::Alpm;
 use gpui::*;
@@ -797,7 +797,25 @@ impl PakajoRoot {
                     .flex_1()
                     .min_h_0()
                     .children(blocked_banner)
-                    .child(manifest),
+                    .child(manifest)
+                    .children((!preview.aur.is_empty()).then(|| {
+                        div()
+                            .v_flex()
+                            .gap_2()
+                            .w_full()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .p_4()
+                            .child(
+                                div().text_sm().font_semibold().child(format!(
+                                    "AUR packages to build ({})",
+                                    preview.aur.len()
+                                )),
+                            )
+                            .child(div().h_px().w_full().bg(cx.theme().border))
+                            .children(preview.aur.iter().map(|c| aur_upgrade_row(c, cx)))
+                    })),
             )
             .into_any_element()
     }

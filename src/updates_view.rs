@@ -161,7 +161,7 @@ fn repo_upgrade_row(upgrade: &RepoUpgrade, cx: &App) -> Stateful<Div> {
         )
 }
 
-fn aur_upgrade_row(candidate: &AurUpgradeCandidate, cx: &App) -> Stateful<Div> {
+pub(crate) fn aur_upgrade_row(candidate: &AurUpgradeCandidate, cx: &App) -> Stateful<Div> {
     let muted_bg = cx.theme().muted;
     div()
         .id(candidate.name.clone())
