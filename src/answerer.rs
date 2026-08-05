@@ -83,8 +83,8 @@ impl QuestionAnswerer for StdioAnswerer {
         if candidates.is_empty() {
             return ProviderDecision::Decline;
         }
-        eprint!(
-            "{}\n",
+        eprintln!(
+            "{}",
             color::colon(
                 self.color,
                 &format!(
@@ -99,7 +99,7 @@ impl QuestionAnswerer for StdioAnswerer {
                 Some(repo) => format!("{repo}/{}", c.name),
                 None => c.name.clone(),
             };
-            eprint!("  [{}] {display}\n", i + 1);
+            eprintln!("  [{}] {display}", i + 1);
         }
         eprint!(
             "{} ",

@@ -95,10 +95,7 @@ impl PakajoRoot {
         let subscription = cx.subscribe_in(
             &search_input,
             sub_window,
-            |this, _state, ev: &InputEvent, _window, cx| match ev {
-                InputEvent::Change => this.on_search_change(cx),
-                _ => {}
-            },
+            |this, _state, ev: &InputEvent, _window, cx| if let InputEvent::Change = ev { this.on_search_change(cx) },
         );
 
         let session_window = &mut *window;
@@ -113,7 +110,7 @@ impl PakajoRoot {
                 }
                 SessionEvent::InstallLog(ev) => this.on_install_log(ev.clone(), cx),
                 SessionEvent::InstallLogsOpened { kind, source, name } => {
-                    this.on_install_logs_opened(kind.clone(), *source, name.clone(), window, cx)
+                    this.on_install_logs_opened(*kind, *source, name.clone(), window, cx)
                 }
                 SessionEvent::ReviewRequired { qs, name } => {
                     this.on_review_required(qs.clone(), name.clone(), window, cx)

@@ -36,7 +36,7 @@ pub fn build_stub_pkg(info: &AurInfo, dir: &Path) -> anyhow::Result<PathBuf> {
     header.set_size(bytes.len() as u64);
     header.set_mode(0o644);
     header.set_cksum();
-    tar.append(&mut header, &mut Cursor::new(&bytes))
+    tar.append(&header, &mut Cursor::new(&bytes))
         .context("failed to append .PKGINFO to tar archive")?;
     tar.finish().context("failed to finalize tar archive")?;
 

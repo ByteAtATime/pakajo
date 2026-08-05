@@ -305,11 +305,10 @@ impl PackageIndex {
 
     pub fn load_or_build(sqlite_path: &Path) -> anyhow::Result<PackageIndex> {
         let idx = index_path(sqlite_path);
-        if !needs_rebuild(sqlite_path) {
-            if let Ok(pkg) = Self::load(&idx) {
+        if !needs_rebuild(sqlite_path)
+            && let Ok(pkg) = Self::load(&idx) {
                 return Ok(pkg);
             }
-        }
         let rows = match rusqlite::Connection::open_with_flags(
             sqlite_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,

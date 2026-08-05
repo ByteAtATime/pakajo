@@ -171,11 +171,8 @@ impl InstallPage {
                 format_bytes(state.download_bytes_total),
             ));
         }
-        match &ev {
-            InstallEvent::BuildStarted { .. } => {
-                self.indeterminate = true;
-            }
-            _ => {}
+        if let InstallEvent::BuildStarted { .. } = &ev {
+            self.indeterminate = true;
         }
         match ev {
             InstallEvent::Progress {

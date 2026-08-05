@@ -165,7 +165,7 @@ impl InstallReviewDialog {
                         prompt
                             .candidates
                             .iter()
-                            .map(|candidate| candidate_label(candidate)),
+                            .map(candidate_label),
                     )
                     .on_click(cx.listener(move |this, &chosen: &usize, _window, cx| {
                         this.provider_choices.insert(depend.clone(), chosen);

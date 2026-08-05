@@ -38,15 +38,14 @@ pub(crate) fn dispatch_search(
     let pairs = engine.search_tiered(text);
     let ids: Vec<u32> = pairs.iter().map(|(id, _)| *id).collect();
     let mut entries: Vec<(Tier, SearchResult)> = Vec::with_capacity(pairs.len());
-    if !ids.is_empty() {
-        if let Ok(rows) = sqlite.hydrate_by_ids(&ids) {
+    if !ids.is_empty()
+        && let Ok(rows) = sqlite.hydrate_by_ids(&ids) {
             for (id, tier) in &pairs {
                 if let Some(row) = rows.get(id) {
                     entries.push((*tier, hydrate::row_to_result(row, installed)));
                 }
             }
         }
-    }
     let q = text.to_lowercase();
     if !q.is_empty() {
         for (name, repo) in group_index {
@@ -55,7 +54,7 @@ pub(crate) fn dispatch_search(
             }
         }
     }
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries.sort_by_key(|a| a.0);
     entries.into_iter().map(|(_, r)| r).collect()
 }
 

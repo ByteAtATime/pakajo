@@ -229,11 +229,11 @@ fn run_dry_run_transaction(
 
     let prepare_result = handle.trans_prepare();
     let snapshot = snapshot(state);
-    let outcome = match prepare_result {
+    
+    match prepare_result {
         Ok(()) => Ok(snapshot),
         Err(err) => Err(classify_prepare_error(err)),
-    };
-    outcome
+    }
 }
 
 fn run_repo_dry_run_transaction(

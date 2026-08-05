@@ -12,11 +12,11 @@ pub(super) fn render(percent: i32, width: usize, colored: bool) -> String {
         if p < hash {
             out.push('-');
         } else if p == hash {
-            let head = if pct % 2 == 0 { 'C' } else { 'c' };
+            let head = if pct.is_multiple_of(2) { 'C' } else { 'c' };
             out.push_str(&color::paint(colored, color::YELLOW, &head.to_string()));
         } else {
             let i = width - p;
-            if i % 3 == 0 {
+            if i.is_multiple_of(3) {
                 out.push_str(&color::paint(colored, color::WHITE, "o"));
             } else {
                 out.push(' ');

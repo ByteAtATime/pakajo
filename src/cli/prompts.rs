@@ -94,12 +94,12 @@ pub(super) fn select_group_members(
 }
 
 pub(super) fn confirm_install() -> bool {
-    print!("\n");
+    println!();
     read_confirmation("Proceed with installation?", PromptStream::Stdout)
 }
 
 pub(super) fn confirm_remove() -> bool {
-    print!("\n");
+    println!();
     read_confirmation("Do you want to remove these packages?", PromptStream::Stdout)
 }
 
@@ -197,12 +197,12 @@ pub(super) fn confirm_proceed_to_review(plan: &BuildPlan) -> BuildDecision {
 }
 
 pub(super) fn confirm_install_stderr() -> bool {
-    eprint!("\n");
+    eprintln!();
     read_confirmation("Proceed with installation?", PromptStream::Stderr)
 }
 
 pub(super) fn confirm_remove_stderr() -> bool {
-    eprint!("\n");
+    eprintln!();
     read_confirmation("Do you want to remove these packages?", PromptStream::Stderr)
 }
 

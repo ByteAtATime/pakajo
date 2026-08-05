@@ -291,11 +291,9 @@ impl InstallSink for EscalatedSink {
                 } else {
                     eprint!("{}", render_summary(&s, color::stderr_color()));
                 }
-                return;
             }
             InstallEvent::CheckingDependencies => {
                 eprintln!("checking dependencies...");
-                return;
             }
             other => {
                 if let Ok(line) = serde_json::to_string(&other) {
