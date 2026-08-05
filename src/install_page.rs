@@ -5,7 +5,10 @@ use crate::events::{
 use crate::install::InstallProgress;
 use crate::package::PackageSource;
 use crate::session::InstallKind;
-use crate::transaction_state::{event_stage, aur_event_stage, AurStage, RepoStage};
+use crate::transaction_state::{
+    aur_event_stage, event_stage, ordered_aur_stages, ordered_stages, apply_repo_counters,
+    cell_state, AurStage, AurState, CellState, RepoState, RepoStage,
+};
 use crate::utils::format_bytes;
 use gpui::*;
 use gpui_component::{
@@ -23,25 +26,6 @@ enum PageMode {
     Aur(AurState),
 }
 
-struct RepoState {
-    manifest: Option<TransactionSummary>,
-    stage: RepoStage,
-    scroll: ScrollHandle,
-    download_total: usize,
-    download_done: usize,
-    download_bytes_total: i64,
-    download_bytes_done: i64,
-    download_files: HashMap<String, i64>,
-}
-
-struct AurState {
-    manifest: Option<TransactionSummary>,
-    stage: AurStage,
-    building: Option<String>,
-    cloning: Option<String>,
-    scroll: ScrollHandle,
-}
-
 pub struct InstallPage {
     pub kind: InstallKind,
     pub name: String,
@@ -51,6 +35,7 @@ pub struct InstallPage {
     pub indeterminate: bool,
     pub status_text: Option<String>,
     mode: PageMode,
+    scroll: ScrollHandle,
     on_back: Arc<dyn Fn(&mut Window, &mut App) + 'static>,
 }
 
@@ -65,7 +50,6 @@ impl InstallPage {
             PackageSource::Repo => PageMode::Repo(RepoState {
                 manifest: None,
                 stage: RepoStage::Resolve,
-                scroll: ScrollHandle::new(),
                 download_total: 0,
                 download_done: 0,
                 download_bytes_total: 0,
@@ -77,12 +61,10 @@ impl InstallPage {
                 stage: AurStage::Resolve,
                 building: None,
                 cloning: None,
-                scroll: ScrollHandle::new(),
             }),
             PackageSource::Group => PageMode::Repo(RepoState {
                 manifest: None,
                 stage: RepoStage::Resolve,
-                scroll: ScrollHandle::new(),
                 download_total: 0,
                 download_done: 0,
                 download_bytes_total: 0,
@@ -100,6 +82,7 @@ impl InstallPage {
             status_text: None,
             on_back,
             mode,
+            scroll: ScrollHandle::new(),
         }
     }
 
@@ -316,7 +299,7 @@ impl InstallPage {
 
     fn render_aur(&self, cx: &mut Context<Self>) -> Div {
         let on_back = self.on_back.clone();
-        let PageMode::Aur(state) = &self.mode else {
+        let PageMode::Aur(_state) = &self.mode else {
             return div();
         };
         v_flex()
@@ -344,7 +327,7 @@ impl InstallPage {
                     .items_stretch()
                     .gap_4()
                     .child(self.render_aur_stages(cx))
-                    .child(self.render_terminal(cx, &state.scroll)),
+                    .child(self.render_terminal(cx, &self.scroll)),
             )
     }
 
@@ -539,7 +522,7 @@ impl InstallPage {
 
     fn render_repo(&self, cx: &mut Context<Self>) -> Div {
         let on_back = self.on_back.clone();
-        let PageMode::Repo(state) = &self.mode else {
+        let PageMode::Repo(_state) = &self.mode else {
             return div();
         };
         v_flex()
@@ -567,7 +550,7 @@ impl InstallPage {
                     .items_stretch()
                     .gap_4()
                     .child(self.render_stages(cx))
-                    .child(self.render_terminal(cx, &state.scroll)),
+                    .child(self.render_terminal(cx, &self.scroll)),
             )
     }
 
@@ -750,84 +733,6 @@ impl InstallPage {
             },
         }
     }
-}
-
-fn ordered_stages(kind: InstallKind) -> Vec<RepoStage> {
-    use RepoStage::*;
-    match kind {
-        InstallKind::Install | InstallKind::Upgrade => {
-            vec![Resolve, Validate, Download, Install, Finalize]
-        }
-        InstallKind::Remove => vec![Resolve, Validate, Install, Finalize],
-    }
-}
-
-enum CellState {
-    Done,
-    Active,
-    Failed,
-    Pending,
-}
-
-fn cell_state(status: &InstallProgress, current_idx: usize, idx: usize) -> CellState {
-    match status {
-        InstallProgress::Completed => CellState::Done,
-        InstallProgress::Failed(_) => {
-            if idx < current_idx {
-                CellState::Done
-            } else if idx == current_idx {
-                CellState::Failed
-            } else {
-                CellState::Pending
-            }
-        }
-        _ => {
-            if idx < current_idx {
-                CellState::Done
-            } else if idx == current_idx {
-                CellState::Active
-            } else {
-                CellState::Pending
-            }
-        }
-    }
-}
-
-fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
-    match ev {
-        InstallEvent::RetrievingPackages { num, total_bytes } => {
-            state.download_total = *num;
-            state.download_done = 0;
-            state.download_bytes_total = *total_bytes;
-            state.download_bytes_done = 0;
-            state.download_files.clear();
-        }
-        InstallEvent::DownloadProgress {
-            filename,
-            downloaded,
-            ..
-        } => {
-            let prev = state
-                .download_files
-                .insert(filename.clone(), *downloaded)
-                .unwrap_or(0);
-            state.download_bytes_done += *downloaded - prev;
-        }
-        InstallEvent::DownloadRetry { filename, resume } => {
-            if !*resume && let Some(prev) = state.download_files.remove(filename) {
-                state.download_bytes_done -= prev;
-            }
-        }
-        InstallEvent::DownloadCompleted { .. } => {
-            state.download_done += 1;
-        }
-        _ => {}
-    }
-}
-
-fn ordered_aur_stages() -> &'static [AurStage] {
-    use AurStage::*;
-    &[Resolve, Build, Validate, Install, Finalize]
 }
 
 fn format_package_operation(

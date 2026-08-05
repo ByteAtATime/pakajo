@@ -1,4 +1,14 @@
-use crate::events::{InstallEvent, ProgressPhase};
+use std::collections::HashMap;
+
+use crate::events::{InstallEvent, ProgressPhase, TransactionSummary};
+use crate::install::InstallProgress;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallKind {
+    Install,
+    Remove,
+    Upgrade,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepoStage {
@@ -16,6 +26,33 @@ pub enum AurStage {
     Validate,
     Install,
     Finalize,
+}
+
+#[derive(Debug, Clone)]
+pub struct RepoState {
+    pub manifest: Option<TransactionSummary>,
+    pub stage: RepoStage,
+    pub download_total: usize,
+    pub download_done: usize,
+    pub download_bytes_total: i64,
+    pub download_bytes_done: i64,
+    pub download_files: HashMap<String, i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AurState {
+    pub manifest: Option<TransactionSummary>,
+    pub stage: AurStage,
+    pub building: Option<String>,
+    pub cloning: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellState {
+    Done,
+    Active,
+    Failed,
+    Pending,
 }
 
 pub fn event_stage(ev: &InstallEvent) -> Option<RepoStage> {
@@ -88,10 +125,83 @@ pub fn aur_event_stage(ev: &InstallEvent) -> Option<AurStage> {
     }
 }
 
+pub fn cell_state(status: &InstallProgress, current_idx: usize, idx: usize) -> CellState {
+    match status {
+        InstallProgress::Completed => CellState::Done,
+        InstallProgress::Failed(_) => {
+            if idx < current_idx {
+                CellState::Done
+            } else if idx == current_idx {
+                CellState::Failed
+            } else {
+                CellState::Pending
+            }
+        }
+        _ => {
+            if idx < current_idx {
+                CellState::Done
+            } else if idx == current_idx {
+                CellState::Active
+            } else {
+                CellState::Pending
+            }
+        }
+    }
+}
+
+pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
+    match ev {
+        InstallEvent::RetrievingPackages { num, total_bytes } => {
+            state.download_total = *num;
+            state.download_done = 0;
+            state.download_bytes_total = *total_bytes;
+            state.download_bytes_done = 0;
+            state.download_files.clear();
+        }
+        InstallEvent::DownloadProgress {
+            filename,
+            downloaded,
+            ..
+        } => {
+            let prev = state
+                .download_files
+                .insert(filename.clone(), *downloaded)
+                .unwrap_or(0);
+            state.download_bytes_done += *downloaded - prev;
+        }
+        InstallEvent::DownloadRetry { filename, resume } => {
+            if !*resume && let Some(prev) = state.download_files.remove(filename) {
+                state.download_bytes_done -= prev;
+            }
+        }
+        InstallEvent::DownloadCompleted { .. } => {
+            state.download_done += 1;
+        }
+        _ => {}
+    }
+}
+
+pub fn ordered_stages(kind: InstallKind) -> Vec<RepoStage> {
+    use RepoStage::*;
+    match kind {
+        InstallKind::Install | InstallKind::Upgrade => {
+            vec![Resolve, Validate, Download, Install, Finalize]
+        }
+        InstallKind::Remove => vec![Resolve, Validate, Install, Finalize],
+    }
+}
+
+pub fn ordered_aur_stages() -> &'static [AurStage] {
+    use AurStage::*;
+    &[Resolve, Build, Validate, Install, Finalize]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{InstallEvent, PackageOp, ProgressPhase};
+    use std::collections::HashMap;
+    use crate::events::{DownloadResult, InstallEvent, PackageOp, ProgressPhase};
+    use crate::install::InstallProgress;
 
     #[test]
     fn repo_resolving_dependencies_is_resolve() {
@@ -219,6 +329,213 @@ mod tests {
         assert_eq!(
             aur_event_stage(&InstallEvent::TransactionDone),
             Some(AurStage::Finalize)
+        );
+    }
+
+    fn fresh_repo_state() -> RepoState {
+        RepoState {
+            manifest: None,
+            stage: RepoStage::Resolve,
+            download_total: 0,
+            download_done: 0,
+            download_bytes_total: 0,
+            download_bytes_done: 0,
+            download_files: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn cell_state_completed_is_done_for_any_index() {
+        assert_eq!(cell_state(&InstallProgress::Completed, 0, 0), CellState::Done);
+        assert_eq!(cell_state(&InstallProgress::Completed, 2, 5), CellState::Done);
+    }
+
+    #[test]
+    fn cell_state_failed_partitions_by_current_index() {
+        let status = InstallProgress::Failed("boom".to_string());
+        assert_eq!(cell_state(&status, 2, 0), CellState::Done);
+        assert_eq!(cell_state(&status, 2, 2), CellState::Failed);
+        assert_eq!(cell_state(&status, 2, 3), CellState::Pending);
+    }
+
+    #[test]
+    fn cell_state_running_partitions_by_current_index() {
+        assert_eq!(cell_state(&InstallProgress::Running, 2, 0), CellState::Done);
+        assert_eq!(cell_state(&InstallProgress::Running, 2, 2), CellState::Active);
+        assert_eq!(cell_state(&InstallProgress::Running, 2, 3), CellState::Pending);
+    }
+
+    #[test]
+    fn apply_repo_retrieving_packages_sets_totals() {
+        let mut state = fresh_repo_state();
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::RetrievingPackages {
+                num: 3,
+                total_bytes: 5000,
+            },
+        );
+        assert_eq!(state.download_total, 3);
+        assert_eq!(state.download_done, 0);
+        assert_eq!(state.download_bytes_total, 5000);
+        assert_eq!(state.download_bytes_done, 0);
+        assert!(state.download_files.is_empty());
+    }
+
+    #[test]
+    fn apply_repo_retrieving_packages_clears_existing_map() {
+        let mut state = fresh_repo_state();
+        state.download_files.insert("stale".to_string(), 999);
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::RetrievingPackages {
+                num: 1,
+                total_bytes: 10,
+            },
+        );
+        assert!(state.download_files.is_empty());
+    }
+
+    #[test]
+    fn apply_repo_download_progress_tracks_delta() {
+        let mut state = fresh_repo_state();
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadProgress {
+                filename: "a".to_string(),
+                downloaded: 100,
+                total: 200,
+            },
+        );
+        assert_eq!(state.download_files.get("a"), Some(&100));
+        assert_eq!(state.download_bytes_done, 100);
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadProgress {
+                filename: "a".to_string(),
+                downloaded: 150,
+                total: 200,
+            },
+        );
+        assert_eq!(state.download_files.get("a"), Some(&150));
+        assert_eq!(state.download_bytes_done, 150);
+    }
+
+    #[test]
+    fn apply_repo_download_retry_full_removes_entry() {
+        let mut state = fresh_repo_state();
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadProgress {
+                filename: "a".to_string(),
+                downloaded: 100,
+                total: 200,
+            },
+        );
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadRetry {
+                filename: "a".to_string(),
+                resume: false,
+            },
+        );
+        assert!(state.download_files.is_empty());
+        assert_eq!(state.download_bytes_done, 0);
+    }
+
+    #[test]
+    fn apply_repo_download_retry_resumable_is_noop() {
+        let mut state = fresh_repo_state();
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadProgress {
+                filename: "a".to_string(),
+                downloaded: 100,
+                total: 200,
+            },
+        );
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadRetry {
+                filename: "a".to_string(),
+                resume: true,
+            },
+        );
+        assert_eq!(state.download_files.get("a"), Some(&100));
+        assert_eq!(state.download_bytes_done, 100);
+    }
+
+    #[test]
+    fn apply_repo_download_completed_increments_done() {
+        let mut state = fresh_repo_state();
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadCompleted {
+                filename: "a".to_string(),
+                total: 200,
+                result: DownloadResult::Success,
+            },
+        );
+        assert_eq!(state.download_done, 1);
+    }
+
+    #[test]
+    fn apply_repo_unrelated_event_is_noop() {
+        let mut state = fresh_repo_state();
+        apply_repo_counters(&mut state, &InstallEvent::ResolvingDependencies);
+        assert_eq!(state.download_total, 0);
+        assert_eq!(state.download_done, 0);
+        assert_eq!(state.download_bytes_total, 0);
+        assert_eq!(state.download_bytes_done, 0);
+        assert!(state.download_files.is_empty());
+    }
+
+    #[test]
+    fn ordered_stages_install_includes_download() {
+        assert_eq!(
+            ordered_stages(InstallKind::Install),
+            vec![
+                RepoStage::Resolve,
+                RepoStage::Validate,
+                RepoStage::Download,
+                RepoStage::Install,
+                RepoStage::Finalize,
+            ]
+        );
+    }
+
+    #[test]
+    fn ordered_stages_upgrade_matches_install() {
+        assert_eq!(
+            ordered_stages(InstallKind::Upgrade),
+            ordered_stages(InstallKind::Install)
+        );
+    }
+
+    #[test]
+    fn ordered_stages_remove_skips_download() {
+        assert_eq!(
+            ordered_stages(InstallKind::Remove),
+            vec![
+                RepoStage::Resolve,
+                RepoStage::Validate,
+                RepoStage::Install,
+                RepoStage::Finalize,
+            ]
+        );
+    }
+
+    #[test]
+    fn ordered_aur_stages_lists_build() {
+        assert_eq!(
+            ordered_aur_stages(),
+            &[
+                AurStage::Resolve,
+                AurStage::Build,
+                AurStage::Validate,
+                AurStage::Install,
+                AurStage::Finalize,
+            ]
         );
     }
 }

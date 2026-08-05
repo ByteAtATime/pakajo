@@ -57,12 +57,7 @@ pub(crate) enum UpdatesState {
     Error(String),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InstallKind {
-    Install,
-    Remove,
-    Upgrade,
-}
+pub(crate) use crate::transaction_state::InstallKind;
 
 pub(crate) enum SessionEvent {
     DetailUpdated,
