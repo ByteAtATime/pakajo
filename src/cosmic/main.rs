@@ -48,6 +48,7 @@ pub struct PakajoApp {
     pub(crate) selected_index: Option<usize>,
     pub(crate) detail: DetailData,
     pub(crate) detail_seq: u64,
+    pub(crate) transacting: bool,
 }
 
 impl Application for PakajoApp {
@@ -117,6 +118,7 @@ impl Application for PakajoApp {
                 selected_index: None,
                 detail: DetailData::None,
                 detail_seq: 0,
+                transacting: false,
             },
             Task::none(),
         )
