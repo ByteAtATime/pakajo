@@ -42,8 +42,29 @@ impl GroupSelectDialog {
         self.checks.iter().any(|&c| c)
     }
 
+    fn all_checked(&self) -> bool {
+        !self.checks.is_empty() && self.checks.iter().all(|&c| c)
+    }
+
     fn selected_count(&self) -> usize {
         self.checks.iter().filter(|&&c| c).count()
+    }
+
+    fn render_select_all(&self, cx: &mut Context<Self>) -> Checkbox {
+        Checkbox::new(("select-all", 0usize))
+            .checked(self.all_checked())
+            .label(format!(
+                "Select all ({}/{})",
+                self.selected_count(),
+                self.members.len()
+            ))
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, &next: &bool, _w, cx| {
+                for slot in this.checks.iter_mut() {
+                    *slot = next;
+                }
+                cx.notify();
+            }))
     }
 
     fn render_member_row(
@@ -164,6 +185,7 @@ impl Render for GroupSelectDialog {
         v_flex()
             .w_full()
             .gap_4()
+            .child(self.render_select_all(cx))
             .child(scroll)
             .child(div().h_px().w_full().bg(cx.theme().border))
             .child(footer)
