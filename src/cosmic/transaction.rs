@@ -3,14 +3,14 @@ use std::env::current_exe;
 
 use cosmic::app::Task;
 use cosmic::iced::{Background, Color, Length, Shadow};
-use cosmic::widget::{Column, Row, button, container, scrollable, space, text};
+use cosmic::widget::{Column, Row, button, checkbox, container, radio, scrollable, space, text};
 use futures::{SinkExt as _, StreamExt as _, channel::oneshot};
 
 use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
 use pakajo::events::InstallEvent;
 use pakajo::install::{ChildOutcome, StreamItem, run_install_process};
 use pakajo::package::PackageSource;
-use pakajo::question::{QuestionSet, default_approve, encode_approvals};
+use pakajo::question::{ProviderCandidate, QuestionSet, collect_approvals, encode_approvals};
 use pakajo::transaction_state::{
     InstallKind, RepoStage, RepoState, apply_repo_counters, event_stage, ordered_stages,
 };
@@ -25,6 +25,10 @@ pub enum TransactionMessage {
     InstallDone(ChildOutcome),
     DryRunResult(Result<QuestionSet, String>),
     ToggleStage(usize),
+    ApproveReview,
+    CancelReview,
+    ToggleConflict(usize),
+    SelectProvider { depend: String, idx: usize },
     Close,
 }
 
@@ -35,6 +39,12 @@ enum TransactionStatus {
     Done(ChildOutcome),
 }
 
+struct ConflictReview {
+    qs: QuestionSet,
+    conflict_checks: Vec<bool>,
+    provider_choices: HashMap<String, usize>,
+}
+
 pub(crate) struct TransactionModel {
     name: String,
     stages: Vec<RepoStage>,
@@ -42,6 +52,7 @@ pub(crate) struct TransactionModel {
     repo_state: RepoState,
     expanded: HashSet<usize>,
     status: TransactionStatus,
+    review: Option<ConflictReview>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -69,6 +80,7 @@ impl TransactionModel {
             },
             expanded: HashSet::new(),
             status: TransactionStatus::Checking,
+            review: None,
         }
     }
 
@@ -156,13 +168,21 @@ impl crate::PakajoApp {
                         qs.conflicts.len(),
                         qs.providers.len()
                     );
-                    match default_approve(&qs).and_then(|approvals| encode_approvals(&approvals)) {
-                        Ok(b64) => self.launch_install_subprocess(Some(b64)),
-                        Err(e) => {
-                            eprintln!("[pakajo] approval encode failed: {e:#}");
-                            self.launch_install_subprocess(None)
-                        }
+                    let conflict_count = qs.conflicts.len();
+                    let provider_choices = qs
+                        .providers
+                        .iter()
+                        .map(|prompt| (prompt.depend.clone(), 0))
+                        .collect();
+                    let review = ConflictReview {
+                        qs,
+                        conflict_checks: vec![true; conflict_count],
+                        provider_choices,
+                    };
+                    if let Some(model) = self.transaction.as_mut() {
+                        model.review = Some(review);
                     }
+                    Task::none()
                 }
             },
             TransactionMessage::ToggleStage(i) => {
@@ -170,6 +190,52 @@ impl crate::PakajoApp {
                     model.toggle(i);
                 }
                 Task::none()
+            }
+            TransactionMessage::ToggleConflict(i) => {
+                if let Some(check) = self
+                    .transaction
+                    .as_mut()
+                    .and_then(|m| m.review.as_mut())
+                    .and_then(|r| r.conflict_checks.get_mut(i))
+                {
+                    *check = !*check;
+                }
+                Task::none()
+            }
+            TransactionMessage::SelectProvider { depend, idx } => {
+                if let Some(choices) = self
+                    .transaction
+                    .as_mut()
+                    .and_then(|m| m.review.as_mut())
+                    .map(|r| &mut r.provider_choices)
+                {
+                    choices.insert(depend, idx);
+                }
+                Task::none()
+            }
+            TransactionMessage::CancelReview => {
+                self.transaction = None;
+                self.transacting = false;
+                Task::none()
+            }
+            TransactionMessage::ApproveReview => {
+                let review = match self.transaction.as_mut().and_then(|m| m.review.take()) {
+                    Some(r) => r,
+                    None => return Task::none(),
+                };
+                match collect_approvals(
+                    &review.qs,
+                    &review.conflict_checks,
+                    &review.provider_choices,
+                )
+                .and_then(|approvals| encode_approvals(&approvals))
+                {
+                    Ok(b64) => self.launch_install_subprocess(Some(b64)),
+                    Err(e) => {
+                        eprintln!("[pakajo] approval encoding failed: {e}");
+                        self.launch_install_subprocess(None)
+                    }
+                }
             }
             TransactionMessage::Close => {
                 self.transaction = None;
@@ -266,6 +332,9 @@ impl crate::PakajoApp {
 }
 
 pub(crate) fn transaction_view(model: &TransactionModel) -> cosmic::Element<'_, crate::Message> {
+    if let Some(review) = &model.review {
+        return review_view(model, review);
+    }
     if matches!(model.status, TransactionStatus::Checking) {
         let col = Column::new().push(text("Checking for conflicts…"));
         return scrollable(col).into();
@@ -280,6 +349,99 @@ pub(crate) fn transaction_view(model: &TransactionModel) -> cosmic::Element<'_, 
         col = col.push(action_footer());
     }
     scrollable(col).into()
+}
+
+fn review_view<'a>(
+    model: &'a TransactionModel,
+    review: &'a ConflictReview,
+) -> cosmic::Element<'a, crate::Message> {
+    let title = format!("Review installation of {}", model.name);
+    let mut col = Column::new().spacing(16).push(text(title));
+
+    if !review.qs.conflicts.is_empty() {
+        col = col.push(text("Conflicts"));
+        for (i, conflict) in review.qs.conflicts.iter().enumerate() {
+            let label = format!("Replace {} with {}", conflict.removable, conflict.incoming);
+            let checked = review.conflict_checks.get(i).copied().unwrap_or(false);
+            let item = checkbox(checked).label(label).on_toggle(move |_| {
+                crate::Message::Transaction(TransactionMessage::ToggleConflict(i))
+            });
+            col = col.push(item);
+        }
+    }
+
+    if !review.qs.providers.is_empty() {
+        col = col.push(text("Providers"));
+        for prompt in &review.qs.providers {
+            col = col.push(text(prompt.depend.clone()));
+            let selected = review
+                .provider_choices
+                .get(&prompt.depend)
+                .copied()
+                .unwrap_or(0);
+            for (idx, candidate) in prompt.candidates.iter().enumerate() {
+                let label = candidate_label(candidate);
+                let depend = prompt.depend.clone();
+                let item = radio(text(label), idx, Some(selected), move |chosen: usize| {
+                    crate::Message::Transaction(TransactionMessage::SelectProvider {
+                        depend: depend.clone(),
+                        idx: chosen,
+                    })
+                });
+                col = col.push(item);
+            }
+        }
+    }
+
+    if review.qs.had_unsupported_question {
+        col = col.push(unsupported_banner(&review.qs.unsupported_summary));
+    }
+
+    col = col.push(review_footer());
+    scrollable(col).into()
+}
+
+fn candidate_label(candidate: &ProviderCandidate) -> String {
+    let qualified = match &candidate.repo {
+        Some(repo) => format!("{repo}/{}", candidate.name),
+        None => candidate.name.clone(),
+    };
+    match &candidate.version {
+        Some(version) => format!("{qualified}  {version}"),
+        None => qualified,
+    }
+}
+
+fn unsupported_banner(summary: &str) -> cosmic::Element<'static, crate::Message> {
+    container(text(summary.to_string()))
+        .padding([12.0, 16.0])
+        .width(Length::Fill)
+        .style(|theme: &cosmic::Theme| container::Style {
+            text_color: Some(Color::from(theme.cosmic().warning.on)),
+            background: Some(Background::Color(Color::from(theme.cosmic().warning.base))),
+            border: cosmic::iced::Border {
+                radius: 8.0.into(),
+                width: 1.0,
+                color: Color::from(theme.cosmic().warning.base),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn review_footer() -> cosmic::Element<'static, crate::Message> {
+    let cancel = button::custom(text("Cancel")).on_press(crate::Message::Transaction(
+        TransactionMessage::CancelReview,
+    ));
+    let confirm = button::custom(text("Confirm")).on_press(crate::Message::Transaction(
+        TransactionMessage::ApproveReview,
+    ));
+    Row::new()
+        .spacing(8)
+        .push(space::horizontal())
+        .push(cancel)
+        .push(confirm)
+        .into()
 }
 
 fn action_footer() -> cosmic::Element<'static, crate::Message> {
