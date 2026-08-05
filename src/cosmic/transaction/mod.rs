@@ -13,8 +13,6 @@ use pakajo::package::PackageSource;
 use pakajo::question::{ProviderCandidate, QuestionSet, collect_approvals, encode_approvals};
 use pakajo::transaction_state::InstallKind;
 
-use crate::detail::DetailData;
-
 mod state;
 
 pub(crate) use state::{TransactionModel, TransactionStatus};
@@ -43,45 +41,73 @@ struct ConflictReview {
     provider_choices: HashMap<String, usize>,
 }
 
-impl crate::PakajoApp {
-    pub(crate) fn handle_transaction(
-        &mut self,
-        message: TransactionMessage,
-    ) -> cosmic::app::Task<crate::Message> {
+pub(crate) enum Action {
+    None,
+    Run(Task<crate::Message>),
+    Finished,
+}
+
+pub(crate) struct Transaction {
+    model: TransactionModel,
+}
+
+impl Transaction {
+    pub(crate) fn start(name: String, source: PackageSource) -> (Self, Task<crate::Message>) {
+        let model = TransactionModel::new(name.clone(), InstallKind::Install);
+        let (otx, orx) = oneshot::channel();
+        let name_for_dry = name.clone();
+        let is_repo = matches!(source, PackageSource::Repo);
+        std::thread::spawn(move || {
+            let result = if is_repo {
+                dry_run_for_repo_targets(std::slice::from_ref(&name_for_dry))
+            } else {
+                dry_run_for_target(&name_for_dry)
+            };
+            let _ = otx.send(result);
+        });
+        let task = Task::perform(
+            async move {
+                match orx.await {
+                    Ok(Ok(qs)) => Ok(qs),
+                    Ok(Err(e)) => Err(format!("{e:#}")),
+                    Err(_) => Err("dry-run channel closed".to_string()),
+                }
+            },
+            |result| crate::Message::Transaction(TransactionMessage::DryRunResult(result)).into(),
+        );
+        (Self { model }, task)
+    }
+
+    pub(crate) fn update(&mut self, message: TransactionMessage) -> Action {
         match message {
-            TransactionMessage::StartInstall => self.start_install(),
+            TransactionMessage::StartInstall => Action::None,
             TransactionMessage::StartRemove => {
                 eprintln!("[pakajo] transaction: remove");
-                Task::none()
+                Action::None
             }
             TransactionMessage::InstallEvent(ev) => {
-                if let Some(model) = self.transaction.as_mut() {
-                    model.apply_event(&ev);
-                }
-                Task::none()
+                self.model.apply_event(&ev);
+                Action::None
             }
             TransactionMessage::InstallDone(outcome) => {
-                self.transacting = false;
                 eprintln!("[pakajo] install outcome: {outcome:?}");
                 if matches!(outcome, ChildOutcome::Success) {
                     // TODO: refresh updates
                 }
-                if let Some(model) = self.transaction.as_mut() {
-                    model.finish(outcome);
-                }
-                Task::none()
+                self.model.finish(outcome);
+                Action::None
             }
             TransactionMessage::DryRunResult(result) => match result {
                 Err(e) => {
                     eprintln!("[pakajo] dry-run failed, proceeding with install: {e}");
-                    return self.launch_install_subprocess(None);
+                    self.launch_subprocess(None)
                 }
                 Ok(qs) => {
                     let needs_review = !qs.conflicts.is_empty()
                         || !qs.providers.is_empty()
                         || qs.had_unsupported_question;
                     if !needs_review {
-                        return self.launch_install_subprocess(None);
+                        return self.launch_subprocess(None);
                     }
                     eprintln!(
                         "[pakajo] review required ({} conflicts, {} providers)",
@@ -99,49 +125,41 @@ impl crate::PakajoApp {
                         conflict_checks: vec![true; conflict_count],
                         provider_choices,
                     };
-                    if let Some(model) = self.transaction.as_mut() {
-                        model.review = Some(review);
-                    }
-                    Task::none()
+                    self.model.review = Some(review);
+                    Action::None
                 }
             },
             TransactionMessage::ToggleStage(i) => {
-                if let Some(model) = self.transaction.as_mut() {
-                    model.toggle(i);
-                }
-                Task::none()
+                self.model.toggle(i);
+                Action::None
             }
             TransactionMessage::ToggleConflict(i) => {
                 if let Some(check) = self
-                    .transaction
+                    .model
+                    .review
                     .as_mut()
-                    .and_then(|m| m.review.as_mut())
                     .and_then(|r| r.conflict_checks.get_mut(i))
                 {
                     *check = !*check;
                 }
-                Task::none()
+                Action::None
             }
             TransactionMessage::SelectProvider { depend, idx } => {
                 if let Some(choices) = self
-                    .transaction
+                    .model
+                    .review
                     .as_mut()
-                    .and_then(|m| m.review.as_mut())
                     .map(|r| &mut r.provider_choices)
                 {
                     choices.insert(depend, idx);
                 }
-                Task::none()
+                Action::None
             }
-            TransactionMessage::CancelReview => {
-                self.transaction = None;
-                self.transacting = false;
-                Task::none()
-            }
+            TransactionMessage::CancelReview => Action::Finished,
             TransactionMessage::ApproveReview => {
-                let review = match self.transaction.as_mut().and_then(|m| m.review.take()) {
+                let review = match self.model.review.take() {
                     Some(r) => r,
-                    None => return Task::none(),
+                    None => return Action::None,
                 };
                 match collect_approvals(
                     &review.qs,
@@ -150,75 +168,32 @@ impl crate::PakajoApp {
                 )
                 .and_then(|approvals| encode_approvals(&approvals))
                 {
-                    Ok(b64) => self.launch_install_subprocess(Some(b64)),
+                    Ok(b64) => self.launch_subprocess(Some(b64)),
                     Err(e) => {
                         eprintln!("[pakajo] approval encoding failed: {e}");
-                        self.launch_install_subprocess(None)
+                        self.launch_subprocess(None)
                     }
                 }
             }
-            TransactionMessage::Close => {
-                self.transaction = None;
-                Task::none()
-            }
+            TransactionMessage::Close => Action::Finished,
         }
     }
 
-    fn start_install(&mut self) -> cosmic::app::Task<crate::Message> {
-        if self.transacting {
-            return Task::none();
-        }
-        let (name, source) = match &self.detail {
-            DetailData::Ready { pkg, .. } => (pkg.name.clone(), pkg.source),
-            _ => return Task::none(),
-        };
-        self.transaction = Some(TransactionModel::new(name.clone(), InstallKind::Install));
-        self.transacting = true;
-        let (otx, orx) = oneshot::channel();
-        let name_for_dry = name.clone();
-        let is_repo = matches!(source, PackageSource::Repo);
-        std::thread::spawn(move || {
-            let result = if is_repo {
-                dry_run_for_repo_targets(std::slice::from_ref(&name_for_dry))
-            } else {
-                dry_run_for_target(&name_for_dry)
-            };
-            let _ = otx.send(result);
-        });
-        Task::perform(
-            async move {
-                match orx.await {
-                    Ok(Ok(qs)) => Ok(qs),
-                    Ok(Err(e)) => Err(format!("{e:#}")),
-                    Err(_) => Err("dry-run channel closed".to_string()),
-                }
-            },
-            |result| crate::Message::Transaction(TransactionMessage::DryRunResult(result)).into(),
-        )
-    }
-
-    fn launch_install_subprocess(
-        &mut self,
-        approvals_b64: Option<String>,
-    ) -> cosmic::app::Task<crate::Message> {
+    fn launch_subprocess(&mut self, approvals_b64: Option<String>) -> Action {
         let exe = match current_exe() {
             Ok(exe) => exe,
             Err(e) => {
                 eprintln!("[pakajo] failed to resolve current_exe: {e}");
-                return Task::none();
+                return Action::None;
             }
         };
-        let model = match self.transaction.as_mut() {
-            Some(model) => model,
-            None => return Task::none(),
-        };
-        model.status = TransactionStatus::Running;
-        let name = model.name.clone();
+        self.model.status = TransactionStatus::Running;
+        let name = self.model.name.clone();
         let (raw_tx, mut raw_rx) = futures::channel::mpsc::channel::<StreamItem>(256);
         std::thread::spawn(move || {
             run_install_process(exe, vec![name], raw_tx, approvals_b64);
         });
-        Task::stream(cosmic::iced::stream::channel(
+        let stream = Task::stream(cosmic::iced::stream::channel(
             256,
             move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
                 while let Some(item) = raw_rx.next().await {
@@ -247,28 +222,36 @@ impl crate::PakajoApp {
                     }
                 }
             },
-        ))
+        ));
+        Action::Run(stream)
     }
-}
 
-pub(crate) fn transaction_view(model: &TransactionModel) -> cosmic::Element<'_, crate::Message> {
-    if let Some(review) = &model.review {
-        return review_view(model, review);
+    pub(crate) fn view(&self) -> cosmic::Element<'_, crate::Message> {
+        if let Some(review) = &self.model.review {
+            return review_view(&self.model, review);
+        }
+        if matches!(self.model.status, TransactionStatus::Checking) {
+            let col = Column::new().push(text("Checking for conflicts…"));
+            return scrollable(col).into();
+        }
+        let title = format!("Installing {}", self.model.name);
+        let mut panels = Column::new().spacing(6);
+        for (i, stage) in self.model.stages.iter().enumerate() {
+            panels = panels.push(stage_row(&self.model, i, *stage));
+        }
+        let mut col = Column::new().spacing(16).push(text(title)).push(panels);
+        if matches!(self.model.status, TransactionStatus::Done(_)) {
+            col = col.push(action_footer());
+        }
+        scrollable(col).into()
     }
-    if matches!(model.status, TransactionStatus::Checking) {
-        let col = Column::new().push(text("Checking for conflicts…"));
-        return scrollable(col).into();
+
+    pub(crate) fn is_active(&self) -> bool {
+        matches!(
+            self.model.status,
+            TransactionStatus::Checking | TransactionStatus::Running
+        )
     }
-    let title = format!("Installing {}", model.name);
-    let mut panels = Column::new().spacing(6);
-    for (i, stage) in model.stages.iter().enumerate() {
-        panels = panels.push(stage_row(model, i, *stage));
-    }
-    let mut col = Column::new().spacing(16).push(text(title)).push(panels);
-    if matches!(model.status, TransactionStatus::Done(_)) {
-        col = col.push(action_footer());
-    }
-    scrollable(col).into()
 }
 
 fn review_view<'a>(

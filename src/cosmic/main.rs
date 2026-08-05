@@ -23,7 +23,7 @@ use pakajo::search::engine::SearchEngine;
 use background::begin_aur_sync_in_background;
 use detail::{DetailData, DetailMessage, detail_view};
 use search::{SearchMessage, SearchState, results_list, search_bar, search_status_text};
-use transaction::{TransactionMessage, TransactionModel, transaction_view};
+use transaction::{Action, Transaction, TransactionMessage};
 
 fn main() -> cosmic::iced::Result {
     let cli = cli::parse();
@@ -48,8 +48,7 @@ pub struct PakajoApp {
     pub(crate) selected_index: Option<usize>,
     pub(crate) detail: DetailData,
     pub(crate) detail_seq: u64,
-    pub(crate) transacting: bool,
-    pub(crate) transaction: Option<TransactionModel>,
+    pub(crate) transaction: Option<Transaction>,
 }
 
 impl Application for PakajoApp {
@@ -121,7 +120,6 @@ impl Application for PakajoApp {
                 selected_index: None,
                 detail: DetailData::None,
                 detail_seq: 0,
-                transacting: false,
                 transaction: None,
             },
             Task::none(),
@@ -155,8 +153,8 @@ impl Application for PakajoApp {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        if let Some(model) = self.transaction.as_ref() {
-            return container(transaction_view(model)).into();
+        if let Some(t) = self.transaction.as_ref() {
+            return container(t.view()).into();
         }
         let content = Column::new()
             .spacing(12)
@@ -169,6 +167,39 @@ impl Application for PakajoApp {
             );
 
         container(content).into()
+    }
+}
+
+impl PakajoApp {
+    fn handle_transaction(&mut self, message: TransactionMessage) -> Task<Message> {
+        match message {
+            TransactionMessage::StartInstall => {
+                if self.transaction.as_ref().is_some_and(Transaction::is_active) {
+                    return Task::none();
+                }
+                let (name, source) = match &self.detail {
+                    DetailData::Ready { pkg, .. } => (pkg.name.clone(), pkg.source),
+                    _ => return Task::none(),
+                };
+                let (txn, task) = Transaction::start(name, source);
+                self.transaction = Some(txn);
+                task
+            }
+            other => {
+                let action = match self.transaction.as_mut() {
+                    Some(t) => t.update(other),
+                    None => Action::None,
+                };
+                match action {
+                    Action::None => Task::none(),
+                    Action::Run(task) => task,
+                    Action::Finished => {
+                        self.transaction = None;
+                        Task::none()
+                    }
+                }
+            }
+        }
     }
 }
 
