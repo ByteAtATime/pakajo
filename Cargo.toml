@@ -39,4 +39,4 @@ debug = ["libcosmic/debug"]
 
 [[bin]]
 name = "pakajo-cosmic"
-path = "src/cosmic.rs"
+path = "src/cosmic/main.rs"
