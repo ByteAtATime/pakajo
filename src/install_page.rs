@@ -5,6 +5,7 @@ use crate::events::{
 use crate::install::InstallProgress;
 use crate::package::PackageSource;
 use crate::session::InstallKind;
+use crate::transaction_state::{event_stage, aur_event_stage, AurStage, RepoStage};
 use crate::utils::format_bytes;
 use gpui::*;
 use gpui_component::{
@@ -20,24 +21,6 @@ use std::sync::Arc;
 enum PageMode {
     Repo(RepoState),
     Aur(AurState),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RepoStage {
-    Resolve,
-    Validate,
-    Download,
-    Install,
-    Finalize,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum AurStage {
-    Resolve,
-    Build,
-    Validate,
-    Install,
-    Finalize,
 }
 
 struct RepoState {
@@ -842,79 +825,9 @@ fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
     }
 }
 
-fn event_stage(ev: &InstallEvent) -> Option<RepoStage> {
-    use InstallEvent::*;
-    use RepoStage::*;
-    match ev {
-        ResolvingDependencies => Some(Resolve),
-        CheckingConflicts
-        | CheckingFileConflicts
-        | CheckingIntegrity
-        | CheckingDiskSpace
-        | LoadingPackages
-        | KeyringStart => Some(Validate),
-        Progress { phase, .. } => match phase {
-            ProgressPhase::Conflicts
-            | ProgressPhase::Diskspace
-            | ProgressPhase::Integrity
-            | ProgressPhase::Load
-            | ProgressPhase::Keyring => Some(Validate),
-            ProgressPhase::Add
-            | ProgressPhase::Upgrade
-            | ProgressPhase::Downgrade
-            | ProgressPhase::Reinstall
-            | ProgressPhase::Remove => Some(Install),
-        },
-        RetrievingPackages { .. }
-        | DownloadInit { .. }
-        | DownloadProgress { .. }
-        | DownloadRetry { .. }
-        | DownloadCompleted { .. } => Some(Download),
-        PackageOperation { .. } => Some(Install),
-        HookRun { .. } | ScriptletInfo { .. } | TransactionDone => Some(Finalize),
-        _ => None,
-    }
-}
-
 fn ordered_aur_stages() -> &'static [AurStage] {
     use AurStage::*;
     &[Resolve, Build, Validate, Install, Finalize]
-}
-
-fn aur_event_stage(ev: &InstallEvent) -> Option<AurStage> {
-    use AurStage::*;
-    use InstallEvent::*;
-    match ev {
-        ResolvingAurDependencies { .. }
-        | AurDepResolved { .. }
-        | ResolutionComplete { .. }
-        | LayerBoundary { .. } => Some(Resolve),
-        CloningRepo { .. } | BuildStarted { .. } | BuildOutput { .. } | BuildCompleted { .. } => {
-            Some(Build)
-        }
-        LoadingPackages
-        | ResolvingDependencies
-        | CheckingConflicts
-        | CheckingFileConflicts
-        | CheckingIntegrity
-        | CheckingDiskSpace
-        | KeyringStart => Some(Validate),
-        ProcessingChanges | PackageOperation { .. } => Some(Install),
-        Progress { phase, .. } => match phase {
-            ProgressPhase::Conflicts
-            | ProgressPhase::Diskspace
-            | ProgressPhase::Integrity
-            | ProgressPhase::Load
-            | ProgressPhase::Keyring => Some(Validate),
-            ProgressPhase::Add
-            | ProgressPhase::Upgrade
-            | ProgressPhase::Downgrade
-            | ProgressPhase::Reinstall
-            | ProgressPhase::Remove => Some(Install),
-        },
-        TransactionDone | HookRun { .. } | ScriptletInfo { .. } => Some(Finalize),
-        _ => None,
-    }
 }
 
 fn format_package_operation(

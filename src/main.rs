@@ -1,7 +1,7 @@
 pub use pakajo::{
     answerer, aur, build, clean, cli, color, devel, dry_run, events, git, install, local_index,
     lookup, package, pacman, pacman_watch, pkgbuild, question, remove, resolve, search, srcinfo_io,
-    stats, stub_pkg, updates, upgrade, utils,
+    stats, stub_pkg, transaction_state, updates, upgrade, utils,
 };
 mod group_select_dialog;
 mod icon;
