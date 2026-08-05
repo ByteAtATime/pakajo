@@ -127,7 +127,7 @@ fn build_remove_summary(handle: &alpm::Alpm) -> TransactionSummary {
 
 pub(crate) fn run_remove_process(
     exe: std::path::PathBuf,
-    name: String,
+    names: Vec<String>,
     mut tx: futures::channel::mpsc::Sender<crate::install::StreamItem>,
 ) {
     use std::io::BufRead as _;
@@ -147,7 +147,10 @@ pub(crate) fn run_remove_process(
     };
 
     let mut cmd = Command::new(&exe);
-    cmd.arg("remove").arg("--json").arg(&name);
+    cmd.arg("remove").arg("--json");
+    for name in &names {
+        cmd.arg(name);
+    }
     let outcome = match cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

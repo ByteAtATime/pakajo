@@ -543,6 +543,58 @@ impl PakajoRoot {
         });
     }
 
+    fn open_group_remove_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (group_name, members) = match &self.detail {
+            DetailPane::Group { name, members } => (name.clone(), members.clone()),
+            _ => return,
+        };
+        let installed_members: Vec<GroupMember> =
+            members.into_iter().filter(|m| m.installed).collect();
+        if installed_members.is_empty() {
+            return;
+        }
+
+        let group_name_for_approve = group_name.clone();
+        let root_for_approve = cx.weak_entity();
+        let on_approve = Box::new(
+            move |names: Vec<String>, _window: &mut Window, cx: &mut App| {
+                let Some(root) = root_for_approve.upgrade() else {
+                    return;
+                };
+                root.update(cx, |this, cx| {
+                    this.session
+                        .update(cx, |s, cx| s.start_group_remove(group_name_for_approve, names, cx));
+                });
+            },
+        );
+
+        let on_cancel = std::sync::Arc::new(move |_window: &mut Window, _cx: &mut App| {})
+            as std::sync::Arc<dyn Fn(&mut Window, &mut App) + 'static>;
+
+        let on_cancel_for_dialog = on_cancel.clone();
+        let dialog = cx.new(|_| {
+            GroupSelectDialog::new(installed_members, "Remove".to_string(), on_approve, on_cancel)
+        });
+
+        window.open_dialog(cx, move |dialog_view, _window, _cx| {
+            let title = div()
+                .text_lg()
+                .font_semibold()
+                .child(format!("Remove group {group_name}"));
+            let on_cancel_arc = on_cancel_for_dialog.clone();
+            let dialog_for_content = dialog.clone();
+            dialog_view
+                .title(title)
+                .w(px(560.))
+                .close_button(true)
+                .on_cancel(move |_, window, cx| {
+                    on_cancel_arc(window, cx);
+                    true
+                })
+                .content(move |content, _w, _cx| content.child(dialog_for_content.clone()))
+        });
+    }
+
     fn on_pkgbuild_review_required(
         &mut self,
         diffs: Vec<PkgbuildDiff>,
@@ -1441,7 +1493,24 @@ impl Render for PakajoRoot {
                             .child(
                                 h_flex()
                                     .justify_end()
+                                    .gap_2()
                                     .mt_3()
+                                    .child(
+                                        Button::new("group-remove-button")
+                                            .label("Remove group")
+                                            .ghost()
+                                            .disabled(
+                                                matches!(
+                                                    self.install_progress,
+                                                    InstallProgress::Running
+                                                ) || !members.iter().any(|m| m.installed),
+                                            )
+                                            .on_click(cx.listener(
+                                                move |this, _ev, window, cx| {
+                                                    this.open_group_remove_dialog(window, cx)
+                                                },
+                                            )),
+                                    )
                                     .child(
                                         Button::new("group-install-button")
                                             .label("Install group")

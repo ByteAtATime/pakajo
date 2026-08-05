@@ -405,6 +405,7 @@ impl PakajoSession {
     pub(crate) fn spawn_remove_subprocess(
         &mut self,
         name: String,
+        targets: Vec<String>,
         source: PackageSource,
         cx: &mut Context<Self>,
     ) {
@@ -426,7 +427,7 @@ impl PakajoSession {
             name: name.clone(),
         });
         let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
-        std::thread::spawn(move || crate::remove::run_remove_process(exe, name, tx));
+        std::thread::spawn(move || crate::remove::run_remove_process(exe, targets, tx));
         cx.spawn(async move |this, cx| {
             while let Some(item) = rx.next().await {
                 let _ = this.update(cx, |this, cx| this.handle_stream_item(item, cx));
@@ -576,7 +577,7 @@ impl PakajoSession {
             return;
         }
         self.set_progress(InstallProgress::Running, cx);
-        self.spawn_remove_subprocess(name, source, cx);
+        self.spawn_remove_subprocess(name.clone(), vec![name], source, cx);
     }
 
     pub(crate) fn start_sysupgrade_apply(
@@ -804,6 +805,19 @@ impl PakajoSession {
     pub(crate) fn cancel_group_install(&mut self, cx: &mut Context<Self>) {
         self.pending_group.take();
         self.set_progress(InstallProgress::Idle, cx);
+    }
+
+    pub(crate) fn start_group_remove(
+        &mut self,
+        name: String,
+        members: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.install_progress, InstallProgress::Running) {
+            return;
+        }
+        self.set_progress(InstallProgress::Running, cx);
+        self.spawn_remove_subprocess(name, members, PackageSource::Group, cx);
     }
 
     fn refresh_installed_state(&mut self, cx: &mut Context<Self>) {
