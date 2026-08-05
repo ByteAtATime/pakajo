@@ -33,6 +33,10 @@ clap = { version = "4", features = ["derive"] }
 inotify = { version = "0.11", default-features = false }
 libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "dc1cf9f00cbe2902a52166492654bb9fee8a73d1" }
 
+[features]
+default = ["debug"]
+debug = ["libcosmic/debug"]
+
 [[bin]]
 name = "pakajo-cosmic"
 path = "src/cosmic.rs"
