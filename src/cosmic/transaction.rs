@@ -4,10 +4,13 @@ use std::env::current_exe;
 use cosmic::app::Task;
 use cosmic::iced::{Background, Color, Length, Shadow};
 use cosmic::widget::{Column, Row, button, container, scrollable, space, text};
-use futures::{SinkExt as _, StreamExt as _};
+use futures::{SinkExt as _, StreamExt as _, channel::oneshot};
 
+use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
 use pakajo::events::InstallEvent;
 use pakajo::install::{ChildOutcome, StreamItem, run_install_process};
+use pakajo::package::PackageSource;
+use pakajo::question::{QuestionSet, default_approve, encode_approvals};
 use pakajo::transaction_state::{
     InstallKind, RepoStage, RepoState, apply_repo_counters, event_stage, ordered_stages,
 };
@@ -20,12 +23,14 @@ pub enum TransactionMessage {
     StartRemove,
     InstallEvent(InstallEvent),
     InstallDone(ChildOutcome),
+    DryRunResult(Result<QuestionSet, String>),
     ToggleStage(usize),
     Close,
 }
 
 #[derive(Clone, Debug)]
 enum TransactionStatus {
+    Checking,
     Running,
     Done(ChildOutcome),
 }
@@ -63,7 +68,7 @@ impl TransactionModel {
                 download_files: HashMap::new(),
             },
             expanded: HashSet::new(),
-            status: TransactionStatus::Running,
+            status: TransactionStatus::Checking,
         }
     }
 
@@ -89,6 +94,7 @@ impl TransactionModel {
             StageState::Done
         } else if i == self.current_idx {
             match &self.status {
+                TransactionStatus::Checking => StageState::Pending,
                 TransactionStatus::Running => StageState::Active,
                 TransactionStatus::Done(ChildOutcome::Success) => StageState::Done,
                 TransactionStatus::Done(_) => StageState::Failed,
@@ -133,6 +139,32 @@ impl crate::PakajoApp {
                 }
                 Task::none()
             }
+            TransactionMessage::DryRunResult(result) => match result {
+                Err(e) => {
+                    eprintln!("[pakajo] dry-run failed, proceeding with install: {e}");
+                    return self.launch_install_subprocess(None);
+                }
+                Ok(qs) => {
+                    let needs_review = !qs.conflicts.is_empty()
+                        || !qs.providers.is_empty()
+                        || qs.had_unsupported_question;
+                    if !needs_review {
+                        return self.launch_install_subprocess(None);
+                    }
+                    eprintln!(
+                        "[pakajo] review required ({} conflicts, {} providers)",
+                        qs.conflicts.len(),
+                        qs.providers.len()
+                    );
+                    match default_approve(&qs).and_then(|approvals| encode_approvals(&approvals)) {
+                        Ok(b64) => self.launch_install_subprocess(Some(b64)),
+                        Err(e) => {
+                            eprintln!("[pakajo] approval encode failed: {e:#}");
+                            self.launch_install_subprocess(None)
+                        }
+                    }
+                }
+            },
             TransactionMessage::ToggleStage(i) => {
                 if let Some(model) = self.transaction.as_mut() {
                     model.toggle(i);
@@ -150,10 +182,39 @@ impl crate::PakajoApp {
         if self.transacting {
             return Task::none();
         }
-        let name = match &self.detail {
-            DetailData::Ready { pkg, .. } => pkg.name.clone(),
+        let (name, source) = match &self.detail {
+            DetailData::Ready { pkg, .. } => (pkg.name.clone(), pkg.source),
             _ => return Task::none(),
         };
+        self.transaction = Some(TransactionModel::new(name.clone(), InstallKind::Install));
+        self.transacting = true;
+        let (otx, orx) = oneshot::channel();
+        let name_for_dry = name.clone();
+        let is_repo = matches!(source, PackageSource::Repo);
+        std::thread::spawn(move || {
+            let result = if is_repo {
+                dry_run_for_repo_targets(std::slice::from_ref(&name_for_dry))
+            } else {
+                dry_run_for_target(&name_for_dry)
+            };
+            let _ = otx.send(result);
+        });
+        Task::perform(
+            async move {
+                match orx.await {
+                    Ok(Ok(qs)) => Ok(qs),
+                    Ok(Err(e)) => Err(format!("{e:#}")),
+                    Err(_) => Err("dry-run channel closed".to_string()),
+                }
+            },
+            |result| crate::Message::Transaction(TransactionMessage::DryRunResult(result)).into(),
+        )
+    }
+
+    fn launch_install_subprocess(
+        &mut self,
+        approvals_b64: Option<String>,
+    ) -> cosmic::app::Task<crate::Message> {
         let exe = match current_exe() {
             Ok(exe) => exe,
             Err(e) => {
@@ -161,11 +222,15 @@ impl crate::PakajoApp {
                 return Task::none();
             }
         };
-        self.transaction = Some(TransactionModel::new(name.clone(), InstallKind::Install));
-        self.transacting = true;
+        let model = match self.transaction.as_mut() {
+            Some(model) => model,
+            None => return Task::none(),
+        };
+        model.status = TransactionStatus::Running;
+        let name = model.name.clone();
         let (raw_tx, mut raw_rx) = futures::channel::mpsc::channel::<StreamItem>(256);
         std::thread::spawn(move || {
-            run_install_process(exe, vec![name], raw_tx, None);
+            run_install_process(exe, vec![name], raw_tx, approvals_b64);
         });
         Task::stream(cosmic::iced::stream::channel(
             256,
@@ -201,6 +266,10 @@ impl crate::PakajoApp {
 }
 
 pub(crate) fn transaction_view(model: &TransactionModel) -> cosmic::Element<'_, crate::Message> {
+    if matches!(model.status, TransactionStatus::Checking) {
+        let col = Column::new().push(text("Checking for conflicts…"));
+        return scrollable(col).into();
+    }
     let title = format!("Installing {}", model.name);
     let mut panels = Column::new().spacing(6);
     for (i, stage) in model.stages.iter().enumerate() {
