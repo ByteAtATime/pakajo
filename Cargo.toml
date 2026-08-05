@@ -31,6 +31,8 @@ srcinfo = "2.1.0"
 wait-timeout = "0.2"
 clap = { version = "4", features = ["derive"] }
 inotify = { version = "0.11", default-features = false }
+libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "dc1cf9f00cbe2902a52166492654bb9fee8a73d1" }
 
-[profile.dev.package."*"]
-opt-level = 2
+[[bin]]
+name = "pakajo-cosmic"
+path = "src/cosmic.rs"
