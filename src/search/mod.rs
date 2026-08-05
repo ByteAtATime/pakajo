@@ -14,6 +14,7 @@ pub mod perf;
 pub mod query;
 pub mod tiers;
 
+#[derive(Clone, Debug)]
 pub struct SearchResult {
     pub name: String,
     pub source: PackageSource,
