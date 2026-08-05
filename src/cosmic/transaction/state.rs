@@ -1,0 +1,94 @@
+use std::collections::{HashMap, HashSet};
+
+use pakajo::events::InstallEvent;
+use pakajo::install::ChildOutcome;
+use pakajo::transaction_state::{
+    InstallKind, RepoStage, RepoState, apply_repo_counters, event_stage, ordered_stages,
+};
+
+use super::ConflictReview;
+
+#[derive(Clone, Debug)]
+pub(crate) enum TransactionStatus {
+    Checking,
+    Running,
+    Done(ChildOutcome),
+}
+
+pub(crate) struct TransactionModel {
+    pub(crate) name: String,
+    pub(crate) stages: Vec<RepoStage>,
+    pub(crate) current_idx: usize,
+    pub(crate) repo_state: RepoState,
+    pub(crate) expanded: HashSet<usize>,
+    pub(crate) status: TransactionStatus,
+    pub(super) review: Option<ConflictReview>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StageState {
+    Pending,
+    Active,
+    Done,
+    Failed,
+}
+
+impl TransactionModel {
+    pub(crate) fn new(name: String, kind: InstallKind) -> Self {
+        Self {
+            name,
+            stages: ordered_stages(kind),
+            current_idx: 0,
+            repo_state: RepoState {
+                manifest: None,
+                stage: RepoStage::Resolve,
+                download_total: 0,
+                download_done: 0,
+                download_bytes_total: 0,
+                download_bytes_done: 0,
+                download_files: HashMap::new(),
+            },
+            expanded: HashSet::new(),
+            status: TransactionStatus::Checking,
+            review: None,
+        }
+    }
+
+    pub(crate) fn apply_event(&mut self, ev: &InstallEvent) {
+        apply_repo_counters(&mut self.repo_state, ev);
+        if let Some(stage) = event_stage(ev)
+            && let Some(idx) = self.stages.iter().position(|s| *s == stage)
+            && idx > self.current_idx
+        {
+            self.current_idx = idx;
+        }
+    }
+
+    pub(crate) fn finish(&mut self, outcome: ChildOutcome) {
+        if matches!(outcome, ChildOutcome::Success) {
+            self.current_idx = self.stages.len();
+        }
+        self.status = TransactionStatus::Done(outcome);
+    }
+
+    pub(crate) fn stage_state(&self, i: usize) -> StageState {
+        if i < self.current_idx {
+            StageState::Done
+        } else if i == self.current_idx {
+            match &self.status {
+                TransactionStatus::Checking => StageState::Pending,
+                TransactionStatus::Running => StageState::Active,
+                TransactionStatus::Done(ChildOutcome::Success) => StageState::Done,
+                TransactionStatus::Done(_) => StageState::Failed,
+            }
+        } else {
+            StageState::Pending
+        }
+    }
+
+    pub(crate) fn toggle(&mut self, i: usize) {
+        if self.stage_state(i) == StageState::Done && !self.expanded.insert(i) {
+            self.expanded.remove(&i);
+        }
+    }
+}

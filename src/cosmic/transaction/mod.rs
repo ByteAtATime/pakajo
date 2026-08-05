@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env::current_exe;
 
 use cosmic::app::Task;
@@ -11,11 +11,13 @@ use pakajo::events::InstallEvent;
 use pakajo::install::{ChildOutcome, StreamItem, run_install_process};
 use pakajo::package::PackageSource;
 use pakajo::question::{ProviderCandidate, QuestionSet, collect_approvals, encode_approvals};
-use pakajo::transaction_state::{
-    InstallKind, RepoStage, RepoState, apply_repo_counters, event_stage, ordered_stages,
-};
+use pakajo::transaction_state::{InstallKind, RepoStage};
 
 use crate::detail::DetailData;
+
+mod state;
+
+pub(crate) use state::{StageState, TransactionModel, TransactionStatus};
 
 #[derive(Clone, Debug)]
 pub enum TransactionMessage {
@@ -32,95 +34,10 @@ pub enum TransactionMessage {
     Close,
 }
 
-#[derive(Clone, Debug)]
-enum TransactionStatus {
-    Checking,
-    Running,
-    Done(ChildOutcome),
-}
-
 struct ConflictReview {
     qs: QuestionSet,
     conflict_checks: Vec<bool>,
     provider_choices: HashMap<String, usize>,
-}
-
-pub(crate) struct TransactionModel {
-    name: String,
-    stages: Vec<RepoStage>,
-    current_idx: usize,
-    repo_state: RepoState,
-    expanded: HashSet<usize>,
-    status: TransactionStatus,
-    review: Option<ConflictReview>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StageState {
-    Pending,
-    Active,
-    Done,
-    Failed,
-}
-
-impl TransactionModel {
-    fn new(name: String, kind: InstallKind) -> Self {
-        Self {
-            name,
-            stages: ordered_stages(kind),
-            current_idx: 0,
-            repo_state: RepoState {
-                manifest: None,
-                stage: RepoStage::Resolve,
-                download_total: 0,
-                download_done: 0,
-                download_bytes_total: 0,
-                download_bytes_done: 0,
-                download_files: HashMap::new(),
-            },
-            expanded: HashSet::new(),
-            status: TransactionStatus::Checking,
-            review: None,
-        }
-    }
-
-    fn apply_event(&mut self, ev: &InstallEvent) {
-        apply_repo_counters(&mut self.repo_state, ev);
-        if let Some(stage) = event_stage(ev)
-            && let Some(idx) = self.stages.iter().position(|s| *s == stage)
-            && idx > self.current_idx
-        {
-            self.current_idx = idx;
-        }
-    }
-
-    fn finish(&mut self, outcome: ChildOutcome) {
-        if matches!(outcome, ChildOutcome::Success) {
-            self.current_idx = self.stages.len();
-        }
-        self.status = TransactionStatus::Done(outcome);
-    }
-
-    fn stage_state(&self, i: usize) -> StageState {
-        if i < self.current_idx {
-            StageState::Done
-        } else if i == self.current_idx {
-            match &self.status {
-                TransactionStatus::Checking => StageState::Pending,
-                TransactionStatus::Running => StageState::Active,
-                TransactionStatus::Done(ChildOutcome::Success) => StageState::Done,
-                TransactionStatus::Done(_) => StageState::Failed,
-            }
-        } else {
-            StageState::Pending
-        }
-    }
-
-    fn toggle(&mut self, i: usize) {
-        if self.stage_state(i) == StageState::Done && !self.expanded.insert(i) {
-            self.expanded.remove(&i);
-        }
-    }
 }
 
 impl crate::PakajoApp {
