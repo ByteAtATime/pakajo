@@ -1456,6 +1456,10 @@ impl Render for PakajoRoot {
                             .child(div().h_px().w_full().mt_1().mb_3().bg(cx.theme().border))
                             .child(
                                 div()
+                                    .id("group-detail-members-scroll")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_y_scroll()
                                     .v_flex()
                                     .gap_2()
                                     .children(members.iter().map(|m| {
