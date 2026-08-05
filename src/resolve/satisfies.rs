@@ -2,13 +2,13 @@ use std::cmp::Ordering;
 
 use crate::aur::AurInfo;
 
-pub(super) struct DepParts<'a> {
-    pub(super) name: &'a str,
-    pub(super) op: &'a str,
-    pub(super) version: &'a str,
+pub struct DepParts<'a> {
+    pub name: &'a str,
+    pub op: &'a str,
+    pub version: &'a str,
 }
 
-pub(super) fn split_dep(dep: &str) -> DepParts<'_> {
+pub fn split_dep(dep: &str) -> DepParts<'_> {
     let Some(name_end) = dep.find(['<', '=', '>']) else {
         return DepParts {
             name: dep,
@@ -28,7 +28,7 @@ pub(super) fn split_dep(dep: &str) -> DepParts<'_> {
     }
 }
 
-pub(super) fn ver_satisfies(have: &str, op: &str, want: &str) -> bool {
+pub fn ver_satisfies(have: &str, op: &str, want: &str) -> bool {
     let cmp = alpm::vercmp(have, want);
     match op {
         "=" => cmp == Ordering::Equal,
@@ -40,12 +40,12 @@ pub(super) fn ver_satisfies(have: &str, op: &str, want: &str) -> bool {
     }
 }
 
-pub(super) fn pkg_satisfies(name: &str, version: &str, dep: &str) -> bool {
+pub fn pkg_satisfies(name: &str, version: &str, dep: &str) -> bool {
     let parts = split_dep(dep);
     parts.name == name && ver_satisfies(version, parts.op, parts.version)
 }
 
-pub(super) fn provide_satisfies(provide: &str, dep: &str, pkg_version: &str) -> bool {
+pub fn provide_satisfies(provide: &str, dep: &str, pkg_version: &str) -> bool {
     let p = split_dep(provide);
     let d = split_dep(dep);
     if p.name != d.name {
@@ -59,14 +59,14 @@ pub(super) fn provide_satisfies(provide: &str, dep: &str, pkg_version: &str) -> 
     ver_satisfies(v, d.op, d.version)
 }
 
-pub(super) fn satisfies_pkg(name: &str, version: &str, provides: &[String], dep: &str) -> bool {
+pub fn satisfies_pkg(name: &str, version: &str, provides: &[String], dep: &str) -> bool {
     if pkg_satisfies(name, version, dep) {
         return true;
     }
     provides.iter().any(|p| provide_satisfies(p, dep, version))
 }
 
-pub(super) fn satisfies_aur(dep: &str, pkg: &AurInfo) -> bool {
+pub fn satisfies_aur(dep: &str, pkg: &AurInfo) -> bool {
     satisfies_pkg(&pkg.name, &pkg.version, &pkg.provides, dep)
 }
 

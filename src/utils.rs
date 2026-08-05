@@ -76,7 +76,7 @@ pub fn format_eta(seconds: u64) -> String {
     }
 }
 
-pub(crate) fn version_diff(old: &str, new: &str) -> (String, String, String) {
+pub fn version_diff(old: &str, new: &str) -> (String, String, String) {
     let mut split = old.len().min(new.len());
     for ((oi, oc), (_, nc)) in old.char_indices().zip(new.char_indices()) {
         if oc != nc {

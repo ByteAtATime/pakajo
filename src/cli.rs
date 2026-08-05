@@ -5,7 +5,7 @@ use clap::Parser;
 
 mod args;
 use self::args::{CleanArgs, InstallArgs, RemoveArgs, SearchArgs, UpgradeArgs};
-pub(crate) use self::args::{Cli, Command};
+pub use self::args::{Cli, Command};
 
 mod summary;
 
@@ -16,16 +16,16 @@ use self::prompts::{
 
 mod review;
 
-mod sinks;
 mod chomp;
-pub(crate) use self::sinks::ConsoleSink;
+mod sinks;
+pub use self::sinks::ConsoleSink;
 use self::sinks::{EscalatedSink, JsonSink};
 
 mod privs;
 use self::privs::{is_root, stdin_is_tty};
 
 mod escalate;
-pub(crate) use self::escalate::escalation_command;
+pub use self::escalate::escalation_command;
 use self::escalate::{escalate, escalate_remove, escalate_result, escalate_upgrade};
 
 mod commands;
@@ -33,7 +33,7 @@ use self::commands::{
     alpm_handle, answerer_for, decode_approvals, root_install, run_aur_sync, run_gendb, run_search,
 };
 
-pub(crate) fn parse() -> Cli {
+pub fn parse() -> Cli {
     let mut argv: Vec<String> = std::env::args().collect();
     match argv.get(1).map(String::as_str) {
         Some("-S") => argv[1] = "install".to_string(),
@@ -43,7 +43,7 @@ pub(crate) fn parse() -> Cli {
     Cli::parse_from(argv)
 }
 
-pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
+pub fn install_subcommand(args: InstallArgs) -> ! {
     let positionals = dedup_positionals(args.positionals);
 
     if positionals.is_empty() {
@@ -72,7 +72,13 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
                 std::process::exit(1);
             }
         };
-        exit_with_result(root_install(&handle, &positionals, args.as_deps, args.json, approvals));
+        exit_with_result(root_install(
+            &handle,
+            &positionals,
+            args.as_deps,
+            args.json,
+            approvals,
+        ));
     }
 
     let mut repo_or_file: Vec<String> = Vec::new();
@@ -177,7 +183,7 @@ pub(crate) fn install_subcommand(args: InstallArgs) -> ! {
     }
 }
 
-pub(crate) fn search_subcommand(args: SearchArgs) -> ! {
+pub fn search_subcommand(args: SearchArgs) -> ! {
     if args.query.is_empty() {
         eprintln!("usage: pakajo search <query>");
         std::process::exit(2);
@@ -186,19 +192,19 @@ pub(crate) fn search_subcommand(args: SearchArgs) -> ! {
     exit_with_result(run_search(&query));
 }
 
-pub(crate) fn aur_sync_subcommand() -> ! {
+pub fn aur_sync_subcommand() -> ! {
     exit_with_result(run_aur_sync());
 }
 
-pub(crate) fn gendb_subcommand() -> ! {
+pub fn gendb_subcommand() -> ! {
     exit_with_result(run_gendb());
 }
 
-pub(crate) fn clean_subcommand(args: CleanArgs) -> ! {
+pub fn clean_subcommand(args: CleanArgs) -> ! {
     exit_with_result(crate::clean::run_clean(args.remove));
 }
 
-pub(crate) fn remove_subcommand(args: RemoveArgs) -> ! {
+pub fn remove_subcommand(args: RemoveArgs) -> ! {
     let positionals = dedup_positionals(args.positionals);
 
     if positionals.is_empty() {
@@ -247,7 +253,7 @@ pub(crate) fn remove_subcommand(args: RemoveArgs) -> ! {
     escalate_remove(&positionals, args.json);
 }
 
-pub(crate) fn upgrade_subcommand(args: UpgradeArgs) -> ! {
+pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {
     let approvals = match args
         .approvals_b64
         .as_deref()

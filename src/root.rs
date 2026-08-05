@@ -1,18 +1,21 @@
 use crate::{
     aur::AurClient,
     events::InstallEvent,
+    group_select_dialog::GroupSelectDialog,
     icon::PakajoIcon,
     install::InstallProgress,
     install_page::InstallPage,
     install_review_dialog::{self, InstallReviewDialog},
-    group_select_dialog::GroupSelectDialog,
     package::PackageSource,
     package_detail::{DetailIntent, PackageDetail},
     pkgbuild::PkgbuildDiff,
     pkgbuild_review_dialog::PkgbuildReviewFlow,
     question::QuestionSet,
     search_view::{SearchView, centered},
-    session::{DetailData, GroupMember, InstallKind, PakajoSession, SearchState, SessionEvent, UpdatesState},
+    session::{
+        DetailData, GroupMember, InstallKind, PakajoSession, SearchState, SessionEvent,
+        UpdatesState,
+    },
     updates_view::{UpdatesView, aur_upgrade_row},
 };
 use alpm::Alpm;
@@ -38,7 +41,10 @@ enum DetailPane {
     Loading,
     Ready(Entity<PackageDetail>),
     Error(String),
-    Group { name: String, members: Vec<GroupMember> },
+    Group {
+        name: String,
+        members: Vec<GroupMember>,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -95,7 +101,11 @@ impl PakajoRoot {
         let subscription = cx.subscribe_in(
             &search_input,
             sub_window,
-            |this, _state, ev: &InputEvent, _window, cx| if let InputEvent::Change = ev { this.on_search_change(cx) },
+            |this, _state, ev: &InputEvent, _window, cx| {
+                if let InputEvent::Change = ev {
+                    this.on_search_change(cx)
+                }
+            },
         );
 
         let session_window = &mut *window;
@@ -495,8 +505,9 @@ impl PakajoRoot {
                     return;
                 };
                 root.update(cx, |this, cx| {
-                    this.session
-                        .update(cx, |s, cx| s.start_group_install(group_name_for_approve, names, cx));
+                    this.session.update(cx, |s, cx| {
+                        s.start_group_install(group_name_for_approve, names, cx)
+                    });
                 });
             },
         );
@@ -511,9 +522,8 @@ impl PakajoRoot {
         }) as std::sync::Arc<dyn Fn(&mut Window, &mut App) + 'static>;
 
         let on_cancel_for_dialog = on_cancel.clone();
-        let dialog = cx.new(|_| {
-            GroupSelectDialog::new(members, "Install".to_string(), on_approve, on_cancel)
-        });
+        let dialog = cx
+            .new(|_| GroupSelectDialog::new(members, "Install".to_string(), on_approve, on_cancel));
 
         window.open_dialog(cx, move |dialog_view, _window, cx| {
             let title = h_flex()
@@ -559,8 +569,9 @@ impl PakajoRoot {
                     return;
                 };
                 root.update(cx, |this, cx| {
-                    this.session
-                        .update(cx, |s, cx| s.start_group_remove(group_name_for_approve, names, cx));
+                    this.session.update(cx, |s, cx| {
+                        s.start_group_remove(group_name_for_approve, names, cx)
+                    });
                 });
             },
         );
@@ -570,7 +581,12 @@ impl PakajoRoot {
 
         let on_cancel_for_dialog = on_cancel.clone();
         let dialog = cx.new(|_| {
-            GroupSelectDialog::new(installed_members, "Remove".to_string(), on_approve, on_cancel)
+            GroupSelectDialog::new(
+                installed_members,
+                "Remove".to_string(),
+                on_approve,
+                on_cancel,
+            )
         });
 
         window.open_dialog(cx, move |dialog_view, _window, _cx| {
@@ -1448,7 +1464,10 @@ impl Render for PakajoRoot {
                             .gap_2()
                             .p_4()
                             .child(
-                                div().text_xl().font_semibold().child(format!("{name} (group)")),
+                                div()
+                                    .text_xl()
+                                    .font_semibold()
+                                    .child(format!("{name} (group)")),
                             )
                             .child(div().h_px().w_full().mt_1().mb_3().bg(cx.theme().border))
                             .child(
@@ -1476,9 +1495,8 @@ impl Render for PakajoRoot {
                                                     .child(div().font_bold().child(m.name.clone()))
                                                     .children(if m.installed {
                                                         Some(
-                                                            Icon::new(IconName::Check).text_color(
-                                                                cx.theme().green,
-                                                            ),
+                                                            Icon::new(IconName::Check)
+                                                                .text_color(cx.theme().green),
                                                         )
                                                     } else {
                                                         None
@@ -1506,11 +1524,9 @@ impl Render for PakajoRoot {
                                                     InstallProgress::Running
                                                 ) || !members.iter().any(|m| m.installed),
                                             )
-                                            .on_click(cx.listener(
-                                                move |this, _ev, window, cx| {
-                                                    this.open_group_remove_dialog(window, cx)
-                                                },
-                                            )),
+                                            .on_click(cx.listener(move |this, _ev, window, cx| {
+                                                this.open_group_remove_dialog(window, cx)
+                                            })),
                                     )
                                     .child(
                                         Button::new("group-install-button")
@@ -1521,11 +1537,9 @@ impl Render for PakajoRoot {
                                                 self.install_progress,
                                                 InstallProgress::Running
                                             ))
-                                            .on_click(cx.listener(
-                                                move |this, _ev, window, cx| {
-                                                    this.open_group_install_dialog(window, cx)
-                                                },
-                                            )),
+                                            .on_click(cx.listener(move |this, _ev, window, cx| {
+                                                this.open_group_install_dialog(window, cx)
+                                            })),
                                     ),
                             )
                             .into_any_element(),

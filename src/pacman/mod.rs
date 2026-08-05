@@ -1,7 +1,7 @@
 use alpm::{Alpm, SigLevel};
 use anyhow::Context as _;
 
-pub(crate) mod lock;
+pub mod lock;
 
 fn parse_siglevel(sig_strings: &[String]) -> SigLevel {
     if sig_strings.is_empty() {
@@ -79,7 +79,7 @@ pub fn init_alpm_at(
     Ok(handle)
 }
 
-pub(crate) fn init_alpm_rootless(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
+pub fn init_alpm_rootless(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
     let checkdb = crate::build::cache_root()?.join("checkdb");
     std::fs::create_dir_all(&checkdb).context("creating checkdb dir")?;
     let local_link = checkdb.join("local");
@@ -106,10 +106,7 @@ pub fn find_pkg<'a>(handle: &'a Alpm, name: &str) -> Option<&'a alpm::Package> {
     handle.syncdbs().iter().find_map(|db| db.pkg(name).ok())
 }
 
-pub fn find_groups<'a>(
-    handle: &'a Alpm,
-    name: &str,
-) -> Vec<(&'a alpm::Db, &'a alpm::Group)> {
+pub fn find_groups<'a>(handle: &'a Alpm, name: &str) -> Vec<(&'a alpm::Db, &'a alpm::Group)> {
     handle
         .syncdbs()
         .iter()

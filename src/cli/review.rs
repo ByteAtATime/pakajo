@@ -7,7 +7,7 @@ use crate::cli::prompts::confirm_review_accept;
 use crate::color;
 use crate::pkgbuild::{PkgbuildInfo, compute_diff};
 
-pub(super) fn review_pkgbuilds(pkgbuilds: &[PkgbuildInfo]) -> bool {
+pub fn review_pkgbuilds(pkgbuilds: &[PkgbuildInfo]) -> bool {
     let use_color = color::stdout_color();
     let mut combined = String::new();
     for pb in pkgbuilds {

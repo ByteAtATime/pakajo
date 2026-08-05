@@ -14,7 +14,7 @@ fn run_escalated_child(mut child: Child, json: bool) -> anyhow::Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
-pub(super) fn escalate_result(
+pub fn escalate_result(
     targets: &[String],
     as_deps: bool,
     json: bool,
@@ -24,12 +24,7 @@ pub(super) fn escalate_result(
     run_escalated_child(child, json)
 }
 
-pub(super) fn escalate(
-    targets: &[String],
-    as_deps: bool,
-    json: bool,
-    approvals_b64: Option<&str>,
-) -> ! {
+pub fn escalate(targets: &[String], as_deps: bool, json: bool, approvals_b64: Option<&str>) -> ! {
     let code = match escalate_result(targets, as_deps, json, approvals_b64) {
         Ok(code) => code,
         Err(e) => {
@@ -40,7 +35,7 @@ pub(super) fn escalate(
     std::process::exit(code);
 }
 
-pub(super) fn escalate_remove(targets: &[String], json: bool) -> ! {
+pub fn escalate_remove(targets: &[String], json: bool) -> ! {
     let child = match crate::remove::spawn_remove_child(targets) {
         Ok(child) => child,
         Err(e) => {
@@ -57,7 +52,7 @@ pub(super) fn escalate_remove(targets: &[String], json: bool) -> ! {
     }
 }
 
-pub(super) fn escalate_upgrade(no_refresh: bool, ignores: &[String], json: bool) -> i32 {
+pub fn escalate_upgrade(no_refresh: bool, ignores: &[String], json: bool) -> i32 {
     let child = match spawn_upgrade_child(no_refresh, ignores) {
         Ok(child) => child,
         Err(e) => {
@@ -90,7 +85,7 @@ fn spawn_upgrade_child(no_refresh: bool, ignores: &[String]) -> anyhow::Result<C
     cmd.spawn().context("failed to spawn upgrade child")
 }
 
-pub(crate) trait PrivilegeEscalator {
+pub trait PrivilegeEscalator {
     fn build_command(&self, exe: &str) -> Command;
 }
 
@@ -132,7 +127,7 @@ fn select_privilege_escalator(root: bool, tty: bool) -> Box<dyn PrivilegeEscalat
     }
 }
 
-pub(crate) fn escalation_command(exe: &str) -> Command {
+pub fn escalation_command(exe: &str) -> Command {
     select_privilege_escalator(is_root(), stdin_is_tty()).build_command(exe)
 }
 

@@ -16,7 +16,7 @@ use crate::install::{
 };
 use crate::resolve::AurQuery;
 
-pub(crate) fn write_fingerprint_file(summary_bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
+pub fn write_fingerprint_file(summary_bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
     let path = std::env::temp_dir().join(format!(
         "pakajo-sysupgrade-fingerprint-{}.json",
         std::process::id()
@@ -51,7 +51,7 @@ pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
     repo_sysupgrade_into(&mut handle, sink, answerer, preview.as_ref())
 }
 
-pub(crate) fn run_sysupgrade_process(
+pub fn run_sysupgrade_process(
     exe: PathBuf,
     fingerprint_file: String,
     mut tx: mpsc::Sender<StreamItem>,
@@ -106,11 +106,7 @@ pub(crate) fn run_sysupgrade_process(
     send_event(StreamItem::Done(outcome));
 }
 
-pub(crate) fn apply_ignores(
-    handle: &mut alpm::Alpm,
-    config: &pacmanconf::Config,
-    extra: &[String],
-) {
+pub fn apply_ignores(handle: &mut alpm::Alpm, config: &pacmanconf::Config, extra: &[String]) {
     for name in &config.ignore_pkg {
         let _ = handle.add_ignorepkg(name.as_str());
     }
@@ -123,7 +119,7 @@ pub(crate) fn apply_ignores(
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct AurUpgradeCandidate {
+pub struct AurUpgradeCandidate {
     pub name: String,
     pub local_version: String,
     pub remote_version: String,
@@ -159,7 +155,7 @@ fn select_upgradable_candidates(
     candidates
 }
 
-pub(crate) fn compute_aur_upgrades(
+pub fn compute_aur_upgrades(
     handle: &alpm::Alpm,
     aur: &impl AurQuery,
 ) -> anyhow::Result<Vec<AurUpgradeCandidate>> {

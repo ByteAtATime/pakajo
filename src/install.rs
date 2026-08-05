@@ -17,16 +17,16 @@ use crate::events::{
 };
 
 #[cfg(test)]
-pub(crate) use tests::setup_fake_root;
+pub use tests::setup_fake_root;
 
-pub(crate) struct QuestionState {
-    pub(crate) deny_flag: bool,
-    pub(crate) detail: String,
+pub struct QuestionState {
+    pub deny_flag: bool,
+    pub detail: String,
     answerer: Box<dyn crate::answerer::QuestionAnswerer>,
 }
 
 impl QuestionState {
-    pub(crate) fn new(answerer: Box<dyn crate::answerer::QuestionAnswerer>) -> Self {
+    pub fn new(answerer: Box<dyn crate::answerer::QuestionAnswerer>) -> Self {
         Self {
             deny_flag: false,
             detail: String::new(),
@@ -47,14 +47,14 @@ pub enum InstallProgress {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum ChildOutcome {
+pub enum ChildOutcome {
     Success,
     Dismissed,
     NotFound,
     Failed(String),
 }
 
-pub(crate) enum StreamItem {
+pub enum StreamItem {
     Event(InstallEvent),
     Done(ChildOutcome),
 }
@@ -76,7 +76,7 @@ pub fn run_install<S: InstallSink + 'static, F: FnOnce() -> bool>(
     install_into(&mut handle, targets, as_deps, sink, confirm, answerer)
 }
 
-pub(crate) fn install_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
+pub fn install_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
     handle: &mut alpm::Alpm,
     targets: &[InstallTarget],
     as_deps: bool,
@@ -92,7 +92,7 @@ pub(crate) fn install_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
     result
 }
 
-pub(crate) fn register_callbacks<S: InstallSink + 'static>(
+pub fn register_callbacks<S: InstallSink + 'static>(
     handle: &alpm::Alpm,
     sink: Rc<RefCell<S>>,
     qstate: Rc<RefCell<QuestionState>>,
@@ -291,7 +291,7 @@ fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
     Ok(())
 }
 
-pub(crate) fn build_summary(handle: &alpm::Alpm) -> TransactionSummary {
+pub fn build_summary(handle: &alpm::Alpm) -> TransactionSummary {
     let mut packages = Vec::new();
     let mut total_download_size = 0;
     let mut total_installed_size = 0;
@@ -474,7 +474,7 @@ fn convert_log_level(level: AlpmLogLevel) -> Option<LogLevel> {
     }
 }
 
-pub(crate) fn run_install_process(
+pub fn run_install_process(
     exe: PathBuf,
     names: Vec<String>,
     mut tx: mpsc::Sender<StreamItem>,
@@ -528,7 +528,7 @@ pub(crate) fn run_install_process(
     send_event(StreamItem::Done(outcome));
 }
 
-pub(crate) fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
+pub fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
     let code = match status {
         Err(error) => return ChildOutcome::Failed(error.to_string()),
         Ok(status) => status.code(),
@@ -550,7 +550,7 @@ mod tests {
     use crate::resolve::{BuildLayer, BuildPlan};
     use std::fs;
 
-    pub(crate) fn setup_fake_root(suffix: &str) -> alpm::Alpm {
+    pub fn setup_fake_root(suffix: &str) -> alpm::Alpm {
         let base = std::env::temp_dir().join(format!("pakajo_fake_root_{suffix}"));
         let _ = fs::remove_dir_all(&base);
         let root = base.join("root");

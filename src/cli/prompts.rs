@@ -32,10 +32,7 @@ fn read_confirmation(message: &str, stream: PromptStream) -> bool {
     matches!(input.trim().to_lowercase().as_str(), "" | "y" | "yes")
 }
 
-pub(super) fn select_group_members(
-    group_name: &str,
-    groups: &[(&alpm::Db, &alpm::Group)],
-) -> Vec<String> {
+pub fn select_group_members(group_name: &str, groups: &[(&alpm::Db, &alpm::Group)]) -> Vec<String> {
     let c = color::stdout_color();
     let flat: Vec<&alpm::Package> = groups
         .iter()
@@ -44,7 +41,10 @@ pub(super) fn select_group_members(
     let total = flat.len();
     println!(
         "{}",
-        color::colon(c, &format!("There are {total} members in group {group_name}:"))
+        color::colon(
+            c,
+            &format!("There are {total} members in group {group_name}:")
+        )
     );
 
     let mut n = 1usize;
@@ -64,7 +64,10 @@ pub(super) fn select_group_members(
     }
 
     loop {
-        print!("\n{}", color::paint(c, color::BOLD, "Enter a selection (default=all):"));
+        print!(
+            "\n{}",
+            color::paint(c, color::BOLD, "Enter a selection (default=all):")
+        );
         print!(" ");
         let _ = std::io::stdout().flush();
         let mut input = String::new();
@@ -89,18 +92,24 @@ pub(super) fn select_group_members(
         if had_error {
             continue;
         }
-        return picks.into_iter().map(|i| flat[i].name().to_string()).collect();
+        return picks
+            .into_iter()
+            .map(|i| flat[i].name().to_string())
+            .collect();
     }
 }
 
-pub(super) fn confirm_install() -> bool {
+pub fn confirm_install() -> bool {
     println!();
     read_confirmation("Proceed with installation?", PromptStream::Stdout)
 }
 
-pub(super) fn confirm_remove() -> bool {
+pub fn confirm_remove() -> bool {
     println!();
-    read_confirmation("Do you want to remove these packages?", PromptStream::Stdout)
+    read_confirmation(
+        "Do you want to remove these packages?",
+        PromptStream::Stdout,
+    )
 }
 
 fn print_plan_summary(plan: &BuildPlan) {
@@ -170,7 +179,7 @@ fn print_plan_summary(plan: &BuildPlan) {
     }
 }
 
-pub(super) fn confirm_build(plan: &BuildPlan) -> BuildDecision {
+pub fn confirm_build(plan: &BuildPlan) -> BuildDecision {
     print_plan_summary(plan);
     let c = color::stdout_color();
     print!(
@@ -187,7 +196,7 @@ pub(super) fn confirm_build(plan: &BuildPlan) -> BuildDecision {
     }
 }
 
-pub(super) fn confirm_proceed_to_review(plan: &BuildPlan) -> BuildDecision {
+pub fn confirm_proceed_to_review(plan: &BuildPlan) -> BuildDecision {
     print_plan_summary(plan);
     if read_confirmation("Proceed to review?", PromptStream::Stdout) {
         BuildDecision::Review
@@ -196,17 +205,20 @@ pub(super) fn confirm_proceed_to_review(plan: &BuildPlan) -> BuildDecision {
     }
 }
 
-pub(super) fn confirm_install_stderr() -> bool {
+pub fn confirm_install_stderr() -> bool {
     eprintln!();
     read_confirmation("Proceed with installation?", PromptStream::Stderr)
 }
 
-pub(super) fn confirm_remove_stderr() -> bool {
+pub fn confirm_remove_stderr() -> bool {
     eprintln!();
-    read_confirmation("Do you want to remove these packages?", PromptStream::Stderr)
+    read_confirmation(
+        "Do you want to remove these packages?",
+        PromptStream::Stderr,
+    )
 }
 
-pub(super) fn confirm_review_accept() -> bool {
+pub fn confirm_review_accept() -> bool {
     println!();
     read_confirmation("Accept changes?", PromptStream::Stdout)
 }

@@ -20,7 +20,7 @@ pub fn to_search_results(
         .collect()
 }
 
-pub(crate) fn row_to_result(row: &PackageRow, installed: &HashSet<String>) -> SearchResult {
+pub fn row_to_result(row: &PackageRow, installed: &HashSet<String>) -> SearchResult {
     let source = match row.source.as_str() {
         "aur" => PackageSource::Aur,
         _ => PackageSource::Repo,

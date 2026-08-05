@@ -35,10 +35,7 @@ pub fn dry_run_for_repo_targets(targets: &[String]) -> anyhow::Result<QuestionSe
     repo_dry_run(&mut alpm, targets)
 }
 
-pub(crate) fn repo_dry_run(
-    handle: &mut alpm::Alpm,
-    targets: &[String],
-) -> anyhow::Result<QuestionSet> {
+pub fn repo_dry_run(handle: &mut alpm::Alpm, targets: &[String]) -> anyhow::Result<QuestionSet> {
     let state = attach_recorder(handle);
     let outcome = run_repo_dry_run_transaction(handle, targets, &state);
     let _ = handle.trans_release();
@@ -46,27 +43,27 @@ pub(crate) fn repo_dry_run(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct SysupgradePreview {
-    pub(crate) summary: TransactionSummary,
-    pub(crate) questions: QuestionSet,
-    pub(crate) prepare_error: Option<PrepareFailure>,
-    pub(crate) aur: Vec<crate::upgrade::AurUpgradeCandidate>,
-    pub(crate) pkgbuild_diffs: Vec<crate::pkgbuild::PkgbuildDiff>,
+pub struct SysupgradePreview {
+    pub summary: TransactionSummary,
+    pub questions: QuestionSet,
+    pub prepare_error: Option<PrepareFailure>,
+    pub aur: Vec<crate::upgrade::AurUpgradeCandidate>,
+    pub pkgbuild_diffs: Vec<crate::pkgbuild::PkgbuildDiff>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum PrepareFailure {
+pub enum PrepareFailure {
     Unsatisfied(Vec<UnsatisfiedDep>),
     Other(String),
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct UnsatisfiedDep {
-    pub(crate) depend: String,
-    pub(crate) target: String,
+pub struct UnsatisfiedDep {
+    pub depend: String,
+    pub target: String,
 }
 
-pub(crate) fn compute_sysupgrade_preview(
+pub fn compute_sysupgrade_preview(
     handle: &mut alpm::Alpm,
     config: &pacmanconf::Config,
 ) -> anyhow::Result<SysupgradePreview> {
@@ -112,7 +109,7 @@ fn run_sysupgrade_preview(
     })
 }
 
-pub(crate) fn default_repo_summary(
+pub fn default_repo_summary(
     handle: &mut alpm::Alpm,
 ) -> anyhow::Result<crate::events::TransactionSummary> {
     let state = attach_recorder(handle);
@@ -229,7 +226,7 @@ fn run_dry_run_transaction(
 
     let prepare_result = handle.trans_prepare();
     let snapshot = snapshot(state);
-    
+
     match prepare_result {
         Ok(()) => Ok(snapshot),
         Err(err) => Err(classify_prepare_error(err)),

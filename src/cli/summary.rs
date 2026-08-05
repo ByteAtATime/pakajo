@@ -4,7 +4,7 @@ use crate::{
     utils::format_mib,
 };
 
-pub(super) fn print_summary(summary: &TransactionSummary) {
+pub fn print_summary(summary: &TransactionSummary) {
     if summary.packages.is_empty() {
         println!(" nothing to do");
         return;
@@ -37,7 +37,7 @@ fn append_table_line(out: &mut String, cells: &[String], right_align: &[bool], w
     out.push('\n');
 }
 
-pub(super) fn render_summary(summary: &TransactionSummary, colored: bool) -> String {
+pub fn render_summary(summary: &TransactionSummary, colored: bool) -> String {
     let count = summary.packages.len();
 
     let mut ordered: Vec<&SummaryPackage> = summary.packages.iter().collect();

@@ -125,7 +125,7 @@ fn build_remove_summary(handle: &alpm::Alpm) -> TransactionSummary {
     }
 }
 
-pub(crate) fn run_remove_process(
+pub fn run_remove_process(
     exe: std::path::PathBuf,
     names: Vec<String>,
     mut tx: futures::channel::mpsc::Sender<crate::install::StreamItem>,
@@ -180,7 +180,7 @@ pub(crate) fn run_remove_process(
     send_event(crate::install::StreamItem::Done(outcome));
 }
 
-pub(crate) fn spawn_remove_child(targets: &[String]) -> anyhow::Result<std::process::Child> {
+pub fn spawn_remove_child(targets: &[String]) -> anyhow::Result<std::process::Child> {
     use std::process::Stdio;
     let exe = std::env::current_exe().context("failed to determine executable path")?;
     let mut cmd = crate::cli::escalation_command(&exe.to_string_lossy());

@@ -9,12 +9,12 @@ use crate::install::{self, InstallTarget};
 use crate::package::PackageSource;
 use crate::search::SearchResult;
 
-pub(super) fn alpm_handle() -> anyhow::Result<alpm::Alpm> {
+pub fn alpm_handle() -> anyhow::Result<alpm::Alpm> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     crate::pacman::init_alpm(&config)
 }
 
-pub(super) fn run_aur_sync() -> anyhow::Result<()> {
+pub fn run_aur_sync() -> anyhow::Result<()> {
     let handle = alpm_handle()?;
     let index = crate::local_index::LocalIndex::open(&crate::local_index::LocalIndex::db_path()?)?;
     match index.refresh(&handle)? {
@@ -30,7 +30,7 @@ pub(super) fn run_aur_sync() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(super) fn run_gendb() -> anyhow::Result<()> {
+pub fn run_gendb() -> anyhow::Result<()> {
     let handle = alpm_handle()?;
     let arch = handle
         .architectures()
@@ -118,7 +118,7 @@ fn fetch_base_devel_info(base: &str, arch: &str) -> anyhow::Result<Option<crate:
     Ok(Some(pkg_info))
 }
 
-pub(super) fn run_search(query: &str) -> anyhow::Result<()> {
+pub fn run_search(query: &str) -> anyhow::Result<()> {
     let sqlite_path = crate::local_index::LocalIndex::db_path()?;
     let local = crate::local_index::LocalIndex::open(&sqlite_path)?;
     let engine = crate::search::engine::SearchEngine::new(sqlite_path)?;
@@ -179,14 +179,14 @@ fn print_search_results(rows: &[SearchResult]) {
     }
 }
 
-pub(super) fn decode_approvals(b64: &str) -> anyhow::Result<crate::question::Approvals> {
+pub fn decode_approvals(b64: &str) -> anyhow::Result<crate::question::Approvals> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64)
         .context("--approvals is not valid base64")?;
     serde_json::from_slice(&bytes).context("--approvals is not valid JSON")
 }
 
-pub(super) fn answerer_for(
+pub fn answerer_for(
     approvals: Option<crate::question::Approvals>,
 ) -> Box<dyn crate::answerer::QuestionAnswerer> {
     if let Some(appr) = approvals {
@@ -198,7 +198,7 @@ pub(super) fn answerer_for(
     }
 }
 
-pub(super) fn root_install(
+pub fn root_install(
     handle: &alpm::Alpm,
     positionals: &[String],
     as_deps: bool,

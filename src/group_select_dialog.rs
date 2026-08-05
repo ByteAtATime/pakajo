@@ -3,11 +3,11 @@ use std::sync::Arc;
 use crate::session::GroupMember;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
-    h_flex,
-    v_flex,
+    h_flex, v_flex,
 };
 
 type GroupApproveFn = Box<dyn FnOnce(Vec<String>, &mut Window, &mut App) + 'static>;
@@ -67,12 +67,7 @@ impl GroupSelectDialog {
             }))
     }
 
-    fn render_member_row(
-        &self,
-        index: usize,
-        m: &GroupMember,
-        cx: &mut Context<Self>,
-    ) -> Checkbox {
+    fn render_member_row(&self, index: usize, m: &GroupMember, cx: &mut Context<Self>) -> Checkbox {
         let mut secondary = v_flex();
         let mut has_content = false;
         if let Some(d) = &m.description {
@@ -142,22 +137,23 @@ impl GroupSelectDialog {
                     .disabled(approve_disabled)
                     .icon(IconName::ArrowRight)
                     .on_click(move |_, window, cx| {
-                        let action = entity.update(cx, |this, _cx| {
-                            if this.any_checked() {
-                                let names: Vec<String> = this
-                                    .members
-                                    .iter()
-                                    .zip(this.checks.iter())
-                                    .filter_map(|(m, &on)| {
-                                        if on { Some(m.name.clone()) } else { None }
-                                    })
-                                    .collect();
-                                let on_approve = this.on_approve.take();
-                                Some((names, on_approve))
-                            } else {
-                                None
-                            }
-                        });
+                        let action =
+                            entity.update(cx, |this, _cx| {
+                                if this.any_checked() {
+                                    let names: Vec<String> =
+                                        this.members
+                                            .iter()
+                                            .zip(this.checks.iter())
+                                            .filter_map(|(m, &on)| {
+                                                if on { Some(m.name.clone()) } else { None }
+                                            })
+                                            .collect();
+                                    let on_approve = this.on_approve.take();
+                                    Some((names, on_approve))
+                                } else {
+                                    None
+                                }
+                            });
                         if let Some((names, Some(on_approve))) = action {
                             on_approve(names, window, cx);
                         }

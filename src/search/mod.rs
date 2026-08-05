@@ -27,7 +27,7 @@ pub struct SearchResult {
     pub last_update: Option<i64>,
 }
 
-pub(crate) fn dispatch_search(
+pub fn dispatch_search(
     engine: &SearchEngine,
     sqlite: &LocalIndex,
     installed: &HashSet<String>,
@@ -39,13 +39,14 @@ pub(crate) fn dispatch_search(
     let ids: Vec<u32> = pairs.iter().map(|(id, _)| *id).collect();
     let mut entries: Vec<(Tier, SearchResult)> = Vec::with_capacity(pairs.len());
     if !ids.is_empty()
-        && let Ok(rows) = sqlite.hydrate_by_ids(&ids) {
-            for (id, tier) in &pairs {
-                if let Some(row) = rows.get(id) {
-                    entries.push((*tier, hydrate::row_to_result(row, installed)));
-                }
+        && let Ok(rows) = sqlite.hydrate_by_ids(&ids)
+    {
+        for (id, tier) in &pairs {
+            if let Some(row) = rows.get(id) {
+                entries.push((*tier, hydrate::row_to_result(row, installed)));
             }
         }
+    }
     let q = text.to_lowercase();
     if !q.is_empty() {
         for (name, repo) in group_index {
@@ -84,7 +85,7 @@ fn group_search_result(name: &String, repo: &String) -> SearchResult {
     }
 }
 
-pub(crate) fn friendly_search_error(err: &anyhow::Error) -> String {
+pub fn friendly_search_error(err: &anyhow::Error) -> String {
     let msg = format!("{err:#}");
     if msg.contains("Too many package results") {
         "Too many results! Please narrow your search".to_string()
@@ -103,7 +104,10 @@ mod tests {
     #[test]
     fn group_name_tier_classifies_exact_prefix_substring() {
         assert_eq!(group_name_tier("gnome", "gnome"), Some(Tier::ExactName));
-        assert_eq!(group_name_tier("gnome-shell", "gnome"), Some(Tier::PrefixName));
+        assert_eq!(
+            group_name_tier("gnome-shell", "gnome"),
+            Some(Tier::PrefixName)
+        );
         assert_eq!(group_name_tier("x-gnome-y", "gnome"), Some(Tier::Substring));
         assert_eq!(group_name_tier("kde", "gnome"), None);
     }

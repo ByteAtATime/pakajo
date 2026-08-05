@@ -25,9 +25,15 @@ const LOCK_DEBOUNCE: Duration = Duration::from_millis(300);
 pub(crate) enum DetailData {
     None,
     Loading,
-    Ready { pkg: Package, installed: bool },
+    Ready {
+        pkg: Package,
+        installed: bool,
+    },
     Error(String),
-    Group { name: String, members: Vec<GroupMember> },
+    Group {
+        name: String,
+        members: Vec<GroupMember>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -1001,11 +1007,9 @@ impl PakajoSession {
 
             let outcome = cx
                 .background_executor()
-                .spawn(
-                    async move {
-                        execute_search_for(search_engine, local_index, group_index, installed, text)
-                    },
-                )
+                .spawn(async move {
+                    execute_search_for(search_engine, local_index, group_index, installed, text)
+                })
                 .await;
 
             let _ = this.update(cx, |this, cx| {

@@ -144,7 +144,7 @@ pub struct SummaryPackage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum SummaryAction {
+pub enum SummaryAction {
     Install,
     Upgrade,
     Downgrade,
@@ -152,7 +152,7 @@ pub(crate) enum SummaryAction {
     Remove,
 }
 
-pub(crate) fn classify_action(pkg: &SummaryPackage) -> SummaryAction {
+pub fn classify_action(pkg: &SummaryPackage) -> SummaryAction {
     if pkg.is_removal {
         return SummaryAction::Remove;
     }
@@ -166,14 +166,14 @@ pub(crate) fn classify_action(pkg: &SummaryPackage) -> SummaryAction {
     }
 }
 
-pub(crate) fn target_version(pkg: &SummaryPackage) -> &str {
+pub fn target_version(pkg: &SummaryPackage) -> &str {
     if pkg.is_removal {
         return pkg.old_version.as_deref().unwrap_or("");
     }
     &pkg.new_version
 }
 
-pub(crate) fn summary_fingerprint(
+pub fn summary_fingerprint(
     summary: &TransactionSummary,
 ) -> std::collections::BTreeSet<(String, SummaryAction, String)> {
     summary
@@ -189,7 +189,7 @@ pub(crate) fn summary_fingerprint(
         .collect()
 }
 
-pub(crate) fn summaries_match(prev: &TransactionSummary, cur: &TransactionSummary) -> bool {
+pub fn summaries_match(prev: &TransactionSummary, cur: &TransactionSummary) -> bool {
     summary_fingerprint(prev) == summary_fingerprint(cur)
 }
 

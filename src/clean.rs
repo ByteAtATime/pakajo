@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::Context;
 
-pub(crate) fn run_clean(remove: bool) -> anyhow::Result<()> {
+pub fn run_clean(remove: bool) -> anyhow::Result<()> {
     let root = crate::build::cache_root()?;
     if !root.exists() {
         println!("cache directory not found: {}", root.display());

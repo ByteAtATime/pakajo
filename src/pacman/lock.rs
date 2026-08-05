@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
-pub(crate) fn db_lck_path(dbpath: &str) -> PathBuf {
+pub fn db_lck_path(dbpath: &str) -> PathBuf {
     Path::new(dbpath).join("db.lck")
 }
 
-pub(crate) fn install_lock_cleanup_on_signal(handle: &alpm::Alpm) {
+pub fn install_lock_cleanup_on_signal(handle: &alpm::Alpm) {
     let lock_path = db_lck_path(handle.dbpath());
 
     #[cfg(not(test))]

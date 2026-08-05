@@ -1,6 +1,6 @@
 use crate::color;
 
-pub(super) fn render(percent: i32, width: usize, colored: bool) -> String {
+pub fn render(percent: i32, width: usize, colored: bool) -> String {
     if width == 0 {
         return String::new();
     }

@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use wait_timeout::ChildExt as _;
 
-pub(crate) fn ls_remote(url: &str, branch: Option<&str>) -> anyhow::Result<String> {
+pub fn ls_remote(url: &str, branch: Option<&str>) -> anyhow::Result<String> {
     let mut command = std::process::Command::new("git");
     command
         .env("GIT_TERMINAL_PROMPT", "0")

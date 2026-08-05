@@ -4,7 +4,7 @@ use crate::pacman;
 use crate::upgrade::AurUpgradeCandidate;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct RepoUpgrade {
+pub struct RepoUpgrade {
     pub name: String,
     pub old: String,
     pub new: String,
@@ -13,19 +13,19 @@ pub(crate) struct RepoUpgrade {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct PendingUpdates {
+pub struct PendingUpdates {
     pub repo: Vec<RepoUpgrade>,
     pub aur: Vec<AurUpgradeCandidate>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct UpdatesFetch {
+pub struct UpdatesFetch {
     pub repo: Vec<RepoUpgrade>,
     pub aur: Vec<AurUpgradeCandidate>,
     pub aur_error: Option<String>,
 }
 
-pub(crate) fn compute_repo_upgrades(
+pub fn compute_repo_upgrades(
     handle: &alpm::Alpm,
     config: &pacmanconf::Config,
 ) -> anyhow::Result<Vec<RepoUpgrade>> {
@@ -58,7 +58,7 @@ pub(crate) fn compute_repo_upgrades(
     Ok(repo)
 }
 
-pub(crate) fn pending_updates() -> anyhow::Result<UpdatesFetch> {
+pub fn pending_updates() -> anyhow::Result<UpdatesFetch> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let mut handle = pacman::init_alpm_rootless(&config)?;
     handle

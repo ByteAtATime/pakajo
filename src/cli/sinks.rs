@@ -4,7 +4,10 @@ use std::time::Instant;
 
 use super::summary::{print_summary, render_summary};
 use crate::events::{DownloadResult, InstallEvent, InstallSink, LogLevel, ProgressPhase};
-use crate::{color, utils::{format_bytes, format_eta, format_rate, humanize_size}};
+use crate::{
+    color,
+    utils::{format_bytes, format_eta, format_rate, humanize_size},
+};
 
 struct DownloadStat {
     sync_xfered: i64,
@@ -13,7 +16,7 @@ struct DownloadStat {
     eta: u64,
 }
 
-pub(crate) struct ConsoleSink {
+pub struct ConsoleSink {
     last_progress: Option<(ProgressPhase, String, i32)>,
     hooks_header_done: bool,
     color: bool,
@@ -22,7 +25,7 @@ pub(crate) struct ConsoleSink {
 }
 
 impl ConsoleSink {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             last_progress: None,
             hooks_header_done: false,
@@ -68,12 +71,15 @@ impl ConsoleSink {
                     100
                 };
                 let now = Instant::now();
-                let stat = self.downloads.entry(filename.clone()).or_insert_with(|| DownloadStat {
-                    sync_xfered: *downloaded,
-                    sync_time: now,
-                    rate: 0.0,
-                    eta: 0,
-                });
+                let stat = self
+                    .downloads
+                    .entry(filename.clone())
+                    .or_insert_with(|| DownloadStat {
+                        sync_xfered: *downloaded,
+                        sync_time: now,
+                        rate: 0.0,
+                        eta: 0,
+                    });
                 let timediff = now.duration_since(stat.sync_time).as_millis() as i64;
                 if timediff >= 200 {
                     let chunk = *downloaded - stat.sync_xfered;
@@ -116,19 +122,19 @@ impl ConsoleSink {
             } => {
                 self.downloads.remove(filename);
                 match result {
-                DownloadResult::UpToDate => {
-                    println!(" {} is up to date", clean_pkg_filename(filename));
+                    DownloadResult::UpToDate => {
+                        println!(" {} is up to date", clean_pkg_filename(filename));
+                    }
+                    DownloadResult::Success => {
+                        let clear = if self.color { "\x1b[K" } else { "" };
+                        println!("\r  {filename}: {} [done]{clear}", format_bytes(*total));
+                    }
+                    DownloadResult::Failed => {
+                        let clear = if self.color { "\x1b[K" } else { "" };
+                        println!("\r  {filename}: {} [failed]{clear}", format_bytes(*total));
+                    }
                 }
-                DownloadResult::Success => {
-                    let clear = if self.color { "\x1b[K" } else { "" };
-                    println!("\r  {filename}: {} [done]{clear}", format_bytes(*total));
-                }
-                DownloadResult::Failed => {
-                    let clear = if self.color { "\x1b[K" } else { "" };
-                    println!("\r  {filename}: {} [failed]{clear}", format_bytes(*total));
-                }
-                }
-            },
+            }
             InstallEvent::Progress {
                 phase,
                 package,
@@ -258,10 +264,10 @@ impl InstallSink for ConsoleSink {
     }
 }
 
-pub(super) struct JsonSink;
+pub struct JsonSink;
 
 impl JsonSink {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         JsonSink
     }
 }
@@ -274,10 +280,10 @@ impl InstallSink for JsonSink {
     }
 }
 
-pub(super) struct EscalatedSink;
+pub struct EscalatedSink;
 
 impl EscalatedSink {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         EscalatedSink
     }
 }

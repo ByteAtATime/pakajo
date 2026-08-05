@@ -4,7 +4,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::thread;
 
-pub(crate) fn spawn_db_lock_watcher(db_dir: impl AsRef<Path>, mut tx: mpsc::Sender<()>) {
+pub fn spawn_db_lock_watcher(db_dir: impl AsRef<Path>, mut tx: mpsc::Sender<()>) {
     let db_dir = db_dir.as_ref().to_path_buf();
     thread::spawn(move || {
         let mut inotify = match Inotify::init() {

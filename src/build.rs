@@ -137,9 +137,10 @@ pub fn run_build<S: InstallSink + ?Sized>(
             });
 
             if let Some(arch) = arch
-                && let Err(e) = crate::devel::refresh_baseline(&dir, arch) {
-                    eprintln!("warning: devel baseline refresh failed for {pkgbase}: {e:#}");
-                }
+                && let Err(e) = crate::devel::refresh_baseline(&dir, arch)
+            {
+                eprintln!("warning: devel baseline refresh failed for {pkgbase}: {e:#}");
+            }
 
             let as_deps = user_as_deps || !plan.targets.iter().any(|t| t == &info.name);
             run_install_child(&artifacts, as_deps, sink, approvals_b64)?;
@@ -175,7 +176,7 @@ fn is_valid_pkgbase(s: &str) -> Option<()> {
     Some(())
 }
 
-pub(crate) fn cache_root() -> anyhow::Result<PathBuf> {
+pub fn cache_root() -> anyhow::Result<PathBuf> {
     let cache = match std::env::var("XDG_CACHE_HOME") {
         Ok(xdg) => PathBuf::from(xdg),
         Err(_) => {
@@ -187,14 +188,14 @@ pub(crate) fn cache_root() -> anyhow::Result<PathBuf> {
     Ok(cache.join("pakajo"))
 }
 
-pub(crate) fn clone_dir(pkgbase: &str) -> anyhow::Result<PathBuf> {
+pub fn clone_dir(pkgbase: &str) -> anyhow::Result<PathBuf> {
     if is_valid_pkgbase(pkgbase).is_none() {
         anyhow::bail!("invalid pkgbase from AUR: {pkgbase:?}");
     }
     Ok(cache_root()?.join(pkgbase))
 }
 
-pub(crate) fn git_clone_or_pull(dir: &Path, pkgbase: &str) -> anyhow::Result<()> {
+pub fn git_clone_or_pull(dir: &Path, pkgbase: &str) -> anyhow::Result<()> {
     if dir.exists() {
         let status = std::process::Command::new("git")
             .arg("-C")
@@ -364,7 +365,7 @@ fn set_nonblocking(file: &std::fs::File) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn spawn_install_child(
+pub fn spawn_install_child(
     targets: &[String],
     as_deps: bool,
     approvals_b64: Option<&str>,

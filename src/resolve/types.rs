@@ -26,12 +26,12 @@ impl Reason {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct InstallNode {
-    pub(super) name: String,
-    pub(super) source: Source,
-    pub(super) reason: Reason,
-    pub(super) version: String,
-    pub(super) aur_info: Option<AurInfo>,
+pub struct InstallNode {
+    pub name: String,
+    pub source: Source,
+    pub reason: Reason,
+    pub version: String,
+    pub aur_info: Option<AurInfo>,
 }
 
 #[derive(Debug, Clone)]

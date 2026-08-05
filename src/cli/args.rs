@@ -2,13 +2,13 @@ use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "pakajo")]
-pub(crate) struct Cli {
+pub struct Cli {
     #[command(subcommand)]
-    pub(crate) command: Option<Command>,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand)]
-pub(crate) enum Command {
+pub enum Command {
     #[command(alias = "add")]
     Install(InstallArgs),
     #[command(alias = "uninstall", alias = "rm")]
@@ -21,50 +21,50 @@ pub(crate) enum Command {
 }
 
 #[derive(Args)]
-pub(crate) struct InstallArgs {
+pub struct InstallArgs {
     #[arg(long)]
-    pub(super) json: bool,
+    pub json: bool,
     #[arg(long = "asdeps")]
-    pub(super) as_deps: bool,
+    pub as_deps: bool,
     #[arg(long = "approvals")]
-    pub(super) approvals_b64: Option<String>,
+    pub approvals_b64: Option<String>,
     #[arg(long = "skip-review")]
-    pub(super) skip_review: bool,
-    pub(super) positionals: Vec<String>,
+    pub skip_review: bool,
+    pub positionals: Vec<String>,
 }
 
 #[derive(Args)]
-pub(crate) struct RemoveArgs {
+pub struct RemoveArgs {
     #[arg(long)]
-    pub(super) json: bool,
-    pub(super) positionals: Vec<String>,
+    pub json: bool,
+    pub positionals: Vec<String>,
 }
 
 #[derive(Args)]
-pub(crate) struct UpgradeArgs {
+pub struct UpgradeArgs {
     #[arg(long)]
-    pub(super) json: bool,
+    pub json: bool,
     #[arg(long = "no-refresh")]
-    pub(super) no_refresh: bool,
+    pub no_refresh: bool,
     #[arg(long = "repo-only")]
-    pub(super) repo_only: bool,
+    pub repo_only: bool,
     #[arg(long = "ignore")]
-    pub(super) ignores: Vec<String>,
+    pub ignores: Vec<String>,
     #[arg(long = "skip-review")]
-    pub(super) skip_review: bool,
+    pub skip_review: bool,
     #[arg(long = "fingerprint-file")]
-    pub(super) fingerprint_file: Option<String>,
+    pub fingerprint_file: Option<String>,
     #[arg(long = "approvals")]
-    pub(super) approvals_b64: Option<String>,
+    pub approvals_b64: Option<String>,
 }
 
 #[derive(Args)]
-pub(crate) struct SearchArgs {
-    pub(super) query: Vec<String>,
+pub struct SearchArgs {
+    pub query: Vec<String>,
 }
 
 #[derive(Args)]
-pub(crate) struct CleanArgs {
+pub struct CleanArgs {
     #[arg(short = 'r', long = "remove")]
-    pub(super) remove: bool,
+    pub remove: bool,
 }

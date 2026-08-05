@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Context as _;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct RepoInfo {
+pub struct RepoInfo {
     pub url: String,
     pub branch: Option<String>,
     pub commit: String,
@@ -25,12 +25,12 @@ impl PartialEq for RepoInfo {
 impl Eq for RepoInfo {}
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct PkgInfo {
+pub struct PkgInfo {
     pub repos: HashSet<RepoInfo>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DevelInfo {
+pub struct DevelInfo {
     pub info: HashMap<String, PkgInfo>,
 }
 
@@ -44,7 +44,7 @@ struct YayOriginInfo {
     sha: String,
 }
 
-pub(crate) fn state_path() -> std::path::PathBuf {
+pub fn state_path() -> std::path::PathBuf {
     cache_dir().join("pakajo").join("devel.json")
 }
 
@@ -59,7 +59,7 @@ fn cache_dir() -> std::path::PathBuf {
     }
 }
 
-pub(crate) fn load_devel_info() -> DevelInfo {
+pub fn load_devel_info() -> DevelInfo {
     let path = state_path();
     if path.exists() {
         return load_from(&path);
@@ -124,7 +124,7 @@ fn import_yay_from(bytes: &[u8]) -> Option<DevelInfo> {
     Some(DevelInfo { info })
 }
 
-pub(crate) fn save_devel_info(info: &DevelInfo) -> anyhow::Result<()> {
+pub fn save_devel_info(info: &DevelInfo) -> anyhow::Result<()> {
     save_to(info, &state_path())
 }
 
@@ -142,7 +142,7 @@ fn save_to(info: &DevelInfo, path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn parse_url(source: &str) -> Option<(String, Option<String>)> {
+pub fn parse_url(source: &str) -> Option<(String, Option<String>)> {
     let url = source.splitn(2, "::").last().unwrap();
 
     if !url.starts_with("git") || !url.contains("://") {
@@ -175,7 +175,7 @@ pub(crate) fn parse_url(source: &str) -> Option<(String, Option<String>)> {
     Some((remote, branch))
 }
 
-pub(crate) fn fetch_devel_info(arch: &str, srcinfo: &srcinfo::Srcinfo) -> anyhow::Result<PkgInfo> {
+pub fn fetch_devel_info(arch: &str, srcinfo: &srcinfo::Srcinfo) -> anyhow::Result<PkgInfo> {
     let mut targets: Vec<(String, Option<String>)> = Vec::new();
     for source in srcinfo.base.source.arch(arch) {
         if let Some((url, branch)) = parse_url(source) {
@@ -212,7 +212,7 @@ pub(crate) fn fetch_devel_info(arch: &str, srcinfo: &srcinfo::Srcinfo) -> anyhow
     Ok(PkgInfo { repos })
 }
 
-pub(crate) fn refresh_baseline(build_dir: &std::path::Path, arch: &str) -> anyhow::Result<()> {
+pub fn refresh_baseline(build_dir: &std::path::Path, arch: &str) -> anyhow::Result<()> {
     let srcinfo = if build_dir.join(".SRCINFO").exists() {
         crate::srcinfo_io::read_from_dir(build_dir)?
     } else {
@@ -233,7 +233,7 @@ fn merge_baseline(devel: &mut DevelInfo, srcinfo: &srcinfo::Srcinfo, pkg_info: P
     }
 }
 
-pub(crate) fn possible_devel_updates_from(info: &DevelInfo) -> Vec<String> {
+pub fn possible_devel_updates_from(info: &DevelInfo) -> Vec<String> {
     let targets: Vec<(&String, &RepoInfo)> = info
         .info
         .iter()
@@ -272,7 +272,7 @@ pub(crate) fn possible_devel_updates_from(info: &DevelInfo) -> Vec<String> {
     updated
 }
 
-pub(crate) fn possible_devel_updates() -> Vec<String> {
+pub fn possible_devel_updates() -> Vec<String> {
     possible_devel_updates_from(&load_devel_info())
 }
 

@@ -1,40 +1,18 @@
-mod answerer;
-mod aur;
-mod build;
-mod clean;
-mod cli;
-mod color;
-mod devel;
-mod dry_run;
-mod events;
-mod git;
+pub use pakajo::{
+    answerer, aur, build, clean, cli, color, devel, dry_run, events, git, install, local_index,
+    lookup, package, pacman, pacman_watch, pkgbuild, question, remove, resolve, search, srcinfo_io,
+    stats, stub_pkg, updates, upgrade, utils,
+};
+mod group_select_dialog;
 mod icon;
-mod install;
 mod install_page;
 mod install_review_dialog;
-mod group_select_dialog;
-mod local_index;
-mod lookup;
-mod package;
 mod package_detail;
-mod pacman;
-mod pacman_watch;
-mod pkgbuild;
 mod pkgbuild_review_dialog;
-mod question;
-mod remove;
-mod resolve;
 mod root;
-mod search;
 mod search_view;
 mod session;
-mod srcinfo_io;
-mod stats;
-mod stub_pkg;
-mod updates;
 mod updates_view;
-mod upgrade;
-mod utils;
 
 use crate::{pacman::init_alpm, root::PakajoRoot};
 use anyhow::Context as _;

@@ -2,13 +2,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::satisfies::split_dep;
 
-pub(super) struct ProvideEntry {
-    pub(super) provider: String,
-    pub(super) provide: String,
-    pub(super) provider_version: String,
+pub struct ProvideEntry {
+    pub provider: String,
+    pub provide: String,
+    pub provider_version: String,
 }
 
-pub(super) struct DepGraph {
+pub struct DepGraph {
     nodes: HashSet<String>,
     deps: HashMap<String, HashSet<String>>,
     rdeps: HashMap<String, HashSet<String>>,
@@ -16,7 +16,7 @@ pub(super) struct DepGraph {
 }
 
 impl DepGraph {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             nodes: HashSet::new(),
             deps: HashMap::new(),
@@ -25,11 +25,11 @@ impl DepGraph {
         }
     }
 
-    pub(super) fn add_node(&mut self, name: &str) {
+    pub fn add_node(&mut self, name: &str) {
         self.nodes.insert(name.to_string());
     }
 
-    pub(super) fn add_provides(&mut self, provide: &str, provider: &str, provider_version: &str) {
+    pub fn add_provides(&mut self, provide: &str, provider: &str, provider_version: &str) {
         let name = split_dep(provide).name.to_string();
         self.provides.entry(name).or_insert(ProvideEntry {
             provider: provider.to_string(),
@@ -38,15 +38,15 @@ impl DepGraph {
         });
     }
 
-    pub(super) fn has_provides(&self, name: &str) -> Option<&ProvideEntry> {
+    pub fn has_provides(&self, name: &str) -> Option<&ProvideEntry> {
         self.provides.get(name)
     }
 
-    pub(super) fn exists(&self, name: &str) -> bool {
+    pub fn exists(&self, name: &str) -> bool {
         self.nodes.contains(name)
     }
 
-    pub(super) fn depend_on(&mut self, child: &str, parent: &str) {
+    pub fn depend_on(&mut self, child: &str, parent: &str) {
         if child == parent {
             return;
         }
@@ -62,7 +62,7 @@ impl DepGraph {
             .insert(child.to_string());
     }
 
-    pub(super) fn topo_layers(&self) -> std::result::Result<Vec<Vec<String>>, Vec<String>> {
+    pub fn topo_layers(&self) -> std::result::Result<Vec<Vec<String>>, Vec<String>> {
         let mut indegree: HashMap<String, usize> = self
             .nodes
             .iter()
