@@ -23,7 +23,7 @@ use pakajo::search::engine::SearchEngine;
 use background::begin_aur_sync_in_background;
 use detail::{DetailData, DetailMessage, detail_view};
 use search::{SearchMessage, SearchState, results_list, search_bar, search_status_text};
-use transaction::TransactionMessage;
+use transaction::{TransactionMessage, TransactionModel, transaction_view};
 
 fn main() -> cosmic::iced::Result {
     let cli = cli::parse();
@@ -49,6 +49,7 @@ pub struct PakajoApp {
     pub(crate) detail: DetailData,
     pub(crate) detail_seq: u64,
     pub(crate) transacting: bool,
+    pub(crate) transaction: Option<TransactionModel>,
 }
 
 impl Application for PakajoApp {
@@ -119,6 +120,7 @@ impl Application for PakajoApp {
                 detail: DetailData::None,
                 detail_seq: 0,
                 transacting: false,
+                transaction: None,
             },
             Task::none(),
         )
@@ -151,6 +153,9 @@ impl Application for PakajoApp {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
+        if let Some(model) = self.transaction.as_ref() {
+            return container(transaction_view(model)).into();
+        }
         let content = Column::new()
             .spacing(12)
             .push(search_bar(&self.query))
