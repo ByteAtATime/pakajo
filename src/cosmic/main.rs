@@ -28,7 +28,7 @@ use transaction::{TransactionMessage, TransactionModel, transaction_view};
 fn main() -> cosmic::iced::Result {
     let cli = cli::parse();
     cli::dispatch(cli);
-    let settings = Settings::default();
+    let settings = Settings::default().client_decorations(false);
     let flags = ();
     app::run::<PakajoApp>(settings, flags)
 }
@@ -66,7 +66,8 @@ impl Application for PakajoApp {
         &mut self.core
     }
 
-    fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
+    fn init(mut core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
+        core.window.show_headerbar = false;
         let search_engine = LocalIndex::db_path()
             .ok()
             .and_then(|p| SearchEngine::new(p).ok())
