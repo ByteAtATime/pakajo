@@ -43,6 +43,19 @@ pub fn parse() -> Cli {
     Cli::parse_from(argv)
 }
 
+pub fn dispatch(cli: Cli) {
+    match cli.command {
+        Some(Command::Install(a)) => install_subcommand(a),
+        Some(Command::Remove(a)) => remove_subcommand(a),
+        Some(Command::Upgrade(a)) => upgrade_subcommand(a),
+        Some(Command::Search(a)) => search_subcommand(a),
+        Some(Command::Clean(a)) => clean_subcommand(a),
+        Some(Command::AurSync) => aur_sync_subcommand(),
+        Some(Command::Gendb) => gendb_subcommand(),
+        None => {}
+    }
+}
+
 pub fn install_subcommand(args: InstallArgs) -> ! {
     let positionals = dedup_positionals(args.positionals);
 

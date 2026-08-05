@@ -4,8 +4,11 @@ use cosmic::{
     app::{self, Core, Settings, Task},
     executor,
 };
+use pakajo::cli;
 
 fn main() -> cosmic::iced::Result {
+    let cli = cli::parse();
+    cli::dispatch(cli);
     let settings = Settings::default();
     let flags = ();
     app::run::<PakajoApp>(settings, flags)

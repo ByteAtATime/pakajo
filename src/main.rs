@@ -20,17 +20,7 @@ use gpui::*;
 use gpui_component::*;
 
 fn main() -> anyhow::Result<()> {
-    let cli = cli::parse();
-    match cli.command {
-        Some(cli::Command::Install(a)) => cli::install_subcommand(a),
-        Some(cli::Command::Remove(a)) => cli::remove_subcommand(a),
-        Some(cli::Command::Upgrade(a)) => cli::upgrade_subcommand(a),
-        Some(cli::Command::Search(a)) => cli::search_subcommand(a),
-        Some(cli::Command::Clean(a)) => cli::clean_subcommand(a),
-        Some(cli::Command::AurSync) => cli::aur_sync_subcommand(),
-        Some(cli::Command::Gendb) => cli::gendb_subcommand(),
-        None => {}
-    }
+    cli::dispatch(cli::parse());
 
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let handle = init_alpm(&config)?;
