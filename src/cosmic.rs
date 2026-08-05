@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use cosmic::widget::{Column, Row, container, scrollable, text, text_input};
+use cosmic::widget::{Column, Row, button, container, scrollable, text, text_input};
 use cosmic::{
     Application, Element,
     app::{self, Core, Settings, Task},
@@ -35,6 +35,7 @@ pub struct PakajoApp {
     results: Vec<SearchResult>,
     search_state: SearchState,
     search_seq: u64,
+    selected_index: Option<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -103,6 +104,7 @@ impl Application for PakajoApp {
                 results: Vec::new(),
                 search_state: SearchState::Idle,
                 search_seq: 0,
+                selected_index: None,
             },
             Task::none(),
         )
@@ -117,6 +119,7 @@ impl Application for PakajoApp {
 
                 if text.trim().is_empty() {
                     self.results.clear();
+                    self.selected_index = None;
                     self.search_state = SearchState::Idle;
                     return Task::none();
                 }
@@ -137,11 +140,45 @@ impl Application for PakajoApp {
             Message::Search(SearchMessage::ResultsReady { seq, results }) => {
                 if seq == self.search_seq {
                     self.results = results;
+                    self.selected_index =
+                        if self.results.is_empty() { None } else { Some(0) };
                     self.search_state = SearchState::Done;
                 }
                 Task::none()
             }
+            Message::Search(SearchMessage::SelectDelta(delta)) => {
+                if let Some(i) =
+                    next_selected_index(self.results.len(), self.selected_index, delta)
+                {
+                    self.selected_index = Some(i);
+                }
+                Task::none()
+            }
+            Message::Search(SearchMessage::SelectIndex(i)) => {
+                if i < self.results.len() {
+                    self.selected_index = Some(i);
+                }
+                Task::none()
+            }
         }
+    }
+
+    fn subscription(&self) -> cosmic::iced::Subscription<Self::Message> {
+        cosmic::iced::event::listen_with(|event, _status, _id| match event {
+            cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+                key,
+                ..
+            }) => match key {
+                cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::ArrowUp) => {
+                    Some(Message::Search(SearchMessage::SelectDelta(-1)))
+                }
+                cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::ArrowDown) => {
+                    Some(Message::Search(SearchMessage::SelectDelta(1)))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
@@ -155,8 +192,9 @@ impl Application for PakajoApp {
         };
 
         let mut list = Column::new().spacing(6);
-        for result in &self.results {
-            list = list.push(result_row(result));
+        for (index, result) in self.results.iter().enumerate() {
+            let is_selected = self.selected_index == Some(index);
+            list = list.push(result_row(result, index, is_selected));
         }
 
         let content = Column::new()
@@ -181,9 +219,11 @@ pub enum SearchMessage {
         seq: u64,
         results: Vec<SearchResult>,
     },
+    SelectDelta(i32),
+    SelectIndex(usize),
 }
 
-fn result_row(result: &SearchResult) -> Element<'_, Message> {
+fn result_row(result: &SearchResult, index: usize, is_selected: bool) -> Element<'_, Message> {
     let badge = result.repo.as_deref().unwrap_or("aur");
 
     let top = Row::new()
@@ -194,10 +234,16 @@ fn result_row(result: &SearchResult) -> Element<'_, Message> {
         .push(text(result.version.clone()))
         .push_maybe(result.installed.then(|| text("installed")));
 
-    Column::new()
+    let content = Column::new()
         .spacing(4)
         .push(top)
-        .push_maybe(result.description.as_ref().map(|d| text(d.clone())))
+        .push_maybe(result.description.as_ref().map(|d| text(d.clone())));
+
+    button::custom(content)
+        .on_press(Message::Search(SearchMessage::SelectIndex(index)))
+        .selected(is_selected)
+        .class(cosmic::theme::Button::ListItem([0.0; 4]))
+        .width(cosmic::iced::Length::Fill)
         .into()
 }
 
@@ -269,4 +315,43 @@ fn begin_aur_sync_in_background(
             }
         }
     });
+}
+
+fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Option<usize> {
+    let max = len.checked_sub(1)?;
+    let cur = current.unwrap_or(0);
+    let next = (cur as i32 + delta).clamp(0, max as i32) as usize;
+    if current == Some(next) {
+        None
+    } else {
+        Some(next)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_selected_index;
+
+    #[test]
+    fn next_selected_index_empty_returns_none() {
+        assert_eq!(next_selected_index(0, None, 1), None);
+    }
+
+    #[test]
+    fn next_selected_index_clamps_to_bounds() {
+        assert_eq!(next_selected_index(5, None, -3), Some(0));
+        assert_eq!(next_selected_index(5, None, 100), Some(4));
+    }
+
+    #[test]
+    fn next_selected_index_noop_returns_none() {
+        assert_eq!(next_selected_index(5, Some(4), 1), None);
+        assert_eq!(next_selected_index(5, Some(0), -1), None);
+    }
+
+    #[test]
+    fn next_selected_index_moves() {
+        assert_eq!(next_selected_index(5, Some(2), -1), Some(1));
+        assert_eq!(next_selected_index(5, Some(2), 1), Some(3));
+    }
 }
