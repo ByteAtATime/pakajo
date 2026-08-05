@@ -29,15 +29,18 @@ pub fn dry_run_for_target(target: &str) -> anyhow::Result<QuestionSet> {
     dry_run(&mut alpm, &plan)
 }
 
-pub fn dry_run_for_repo_target(target: &str) -> anyhow::Result<QuestionSet> {
+pub fn dry_run_for_repo_targets(targets: &[String]) -> anyhow::Result<QuestionSet> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let mut alpm = crate::pacman::init_alpm(&config)?;
-    repo_dry_run(&mut alpm, target)
+    repo_dry_run(&mut alpm, targets)
 }
 
-pub(crate) fn repo_dry_run(handle: &mut alpm::Alpm, target: &str) -> anyhow::Result<QuestionSet> {
+pub(crate) fn repo_dry_run(
+    handle: &mut alpm::Alpm,
+    targets: &[String],
+) -> anyhow::Result<QuestionSet> {
     let state = attach_recorder(handle);
-    let outcome = run_repo_dry_run_transaction(handle, target, &state);
+    let outcome = run_repo_dry_run_transaction(handle, targets, &state);
     let _ = handle.trans_release();
     outcome
 }
@@ -235,18 +238,20 @@ fn run_dry_run_transaction(
 
 fn run_repo_dry_run_transaction(
     handle: &mut alpm::Alpm,
-    target: &str,
+    targets: &[String],
     state: &Rc<RefCell<RecorderState>>,
 ) -> anyhow::Result<QuestionSet> {
     handle
         .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
         .context("failed to init dry-run transaction")?;
-    let pkg = crate::pacman::find_pkg(handle, target)
-        .ok_or_else(|| anyhow::anyhow!("package '{target}' not found in any repository"))?;
-    handle
-        .trans_add_pkg(pkg)
-        .map_err(alpm::Error::from)
-        .with_context(|| format!("failed to queue package for dry-run: {target}"))?;
+    for target in targets {
+        let pkg = crate::pacman::find_pkg(handle, target)
+            .ok_or_else(|| anyhow::anyhow!("package '{target}' not found in any repository"))?;
+        handle
+            .trans_add_pkg(pkg)
+            .map_err(alpm::Error::from)
+            .with_context(|| format!("failed to queue package for dry-run: {target}"))?;
+    }
     let prepare_result = handle.trans_prepare();
     let snapshot = snapshot(state);
     match prepare_result {

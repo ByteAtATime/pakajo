@@ -12,6 +12,7 @@ mod icon;
 mod install;
 mod install_page;
 mod install_review_dialog;
+mod group_select_dialog;
 mod local_index;
 mod lookup;
 mod package;

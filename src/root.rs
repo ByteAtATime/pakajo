@@ -5,6 +5,7 @@ use crate::{
     install::InstallProgress,
     install_page::InstallPage,
     install_review_dialog::{self, InstallReviewDialog},
+    group_select_dialog::GroupSelectDialog,
     package::PackageSource,
     package_detail::{DetailIntent, PackageDetail},
     pkgbuild::PkgbuildDiff,
@@ -116,6 +117,9 @@ impl PakajoRoot {
                 }
                 SessionEvent::ReviewRequired { qs, name } => {
                     this.on_review_required(qs.clone(), name.clone(), window, cx)
+                }
+                SessionEvent::GroupReviewRequired { qs, name } => {
+                    this.on_group_review_required(qs.clone(), name.clone(), window, cx)
                 }
                 SessionEvent::PkgbuildReviewRequired { diffs } => {
                     this.on_pkgbuild_review_required(diffs.clone(), window, cx)
@@ -427,6 +431,115 @@ impl PakajoRoot {
                     true
                 })
                 .content(move |content, _window, _cx| content.child(review_for_content.clone()))
+        });
+    }
+
+    fn on_group_review_required(
+        &mut self,
+        qs: QuestionSet,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name_for_title = name;
+
+        let root_for_approve = cx.weak_entity();
+        let on_approve = Box::new(
+            move |approvals: crate::question::Approvals, _window: &mut Window, cx: &mut App| {
+                let Some(root) = root_for_approve.upgrade() else {
+                    return;
+                };
+                root.update(cx, |this, cx| {
+                    this.session
+                        .update(cx, |s, cx| s.confirm_group_install(approvals, cx));
+                });
+            },
+        );
+
+        let root_for_cancel = cx.weak_entity();
+        let on_cancel = std::sync::Arc::new(move |_window: &mut Window, cx: &mut App| {
+            if let Some(root) = root_for_cancel.upgrade() {
+                root.update(cx, |this, cx| {
+                    this.session.update(cx, |s, cx| s.cancel_group_install(cx));
+                });
+            }
+        }) as std::sync::Arc<dyn Fn(&mut Window, &mut App) + 'static>;
+
+        let on_cancel_for_dialog = on_cancel.clone();
+        let review = cx.new(|_| InstallReviewDialog::new(qs, on_approve, on_cancel));
+
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let title = install_review_dialog::build_title(&name_for_title, cx);
+            let on_cancel_arc = on_cancel_for_dialog.clone();
+            let review_for_content = review.clone();
+            dialog
+                .title(title)
+                .w(px(560.))
+                .close_button(true)
+                .on_cancel(move |_, window, cx| {
+                    on_cancel_arc(window, cx);
+                    true
+                })
+                .content(move |content, _window, _cx| content.child(review_for_content.clone()))
+        });
+    }
+
+    fn open_group_install_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (group_name, members) = match &self.detail {
+            DetailPane::Group { name, members } => (name.clone(), members.clone()),
+            _ => return,
+        };
+
+        let group_name_for_approve = group_name.clone();
+        let root_for_approve = cx.weak_entity();
+        let on_approve = Box::new(
+            move |names: Vec<String>, _window: &mut Window, cx: &mut App| {
+                let Some(root) = root_for_approve.upgrade() else {
+                    return;
+                };
+                root.update(cx, |this, cx| {
+                    this.session
+                        .update(cx, |s, cx| s.start_group_install(group_name_for_approve, names, cx));
+                });
+            },
+        );
+
+        let root_for_cancel = cx.weak_entity();
+        let on_cancel = std::sync::Arc::new(move |_window: &mut Window, cx: &mut App| {
+            if let Some(root) = root_for_cancel.upgrade() {
+                root.update(cx, |this, cx| {
+                    this.session.update(cx, |s, cx| s.cancel_group_install(cx));
+                });
+            }
+        }) as std::sync::Arc<dyn Fn(&mut Window, &mut App) + 'static>;
+
+        let on_cancel_for_dialog = on_cancel.clone();
+        let dialog = cx.new(|_| {
+            GroupSelectDialog::new(members, "Install".to_string(), on_approve, on_cancel)
+        });
+
+        window.open_dialog(cx, move |dialog_view, _window, cx| {
+            let title = h_flex()
+                .gap_2()
+                .items_center()
+                .child(Icon::new(PakajoIcon::PackageCheck).text_color(cx.theme().primary))
+                .child(
+                    div()
+                        .text_lg()
+                        .font_semibold()
+                        .child(format!("Install group {group_name}")),
+                );
+            let on_cancel_arc = on_cancel_for_dialog.clone();
+            let dialog_for_content = dialog.clone();
+            dialog_view
+                .title(title)
+                .w(px(560.))
+                .close_button(true)
+                .on_cancel(move |_, window, cx| {
+                    on_cancel_arc(window, cx);
+                    true
+                })
+                .content(move |content, _w, _cx| content.child(dialog_for_content.clone()))
         });
     }
 
@@ -1324,6 +1437,26 @@ impl Render for PakajoRoot {
                                                     .child(d)
                                             }))
                                     })),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_end()
+                                    .mt_3()
+                                    .child(
+                                        Button::new("group-install-button")
+                                            .label("Install group")
+                                            .primary()
+                                            .icon(IconName::ArrowDown)
+                                            .disabled(matches!(
+                                                self.install_progress,
+                                                InstallProgress::Running
+                                            ))
+                                            .on_click(cx.listener(
+                                                move |this, _ev, window, cx| {
+                                                    this.open_group_install_dialog(window, cx)
+                                                },
+                                            )),
+                                    ),
                             )
                             .into_any_element(),
                     };

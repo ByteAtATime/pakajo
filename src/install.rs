@@ -476,7 +476,7 @@ fn convert_log_level(level: AlpmLogLevel) -> Option<LogLevel> {
 
 pub(crate) fn run_install_process(
     exe: PathBuf,
-    name: String,
+    names: Vec<String>,
     mut tx: mpsc::Sender<StreamItem>,
     approvals_b64: Option<String>,
 ) {
@@ -498,8 +498,10 @@ pub(crate) fn run_install_process(
     if let Some(b64) = &approvals_b64 {
         cmd.arg("--approvals").arg(b64);
     }
+    for name in &names {
+        cmd.arg(name);
+    }
     let outcome = match cmd
-        .arg(&name)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -784,8 +786,8 @@ mod tests {
             .pkg("cava-git")
             .expect("cava-git should be installed in localdb after seeding");
 
-        let qs =
-            crate::dry_run::repo_dry_run(&mut handle, "cava").expect("repo dry-run should succeed");
+        let qs = crate::dry_run::repo_dry_run(&mut handle, &["cava".to_string()])
+            .expect("repo dry-run should succeed");
         assert!(
             qs.conflicts
                 .iter()

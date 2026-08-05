@@ -96,7 +96,16 @@ impl InstallPage {
                 cloning: None,
                 scroll: ScrollHandle::new(),
             }),
-            PackageSource::Group => panic!("group install not implemented until Phase 4"),
+            PackageSource::Group => PageMode::Repo(RepoState {
+                manifest: None,
+                stage: RepoStage::Resolve,
+                scroll: ScrollHandle::new(),
+                download_total: 0,
+                download_done: 0,
+                download_bytes_total: 0,
+                download_bytes_done: 0,
+                download_files: HashMap::new(),
+            }),
         };
         Self {
             kind,

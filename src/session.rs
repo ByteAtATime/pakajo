@@ -72,6 +72,10 @@ pub(crate) enum SessionEvent {
         qs: QuestionSet,
         name: String,
     },
+    GroupReviewRequired {
+        qs: crate::question::QuestionSet,
+        name: String,
+    },
     PkgbuildReviewRequired {
         diffs: Vec<PkgbuildDiff>,
     },
@@ -85,6 +89,11 @@ struct PendingInstall {
     name: String,
     source: PackageSource,
     approvals_b64: Option<String>,
+}
+
+struct PendingGroupInstall {
+    name: String,
+    members: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -108,6 +117,7 @@ pub(crate) struct PakajoSession {
     pub(crate) search_state: SearchState,
     install_progress: InstallProgress,
     pending_install: Option<PendingInstall>,
+    pending_group: Option<PendingGroupInstall>,
     pub(crate) pending_count: u32,
     pub(crate) updates_state: UpdatesState,
     pub(crate) pending_updates: crate::updates::PendingUpdates,
@@ -154,6 +164,7 @@ impl PakajoSession {
             search_state: SearchState::Idle,
             install_progress: InstallProgress::Idle,
             pending_install: None,
+            pending_group: None,
             pending_count: 0,
             updates_state: UpdatesState::Idle,
             pending_updates: crate::updates::PendingUpdates {
@@ -357,6 +368,7 @@ impl PakajoSession {
     pub(crate) fn spawn_install_subprocess(
         &mut self,
         name: String,
+        targets: Vec<String>,
         source: PackageSource,
         approvals_b64: Option<String>,
         cx: &mut Context<Self>,
@@ -380,7 +392,7 @@ impl PakajoSession {
         });
         let (tx, mut rx) = futures::channel::mpsc::channel::<StreamItem>(256);
         std::thread::spawn(move || {
-            crate::install::run_install_process(exe, name, tx, approvals_b64)
+            crate::install::run_install_process(exe, targets, tx, approvals_b64)
         });
         cx.spawn(async move |this, cx| {
             while let Some(item) = rx.next().await {
@@ -513,7 +525,7 @@ impl PakajoSession {
         let name_for_dry_run = name.clone();
         std::thread::spawn(move || {
             let result = if is_repo {
-                crate::dry_run::dry_run_for_repo_target(&name_for_dry_run)
+                crate::dry_run::dry_run_for_repo_targets(std::slice::from_ref(&name_for_dry_run))
             } else {
                 crate::dry_run::dry_run_for_target(&name_for_dry_run)
             };
@@ -632,7 +644,13 @@ impl PakajoSession {
         } else {
             let pending = self.pending_install.take().unwrap();
             self.set_progress(InstallProgress::Running, cx);
-            self.spawn_install_subprocess(pending.name, pending.source, pending.approvals_b64, cx);
+            self.spawn_install_subprocess(
+                pending.name.clone(),
+                vec![pending.name],
+                pending.source,
+                pending.approvals_b64,
+                cx,
+            );
         }
     }
 
@@ -681,7 +699,13 @@ impl PakajoSession {
             return;
         };
         self.set_progress(InstallProgress::Running, cx);
-        self.spawn_install_subprocess(pending.name, pending.source, pending.approvals_b64, cx);
+        self.spawn_install_subprocess(
+            pending.name.clone(),
+            vec![pending.name],
+            pending.source,
+            pending.approvals_b64,
+            cx,
+        );
     }
 
     pub(crate) fn cancel_pkgbuild_review(&mut self, cx: &mut Context<Self>) {
@@ -696,6 +720,90 @@ impl PakajoSession {
 
     pub(crate) fn reset_install(&mut self, cx: &mut Context<Self>) {
         self.cancel_install(cx);
+    }
+
+    fn run_group_install(&mut self, approvals_b64: Option<String>, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_group.take() else {
+            return;
+        };
+        self.set_progress(InstallProgress::Running, cx);
+        self.spawn_install_subprocess(
+            pending.name,
+            pending.members,
+            PackageSource::Group,
+            approvals_b64,
+            cx,
+        );
+    }
+
+    pub(crate) fn start_group_install(
+        &mut self,
+        name: String,
+        members: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.install_progress, InstallProgress::Running) {
+            return;
+        }
+        self.pending_group = Some(PendingGroupInstall {
+            name: name.clone(),
+            members: members.clone(),
+        });
+        self.set_progress(InstallProgress::Running, cx);
+        let (mut dry_tx, mut dry_rx) =
+            futures::channel::mpsc::channel::<anyhow::Result<crate::question::QuestionSet>>(1);
+        std::thread::spawn(move || {
+            let result = crate::dry_run::dry_run_for_repo_targets(&members);
+            let _ = dry_tx.try_send(result);
+        });
+        cx.spawn(async move |this, cx| {
+            let Some(result) = dry_rx.next().await else {
+                let _ = this.update(cx, |this, cx| {
+                    this.pending_group.take();
+                    this.set_progress(InstallProgress::Idle, cx);
+                });
+                return;
+            };
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(qs)
+                    if !qs.conflicts.is_empty()
+                        || !qs.providers.is_empty()
+                        || qs.had_unsupported_question =>
+                {
+                    let gname = name.clone();
+                    this.set_progress(InstallProgress::ConflictReview(qs.clone()), cx);
+                    cx.emit(SessionEvent::GroupReviewRequired { qs, name: gname });
+                }
+                Ok(_) => this.run_group_install(None, cx),
+                Err(err) => {
+                    eprintln!("dry-run failed, proceeding with group install: {err:#}");
+                    this.run_group_install(None, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn confirm_group_install(
+        &mut self,
+        approvals: crate::question::Approvals,
+        cx: &mut Context<Self>,
+    ) {
+        match encode_approvals(&approvals) {
+            Ok(b64) => self.run_group_install(Some(b64), cx),
+            Err(error) => {
+                self.pending_group.take();
+                self.set_progress(
+                    InstallProgress::Failed(format!("failed to encode approvals: {error}")),
+                    cx,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn cancel_group_install(&mut self, cx: &mut Context<Self>) {
+        self.pending_group.take();
+        self.set_progress(InstallProgress::Idle, cx);
     }
 
     fn refresh_installed_state(&mut self, cx: &mut Context<Self>) {
