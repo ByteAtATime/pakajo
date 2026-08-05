@@ -6,7 +6,7 @@ use pakajo::transaction_state::{
     InstallKind, RepoStage, RepoState, apply_repo_counters, event_stage, ordered_stages,
 };
 
-use super::ConflictReview;
+use super::review::ReviewModel;
 
 #[derive(Clone, Debug)]
 pub(crate) enum TransactionStatus {
@@ -22,7 +22,7 @@ pub(crate) struct TransactionModel {
     pub(crate) repo_state: RepoState,
     pub(crate) expanded: HashSet<usize>,
     pub(crate) status: TransactionStatus,
-    pub(super) review: Option<ConflictReview>,
+    pub(super) review: Option<ReviewModel>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
