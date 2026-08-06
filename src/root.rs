@@ -16,6 +16,7 @@ use crate::{
         DetailData, GroupMember, InstallKind, PakajoSession, SearchState, SessionEvent,
         UpdatesState,
     },
+    transaction_state::{Direction, SysupgradePage, next_sysupgrade_step},
     updates_view::{UpdatesView, aur_upgrade_row},
 };
 use alpm::Alpm;
@@ -55,6 +56,15 @@ enum Page {
     Confirm,
     Resolve,
     PkgbuildReview,
+}
+
+fn sysupgrade_page_to_view(page: SysupgradePage) -> Page {
+    match page {
+        SysupgradePage::Updates => Page::Updates,
+        SysupgradePage::Resolve => Page::Resolve,
+        SysupgradePage::PkgbuildReview => Page::PkgbuildReview,
+        SysupgradePage::Confirm => Page::Confirm,
+    }
 }
 
 pub struct PakajoRoot {
@@ -165,16 +175,19 @@ impl PakajoRoot {
                                 .collect();
                             this.sysupgrade_preview = Some(preview.clone());
                             this.sysupgrade_preview_error = None;
-                            this.page = if !preview.questions.conflicts.is_empty()
-                                || !preview.questions.providers.is_empty()
-                            {
-                                Page::Resolve
-                            } else if !preview.pkgbuild_diffs.is_empty() {
+                            let has_resolve = !preview.questions.conflicts.is_empty()
+                                || !preview.questions.providers.is_empty();
+                            let has_diffs = !preview.pkgbuild_diffs.is_empty();
+                            let next = next_sysupgrade_step(
+                                SysupgradePage::Updates,
+                                Direction::Forward,
+                                has_resolve,
+                                has_diffs,
+                            );
+                            if matches!(next, SysupgradePage::PkgbuildReview) {
                                 this.pkgbuild_review_index = 0;
-                                Page::PkgbuildReview
-                            } else {
-                                Page::Confirm
-                            };
+                            }
+                            this.page = sysupgrade_page_to_view(next);
                         }
                         Err(msg) => {
                             this.sysupgrade_preview = None;
@@ -929,16 +942,18 @@ impl PakajoRoot {
                             .as_ref()
                             .map(|p| !p.pkgbuild_diffs.is_empty())
                             .unwrap_or(false);
-                        this.page = if has_diffs {
+                        let has_resolve = !this.conflict_checks.is_empty()
+                            || !this.provider_choices.is_empty();
+                        let next = next_sysupgrade_step(
+                            SysupgradePage::Confirm,
+                            Direction::Backward,
+                            has_resolve,
+                            has_diffs,
+                        );
+                        if matches!(next, SysupgradePage::PkgbuildReview) {
                             this.pkgbuild_review_index = 0;
-                            Page::PkgbuildReview
-                        } else if !this.conflict_checks.is_empty()
-                            || !this.provider_choices.is_empty()
-                        {
-                            Page::Resolve
-                        } else {
-                            Page::Updates
-                        };
+                        }
+                        this.page = sysupgrade_page_to_view(next);
                         cx.notify();
                     })),
             )
@@ -1050,12 +1065,16 @@ impl PakajoRoot {
                             .as_ref()
                             .map(|p| !p.pkgbuild_diffs.is_empty())
                             .unwrap_or(false);
-                        this.page = if has_diffs {
+                        let next = next_sysupgrade_step(
+                            SysupgradePage::Resolve,
+                            Direction::Forward,
+                            false,
+                            has_diffs,
+                        );
+                        if matches!(next, SysupgradePage::PkgbuildReview) {
                             this.pkgbuild_review_index = 0;
-                            Page::PkgbuildReview
-                        } else {
-                            Page::Confirm
-                        };
+                        }
+                        this.page = sysupgrade_page_to_view(next);
                         cx.notify();
                     })),
             );
@@ -1126,11 +1145,13 @@ impl PakajoRoot {
                     .icon(IconName::ArrowLeft)
                     .label("Back")
                     .on_click(cx.listener(move |this, _ev, _window, cx| {
-                        this.page = if has_resolve {
-                            Page::Resolve
-                        } else {
-                            Page::Updates
-                        };
+                        let next = next_sysupgrade_step(
+                            SysupgradePage::PkgbuildReview,
+                            Direction::Backward,
+                            has_resolve,
+                            false,
+                        );
+                        this.page = sysupgrade_page_to_view(next);
                         cx.notify();
                     })),
             )
@@ -1166,7 +1187,13 @@ impl PakajoRoot {
                         if this.pkgbuild_review_index + 1 < diffs.len() {
                             this.pkgbuild_review_index += 1;
                         } else {
-                            this.page = Page::Confirm;
+                            let next = next_sysupgrade_step(
+                                SysupgradePage::PkgbuildReview,
+                                Direction::Forward,
+                                false,
+                                false,
+                            );
+                            this.page = sysupgrade_page_to_view(next);
                         }
                         cx.notify();
                     })),

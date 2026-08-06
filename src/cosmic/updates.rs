@@ -188,20 +188,7 @@ impl crate::PakajoApp {
     pub(crate) fn updates_page(&self) -> cosmic::Element<'_, crate::Message> {
         let back =
             button::custom(text("Back")).on_press(crate::Message::Navigate(crate::Page::Search));
-        let refresh: cosmic::Element<'_, crate::Message> =
-            if matches!(self.updates_state, UpdatesState::Loading) {
-                text("Refreshing...").into()
-            } else {
-                button::custom(text("Refresh"))
-                    .on_press(crate::Message::Updates(UpdatesMessage::RefreshUpdates))
-                    .into()
-            };
-        let header = Row::new()
-            .spacing(12)
-            .push(back)
-            .push(text("Updates"))
-            .push(Space::new().width(cosmic::iced::Length::Fill))
-            .push(refresh);
+        let header = Row::new().spacing(12).push(back).push(text("Updates"));
         let padded_header = container(header).padding([12.0, 12.0]);
         let body: cosmic::Element<'_, crate::Message> = match &self.updates_state {
             UpdatesState::Loading => container(text("Checking for updates..."))
@@ -256,7 +243,7 @@ impl crate::PakajoApp {
         message: UpdatesMessage,
     ) -> cosmic::app::Task<crate::Message> {
         match message {
-            UpdatesMessage::RefreshUpdates => self.start_updates_check(),
+            UpdatesMessage::RefreshUpdates => Task::none(),
             UpdatesMessage::Fetched(result) => match result {
                 Ok(fetch) => {
                     let count = (fetch.repo.len() + fetch.aur.len()) as u32;

@@ -236,6 +236,67 @@ pub fn classify_outcome(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SysupgradePage {
+    Updates,
+    Resolve,
+    PkgbuildReview,
+    Confirm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Forward,
+    Backward,
+}
+
+pub fn next_sysupgrade_step(
+    from: SysupgradePage,
+    dir: Direction,
+    has_resolve: bool,
+    has_diffs: bool,
+) -> SysupgradePage {
+    use Direction::*;
+    use SysupgradePage::*;
+    match (from, dir) {
+        (Updates, Forward) => {
+            if has_resolve {
+                Resolve
+            } else if has_diffs {
+                PkgbuildReview
+            } else {
+                Confirm
+            }
+        }
+        (Resolve, Forward) => {
+            if has_diffs {
+                PkgbuildReview
+            } else {
+                Confirm
+            }
+        }
+        (Resolve, Backward) => Updates,
+        (PkgbuildReview, Forward) => Confirm,
+        (PkgbuildReview, Backward) => {
+            if has_resolve {
+                Resolve
+            } else {
+                Updates
+            }
+        }
+        (Confirm, Backward) => {
+            if has_diffs {
+                PkgbuildReview
+            } else if has_resolve {
+                Resolve
+            } else {
+                Updates
+            }
+        }
+        _ => from,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,6 +695,118 @@ mod tests {
             NextInstallState::Failed {
                 message: "msg".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_updates_forward_skips_to_confirm_without_steps() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::Updates, Direction::Forward, false, false),
+            SysupgradePage::Confirm
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_updates_forward_without_resolve_enters_pkgbuild_review() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::Updates, Direction::Forward, false, true),
+            SysupgradePage::PkgbuildReview
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_updates_forward_with_resolve_enters_resolve() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::Updates, Direction::Forward, true, true),
+            SysupgradePage::Resolve
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_resolve_forward_enters_pkgbuild_review_with_diffs() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::Resolve, Direction::Forward, true, true),
+            SysupgradePage::PkgbuildReview
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_resolve_forward_skips_to_confirm_without_diffs() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::Resolve, Direction::Forward, true, false),
+            SysupgradePage::Confirm
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_resolve_backward_returns_updates() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::Resolve, Direction::Backward, true, true),
+            SysupgradePage::Updates
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_pkgbuild_review_forward_enters_confirm() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::PkgbuildReview, Direction::Forward, true, true),
+            SysupgradePage::Confirm
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_pkgbuild_review_backward_returns_resolve_when_present() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::PkgbuildReview, Direction::Backward, true, true),
+            SysupgradePage::Resolve
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_pkgbuild_review_backward_skips_to_updates_without_resolve() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::PkgbuildReview, Direction::Backward, false, true),
+            SysupgradePage::Updates
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_confirm_backward_returns_pkgbuild_review_with_diffs() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::Confirm, Direction::Backward, true, true),
+            SysupgradePage::PkgbuildReview
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_confirm_backward_returns_resolve_without_diffs() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::Confirm, Direction::Backward, true, false),
+            SysupgradePage::Resolve
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_confirm_backward_skips_to_updates_without_steps() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::Confirm, Direction::Backward, false, false),
+            SysupgradePage::Updates
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_confirm_forward_returns_from_unchanged() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::Confirm, Direction::Forward, true, true),
+            SysupgradePage::Confirm
+        );
+    }
+
+    #[test]
+    fn next_sysupgrade_step_updates_backward_returns_from_unchanged() {
+        assert_eq!(
+            next_sysupgrade_step(SysupgradePage::Updates, Direction::Backward, true, true),
+            SysupgradePage::Updates
         );
     }
 }
