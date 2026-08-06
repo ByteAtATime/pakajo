@@ -94,12 +94,11 @@ impl Transaction {
             }
             TransactionMessage::InstallDone(outcome) => {
                 eprintln!("[pakajo] install outcome: {outcome:?}");
-                let succeeded = matches!(outcome, ChildOutcome::Success);
+                let next = pakajo::transaction_state::classify_outcome(&outcome, None, &[]);
                 self.model.finish(outcome);
-                if succeeded {
-                    Action::InstallSucceeded
-                } else {
-                    Action::None
+                match next {
+                    pakajo::transaction_state::NextInstallState::Completed => Action::InstallSucceeded,
+                    _ => Action::None,
                 }
             }
             TransactionMessage::DryRunResult(result) => match result {

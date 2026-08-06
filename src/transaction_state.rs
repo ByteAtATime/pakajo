@@ -11,6 +11,12 @@ pub enum InstallKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SysupgradePhase {
+    Repo,
+    Aur,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepoStage {
     Resolve,
     Validate,
@@ -196,12 +202,47 @@ pub fn ordered_aur_stages() -> &'static [AurStage] {
     &[Resolve, Build, Validate, Install, Finalize]
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum NextInstallState {
+    ContinueAur { targets: Vec<String> },
+    Completed,
+    Cancelled,
+    Failed { message: String },
+}
+
+pub fn classify_outcome(
+    outcome: &crate::install::ChildOutcome,
+    active_phase: Option<SysupgradePhase>,
+    aur_targets: &[String],
+) -> NextInstallState {
+    use crate::install::ChildOutcome;
+    if matches!(outcome, ChildOutcome::Success)
+        && active_phase == Some(SysupgradePhase::Repo)
+        && !aur_targets.is_empty()
+    {
+        return NextInstallState::ContinueAur {
+            targets: aur_targets.to_vec(),
+        };
+    }
+    match outcome {
+        ChildOutcome::Success => NextInstallState::Completed,
+        ChildOutcome::Dismissed => NextInstallState::Cancelled,
+        ChildOutcome::NotFound => NextInstallState::Failed {
+            message: "install child not found".to_string(),
+        },
+        ChildOutcome::Failed(message) => NextInstallState::Failed {
+            message: message.clone(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
     use crate::events::{DownloadResult, InstallEvent, PackageOp, ProgressPhase};
     use crate::install::InstallProgress;
+    use crate::install::ChildOutcome;
 
     #[test]
     fn repo_resolving_dependencies_is_resolve() {
@@ -536,6 +577,63 @@ mod tests {
                 AurStage::Install,
                 AurStage::Finalize,
             ]
+        );
+    }
+
+    #[test]
+    fn classify_success_without_phase_completes() {
+        assert_eq!(
+            classify_outcome(&ChildOutcome::Success, None, &[]),
+            NextInstallState::Completed
+        );
+    }
+
+    #[test]
+    fn classify_success_repo_phase_with_targets_continues_aur() {
+        let targets = vec!["foo".to_string(), "bar".to_string()];
+        assert_eq!(
+            classify_outcome(
+                &ChildOutcome::Success,
+                Some(SysupgradePhase::Repo),
+                &targets
+            ),
+            NextInstallState::ContinueAur { targets }
+        );
+    }
+
+    #[test]
+    fn classify_success_repo_phase_with_empty_targets_completes() {
+        assert_eq!(
+            classify_outcome(&ChildOutcome::Success, Some(SysupgradePhase::Repo), &[]),
+            NextInstallState::Completed
+        );
+    }
+
+    #[test]
+    fn classify_dismissed_cancels() {
+        assert_eq!(
+            classify_outcome(&ChildOutcome::Dismissed, None, &[]),
+            NextInstallState::Cancelled
+        );
+    }
+
+    #[test]
+    fn classify_not_found_fails() {
+        assert_eq!(
+            classify_outcome(&ChildOutcome::NotFound, None, &[]),
+            NextInstallState::Failed {
+                message: "install child not found".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn classify_failed_propagates_message() {
+        assert_eq!(
+            classify_outcome(&ChildOutcome::Failed("msg".to_string()), None, &[]),
+            NextInstallState::Failed {
+                message: "msg".to_string()
+            }
         );
     }
 }
