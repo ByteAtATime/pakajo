@@ -6,12 +6,13 @@ use cosmic::widget::{Svg, svg};
 macro_rules! icon {
     ($name:ident, $file:literal) => {
         pub fn $name<'a>() -> Svg<'a, Theme> {
-            const BYTES: &[u8] = include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/assets/icons/",
-                $file
-            ));
-            svg(svg::Handle::from_memory(BYTES))
+            const BYTES: &[u8] =
+                include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons/", $file));
+            svg(svg::Handle::from_memory(BYTES)).class(cosmic::theme::Svg::Custom(
+                std::rc::Rc::new(|theme: &cosmic::Theme| svg::Style {
+                    color: Some(theme.cosmic().background(false).on.into()),
+                }),
+            ))
         }
     };
 }
