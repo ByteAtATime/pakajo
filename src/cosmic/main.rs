@@ -1,5 +1,6 @@
 mod background;
 mod detail;
+mod icons;
 mod search;
 mod transaction;
 mod updates;
