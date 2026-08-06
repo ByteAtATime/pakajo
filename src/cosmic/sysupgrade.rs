@@ -37,6 +37,13 @@ fn view_to_sysupgrade_page(page: &crate::Page) -> Option<SysupgradePage> {
     }
 }
 
+fn no_preview() -> cosmic::Element<'static, crate::Message> {
+    container(text("No preview available"))
+        .width(cosmic::iced::Length::Fill)
+        .height(cosmic::iced::Length::Fill)
+        .into()
+}
+
 impl crate::PakajoApp {
     pub(crate) fn start_sysupgrade_preview(&mut self) -> Task<crate::Message> {
         if self.transaction.as_ref().is_some_and(|t| t.is_active()) {
@@ -105,6 +112,9 @@ impl crate::PakajoApp {
                             has_resolve,
                             has_diffs,
                         );
+                        if matches!(next, SysupgradePage::PkgbuildReview) {
+                            self.pkgbuild_review_index = 0;
+                        }
                         eprintln!(
                             "[pakajo] sysupgrade preview ready (repo={} aur={} resolve={} diffs={}) -> {:?}",
                             preview.summary.packages.len(),
@@ -119,6 +129,7 @@ impl crate::PakajoApp {
                         self.sysupgrade_preview = None;
                         self.sysupgrade_preview_error = Some(msg.clone());
                         self.sysupgrade_review = None;
+                        self.pkgbuild_review_index = 0;
                         eprintln!("[pakajo] sysupgrade preview failed: {msg}");
                         Task::none()
                     }
@@ -129,6 +140,7 @@ impl crate::PakajoApp {
                 self.sysupgrade_preview_error = None;
                 self.sysupgrade_aur_targets.clear();
                 self.sysupgrade_review = None;
+                self.pkgbuild_review_index = 0;
                 self.goto_page(crate::Page::Updates)
             }
             SysupgradeMessage::ToggleConflict(i) => {
@@ -143,8 +155,29 @@ impl crate::PakajoApp {
                 }
                 Task::none()
             }
-            SysupgradeMessage::Continue => self.route_sysupgrade(Direction::Forward),
-            SysupgradeMessage::Back => self.route_sysupgrade(Direction::Backward),
+            SysupgradeMessage::Continue => {
+                if matches!(self.page, crate::Page::PkgbuildReview) {
+                    let diffs_len = self
+                        .sysupgrade_preview
+                        .as_ref()
+                        .map(|p| p.pkgbuild_diffs.len())
+                        .unwrap_or(0);
+                    if self.pkgbuild_review_index + 1 < diffs_len {
+                        self.pkgbuild_review_index += 1;
+                        return crate::scroll_to_top();
+                    }
+                }
+                self.route_sysupgrade(Direction::Forward)
+            }
+            SysupgradeMessage::Back => {
+                if matches!(self.page, crate::Page::PkgbuildReview)
+                    && self.pkgbuild_review_index > 0
+                {
+                    self.pkgbuild_review_index -= 1;
+                    return crate::scroll_to_top();
+                }
+                self.route_sysupgrade(Direction::Backward)
+            }
         }
     }
 
@@ -159,6 +192,9 @@ impl crate::PakajoApp {
             .map(|p| !p.pkgbuild_diffs.is_empty())
             .unwrap_or(false);
         let next = next_sysupgrade_step(from, dir, has_resolve, has_diffs);
+        if matches!(next, SysupgradePage::PkgbuildReview) {
+            self.pkgbuild_review_index = 0;
+        }
         eprintln!(
             "[pakajo] sysupgrade route {:?} {:?} -> {:?}",
             from, dir, next
@@ -233,13 +269,37 @@ impl crate::PakajoApp {
 
     pub(crate) fn pkgbuild_review_page(&self) -> cosmic::Element<'_, crate::Message> {
         let back = button::custom(text("Back"))
-            .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Abort));
+            .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Back));
+        let continue_btn = button::custom(text("Continue"))
+            .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Continue));
         let header = Row::new()
             .spacing(12)
             .push(back)
-            .push(text("Review PKGBUILD"));
+            .push(text("Review PKGBUILD"))
+            .push(space::horizontal())
+            .push(continue_btn);
         let padded_header = container(header).padding([12.0, 12.0]);
-        let column = Column::new().push(padded_header);
+
+        let Some(preview) = self.sysupgrade_preview.as_ref() else {
+            return no_preview();
+        };
+        let diffs = &preview.pkgbuild_diffs;
+        if diffs.is_empty() {
+            return no_preview();
+        }
+        let index = self.pkgbuild_review_index.min(diffs.len() - 1);
+        let current = &diffs[index];
+
+        let position = format!("Diff {} of {}", index + 1, diffs.len());
+        let body = Column::new()
+            .spacing(16)
+            .padding([0.0, 12.0])
+            .push(text(position))
+            .push(crate::transaction::diff_lines_column(current));
+
+        let column = Column::new()
+            .push(padded_header)
+            .push(scrollable(body).id(crate::page_scroll_id()));
         container(column)
             .width(cosmic::iced::Length::Fill)
             .height(cosmic::iced::Length::Fill)

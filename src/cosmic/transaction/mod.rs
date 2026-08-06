@@ -21,6 +21,7 @@ use accordion::{action_footer, stage_row};
 
 mod pkgbuild;
 use pkgbuild::{PkgbuildMessage, PkgbuildModel};
+pub(crate) use pkgbuild::diff_lines_column;
 
 pub(crate) mod review;
 use review::{ReviewMessage, ReviewModel};

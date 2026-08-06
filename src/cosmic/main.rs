@@ -65,6 +65,7 @@ pub struct PakajoApp {
     pub(crate) sysupgrade_preview_in_flight: bool,
     pub(crate) sysupgrade_aur_targets: Vec<String>,
     pub(crate) sysupgrade_review: Option<ReviewModel>,
+    pub(crate) pkgbuild_review_index: usize,
 }
 
 impl Application for PakajoApp {
@@ -149,6 +150,7 @@ impl Application for PakajoApp {
             sysupgrade_preview_in_flight: false,
             sysupgrade_aur_targets: Vec::new(),
             sysupgrade_review: None,
+            pkgbuild_review_index: 0,
         };
         let task = app.start_updates_check();
         (app, task)
@@ -292,10 +294,7 @@ impl PakajoApp {
 
     pub(crate) fn goto_page(&mut self, page: Page) -> Task<Message> {
         self.page = page;
-        cosmic::iced::widget::scrollable::scroll_to(
-            page_scroll_id(),
-            cosmic::iced::widget::scrollable::AbsoluteOffset { x: Some(0.0), y: Some(0.0) },
-        )
+        scroll_to_top()
     }
 }
 
@@ -320,4 +319,11 @@ pub enum Page {
 
 pub(crate) fn page_scroll_id() -> cosmic::iced::widget::Id {
     cosmic::iced::widget::Id::new("page-scroll")
+}
+
+pub(crate) fn scroll_to_top() -> Task<Message> {
+    cosmic::iced::widget::scrollable::scroll_to(
+        page_scroll_id(),
+        cosmic::iced::widget::scrollable::AbsoluteOffset { x: Some(0.0), y: Some(0.0) },
+    )
 }

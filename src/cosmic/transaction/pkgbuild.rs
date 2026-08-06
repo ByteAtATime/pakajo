@@ -46,18 +46,7 @@ impl PkgbuildModel {
 
         let body = match self.diffs.get(self.current) {
             Some(diff) => {
-                let mut lines = Column::new().spacing(0);
-                for line in diff.diff.lines() {
-                    let line_widget = text(line.to_string()).font(cosmic::font::mono());
-                    let element: cosmic::Element<'_, crate::Message> = match diff_tone(line) {
-                        Some(tone) => container(line_widget)
-                            .style(move |theme: &cosmic::Theme| tone_style(theme, tone))
-                            .into(),
-                        None => line_widget.into(),
-                    };
-                    lines = lines.push(element);
-                }
-                scrollable(lines).height(Length::Fixed(400.0))
+                scrollable(diff_lines_column(diff)).height(Length::Fixed(400.0))
             }
             None => scrollable(text("No PKGBUILD to review")).height(Length::Fixed(400.0)),
         };
@@ -82,6 +71,21 @@ enum DiffTone {
     Muted,
     Added,
     Removed,
+}
+
+pub(crate) fn diff_lines_column(diff: &PkgbuildDiff) -> cosmic::Element<'_, crate::Message> {
+    let mut lines = Column::new().spacing(0);
+    for line in diff.diff.lines() {
+        let line_widget = text(line.to_string()).font(cosmic::font::mono());
+        let element: cosmic::Element<'_, crate::Message> = match diff_tone(line) {
+            Some(tone) => container(line_widget)
+                .style(move |theme: &cosmic::Theme| tone_style(theme, tone))
+                .into(),
+            None => line_widget.into(),
+        };
+        lines = lines.push(element);
+    }
+    lines.into()
 }
 
 fn diff_tone(line: &str) -> Option<DiffTone> {
