@@ -16,6 +16,7 @@ pub(crate) struct ReviewModel {
     pub(super) qs: QuestionSet,
     pub(super) conflict_checks: Vec<bool>,
     pub(super) provider_choices: HashMap<String, usize>,
+    pub(super) approving: bool,
 }
 
 impl ReviewModel {
@@ -30,6 +31,7 @@ impl ReviewModel {
             qs,
             conflict_checks,
             provider_choices,
+            approving: false,
         }
     }
 
@@ -93,7 +95,7 @@ impl ReviewModel {
             col = col.push(unsupported_banner(&self.qs.unsupported_summary));
         }
 
-        col = col.push(review_footer());
+        col = col.push(review_footer(self.approving));
         container(scrollable(col))
             .class(cosmic::theme::Container::Dialog(true))
             .padding([24.0, 24.0])
@@ -130,13 +132,17 @@ fn unsupported_banner(summary: &str) -> cosmic::Element<'static, crate::Message>
         .into()
 }
 
-fn review_footer() -> cosmic::Element<'static, crate::Message> {
+fn review_footer(approving: bool) -> cosmic::Element<'static, crate::Message> {
     let cancel = button::custom(text("Cancel")).on_press(crate::Message::Transaction(
         TransactionMessage::CancelReview,
     ));
-    let confirm = button::custom(text("Confirm")).on_press(crate::Message::Transaction(
-        TransactionMessage::ApproveReview,
-    ));
+    let confirm = if approving {
+        button::custom(text("Loading..."))
+    } else {
+        button::custom(text("Confirm")).on_press(crate::Message::Transaction(
+            TransactionMessage::ApproveReview,
+        ))
+    };
     Row::new()
         .spacing(8)
         .push(space::horizontal())

@@ -2,10 +2,12 @@ use std::collections::{HashMap, HashSet};
 
 use pakajo::events::InstallEvent;
 use pakajo::install::ChildOutcome;
+use pakajo::package::PackageSource;
 use pakajo::transaction_state::{
     InstallKind, RepoStage, RepoState, apply_repo_counters, event_stage, ordered_stages,
 };
 
+use super::pkgbuild::PkgbuildModel;
 use super::review::ReviewModel;
 
 #[derive(Clone, Debug)]
@@ -22,7 +24,10 @@ pub(crate) struct TransactionModel {
     pub(crate) repo_state: RepoState,
     pub(crate) expanded: HashSet<usize>,
     pub(crate) status: TransactionStatus,
+    pub(crate) source: PackageSource,
     pub(super) review: Option<ReviewModel>,
+    pub(super) pending_approvals: Option<String>,
+    pub(super) pkgbuild_review: Option<PkgbuildModel>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -34,7 +39,7 @@ pub(crate) enum StageState {
 }
 
 impl TransactionModel {
-    pub(crate) fn new(name: String, kind: InstallKind) -> Self {
+    pub(crate) fn new(name: String, source: PackageSource, kind: InstallKind) -> Self {
         Self {
             name,
             stages: ordered_stages(kind),
@@ -50,7 +55,10 @@ impl TransactionModel {
             },
             expanded: HashSet::new(),
             status: TransactionStatus::Checking,
+            source,
             review: None,
+            pending_approvals: None,
+            pkgbuild_review: None,
         }
     }
 

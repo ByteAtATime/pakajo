@@ -8,6 +8,7 @@ use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
 use pakajo::events::InstallEvent;
 use pakajo::install::{ChildOutcome, StreamItem, run_install_process};
 use pakajo::package::PackageSource;
+use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
 use pakajo::transaction_state::InstallKind;
 
@@ -17,6 +18,9 @@ pub(crate) use state::{TransactionModel, TransactionStatus};
 
 mod accordion;
 use accordion::{action_footer, stage_row};
+
+mod pkgbuild;
+use pkgbuild::{PkgbuildMessage, PkgbuildModel};
 
 mod review;
 use review::{ReviewMessage, ReviewModel};
@@ -32,6 +36,10 @@ pub enum TransactionMessage {
     ApproveReview,
     CancelReview,
     Review(ReviewMessage),
+    PkgbuildResult(Result<Vec<PkgbuildDiff>, String>),
+    ApprovePkgbuild,
+    CancelPkgbuild,
+    Pkgbuild(PkgbuildMessage),
     Close,
 }
 
@@ -47,7 +55,7 @@ pub(crate) struct Transaction {
 
 impl Transaction {
     pub(crate) fn start(name: String, source: PackageSource) -> (Self, Task<crate::Message>) {
-        let model = TransactionModel::new(name.clone(), InstallKind::Install);
+        let model = TransactionModel::new(name.clone(), source, InstallKind::Install);
         let (otx, orx) = oneshot::channel();
         let name_for_dry = name.clone();
         let is_repo = matches!(source, PackageSource::Repo);
@@ -101,7 +109,7 @@ impl Transaction {
                         || !qs.providers.is_empty()
                         || qs.had_unsupported_question;
                     if !needs_review {
-                        return self.launch_subprocess(None);
+                        return self.proceed_after_conflicts(None);
                     }
                     eprintln!(
                         "[pakajo] review required ({} conflicts, {} providers)",
@@ -125,25 +133,92 @@ impl Transaction {
             }
             TransactionMessage::CancelReview => Action::Finished,
             TransactionMessage::ApproveReview => {
-                let review = match self.model.review.take() {
+                let mut review = match self.model.review.take() {
                     Some(r) => r,
                     None => return Action::None,
                 };
-                match collect_approvals(
+                let approvals = match collect_approvals(
                     &review.qs,
                     &review.conflict_checks,
                     &review.provider_choices,
                 )
                 .and_then(|approvals| encode_approvals(&approvals))
                 {
-                    Ok(b64) => self.launch_subprocess(Some(b64)),
+                    Ok(b64) => Some(b64),
                     Err(e) => {
                         eprintln!("[pakajo] approval encoding failed: {e}");
-                        self.launch_subprocess(None)
+                        None
+                    }
+                };
+                if matches!(self.model.source, PackageSource::Aur) {
+                    review.approving = true;
+                    self.model.review = Some(review);
+                }
+                self.proceed_after_conflicts(approvals)
+            }
+            TransactionMessage::PkgbuildResult(result) => {
+                self.model.review = None;
+                match result {
+                    Err(e) => {
+                        eprintln!("[pakajo] pkgbuild fetch failed, proceeding with install: {e}");
+                        let approvals = self.model.pending_approvals.take();
+                        self.launch_subprocess(approvals)
+                    }
+                    Ok(diffs) if diffs.is_empty() => {
+                        let approvals = self.model.pending_approvals.take();
+                        self.launch_subprocess(approvals)
+                    }
+                    Ok(diffs) => {
+                        self.model.pkgbuild_review = Some(PkgbuildModel::new(diffs));
+                        Action::None
                     }
                 }
             }
+            TransactionMessage::Pkgbuild(m) => {
+                if let Some(p) = self.model.pkgbuild_review.as_mut() {
+                    p.update(m);
+                }
+                Action::None
+            }
+            TransactionMessage::ApprovePkgbuild => {
+                if let Some(p) = self.model.pkgbuild_review.take() {
+                    for diff in &p.diffs {
+                        let _ = mark_seen(&diff.dir);
+                    }
+                }
+                let approvals = self.model.pending_approvals.take();
+                self.launch_subprocess(approvals)
+            }
+            TransactionMessage::CancelPkgbuild => Action::Finished,
             TransactionMessage::Close => Action::Finished,
+        }
+    }
+
+    fn proceed_after_conflicts(&mut self, approvals: Option<String>) -> Action {
+        self.model.pending_approvals = approvals;
+        if matches!(self.model.source, PackageSource::Aur) {
+            let (otx, orx) = oneshot::channel();
+            let target = self.model.name.clone();
+            std::thread::spawn(move || {
+                let result = prepare_pkgbuild_diffs(std::slice::from_ref(&target));
+                let _ = otx.send(result);
+            });
+            let task = Task::perform(
+                async move {
+                    match orx.await {
+                        Ok(Ok(diffs)) => Ok(diffs),
+                        Ok(Err(e)) => Err(format!("{e:#}")),
+                        Err(_) => Err("pkgbuild fetch channel closed".to_string()),
+                    }
+                },
+                |result| {
+                    crate::Message::Transaction(TransactionMessage::PkgbuildResult(result)).into()
+                },
+            );
+            Action::Run(task)
+        } else {
+            let approvals = self.model.pending_approvals.take();
+            self.launch_subprocess(approvals)
         }
     }
 
@@ -208,7 +283,10 @@ impl Transaction {
     }
 
     pub(crate) fn dialog(&self) -> Option<cosmic::Element<'_, crate::Message>> {
-        self.model.review.as_ref().map(|r| r.view(&self.model.name))
+        if let Some(r) = self.model.review.as_ref() {
+            return Some(r.view(&self.model.name));
+        }
+        self.model.pkgbuild_review.as_ref().map(|p| p.view())
     }
 
     pub(crate) fn is_active(&self) -> bool {
