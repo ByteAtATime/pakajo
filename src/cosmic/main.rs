@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use cosmic::widget::{Column, Row, container, scrollable};
+use cosmic::widget::{Column, Row, button, container, scrollable, text};
 use cosmic::{
     Application, Element,
     app::{self, Core, Settings, Task},
@@ -53,6 +53,7 @@ pub struct PakajoApp {
     pub(crate) pending_updates: pakajo::updates::PendingUpdates,
     pub(crate) pending_count: u32,
     pub(crate) updates_aur_error: Option<String>,
+    pub(crate) page: Page,
 }
 
 impl Application for PakajoApp {
@@ -131,6 +132,7 @@ impl Application for PakajoApp {
             },
             pending_count: 0,
             updates_aur_error: None,
+            page: Page::Search,
         };
         let task = app.start_updates_check();
         (app, task)
@@ -142,6 +144,10 @@ impl Application for PakajoApp {
             Message::Detail(m) => self.handle_detail(m),
             Message::Transaction(m) => self.handle_transaction(m),
             Message::Updates(m) => self.handle_updates(m),
+            Message::Navigate(page) => {
+                self.page = page;
+                Task::none()
+            }
         }
     }
 
@@ -172,10 +178,27 @@ impl Application for PakajoApp {
                     .into();
             }
         }
+        match self.page {
+            Page::Search => self.search_page(),
+            Page::Updates => self.updates_page(),
+        }
+    }
+
+    fn dialog(&self) -> Option<Element<'_, Self::Message>> {
+        self.transaction.as_ref().and_then(|t| t.dialog())
+    }
+}
+
+impl PakajoApp {
+    fn search_page(&self) -> Element<'_, Message> {
         let checking = self.transaction.as_ref().map(|t| t.name());
+        let header = Row::new()
+            .spacing(8)
+            .push(search_bar(&self.query))
+            .push(self.updates_badge());
         let content = Column::new()
             .spacing(12)
-            .push(search_bar(&self.query))
+            .push(header)
             .push(search_status_text(self.search_state, self.results.len()))
             .push(
                 Row::new()
@@ -186,16 +209,61 @@ impl Application for PakajoApp {
         container(content).into()
     }
 
-    fn dialog(&self) -> Option<Element<'_, Self::Message>> {
-        self.transaction.as_ref().and_then(|t| t.dialog())
-    }
-}
+    fn updates_badge(&self) -> Element<'_, Message> {
+        let (label, class) = match &self.updates_state {
+            UpdatesState::Loading => ("...".to_string(), cosmic::theme::Button::Standard),
+            UpdatesState::Error(_) => ("!".to_string(), cosmic::theme::Button::Destructive),
+            UpdatesState::Idle => {
+                if self.pending_count > 0 {
+                    (
+                        self.pending_count.to_string(),
+                        cosmic::theme::Button::Suggested,
+                    )
+                } else {
+                    (
+                        self.pending_count.to_string(),
+                        cosmic::theme::Button::Standard,
+                    )
+                }
+            }
+        };
 
-impl PakajoApp {
+        button::custom(text(label))
+            .on_press(Message::Navigate(Page::Updates))
+            .class(class)
+            .into()
+    }
+
+    fn updates_page(&self) -> Element<'_, Message> {
+        let back = button::custom(text("Back")).on_press(Message::Navigate(Page::Search));
+        let header = Row::new().spacing(12).push(back).push(text("Updates"));
+        let body: Element<'_, Message> = match &self.updates_state {
+            UpdatesState::Loading => text("Checking for updates...").into(),
+            UpdatesState::Error(msg) => Column::new()
+                .spacing(6)
+                .push(text("Couldn't check for updates"))
+                .push(text(msg.clone()).class(cosmic::iced::Color::from_rgba(0.5, 0.5, 0.5, 1.0)))
+                .into(),
+            UpdatesState::Idle => {
+                if self.pending_count == 0 {
+                    text("Your system is up to date").into()
+                } else {
+                    text(format!("{} updates available", self.pending_count)).into()
+                }
+            }
+        };
+        let column = Column::new().spacing(12).push(header).push(body);
+        container(column).padding(12).into()
+    }
+
     fn handle_transaction(&mut self, message: TransactionMessage) -> Task<Message> {
         match message {
             TransactionMessage::StartInstall => {
-                if self.transaction.as_ref().is_some_and(Transaction::is_active) {
+                if self
+                    .transaction
+                    .as_ref()
+                    .is_some_and(Transaction::is_active)
+                {
                     return Task::none();
                 }
                 let (name, source) = match &self.detail {
@@ -220,9 +288,7 @@ impl PakajoApp {
                     }
                     Action::InstallSucceeded => {
                         self.refresh_installed_state();
-                        Task::done(
-                            crate::Message::Updates(UpdatesMessage::RefreshUpdates).into(),
-                        )
+                        Task::done(crate::Message::Updates(UpdatesMessage::RefreshUpdates).into())
                     }
                 }
             }
@@ -313,6 +379,7 @@ pub enum Message {
     Detail(DetailMessage),
     Transaction(TransactionMessage),
     Updates(UpdatesMessage),
+    Navigate(Page),
 }
 
 #[derive(Clone, Debug)]
@@ -326,4 +393,10 @@ pub enum UpdatesState {
     Idle,
     Loading,
     Error(String),
+}
+
+#[derive(Clone, Debug)]
+pub enum Page {
+    Search,
+    Updates,
 }
