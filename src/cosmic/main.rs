@@ -2,6 +2,7 @@ mod background;
 mod detail;
 mod icons;
 mod search;
+mod sysupgrade;
 mod transaction;
 mod updates;
 
@@ -25,6 +26,7 @@ use pakajo::search::engine::SearchEngine;
 use background::begin_aur_sync_in_background;
 use detail::{DetailData, DetailMessage, detail_view};
 use search::{SearchMessage, SearchState, results_list, search_bar, search_status_text};
+use sysupgrade::SysupgradeMessage;
 use transaction::{Action, Transaction, TransactionMessage};
 use updates::{UpdatesMessage, UpdatesState};
 
@@ -57,6 +59,10 @@ pub struct PakajoApp {
     pub(crate) pending_count: u32,
     pub(crate) updates_aur_error: Option<String>,
     pub(crate) page: Page,
+    pub(crate) sysupgrade_preview: Option<pakajo::dry_run::SysupgradePreview>,
+    pub(crate) sysupgrade_preview_error: Option<String>,
+    pub(crate) sysupgrade_preview_in_flight: bool,
+    pub(crate) sysupgrade_aur_targets: Vec<String>,
 }
 
 impl Application for PakajoApp {
@@ -136,6 +142,10 @@ impl Application for PakajoApp {
             pending_count: 0,
             updates_aur_error: None,
             page: Page::Search,
+            sysupgrade_preview: None,
+            sysupgrade_preview_error: None,
+            sysupgrade_preview_in_flight: false,
+            sysupgrade_aur_targets: Vec::new(),
         };
         let task = app.start_updates_check();
         (app, task)
@@ -147,6 +157,7 @@ impl Application for PakajoApp {
             Message::Detail(m) => self.handle_detail(m),
             Message::Transaction(m) => self.handle_transaction(m),
             Message::Updates(m) => self.handle_updates(m),
+            Message::Sysupgrade(m) => self.handle_sysupgrade(m),
             Message::Navigate(page) => {
                 self.page = page;
                 Task::none()
@@ -184,6 +195,9 @@ impl Application for PakajoApp {
         match self.page {
             Page::Search => self.search_page(),
             Page::Updates => self.updates_page(),
+            Page::Resolve => self.resolve_page(),
+            Page::PkgbuildReview => self.pkgbuild_review_page(),
+            Page::Confirm => self.confirm_page(),
         }
     }
 
@@ -283,6 +297,7 @@ pub enum Message {
     Detail(DetailMessage),
     Transaction(TransactionMessage),
     Updates(UpdatesMessage),
+    Sysupgrade(SysupgradeMessage),
     Navigate(Page),
 }
 
@@ -290,4 +305,7 @@ pub enum Message {
 pub enum Page {
     Search,
     Updates,
+    Resolve,
+    PkgbuildReview,
+    Confirm,
 }
