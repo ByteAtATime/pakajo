@@ -54,7 +54,10 @@ impl std::fmt::Debug for DetailMessage {
     }
 }
 
-pub fn detail_view(detail: &DetailData) -> cosmic::Element<'_, crate::Message> {
+pub fn detail_view<'a>(
+    detail: &'a DetailData,
+    checking: Option<&'a str>,
+) -> cosmic::Element<'a, crate::Message> {
     match detail {
         DetailData::None => text("Select a package").into(),
         DetailData::Loading => text("Loading...").into(),
@@ -87,12 +90,18 @@ pub fn detail_view(detail: &DetailData) -> cosmic::Element<'_, crate::Message> {
                     crate::Message::Transaction(TransactionMessage::StartInstall),
                 )
             };
+            let busy = checking == Some(pkg.name.as_str());
+            let action = if busy {
+                button::custom(text("Loading..."))
+            } else {
+                button::custom(text(label)).on_press(intent)
+            };
             Column::new()
                 .spacing(6)
                 .push(text(pkg.name.clone()).font(cosmic::font::semibold()))
                 .push(text(pkg.version.clone()))
                 .push_maybe(pkg.description.as_ref().map(|d| text(d.clone())))
-                .push(button::custom(text(label)).on_press(intent))
+                .push(action)
                 .into()
         }
     }

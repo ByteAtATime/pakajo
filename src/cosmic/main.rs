@@ -154,11 +154,14 @@ impl Application for PakajoApp {
 
     fn view(&self) -> Element<'_, Self::Message> {
         if let Some(t) = self.transaction.as_ref() {
-            return container(t.view())
-                .width(cosmic::iced::Length::Fill)
-                .height(cosmic::iced::Length::Fill)
-                .into();
+            if !t.is_checking() {
+                return container(t.view())
+                    .width(cosmic::iced::Length::Fill)
+                    .height(cosmic::iced::Length::Fill)
+                    .into();
+            }
         }
+        let checking = self.transaction.as_ref().map(|t| t.name());
         let content = Column::new()
             .spacing(12)
             .push(search_bar(&self.query))
@@ -166,7 +169,7 @@ impl Application for PakajoApp {
             .push(
                 Row::new()
                     .push(scrollable(results_list(&self.results, self.selected_index)).width(384.))
-                    .push(detail_view(&self.detail)),
+                    .push(detail_view(&self.detail, checking)),
             );
 
         container(content).into()

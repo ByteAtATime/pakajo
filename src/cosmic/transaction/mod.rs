@@ -195,10 +195,6 @@ impl Transaction {
     }
 
     pub(crate) fn view(&self) -> cosmic::Element<'_, crate::Message> {
-        if matches!(self.model.status, TransactionStatus::Checking) {
-            let col = Column::new().push(text("Checking for conflicts…"));
-            return scrollable(col).into();
-        }
         let title = format!("Installing {}", self.model.name);
         let mut panels = Column::new().spacing(6);
         for (i, stage) in self.model.stages.iter().enumerate() {
@@ -220,5 +216,13 @@ impl Transaction {
             self.model.status,
             TransactionStatus::Checking | TransactionStatus::Running
         )
+    }
+
+    pub(crate) fn is_checking(&self) -> bool {
+        matches!(self.model.status, TransactionStatus::Checking)
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.model.name
     }
 }
