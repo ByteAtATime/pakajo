@@ -94,7 +94,11 @@ impl ReviewModel {
         }
 
         col = col.push(review_footer());
-        scrollable(col).into()
+        container(scrollable(col))
+            .class(cosmic::theme::Container::Dialog(true))
+            .padding([24.0, 24.0])
+            .width(Length::Fixed(570.0))
+            .into()
     }
 }
 

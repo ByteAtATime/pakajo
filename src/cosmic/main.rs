@@ -154,7 +154,10 @@ impl Application for PakajoApp {
 
     fn view(&self) -> Element<'_, Self::Message> {
         if let Some(t) = self.transaction.as_ref() {
-            return container(t.view()).into();
+            return container(t.view())
+                .width(cosmic::iced::Length::Fill)
+                .height(cosmic::iced::Length::Fill)
+                .into();
         }
         let content = Column::new()
             .spacing(12)
@@ -167,6 +170,10 @@ impl Application for PakajoApp {
             );
 
         container(content).into()
+    }
+
+    fn dialog(&self) -> Option<Element<'_, Self::Message>> {
+        self.transaction.as_ref().and_then(|t| t.dialog())
     }
 }
 

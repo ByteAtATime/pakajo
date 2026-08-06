@@ -195,9 +195,6 @@ impl Transaction {
     }
 
     pub(crate) fn view(&self) -> cosmic::Element<'_, crate::Message> {
-        if let Some(review) = &self.model.review {
-            return review.view(&self.model.name);
-        }
         if matches!(self.model.status, TransactionStatus::Checking) {
             let col = Column::new().push(text("Checking for conflicts…"));
             return scrollable(col).into();
@@ -212,6 +209,10 @@ impl Transaction {
             col = col.push(action_footer());
         }
         scrollable(col).into()
+    }
+
+    pub(crate) fn dialog(&self) -> Option<cosmic::Element<'_, crate::Message>> {
+        self.model.review.as_ref().map(|r| r.view(&self.model.name))
     }
 
     pub(crate) fn is_active(&self) -> bool {
