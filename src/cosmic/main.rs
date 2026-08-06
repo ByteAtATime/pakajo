@@ -2,12 +2,13 @@ mod background;
 mod detail;
 mod search;
 mod transaction;
+mod updates;
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use cosmic::widget::{Column, Row, button, container, scrollable, text};
+use cosmic::widget::{Column, Row, container, scrollable};
 use cosmic::{
     Application, Element,
     app::{self, Core, Settings, Task},
@@ -24,6 +25,7 @@ use background::begin_aur_sync_in_background;
 use detail::{DetailData, DetailMessage, detail_view};
 use search::{SearchMessage, SearchState, results_list, search_bar, search_status_text};
 use transaction::{Action, Transaction, TransactionMessage};
+use updates::{UpdatesMessage, UpdatesState};
 
 fn main() -> cosmic::iced::Result {
     let cli = cli::parse();
@@ -209,53 +211,6 @@ impl PakajoApp {
         container(content).into()
     }
 
-    fn updates_badge(&self) -> Element<'_, Message> {
-        let (label, class) = match &self.updates_state {
-            UpdatesState::Loading => ("...".to_string(), cosmic::theme::Button::Standard),
-            UpdatesState::Error(_) => ("!".to_string(), cosmic::theme::Button::Destructive),
-            UpdatesState::Idle => {
-                if self.pending_count > 0 {
-                    (
-                        self.pending_count.to_string(),
-                        cosmic::theme::Button::Suggested,
-                    )
-                } else {
-                    (
-                        self.pending_count.to_string(),
-                        cosmic::theme::Button::Standard,
-                    )
-                }
-            }
-        };
-
-        button::custom(text(label))
-            .on_press(Message::Navigate(Page::Updates))
-            .class(class)
-            .into()
-    }
-
-    fn updates_page(&self) -> Element<'_, Message> {
-        let back = button::custom(text("Back")).on_press(Message::Navigate(Page::Search));
-        let header = Row::new().spacing(12).push(back).push(text("Updates"));
-        let body: Element<'_, Message> = match &self.updates_state {
-            UpdatesState::Loading => text("Checking for updates...").into(),
-            UpdatesState::Error(msg) => Column::new()
-                .spacing(6)
-                .push(text("Couldn't check for updates"))
-                .push(text(msg.clone()).class(cosmic::iced::Color::from_rgba(0.5, 0.5, 0.5, 1.0)))
-                .into(),
-            UpdatesState::Idle => {
-                if self.pending_count == 0 {
-                    text("Your system is up to date").into()
-                } else {
-                    text(format!("{} updates available", self.pending_count)).into()
-                }
-            }
-        };
-        let column = Column::new().spacing(12).push(header).push(body);
-        container(column).padding(12).into()
-    }
-
     fn handle_transaction(&mut self, message: TransactionMessage) -> Task<Message> {
         match message {
             TransactionMessage::StartInstall => {
@@ -295,58 +250,6 @@ impl PakajoApp {
         }
     }
 
-    fn handle_updates(&mut self, message: UpdatesMessage) -> Task<Message> {
-        match message {
-            UpdatesMessage::RefreshUpdates => Task::none(),
-            UpdatesMessage::Fetched(result) => match result {
-                Ok(fetch) => {
-                    let count = (fetch.repo.len() + fetch.aur.len()) as u32;
-                    eprintln!(
-                        "[pakajo] {} updates available (repo={} aur={})",
-                        count,
-                        fetch.repo.len(),
-                        fetch.aur.len()
-                    );
-                    self.pending_updates = pakajo::updates::PendingUpdates {
-                        repo: fetch.repo,
-                        aur: fetch.aur,
-                    };
-                    self.updates_aur_error = fetch.aur_error;
-                    self.pending_count = count;
-                    self.updates_state = UpdatesState::Idle;
-                    Task::none()
-                }
-                Err(msg) => {
-                    eprintln!("[pakajo] updates checker failed: {msg}");
-                    self.updates_state = UpdatesState::Error(msg);
-                    Task::none()
-                }
-            },
-        }
-    }
-
-    fn start_updates_check(&mut self) -> Task<Message> {
-        if matches!(self.updates_state, UpdatesState::Loading) {
-            return Task::none();
-        }
-        self.updates_state = UpdatesState::Loading;
-        let (tx, rx) = futures::channel::oneshot::channel();
-        std::thread::spawn(move || {
-            let result = pakajo::updates::pending_updates();
-            let _ = tx.send(result);
-        });
-        Task::perform(
-            async move {
-                match rx.await {
-                    Ok(Ok(fetch)) => Ok(fetch),
-                    Ok(Err(e)) => Err(format!("{e:#}")),
-                    Err(_) => Err("updates check cancelled".to_string()),
-                }
-            },
-            |result| Message::Updates(UpdatesMessage::Fetched(result)).into(),
-        )
-    }
-
     fn refresh_installed_state(&mut self) {
         if let Ok(config) = pacmanconf::Config::new()
             && let Ok(handle) = init_alpm(&config)
@@ -380,19 +283,6 @@ pub enum Message {
     Transaction(TransactionMessage),
     Updates(UpdatesMessage),
     Navigate(Page),
-}
-
-#[derive(Clone, Debug)]
-pub enum UpdatesMessage {
-    RefreshUpdates,
-    Fetched(Result<pakajo::updates::UpdatesFetch, String>),
-}
-
-#[derive(Clone, Debug)]
-pub enum UpdatesState {
-    Idle,
-    Loading,
-    Error(String),
 }
 
 #[derive(Clone, Debug)]
