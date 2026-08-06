@@ -38,6 +38,15 @@ pub fn row_to_result(row: &PackageRow, installed: &HashSet<String>) -> SearchRes
     }
 }
 
+pub fn apply_installed_to_results(
+    results: &mut [SearchResult],
+    installed: &HashSet<String>,
+) {
+    for result in results.iter_mut() {
+        result.installed = installed.contains(&result.name);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,6 +96,20 @@ mod tests {
         let mut installed = HashSet::new();
         installed.insert("vim".to_string());
         let results = to_search_results(&rows, &[1, 2], &installed);
+        assert!(results[0].installed);
+        assert!(!results[1].installed);
+    }
+
+    #[test]
+    fn apply_installed_to_results_flips_only_members() {
+        let mut rows = HashMap::new();
+        rows.insert(1, row("vim", "aur"));
+        rows.insert(2, row("emacs", "aur"));
+        let empty = HashSet::new();
+        let mut results = to_search_results(&rows, &[1, 2], &empty);
+        let mut installed = HashSet::new();
+        installed.insert("vim".to_string());
+        apply_installed_to_results(&mut results, &installed);
         assert!(results[0].installed);
         assert!(!results[1].installed);
     }

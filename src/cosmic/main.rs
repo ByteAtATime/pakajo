@@ -131,6 +131,7 @@ impl Application for PakajoApp {
             Message::Search(m) => self.handle_search(m),
             Message::Detail(m) => self.handle_detail(m),
             Message::Transaction(m) => self.handle_transaction(m),
+            Message::Updates(m) => self.handle_updates(m),
         }
     }
 
@@ -207,8 +208,45 @@ impl PakajoApp {
                         self.transaction = None;
                         Task::none()
                     }
+                    Action::InstallSucceeded => {
+                        self.refresh_installed_state();
+                        Task::done(
+                            crate::Message::Updates(UpdatesMessage::RefreshUpdates).into(),
+                        )
+                    }
                 }
             }
+        }
+    }
+
+    fn handle_updates(&mut self, _message: UpdatesMessage) -> Task<Message> {
+        match _message {
+            UpdatesMessage::RefreshUpdates => Task::none(),
+        }
+    }
+
+    fn refresh_installed_state(&mut self) {
+        if let Ok(config) = pacmanconf::Config::new()
+            && let Ok(handle) = init_alpm(&config)
+        {
+            self.alpm = Some(handle);
+        }
+        if let Some(alpm) = &self.alpm {
+            self.installed_names = Arc::new(pakajo::package::installed_names(alpm));
+        }
+        pakajo::search::apply_installed_to_results(&mut self.results, &self.installed_names);
+        self.refresh_detail_installed();
+    }
+
+    fn refresh_detail_installed(&mut self) {
+        if let DetailData::Ready { pkg, .. } = &self.detail {
+            let installed = self
+                .alpm
+                .as_ref()
+                .map(|a| pakajo::package::is_installed(a, &pkg.name))
+                .unwrap_or(false);
+            let pkg = pkg.clone();
+            self.detail = DetailData::Ready { pkg, installed };
         }
     }
 }
@@ -218,4 +256,10 @@ pub enum Message {
     Search(SearchMessage),
     Detail(DetailMessage),
     Transaction(TransactionMessage),
+    Updates(UpdatesMessage),
+}
+
+#[derive(Clone, Debug)]
+pub enum UpdatesMessage {
+    RefreshUpdates,
 }

@@ -47,6 +47,7 @@ pub(crate) enum Action {
     None,
     Run(Task<crate::Message>),
     Finished,
+    InstallSucceeded,
 }
 
 pub(crate) struct Transaction {
@@ -93,11 +94,13 @@ impl Transaction {
             }
             TransactionMessage::InstallDone(outcome) => {
                 eprintln!("[pakajo] install outcome: {outcome:?}");
-                if matches!(outcome, ChildOutcome::Success) {
-                    // TODO: refresh updates
-                }
+                let succeeded = matches!(outcome, ChildOutcome::Success);
                 self.model.finish(outcome);
-                Action::None
+                if succeeded {
+                    Action::InstallSucceeded
+                } else {
+                    Action::None
+                }
             }
             TransactionMessage::DryRunResult(result) => match result {
                 Err(e) => {

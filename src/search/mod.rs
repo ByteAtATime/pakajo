@@ -14,6 +14,8 @@ pub mod perf;
 pub mod query;
 pub mod tiers;
 
+pub use hydrate::apply_installed_to_results;
+
 #[derive(Clone, Debug)]
 pub struct SearchResult {
     pub name: String,
