@@ -28,6 +28,7 @@ use detail::{DetailData, DetailMessage, detail_view};
 use search::{SearchMessage, SearchState, results_list, search_bar, search_status_text};
 use sysupgrade::SysupgradeMessage;
 use transaction::{Action, Transaction, TransactionMessage};
+use transaction::review::ReviewModel;
 use updates::{UpdatesMessage, UpdatesState};
 
 fn main() -> cosmic::iced::Result {
@@ -63,6 +64,7 @@ pub struct PakajoApp {
     pub(crate) sysupgrade_preview_error: Option<String>,
     pub(crate) sysupgrade_preview_in_flight: bool,
     pub(crate) sysupgrade_aur_targets: Vec<String>,
+    pub(crate) sysupgrade_review: Option<ReviewModel>,
 }
 
 impl Application for PakajoApp {
@@ -146,6 +148,7 @@ impl Application for PakajoApp {
             sysupgrade_preview_error: None,
             sysupgrade_preview_in_flight: false,
             sysupgrade_aur_targets: Vec::new(),
+            sysupgrade_review: None,
         };
         let task = app.start_updates_check();
         (app, task)
@@ -158,10 +161,7 @@ impl Application for PakajoApp {
             Message::Transaction(m) => self.handle_transaction(m),
             Message::Updates(m) => self.handle_updates(m),
             Message::Sysupgrade(m) => self.handle_sysupgrade(m),
-            Message::Navigate(page) => {
-                self.page = page;
-                Task::none()
-            }
+            Message::Navigate(page) => self.goto_page(page),
         }
     }
 
@@ -219,7 +219,7 @@ impl PakajoApp {
             .push(search_status_text(self.search_state, self.results.len()))
             .push(
                 Row::new()
-                    .push(scrollable(results_list(&self.results, self.selected_index)).width(384.))
+                    .push(scrollable(results_list(&self.results, self.selected_index)).width(384.).id(page_scroll_id()))
                     .push(detail_view(&self.detail, checking)),
             );
 
@@ -289,6 +289,14 @@ impl PakajoApp {
             self.detail = DetailData::Ready { pkg, installed };
         }
     }
+
+    pub(crate) fn goto_page(&mut self, page: Page) -> Task<Message> {
+        self.page = page;
+        cosmic::iced::widget::scrollable::scroll_to(
+            page_scroll_id(),
+            cosmic::iced::widget::scrollable::AbsoluteOffset { x: Some(0.0), y: Some(0.0) },
+        )
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -301,11 +309,15 @@ pub enum Message {
     Navigate(Page),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Page {
     Search,
     Updates,
     Resolve,
     PkgbuildReview,
     Confirm,
+}
+
+pub(crate) fn page_scroll_id() -> cosmic::iced::widget::Id {
+    cosmic::iced::widget::Id::new("page-scroll")
 }

@@ -22,7 +22,7 @@ use accordion::{action_footer, stage_row};
 mod pkgbuild;
 use pkgbuild::{PkgbuildMessage, PkgbuildModel};
 
-mod review;
+pub(crate) mod review;
 use review::{ReviewMessage, ReviewModel};
 
 #[derive(Clone, Debug)]

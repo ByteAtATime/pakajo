@@ -13,9 +13,9 @@ pub enum ReviewMessage {
 }
 
 pub(crate) struct ReviewModel {
-    pub(super) qs: QuestionSet,
-    pub(super) conflict_checks: Vec<bool>,
-    pub(super) provider_choices: HashMap<String, usize>,
+    pub(crate) qs: QuestionSet,
+    pub(crate) conflict_checks: Vec<bool>,
+    pub(crate) provider_choices: HashMap<String, usize>,
     pub(super) approving: bool,
 }
 
@@ -46,6 +46,14 @@ impl ReviewModel {
                 self.provider_choices.insert(depend, idx);
             }
         }
+    }
+
+    pub(crate) fn toggle_conflict(&mut self, i: usize) {
+        self.update(ReviewMessage::ToggleConflict(i));
+    }
+
+    pub(crate) fn select_provider(&mut self, depend: String, idx: usize) {
+        self.update(ReviewMessage::SelectProvider { depend, idx });
     }
 
     pub(crate) fn view(&self, name: &str) -> cosmic::Element<'_, crate::Message> {
@@ -104,7 +112,7 @@ impl ReviewModel {
     }
 }
 
-fn candidate_label(candidate: &ProviderCandidate) -> String {
+pub(crate) fn candidate_label(candidate: &ProviderCandidate) -> String {
     let qualified = match &candidate.repo {
         Some(repo) => format!("{repo}/{}", candidate.name),
         None => candidate.name.clone(),
@@ -115,7 +123,7 @@ fn candidate_label(candidate: &ProviderCandidate) -> String {
     }
 }
 
-fn unsupported_banner(summary: &str) -> cosmic::Element<'static, crate::Message> {
+pub(crate) fn unsupported_banner(summary: &str) -> cosmic::Element<'static, crate::Message> {
     container(text(summary.to_string()))
         .padding([12.0, 16.0])
         .width(Length::Fill)

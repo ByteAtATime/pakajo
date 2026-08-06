@@ -253,6 +253,7 @@ impl crate::PakajoApp {
                         }
                     }
                     scrollable(list)
+                        .id(crate::page_scroll_id())
                         .width(cosmic::iced::Length::Fill)
                         .height(cosmic::iced::Length::Fill)
                         .into()

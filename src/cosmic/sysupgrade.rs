@@ -1,9 +1,11 @@
 use cosmic::app::Task;
-use cosmic::widget::{Column, Row, button, container, text};
+use cosmic::widget::{Column, Row, button, checkbox, container, radio, scrollable, space, text};
 
 use anyhow::Context as _;
 use pakajo::dry_run::SysupgradePreview;
 use pakajo::transaction_state::{Direction, SysupgradePage, next_sysupgrade_step};
+
+use crate::transaction::review::{ReviewModel, candidate_label, unsupported_banner};
 
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -11,6 +13,10 @@ pub enum SysupgradeMessage {
     StartPreview,
     PreviewFetched(Result<SysupgradePreview, String>),
     Abort,
+    ToggleConflict(usize),
+    SelectProvider { depend: String, idx: usize },
+    Continue,
+    Back,
 }
 
 fn sysupgrade_page_to_view(p: SysupgradePage) -> crate::Page {
@@ -19,6 +25,15 @@ fn sysupgrade_page_to_view(p: SysupgradePage) -> crate::Page {
         SysupgradePage::Resolve => crate::Page::Resolve,
         SysupgradePage::PkgbuildReview => crate::Page::PkgbuildReview,
         SysupgradePage::Confirm => crate::Page::Confirm,
+    }
+}
+
+fn view_to_sysupgrade_page(page: &crate::Page) -> Option<SysupgradePage> {
+    match page {
+        crate::Page::Resolve => Some(SysupgradePage::Resolve),
+        crate::Page::PkgbuildReview => Some(SysupgradePage::PkgbuildReview),
+        crate::Page::Confirm => Some(SysupgradePage::Confirm),
+        _ => None,
     }
 }
 
@@ -79,6 +94,11 @@ impl crate::PakajoApp {
                         let has_resolve = !preview.questions.conflicts.is_empty()
                             || !preview.questions.providers.is_empty();
                         let has_diffs = !preview.pkgbuild_diffs.is_empty();
+                        self.sysupgrade_review = if has_resolve {
+                            Some(ReviewModel::new(preview.questions.clone()))
+                        } else {
+                            None
+                        };
                         let next = next_sysupgrade_step(
                             SysupgradePage::Updates,
                             Direction::Forward,
@@ -93,12 +113,12 @@ impl crate::PakajoApp {
                             has_diffs,
                             next
                         );
-                        self.page = sysupgrade_page_to_view(next);
-                        Task::none()
+                        self.goto_page(sysupgrade_page_to_view(next))
                     }
                     Err(msg) => {
                         self.sysupgrade_preview = None;
                         self.sysupgrade_preview_error = Some(msg.clone());
+                        self.sysupgrade_review = None;
                         eprintln!("[pakajo] sysupgrade preview failed: {msg}");
                         Task::none()
                     }
@@ -108,21 +128,103 @@ impl crate::PakajoApp {
                 self.sysupgrade_preview = None;
                 self.sysupgrade_preview_error = None;
                 self.sysupgrade_aur_targets.clear();
-                self.page = crate::Page::Updates;
+                self.sysupgrade_review = None;
+                self.goto_page(crate::Page::Updates)
+            }
+            SysupgradeMessage::ToggleConflict(i) => {
+                if let Some(r) = self.sysupgrade_review.as_mut() {
+                    r.toggle_conflict(i);
+                }
                 Task::none()
             }
+            SysupgradeMessage::SelectProvider { depend, idx } => {
+                if let Some(r) = self.sysupgrade_review.as_mut() {
+                    r.select_provider(depend, idx);
+                }
+                Task::none()
+            }
+            SysupgradeMessage::Continue => self.route_sysupgrade(Direction::Forward),
+            SysupgradeMessage::Back => self.route_sysupgrade(Direction::Backward),
         }
+    }
+
+    fn route_sysupgrade(&mut self, dir: Direction) -> Task<crate::Message> {
+        let Some(from) = view_to_sysupgrade_page(&self.page) else {
+            return Task::none();
+        };
+        let has_resolve = self.sysupgrade_review.is_some();
+        let has_diffs = self
+            .sysupgrade_preview
+            .as_ref()
+            .map(|p| !p.pkgbuild_diffs.is_empty())
+            .unwrap_or(false);
+        let next = next_sysupgrade_step(from, dir, has_resolve, has_diffs);
+        eprintln!(
+            "[pakajo] sysupgrade route {:?} {:?} -> {:?}",
+            from, dir, next
+        );
+        self.goto_page(sysupgrade_page_to_view(next))
     }
 
     pub(crate) fn resolve_page(&self) -> cosmic::Element<'_, crate::Message> {
         let back = button::custom(text("Back"))
-            .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Abort));
+            .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Back));
+        let continue_btn = button::custom(text("Continue"))
+            .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Continue));
         let header = Row::new()
             .spacing(12)
             .push(back)
-            .push(text("Resolve conflicts"));
+            .push(text("Resolve conflicts"))
+            .push(space::horizontal())
+            .push(continue_btn);
         let padded_header = container(header).padding([12.0, 12.0]);
-        let column = Column::new().push(padded_header);
+
+        let mut body = Column::new().spacing(16).padding([0.0, 12.0]);
+
+        if let Some(r) = &self.sysupgrade_review {
+            if !r.qs.conflicts.is_empty() {
+                body = body.push(text("Conflicts"));
+                for (i, conflict) in r.qs.conflicts.iter().enumerate() {
+                    let label = format!("Replace {} with {}", conflict.removable, conflict.incoming);
+                    let checked = r.conflict_checks.get(i).copied().unwrap_or(false);
+                    let item = checkbox(checked).label(label).on_toggle(move |_| {
+                        crate::Message::Sysupgrade(SysupgradeMessage::ToggleConflict(i))
+                    });
+                    body = body.push(item);
+                }
+            }
+
+            if !r.qs.providers.is_empty() {
+                body = body.push(text("Providers"));
+                for prompt in &r.qs.providers {
+                    body = body.push(text(prompt.depend.clone()));
+                    let selected = r
+                        .provider_choices
+                        .get(&prompt.depend)
+                        .copied()
+                        .unwrap_or(0);
+                    for (idx, candidate) in prompt.candidates.iter().enumerate() {
+                        let label = candidate_label(candidate);
+                        let depend = prompt.depend.clone();
+                        let item = radio(text(label), idx, Some(selected), move |chosen: usize| {
+                            crate::Message::Sysupgrade(SysupgradeMessage::SelectProvider {
+                                depend: depend.clone(),
+                                idx: chosen,
+                            })
+                        });
+                        body = body.push(item);
+                    }
+                }
+            }
+
+            if r.qs.had_unsupported_question {
+                body = body.push(unsupported_banner(&r.qs.unsupported_summary));
+            }
+        }
+
+        let column = Column::new()
+            .push(padded_header)
+            .push(scrollable(body).id(crate::page_scroll_id()));
         container(column)
             .width(cosmic::iced::Length::Fill)
             .height(cosmic::iced::Length::Fill)
