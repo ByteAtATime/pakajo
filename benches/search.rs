@@ -35,6 +35,11 @@ fn criterion_benchmark(c: &mut Criterion) {
         "linux",
         "python",
         "firefx",
+        "c",
+        "ch",
+        "chr",
+        "chro",
+        "chroe",
         "chroem",
         "\"google chrome\"",
     ];
