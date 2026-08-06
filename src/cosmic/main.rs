@@ -49,6 +49,10 @@ pub struct PakajoApp {
     pub(crate) detail: DetailData,
     pub(crate) detail_seq: u64,
     pub(crate) transaction: Option<Transaction>,
+    pub(crate) updates_state: UpdatesState,
+    pub(crate) pending_updates: pakajo::updates::PendingUpdates,
+    pub(crate) pending_count: u32,
+    pub(crate) updates_aur_error: Option<String>,
 }
 
 impl Application for PakajoApp {
@@ -104,26 +108,32 @@ impl Application for PakajoApp {
             begin_aur_sync_in_background(index.clone(), search_engine.clone());
         }
 
-        (
-            PakajoApp {
-                core,
-                search_engine,
-                local_index,
-                alpm,
-                aur_client,
-                installed_names,
-                group_index,
-                query: String::new(),
-                results: Vec::new(),
-                search_state: SearchState::Idle,
-                search_seq: 0,
-                selected_index: None,
-                detail: DetailData::None,
-                detail_seq: 0,
-                transaction: None,
+        let mut app = PakajoApp {
+            core,
+            search_engine,
+            local_index,
+            alpm,
+            aur_client,
+            installed_names,
+            group_index,
+            query: String::new(),
+            results: Vec::new(),
+            search_state: SearchState::Idle,
+            search_seq: 0,
+            selected_index: None,
+            detail: DetailData::None,
+            detail_seq: 0,
+            transaction: None,
+            updates_state: UpdatesState::Idle,
+            pending_updates: pakajo::updates::PendingUpdates {
+                repo: Vec::new(),
+                aur: Vec::new(),
             },
-            Task::none(),
-        )
+            pending_count: 0,
+            updates_aur_error: None,
+        };
+        let task = app.start_updates_check();
+        (app, task)
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
@@ -219,10 +229,56 @@ impl PakajoApp {
         }
     }
 
-    fn handle_updates(&mut self, _message: UpdatesMessage) -> Task<Message> {
-        match _message {
+    fn handle_updates(&mut self, message: UpdatesMessage) -> Task<Message> {
+        match message {
             UpdatesMessage::RefreshUpdates => Task::none(),
+            UpdatesMessage::Fetched(result) => match result {
+                Ok(fetch) => {
+                    let count = (fetch.repo.len() + fetch.aur.len()) as u32;
+                    eprintln!(
+                        "[pakajo] {} updates available (repo={} aur={})",
+                        count,
+                        fetch.repo.len(),
+                        fetch.aur.len()
+                    );
+                    self.pending_updates = pakajo::updates::PendingUpdates {
+                        repo: fetch.repo,
+                        aur: fetch.aur,
+                    };
+                    self.updates_aur_error = fetch.aur_error;
+                    self.pending_count = count;
+                    self.updates_state = UpdatesState::Idle;
+                    Task::none()
+                }
+                Err(msg) => {
+                    eprintln!("[pakajo] updates checker failed: {msg}");
+                    self.updates_state = UpdatesState::Error(msg);
+                    Task::none()
+                }
+            },
         }
+    }
+
+    fn start_updates_check(&mut self) -> Task<Message> {
+        if matches!(self.updates_state, UpdatesState::Loading) {
+            return Task::none();
+        }
+        self.updates_state = UpdatesState::Loading;
+        let (tx, rx) = futures::channel::oneshot::channel();
+        std::thread::spawn(move || {
+            let result = pakajo::updates::pending_updates();
+            let _ = tx.send(result);
+        });
+        Task::perform(
+            async move {
+                match rx.await {
+                    Ok(Ok(fetch)) => Ok(fetch),
+                    Ok(Err(e)) => Err(format!("{e:#}")),
+                    Err(_) => Err("updates check cancelled".to_string()),
+                }
+            },
+            |result| Message::Updates(UpdatesMessage::Fetched(result)).into(),
+        )
     }
 
     fn refresh_installed_state(&mut self) {
@@ -262,4 +318,12 @@ pub enum Message {
 #[derive(Clone, Debug)]
 pub enum UpdatesMessage {
     RefreshUpdates,
+    Fetched(Result<pakajo::updates::UpdatesFetch, String>),
+}
+
+#[derive(Clone, Debug)]
+pub enum UpdatesState {
+    Idle,
+    Loading,
+    Error(String),
 }
