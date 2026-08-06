@@ -1,4 +1,4 @@
-use cosmic::iced::Length;
+use cosmic::iced::{Color, Length};
 use cosmic::widget::{Column, Row, button, container, scrollable, space, text};
 
 use pakajo::pkgbuild::PkgbuildDiff;
@@ -48,7 +48,14 @@ impl PkgbuildModel {
             Some(diff) => {
                 let mut lines = Column::new().spacing(0);
                 for line in diff.diff.lines() {
-                    lines = lines.push(text(line.to_string()).font(cosmic::font::mono()));
+                    let line_widget = text(line.to_string()).font(cosmic::font::mono());
+                    let element: cosmic::Element<'_, crate::Message> = match diff_tone(line) {
+                        Some(tone) => container(line_widget)
+                            .style(move |theme: &cosmic::Theme| tone_style(theme, tone))
+                            .into(),
+                        None => line_widget.into(),
+                    };
+                    lines = lines.push(element);
                 }
                 scrollable(lines).height(Length::Fixed(400.0))
             }
@@ -68,6 +75,42 @@ impl PkgbuildModel {
             .width(Length::Fixed(570.0))
             .into()
     }
+}
+
+#[derive(Clone, Copy)]
+enum DiffTone {
+    Muted,
+    Added,
+    Removed,
+}
+
+fn diff_tone(line: &str) -> Option<DiffTone> {
+    if line.starts_with("@@") {
+        Some(DiffTone::Muted)
+    } else if line.starts_with("+") {
+        Some(DiffTone::Added)
+    } else if line.starts_with("-") {
+        Some(DiffTone::Removed)
+    } else {
+        None
+    }
+}
+
+fn tone_style(theme: &cosmic::Theme, tone: DiffTone) -> container::Style {
+    let color = match tone {
+        DiffTone::Muted => muted_color(theme),
+        DiffTone::Added => Color::from(theme.cosmic().success.base),
+        DiffTone::Removed => Color::from(theme.cosmic().destructive.base),
+    };
+    container::Style {
+        text_color: Some(color),
+        ..Default::default()
+    }
+}
+
+fn muted_color(theme: &cosmic::Theme) -> Color {
+    let on = Color::from(theme.cosmic().background(false).on);
+    Color { a: 0.5, ..on }
 }
 
 fn pkgbuild_footer(current: usize, len: usize) -> cosmic::Element<'static, crate::Message> {
