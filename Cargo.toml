@@ -35,10 +35,6 @@ criterion = "0.8.2"
 default = ["debug"]
 debug = ["libcosmic/debug"]
 
-[[bin]]
-name = "pakajo"
-path = "src/cosmic/main.rs"
-
 [[bench]]
 name = "search"
 harness = false

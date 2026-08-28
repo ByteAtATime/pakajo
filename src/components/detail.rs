@@ -7,8 +7,8 @@ use pakajo::pacman::{find_groups, find_pkg};
 use pakajo::utils::format_bytes;
 use std::time::Duration;
 
-use crate::icons;
-use crate::transaction::TransactionMessage;
+use crate::components::icons;
+use crate::components::transaction::TransactionMessage;
 
 pub const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
 

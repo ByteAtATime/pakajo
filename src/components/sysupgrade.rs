@@ -8,9 +8,9 @@ use pakajo::events::{SummaryPackage, TransactionSummary};
 use pakajo::question::{collect_approvals, default_approve, encode_approvals};
 use pakajo::transaction_state::{Direction, SysupgradePage, next_sysupgrade_step};
 
-use crate::updates::{aur_upgrade_row, muted};
-use crate::transaction::review::{ReviewModel, candidate_label, unsupported_banner};
-use crate::transaction::Transaction;
+use crate::components::updates::{aur_upgrade_row, muted};
+use crate::components::transaction::review::{ReviewModel, candidate_label, unsupported_banner};
+use crate::components::transaction::Transaction;
 
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -338,7 +338,7 @@ impl crate::PakajoApp {
             .spacing(16)
             .padding([0.0, 12.0])
             .push(text(position))
-            .push(crate::transaction::diff_lines_column(current));
+            .push(crate::components::transaction::diff_lines_column(current));
 
         let column = Column::new()
             .push(padded_header)

@@ -4,7 +4,7 @@ use cosmic::widget::{Column, Row, Space, button, container, scrollable, text};
 use pakajo::updates::RepoUpgrade;
 use pakajo::upgrade::AurUpgradeCandidate;
 
-use crate::sysupgrade::SysupgradeMessage;
+use crate::components::sysupgrade::SysupgradeMessage;
 
 #[derive(Clone, Debug)]
 pub enum UpdatesMessage {

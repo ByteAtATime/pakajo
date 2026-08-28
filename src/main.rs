@@ -1,10 +1,5 @@
 mod background;
-mod detail;
-mod icons;
-mod search;
-mod sysupgrade;
-mod transaction;
-mod updates;
+mod components;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -24,12 +19,12 @@ use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
 
 use background::begin_aur_sync_in_background;
-use detail::{DetailData, DetailMessage, detail_view};
-use search::{SearchMessage, SearchState, results_list, search_bar, search_status_text};
-use sysupgrade::SysupgradeMessage;
-use transaction::review::ReviewModel;
-use transaction::{Action, Transaction, TransactionMessage};
-use updates::{UpdatesMessage, UpdatesState};
+use components::detail::{DetailData, DetailMessage, detail_view};
+use components::search::{SearchMessage, SearchState, results_list, search_bar, search_status_text};
+use components::sysupgrade::SysupgradeMessage;
+use components::transaction::review::ReviewModel;
+use components::transaction::{Action, Transaction, TransactionMessage};
+use components::updates::{UpdatesMessage, UpdatesState};
 
 fn main() -> cosmic::iced::Result {
     let cli = cli::parse();
