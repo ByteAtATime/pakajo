@@ -27,8 +27,8 @@ use background::begin_aur_sync_in_background;
 use detail::{DetailData, DetailMessage, detail_view};
 use search::{SearchMessage, SearchState, results_list, search_bar, search_status_text};
 use sysupgrade::SysupgradeMessage;
-use transaction::{Action, Transaction, TransactionMessage};
 use transaction::review::ReviewModel;
+use transaction::{Action, Transaction, TransactionMessage};
 use updates::{UpdatesMessage, UpdatesState};
 
 fn main() -> cosmic::iced::Result {
@@ -66,6 +66,7 @@ pub struct PakajoApp {
     pub(crate) sysupgrade_aur_targets: Vec<String>,
     pub(crate) sysupgrade_review: Option<ReviewModel>,
     pub(crate) pkgbuild_review_index: usize,
+    pub(crate) active_sysupgrade_phase: Option<pakajo::transaction_state::SysupgradePhase>,
 }
 
 impl Application for PakajoApp {
@@ -151,6 +152,7 @@ impl Application for PakajoApp {
             sysupgrade_aur_targets: Vec::new(),
             sysupgrade_review: None,
             pkgbuild_review_index: 0,
+            active_sysupgrade_phase: None,
         };
         let task = app.start_updates_check();
         (app, task)
@@ -186,13 +188,13 @@ impl Application for PakajoApp {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        if let Some(t) = self.transaction.as_ref() {
-            if !t.is_checking() {
-                return container(t.view())
-                    .width(cosmic::iced::Length::Fill)
-                    .height(cosmic::iced::Length::Fill)
-                    .into();
-            }
+        if let Some(t) = self.transaction.as_ref()
+            && !t.is_checking()
+        {
+            return container(t.view())
+                .width(cosmic::iced::Length::Fill)
+                .height(cosmic::iced::Length::Fill)
+                .into();
         }
         match self.page {
             Page::Search => self.search_page(),
@@ -221,7 +223,11 @@ impl PakajoApp {
             .push(search_status_text(self.search_state, self.results.len()))
             .push(
                 Row::new()
-                    .push(scrollable(results_list(&self.results, self.selected_index)).width(384.).id(page_scroll_id()))
+                    .push(
+                        scrollable(results_list(&self.results, self.selected_index))
+                            .width(384.)
+                            .id(page_scroll_id()),
+                    )
                     .push(detail_view(&self.detail, checking)),
             );
 
@@ -260,7 +266,21 @@ impl PakajoApp {
                     }
                     Action::InstallSucceeded => {
                         self.refresh_installed_state();
-                        Task::done(crate::Message::Updates(UpdatesMessage::RefreshUpdates).into())
+                        let refresh = Task::done(
+                            crate::Message::Updates(UpdatesMessage::RefreshUpdates).into(),
+                        );
+                        if self.active_sysupgrade_phase.is_some() {
+                            self.sysupgrade_preview = None;
+                            self.sysupgrade_review = None;
+                            self.sysupgrade_preview_error = None;
+                            self.sysupgrade_preview_in_flight = false;
+                            self.sysupgrade_aur_targets.clear();
+                            self.pkgbuild_review_index = 0;
+                            self.active_sysupgrade_phase = None;
+                            self.transaction = None;
+                            return Task::batch([refresh, self.goto_page(crate::Page::Updates)]);
+                        }
+                        refresh
                     }
                 }
             }
@@ -324,6 +344,9 @@ pub(crate) fn page_scroll_id() -> cosmic::iced::widget::Id {
 pub(crate) fn scroll_to_top() -> Task<Message> {
     cosmic::iced::widget::scrollable::scroll_to(
         page_scroll_id(),
-        cosmic::iced::widget::scrollable::AbsoluteOffset { x: Some(0.0), y: Some(0.0) },
+        cosmic::iced::widget::scrollable::AbsoluteOffset {
+            x: Some(0.0),
+            y: Some(0.0),
+        },
     )
 }

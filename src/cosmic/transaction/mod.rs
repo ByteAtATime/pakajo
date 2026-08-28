@@ -7,6 +7,7 @@ use futures::{SinkExt as _, StreamExt as _, channel::oneshot};
 use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
 use pakajo::events::InstallEvent;
 use pakajo::install::{ChildOutcome, StreamItem, run_install_process};
+use pakajo::upgrade::run_sysupgrade_process;
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
@@ -270,6 +271,69 @@ impl Transaction {
             },
         ));
         Action::Run(stream)
+    }
+
+    pub(crate) fn start_sysupgrade_repo(
+        fingerprint_file: String,
+        approvals_b64: Option<String>,
+    ) -> (Self, Task<crate::Message>) {
+        let exe = match current_exe() {
+            Ok(exe) => exe,
+            Err(e) => {
+                eprintln!("[pakajo] failed to resolve current_exe: {e}");
+                return (
+                    Self {
+                        model: TransactionModel::new(
+                            "system".to_string(),
+                            PackageSource::Repo,
+                            InstallKind::Upgrade,
+                        ),
+                    },
+                    Task::none(),
+                );
+            }
+        };
+        let mut model = TransactionModel::new(
+            "system".to_string(),
+            PackageSource::Repo,
+            InstallKind::Upgrade,
+        );
+        model.status = TransactionStatus::Running;
+        let (raw_tx, mut raw_rx) = futures::channel::mpsc::channel::<StreamItem>(256);
+        std::thread::spawn(move || {
+            run_sysupgrade_process(exe, fingerprint_file, raw_tx, approvals_b64);
+        });
+        let stream = Task::stream(cosmic::iced::stream::channel(
+            256,
+            move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
+                while let Some(item) = raw_rx.next().await {
+                    match item {
+                        StreamItem::Event(ev) => {
+                            let _ = tx
+                                .send(
+                                    crate::Message::Transaction(TransactionMessage::InstallEvent(
+                                        ev,
+                                    ))
+                                    .into(),
+                                )
+                                .await;
+                        }
+                        StreamItem::Done(outcome) => {
+                            let _ = tx
+                                .send(
+                                    crate::Message::Transaction(TransactionMessage::InstallDone(
+                                        outcome,
+                                    ))
+                                    .into(),
+                                )
+                                .await;
+                            break;
+                        }
+                    }
+                }
+            },
+        ));
+        (Self { model }, stream)
     }
 
     pub(crate) fn view(&self) -> cosmic::Element<'_, crate::Message> {

@@ -3,9 +3,11 @@ use cosmic::widget::{Column, Row, button, checkbox, container, radio, scrollable
 
 use anyhow::Context as _;
 use pakajo::dry_run::SysupgradePreview;
+use pakajo::question::{collect_approvals, default_approve, encode_approvals};
 use pakajo::transaction_state::{Direction, SysupgradePage, next_sysupgrade_step};
 
 use crate::transaction::review::{ReviewModel, candidate_label, unsupported_banner};
+use crate::transaction::Transaction;
 
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -17,6 +19,7 @@ pub enum SysupgradeMessage {
     SelectProvider { depend: String, idx: usize },
     Continue,
     Back,
+    Apply,
 }
 
 fn sysupgrade_page_to_view(p: SysupgradePage) -> crate::Page {
@@ -87,9 +90,52 @@ impl crate::PakajoApp {
         )
     }
 
+    pub(crate) fn start_sysupgrade_apply(&mut self) -> Task<crate::Message> {
+        if self.transaction.as_ref().is_some_and(|t| t.is_active()) {
+            return Task::none();
+        }
+        let Some(preview) = &self.sysupgrade_preview else {
+            return Task::none();
+        };
+        let summary_bytes = serde_json::to_vec(&preview.summary).unwrap_or_default();
+        let fingerprint_file = match pakajo::upgrade::write_fingerprint_file(&summary_bytes) {
+            Ok(p) => p.to_string_lossy().into_owned(),
+            Err(e) => {
+                eprintln!("[pakajo] fingerprint write failed: {e}");
+                return Task::none();
+            }
+        };
+        let approvals_b64 = {
+            let collected = if let Some(r) = &self.sysupgrade_review {
+                collect_approvals(&r.qs, &r.conflict_checks, &r.provider_choices)
+            } else {
+                default_approve(&preview.questions)
+            };
+            match collected {
+                Ok(approvals) => match encode_approvals(&approvals) {
+                    Ok(b64) => Some(b64),
+                    Err(e) => {
+                        eprintln!("[pakajo] approval encoding failed: {e}");
+                        None
+                    }
+                },
+                Err(e) => {
+                    eprintln!("[pakajo] approval collection failed: {e}");
+                    None
+                }
+            }
+        };
+        let (transaction, task) = Transaction::start_sysupgrade_repo(fingerprint_file, approvals_b64);
+        self.transaction = Some(transaction);
+        self.active_sysupgrade_phase = Some(pakajo::transaction_state::SysupgradePhase::Repo);
+        eprintln!("[pakajo] sysupgrade repo apply started");
+        task
+    }
+
     pub(crate) fn handle_sysupgrade(&mut self, message: SysupgradeMessage) -> Task<crate::Message> {
         match message {
             SysupgradeMessage::StartPreview => self.start_sysupgrade_preview(),
+            SysupgradeMessage::Apply => self.start_sysupgrade_apply(),
             SysupgradeMessage::PreviewFetched(result) => {
                 self.sysupgrade_preview_in_flight = false;
                 match result {
@@ -309,10 +355,15 @@ impl crate::PakajoApp {
     pub(crate) fn confirm_page(&self) -> cosmic::Element<'_, crate::Message> {
         let back = button::custom(text("Back"))
             .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Abort));
+        let apply = button::custom(text("Apply"))
+            .class(cosmic::theme::Button::Suggested)
+            .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Apply));
         let header = Row::new()
             .spacing(12)
             .push(back)
-            .push(text("Confirm upgrade"));
+            .push(text("Confirm upgrade"))
+            .push(space::horizontal())
+            .push(apply);
         let padded_header = container(header).padding([12.0, 12.0]);
         let column = Column::new().push(padded_header);
         container(column)
