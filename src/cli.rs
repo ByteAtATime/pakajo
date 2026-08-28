@@ -33,9 +33,12 @@ use self::commands::{
     alpm_handle, answerer_for, decode_approvals, root_install, run_aur_sync, run_gendb, run_search,
 };
 
+mod complete;
+
 pub fn parse() -> Cli {
     let mut argv: Vec<String> = std::env::args().collect();
     match argv.get(1).map(String::as_str) {
+        Some("__complete") => exit_with_result(complete::run(&argv[2..])),
         Some("-S") => argv[1] = "install".to_string(),
         Some("-R") => argv[1] = "remove".to_string(),
         _ => {}
