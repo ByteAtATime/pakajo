@@ -254,14 +254,41 @@ impl PakajoApp {
             }
             other => {
                 let action = match self.transaction.as_mut() {
-                    Some(t) => t.update(other),
+                    Some(t) => {
+                        t.update(other, self.active_sysupgrade_phase, &self.sysupgrade_aur_targets)
+                    }
                     None => Action::None,
                 };
                 match action {
                     Action::None => Task::none(),
                     Action::Run(task) => task,
+                    Action::ContinueAur(targets) => {
+                        self.active_sysupgrade_phase =
+                            Some(pakajo::transaction_state::SysupgradePhase::Aur);
+                        eprintln!(
+                            "[pakajo] sysupgrade continuing to aur phase: {} targets",
+                            targets.len()
+                        );
+                        self.refresh_installed_state();
+                        let refresh = Task::done(
+                            crate::Message::Updates(UpdatesMessage::RefreshUpdates).into(),
+                        );
+                        let (transaction, task) = Transaction::start_sysupgrade_aur(targets);
+                        self.transaction = Some(transaction);
+                        Task::batch([refresh, task])
+                    }
                     Action::Finished => {
                         self.transaction = None;
+                        if self.active_sysupgrade_phase.is_some() {
+                            self.sysupgrade_preview = None;
+                            self.sysupgrade_review = None;
+                            self.sysupgrade_preview_error = None;
+                            self.sysupgrade_preview_in_flight = false;
+                            self.sysupgrade_aur_targets.clear();
+                            self.pkgbuild_review_index = 0;
+                            self.active_sysupgrade_phase = None;
+                            return Task::batch([self.goto_page(crate::Page::Updates)]);
+                        }
                         Task::none()
                     }
                     Action::InstallSucceeded => {

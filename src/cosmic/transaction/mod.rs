@@ -4,6 +4,7 @@ use cosmic::app::Task;
 use cosmic::widget::{Column, scrollable, text};
 use futures::{SinkExt as _, StreamExt as _, channel::oneshot};
 
+use pakajo::build::{BuildDecision, run_build};
 use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
 use pakajo::events::InstallEvent;
 use pakajo::install::{ChildOutcome, StreamItem, run_install_process};
@@ -11,7 +12,7 @@ use pakajo::upgrade::run_sysupgrade_process;
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
-use pakajo::transaction_state::InstallKind;
+use pakajo::transaction_state::{InstallKind, SysupgradePhase};
 
 mod state;
 
@@ -50,6 +51,17 @@ pub(crate) enum Action {
     Run(Task<crate::Message>),
     Finished,
     InstallSucceeded,
+    ContinueAur(Vec<String>),
+}
+
+struct CosmicBuildSink {
+    tx: futures::channel::mpsc::Sender<StreamItem>,
+}
+
+impl pakajo::events::InstallSink for CosmicBuildSink {
+    fn event(&mut self, event: InstallEvent) {
+        let _ = self.tx.try_send(StreamItem::Event(event));
+    }
 }
 
 pub(crate) struct Transaction {
@@ -83,7 +95,12 @@ impl Transaction {
         (Self { model }, task)
     }
 
-    pub(crate) fn update(&mut self, message: TransactionMessage) -> Action {
+    pub(crate) fn update(
+        &mut self,
+        message: TransactionMessage,
+        active_phase: Option<SysupgradePhase>,
+        aur_targets: &[String],
+    ) -> Action {
         match message {
             TransactionMessage::StartInstall => Action::None,
             TransactionMessage::StartRemove => {
@@ -96,11 +113,23 @@ impl Transaction {
             }
             TransactionMessage::InstallDone(outcome) => {
                 eprintln!("[pakajo] install outcome: {outcome:?}");
-                let next = pakajo::transaction_state::classify_outcome(&outcome, None, &[]);
-                self.model.finish(outcome);
+                let next = pakajo::transaction_state::classify_outcome(
+                    &outcome,
+                    active_phase,
+                    aur_targets,
+                );
                 match next {
-                    pakajo::transaction_state::NextInstallState::Completed => Action::InstallSucceeded,
-                    _ => Action::None,
+                    pakajo::transaction_state::NextInstallState::ContinueAur { targets } => {
+                        Action::ContinueAur(targets)
+                    }
+                    pakajo::transaction_state::NextInstallState::Completed => {
+                        self.model.finish(outcome);
+                        Action::InstallSucceeded
+                    }
+                    _ => {
+                        self.model.finish(outcome);
+                        Action::None
+                    }
                 }
             }
             TransactionMessage::DryRunResult(result) => match result {
@@ -302,6 +331,66 @@ impl Transaction {
         let (raw_tx, mut raw_rx) = futures::channel::mpsc::channel::<StreamItem>(256);
         std::thread::spawn(move || {
             run_sysupgrade_process(exe, fingerprint_file, raw_tx, approvals_b64);
+        });
+        let stream = Task::stream(cosmic::iced::stream::channel(
+            256,
+            move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
+                while let Some(item) = raw_rx.next().await {
+                    match item {
+                        StreamItem::Event(ev) => {
+                            let _ = tx
+                                .send(
+                                    crate::Message::Transaction(TransactionMessage::InstallEvent(
+                                        ev,
+                                    ))
+                                    .into(),
+                                )
+                                .await;
+                        }
+                        StreamItem::Done(outcome) => {
+                            let _ = tx
+                                .send(
+                                    crate::Message::Transaction(TransactionMessage::InstallDone(
+                                        outcome,
+                                    ))
+                                    .into(),
+                                )
+                                .await;
+                            break;
+                        }
+                    }
+                }
+            },
+        ));
+        (Self { model }, stream)
+    }
+
+    pub(crate) fn start_sysupgrade_aur(
+        targets: Vec<String>,
+    ) -> (Self, Task<crate::Message>) {
+        let mut model = TransactionModel::new(
+            "system-aur".to_string(),
+            PackageSource::Aur,
+            InstallKind::Upgrade,
+        );
+        model.status = TransactionStatus::Running;
+        let (mut raw_tx, mut raw_rx) = futures::channel::mpsc::channel::<StreamItem>(256);
+        std::thread::spawn(move || {
+            let mut sink = CosmicBuildSink { tx: raw_tx.clone() };
+            let result = run_build(
+                &targets,
+                false,
+                false,
+                &mut sink,
+                |_| BuildDecision::Proceed,
+                |_| true,
+                None,
+            );
+            let outcome = match result {
+                Ok(()) => ChildOutcome::Success,
+                Err(e) => ChildOutcome::Failed(format!("{e:#}")),
+            };
+            let _ = raw_tx.try_send(StreamItem::Done(outcome));
         });
         let stream = Task::stream(cosmic::iced::stream::channel(
             256,
