@@ -1,6 +1,7 @@
-use cosmic::iced::{Background, Color, Length, Shadow};
+use cosmic::iced::{Background, Border, Color, Length, Shadow, widget::progress_bar};
 use cosmic::widget::{Column, Row, button, container, space, text};
-use pakajo::transaction_state::RepoStage;
+use pakajo::transaction_state::{DownloadFile, RepoStage, RepoState};
+use pakajo::utils::{format_bytes, format_eta, humanize_size};
 
 use super::TransactionMessage;
 use super::state::{StageState, TransactionModel};
@@ -37,7 +38,7 @@ pub(super) fn stage_row(
         StageState::Active => Column::new()
             .spacing(6)
             .push(header)
-            .push(muted(active_view(stage)))
+            .push(muted(active_view(&model.repo_state, stage)))
             .into(),
         StageState::Failed => Column::new()
             .spacing(6)
@@ -77,6 +78,7 @@ pub(super) fn stage_row(
 }
 
 const GLYPH_GUTTER_WIDTH: f32 = 18.0;
+const STREAM_ROW_HEIGHT: f32 = 36.0;
 
 fn stage_glyph(state: StageState) -> cosmic::Element<'static, crate::Message> {
     let glyph_text: &'static str = match state {
@@ -227,8 +229,228 @@ fn divider_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().background(false).divider)
 }
 
-fn active_view(stage: RepoStage) -> cosmic::Element<'static, crate::Message> {
-    text(format!("running phase {}", stage_label(stage))).into()
+fn active_view(state: &RepoState, stage: RepoStage) -> cosmic::Element<'_, crate::Message> {
+    match stage {
+        RepoStage::Download => download_view(state),
+        _ => text(format!("running phase {}", stage_label(stage))).into(),
+    }
+}
+
+fn files_in_order(state: &RepoState) -> impl Iterator<Item = (&str, &DownloadFile)> {
+    state
+        .download_order
+        .iter()
+        .filter_map(|name| state.download_files.get(name).map(|f| (name.as_str(), f)))
+}
+
+fn active_card(filename: &str, file: &DownloadFile) -> cosmic::Element<'static, crate::Message> {
+    let pct = if file.total > 0 {
+        (file.downloaded as f64 / file.total as f64 * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let name = text(filename.to_string()).font(cosmic::font::mono());
+    let name = cosmic::widget::container(name)
+        .width(Length::Fill)
+        .style(|t: &cosmic::Theme| container::Style {
+            text_color: Some(on_color(t)),
+            ..Default::default()
+        });
+    let pct_text = tinted(text(format!("{:.0}%", pct)), accent_color);
+    let top = Row::new()
+        .align_y(cosmic::iced::alignment::Vertical::Center)
+        .push(name)
+        .push(space::horizontal())
+        .push(pct_text);
+    let bar = cosmic::iced::widget::progress_bar(0.0..=100.0, pct as f32)
+        .length(Length::Fill)
+        .girth(6.0);
+    let eta_str = if file.total > file.downloaded && file.rate > 0.0 {
+        let remaining = (file.total - file.downloaded) as f64 / file.rate;
+        format_eta(remaining.ceil() as u64)
+    } else if file.total > 0 && file.downloaded >= file.total {
+        format_eta(0)
+    } else {
+        "--:--".to_string()
+    };
+    let bottom = Row::new()
+        .align_y(cosmic::iced::alignment::Vertical::Center)
+        .push(muted(text(format!(
+            "{} / {}",
+            format_bytes(file.downloaded),
+            format_bytes(file.total)
+        ))))
+        .push(space::horizontal())
+        .push(muted(text(format!("ETA: {}", eta_str))));
+
+    Column::new()
+        .spacing(6)
+        .push(top)
+        .push(bar)
+        .push(bottom)
+        .into()
+}
+
+fn completed_row(filename: &str, file: &DownloadFile) -> cosmic::Element<'static, crate::Message> {
+    let name_widget = container(text(filename.to_string()).font(cosmic::font::mono()))
+        .width(Length::Fill)
+        .style(|t: &cosmic::Theme| container::Style {
+            text_color: Some(on_color(t)),
+            ..Default::default()
+        });
+    Row::new()
+        .align_y(cosmic::iced::alignment::Vertical::Center)
+        .spacing(8)
+        .push(crate::icons::circle_check().width(14.0).height(14.0))
+        .push(name_widget)
+        .push(space::horizontal())
+        .push(muted(text(format_bytes(file.total))))
+        .into()
+}
+
+fn stream_row(filename: &str, file: &DownloadFile) -> cosmic::Element<'static, crate::Message> {
+    let pct = if file.total > 0 {
+        (file.downloaded as f64 / file.total as f64 * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let background = progress_bar(0.0..=100.0, pct as f32)
+        .length(Length::Fill)
+        .girth(STREAM_ROW_HEIGHT)
+        .class(cosmic::theme::ProgressBar::custom(
+            |theme: &cosmic::Theme| {
+                let accent = accent_color(theme);
+                let on = on_color(theme);
+                cosmic::iced::widget::progress_bar::Style {
+                    bar: Background::Color(Color { a: 0.18, ..accent }),
+                    background: Background::Color(Color { a: 0.06, ..on }),
+                    border: Border {
+                        radius: 6.0.into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                }
+            },
+        ));
+    let (rate_val, rate_unit) = humanize_size(file.rate.max(0.0) as i64);
+    let speed_str = format!("{:.2} {}/s", rate_val, rate_unit);
+    let right = format!(
+        "{} / {}  {}",
+        format_bytes(file.downloaded),
+        format_bytes(file.total),
+        speed_str
+    );
+    let name = container(text(filename.to_string()).font(cosmic::font::mono()))
+        .width(Length::Fill)
+        .style(|t: &cosmic::Theme| container::Style {
+            text_color: Some(on_color(t)),
+            ..Default::default()
+        });
+    let foreground = Row::new()
+        .align_y(cosmic::iced::alignment::Vertical::Center)
+        .padding([0.0, 12.0])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .push(name)
+        .push(space::horizontal())
+        .push(
+            container(text(right)).style(|t: &cosmic::Theme| container::Style {
+                text_color: Some(on_color(t)),
+                ..Default::default()
+            }),
+        );
+    cosmic::iced::widget::Stack::new()
+        .push(background)
+        .push(foreground)
+        .width(Length::Fill)
+        .into()
+}
+
+fn rich_view(state: &RepoState) -> cosmic::Element<'_, crate::Message> {
+    let mut col = Column::new().spacing(8);
+    let completed: Vec<(&str, &DownloadFile)> =
+        files_in_order(state).filter(|(_, f)| f.completed).collect();
+    let active: Vec<(&str, &DownloadFile)> = files_in_order(state)
+        .filter(|(_, f)| !f.completed)
+        .collect();
+    if !completed.is_empty() {
+        col = col.push(muted(text("Completed")));
+        for (filename, file) in completed {
+            col = col.push(completed_row(filename, file));
+        }
+    }
+    for (filename, file) in active {
+        col = col.push(active_card(filename, file));
+    }
+    col.into()
+}
+
+fn compact_view(state: &RepoState) -> cosmic::Element<'_, crate::Message> {
+    let total = state.download_bytes_total.max(0);
+    let done = state.download_bytes_done.max(0);
+    let pct = if total > 0 {
+        (done as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+
+    let top_row = Row::new()
+        .align_y(cosmic::iced::alignment::Vertical::Center)
+        .push(muted(text("Overall Progress")))
+        .push(space::horizontal())
+        .push(tinted(text(format!("{:.0}%", pct)), accent_color));
+
+    let bar = progress_bar(0.0..=100.0, pct as f32)
+        .length(Length::Fill)
+        .girth(6.0);
+
+    let eta_str = if total > done && state.download_rate > 0.0 {
+        let remaining = (total - done) as f64 / state.download_rate;
+        format_eta(remaining.ceil() as u64)
+    } else if total > 0 && done >= total {
+        format_eta(0)
+    } else {
+        "--:--".to_string()
+    };
+
+    let bottom_row = Row::new()
+        .align_y(cosmic::iced::alignment::Vertical::Center)
+        .push(muted(text(format!(
+            "{} / {} packages",
+            state.download_done, state.download_total
+        ))))
+        .push(space::horizontal())
+        .push(muted(text(format!(
+            "{} / {}  ETA: {}",
+            format_bytes(done),
+            format_bytes(total),
+            eta_str
+        ))));
+
+    let mut col = Column::new().spacing(8);
+    col = col.push(top_row);
+    col = col.push(bar);
+    col = col.push(bottom_row);
+
+    let active: Vec<(&str, &DownloadFile)> = files_in_order(state)
+        .filter(|(_, f)| !f.completed)
+        .collect();
+    col = col.push(muted(text(format!("Downloading ({})", active.len()))));
+    for (filename, file) in active {
+        col = col.push(stream_row(filename, file));
+    }
+    col = col.push(muted(text(format!(
+        "{} packages remaining in queue",
+        state.queued()
+    ))));
+    col.into()
+}
+
+fn download_view(state: &RepoState) -> cosmic::Element<'_, crate::Message> {
+    if state.download_total < 4 {
+        return rich_view(state);
+    }
+    compact_view(state)
 }
 
 fn stage_label(stage: RepoStage) -> &'static str {

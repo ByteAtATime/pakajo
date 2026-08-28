@@ -55,6 +55,10 @@ impl InstallPage {
                 download_bytes_total: 0,
                 download_bytes_done: 0,
                 download_files: HashMap::new(),
+                download_order: Vec::new(),
+                download_rate: 0.0,
+                download_sync_time: None,
+                download_sync_done: 0,
             }),
             PackageSource::Aur => PageMode::Aur(AurState {
                 manifest: None,
@@ -70,6 +74,10 @@ impl InstallPage {
                 download_bytes_total: 0,
                 download_bytes_done: 0,
                 download_files: HashMap::new(),
+                download_order: Vec::new(),
+                download_rate: 0.0,
+                download_sync_time: None,
+                download_sync_done: 0,
             }),
         };
         Self {

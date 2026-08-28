@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::time::Instant;
 
 use crate::events::{InstallEvent, ProgressPhase, TransactionSummary};
 use crate::install::InstallProgress;
@@ -34,6 +36,16 @@ pub enum AurStage {
     Finalize,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DownloadFile {
+    pub downloaded: i64,
+    pub total: i64,
+    pub completed: bool,
+    pub rate: f64,
+    pub sync_time: Option<std::time::Instant>,
+    pub sync_done: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct RepoState {
     pub manifest: Option<TransactionSummary>,
@@ -42,7 +54,24 @@ pub struct RepoState {
     pub download_done: usize,
     pub download_bytes_total: i64,
     pub download_bytes_done: i64,
-    pub download_files: HashMap<String, i64>,
+    pub download_files: HashMap<String, DownloadFile>,
+    pub download_order: Vec<String>,
+    pub download_rate: f64,
+    pub download_sync_time: Option<Instant>,
+    pub download_sync_done: i64,
+}
+
+impl RepoState {
+    pub fn queued(&self) -> usize {
+        let active = self
+            .download_files
+            .values()
+            .filter(|f| !f.completed)
+            .count();
+        self.download_total
+            .saturating_sub(self.download_done)
+            .saturating_sub(active)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -163,27 +192,114 @@ pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
             state.download_bytes_total = *total_bytes;
             state.download_bytes_done = 0;
             state.download_files.clear();
+            state.download_order.clear();
+            state.download_rate = 0.0;
+            state.download_sync_time = None;
+            state.download_sync_done = 0;
+        }
+        InstallEvent::DownloadInit { filename, .. } => {
+            ensure_download_file(state, filename);
         }
         InstallEvent::DownloadProgress {
             filename,
             downloaded,
-            ..
+            total,
         } => {
-            let prev = state
-                .download_files
-                .insert(filename.clone(), *downloaded)
-                .unwrap_or(0);
+            let entry = ensure_download_file(state, filename);
+            let prev = entry.downloaded;
+            entry.downloaded = *downloaded;
+            entry.total = *total;
+            update_file_rate(entry);
             state.download_bytes_done += *downloaded - prev;
+            update_download_rate(state);
         }
         InstallEvent::DownloadRetry { filename, resume } => {
-            if !*resume && let Some(prev) = state.download_files.remove(filename) {
-                state.download_bytes_done -= prev;
+            if !*resume && let Some(f) = state.download_files.get_mut(filename) {
+                state.download_bytes_done -= f.downloaded;
+                f.downloaded = 0;
+                f.rate = 0.0;
+                f.sync_time = None;
+                f.sync_done = 0;
             }
         }
-        InstallEvent::DownloadCompleted { .. } => {
+        InstallEvent::DownloadCompleted {
+            filename, total, ..
+        } => {
+            let f = ensure_download_file(state, filename);
+            let already_completed = f.completed;
+            let prev_downloaded = f.downloaded;
+            if !already_completed {
+                f.downloaded = *total;
+                f.total = *total;
+                f.completed = true;
+            }
+            if !already_completed {
+                state.download_bytes_done += *total - prev_downloaded;
+            }
             state.download_done += 1;
         }
         _ => {}
+    }
+}
+
+const DOWNLOAD_RATE_SAMPLE_MS: u128 = 200;
+
+fn update_download_rate(state: &mut RepoState) {
+    let now = Instant::now();
+    let sync_time = match state.download_sync_time {
+        Some(t) => t,
+        None => {
+            state.download_sync_time = Some(now);
+            state.download_sync_done = state.download_bytes_done;
+            return;
+        }
+    };
+    let timediff = now.duration_since(sync_time).as_millis();
+    if timediff < DOWNLOAD_RATE_SAMPLE_MS {
+        return;
+    }
+    let chunk = (state.download_bytes_done - state.download_sync_done).max(0);
+    state.download_sync_done = state.download_bytes_done;
+    state.download_sync_time = Some(now);
+    let chunk_rate = chunk as f64 * 1000.0 / timediff as f64;
+    state.download_rate = (chunk_rate + 2.0 * state.download_rate) / 3.0;
+}
+
+fn update_file_rate(file: &mut DownloadFile) {
+    let now = Instant::now();
+    let sync_time = match file.sync_time {
+        Some(t) => t,
+        None => {
+            file.sync_time = Some(now);
+            file.sync_done = file.downloaded;
+            return;
+        }
+    };
+    let timediff = now.duration_since(sync_time).as_millis();
+    if timediff < DOWNLOAD_RATE_SAMPLE_MS {
+        return;
+    }
+    let chunk = (file.downloaded - file.sync_done).max(0);
+    file.sync_done = file.downloaded;
+    file.sync_time = Some(now);
+    let chunk_rate = chunk as f64 * 1000.0 / timediff as f64;
+    file.rate = (chunk_rate + 2.0 * file.rate) / 3.0;
+}
+
+fn ensure_download_file<'a>(state: &'a mut RepoState, filename: &str) -> &'a mut DownloadFile {
+    match state.download_files.entry(filename.to_string()) {
+        Entry::Occupied(e) => e.into_mut(),
+        Entry::Vacant(e) => {
+            state.download_order.push(filename.to_string());
+            e.insert(DownloadFile {
+                downloaded: 0,
+                total: 0,
+                completed: false,
+                rate: 0.0,
+                sync_time: None,
+                sync_done: 0,
+            })
+        }
     }
 }
 
@@ -300,10 +416,10 @@ pub fn next_sysupgrade_step(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::events::{DownloadResult, InstallEvent, PackageOp, ProgressPhase};
-    use crate::install::InstallProgress;
     use crate::install::ChildOutcome;
+    use crate::install::InstallProgress;
+    use std::collections::HashMap;
 
     #[test]
     fn repo_resolving_dependencies_is_resolve() {
@@ -443,13 +559,23 @@ mod tests {
             download_bytes_total: 0,
             download_bytes_done: 0,
             download_files: HashMap::new(),
+            download_order: Vec::new(),
+            download_rate: 0.0,
+            download_sync_time: None,
+            download_sync_done: 0,
         }
     }
 
     #[test]
     fn cell_state_completed_is_done_for_any_index() {
-        assert_eq!(cell_state(&InstallProgress::Completed, 0, 0), CellState::Done);
-        assert_eq!(cell_state(&InstallProgress::Completed, 2, 5), CellState::Done);
+        assert_eq!(
+            cell_state(&InstallProgress::Completed, 0, 0),
+            CellState::Done
+        );
+        assert_eq!(
+            cell_state(&InstallProgress::Completed, 2, 5),
+            CellState::Done
+        );
     }
 
     #[test]
@@ -463,8 +589,14 @@ mod tests {
     #[test]
     fn cell_state_running_partitions_by_current_index() {
         assert_eq!(cell_state(&InstallProgress::Running, 2, 0), CellState::Done);
-        assert_eq!(cell_state(&InstallProgress::Running, 2, 2), CellState::Active);
-        assert_eq!(cell_state(&InstallProgress::Running, 2, 3), CellState::Pending);
+        assert_eq!(
+            cell_state(&InstallProgress::Running, 2, 2),
+            CellState::Active
+        );
+        assert_eq!(
+            cell_state(&InstallProgress::Running, 2, 3),
+            CellState::Pending
+        );
     }
 
     #[test]
@@ -487,7 +619,17 @@ mod tests {
     #[test]
     fn apply_repo_retrieving_packages_clears_existing_map() {
         let mut state = fresh_repo_state();
-        state.download_files.insert("stale".to_string(), 999);
+        state.download_files.insert(
+            "stale".to_string(),
+            DownloadFile {
+                downloaded: 999,
+                total: 0,
+                completed: false,
+                rate: 0.0,
+                sync_time: None,
+                sync_done: 0,
+            },
+        );
         apply_repo_counters(
             &mut state,
             &InstallEvent::RetrievingPackages {
@@ -509,7 +651,13 @@ mod tests {
                 total: 200,
             },
         );
-        assert_eq!(state.download_files.get("a"), Some(&100));
+        let f = state.download_files.get("a").expect("file a present");
+        assert_eq!(f.downloaded, 100);
+        assert_eq!(f.total, 200);
+        assert!(!f.completed);
+        assert_eq!(f.rate, 0.0);
+        assert!(f.sync_time.is_some());
+        assert_eq!(f.sync_done, 100);
         assert_eq!(state.download_bytes_done, 100);
         apply_repo_counters(
             &mut state,
@@ -519,12 +667,15 @@ mod tests {
                 total: 200,
             },
         );
-        assert_eq!(state.download_files.get("a"), Some(&150));
+        let f = state.download_files.get("a").expect("file a present");
+        assert_eq!(f.downloaded, 150);
+        assert_eq!(f.total, 200);
+        assert!(!f.completed);
         assert_eq!(state.download_bytes_done, 150);
     }
 
     #[test]
-    fn apply_repo_download_retry_full_removes_entry() {
+    fn apply_repo_download_retry_full_resets_entry() {
         let mut state = fresh_repo_state();
         apply_repo_counters(
             &mut state,
@@ -541,7 +692,17 @@ mod tests {
                 resume: false,
             },
         );
-        assert!(state.download_files.is_empty());
+        assert_eq!(
+            state.download_files.get("a"),
+            Some(&DownloadFile {
+                downloaded: 0,
+                total: 200,
+                completed: false,
+                rate: 0.0,
+                sync_time: None,
+                sync_done: 0,
+            })
+        );
         assert_eq!(state.download_bytes_done, 0);
     }
 
@@ -563,7 +724,10 @@ mod tests {
                 resume: true,
             },
         );
-        assert_eq!(state.download_files.get("a"), Some(&100));
+        let f = state.download_files.get("a").expect("file a present");
+        assert_eq!(f.downloaded, 100);
+        assert_eq!(f.total, 200);
+        assert!(!f.completed);
         assert_eq!(state.download_bytes_done, 100);
     }
 
@@ -579,6 +743,17 @@ mod tests {
             },
         );
         assert_eq!(state.download_done, 1);
+        assert_eq!(
+            state.download_files.get("a"),
+            Some(&DownloadFile {
+                downloaded: 200,
+                total: 200,
+                completed: true,
+                rate: 0.0,
+                sync_time: None,
+                sync_done: 0,
+            })
+        );
     }
 
     #[test]
@@ -590,6 +765,75 @@ mod tests {
         assert_eq!(state.download_bytes_total, 0);
         assert_eq!(state.download_bytes_done, 0);
         assert!(state.download_files.is_empty());
+    }
+
+    #[test]
+    fn apply_repo_download_order_preserves_insertion_order() {
+        let mut state = fresh_repo_state();
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadInit {
+                filename: "a".to_string(),
+                optional: false,
+            },
+        );
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadInit {
+                filename: "b".to_string(),
+                optional: false,
+            },
+        );
+        assert_eq!(state.download_order, vec!["a".to_string(), "b".to_string()]);
+
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::RetrievingPackages {
+                num: 1,
+                total_bytes: 0,
+            },
+        );
+        assert!(state.download_order.is_empty());
+
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadInit {
+                filename: "a".to_string(),
+                optional: false,
+            },
+        );
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadInit {
+                filename: "b".to_string(),
+                optional: false,
+            },
+        );
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadInit {
+                filename: "a".to_string(),
+                optional: false,
+            },
+        );
+        assert_eq!(state.download_order, vec!["a".to_string(), "b".to_string()]);
+
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadProgress {
+                filename: "a".to_string(),
+                downloaded: 10,
+                total: 100,
+            },
+        );
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadRetry {
+                filename: "a".to_string(),
+                resume: false,
+            },
+        );
+        assert_eq!(state.download_order, vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]
@@ -749,7 +993,12 @@ mod tests {
     #[test]
     fn next_sysupgrade_step_pkgbuild_review_forward_enters_confirm() {
         assert_eq!(
-            next_sysupgrade_step(SysupgradePage::PkgbuildReview, Direction::Forward, true, true),
+            next_sysupgrade_step(
+                SysupgradePage::PkgbuildReview,
+                Direction::Forward,
+                true,
+                true
+            ),
             SysupgradePage::Confirm
         );
     }
@@ -757,7 +1006,12 @@ mod tests {
     #[test]
     fn next_sysupgrade_step_pkgbuild_review_backward_returns_resolve_when_present() {
         assert_eq!(
-            next_sysupgrade_step(SysupgradePage::PkgbuildReview, Direction::Backward, true, true),
+            next_sysupgrade_step(
+                SysupgradePage::PkgbuildReview,
+                Direction::Backward,
+                true,
+                true
+            ),
             SysupgradePage::Resolve
         );
     }
@@ -765,7 +1019,12 @@ mod tests {
     #[test]
     fn next_sysupgrade_step_pkgbuild_review_backward_skips_to_updates_without_resolve() {
         assert_eq!(
-            next_sysupgrade_step(SysupgradePage::PkgbuildReview, Direction::Backward, false, true),
+            next_sysupgrade_step(
+                SysupgradePage::PkgbuildReview,
+                Direction::Backward,
+                false,
+                true
+            ),
             SysupgradePage::Updates
         );
     }
