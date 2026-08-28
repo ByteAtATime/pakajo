@@ -17,7 +17,6 @@ use crate::transaction::Transaction;
 pub enum SysupgradeMessage {
     StartPreview,
     PreviewFetched(Result<SysupgradePreview, String>),
-    Abort,
     ToggleConflict(usize),
     SelectProvider { depend: String, idx: usize },
     Continue,
@@ -187,14 +186,6 @@ impl crate::PakajoApp {
                     }
                 }
             }
-            SysupgradeMessage::Abort => {
-                self.sysupgrade_preview = None;
-                self.sysupgrade_preview_error = None;
-                self.sysupgrade_aur_targets.clear();
-                self.sysupgrade_review = None;
-                self.pkgbuild_review_index = 0;
-                self.goto_page(crate::Page::Updates)
-            }
             SysupgradeMessage::ToggleConflict(i) => {
                 if let Some(r) = self.sysupgrade_review.as_mut() {
                     r.toggle_conflict(i);
@@ -360,7 +351,7 @@ impl crate::PakajoApp {
 
     pub(crate) fn confirm_page(&self) -> cosmic::Element<'_, crate::Message> {
         let back = button::custom(text("Back"))
-            .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Abort));
+            .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Back));
 
         let apply_disabled = match self.sysupgrade_preview.as_ref() {
             Some(preview) => {
