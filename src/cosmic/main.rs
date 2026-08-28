@@ -215,6 +215,12 @@ impl Application for PakajoApp {
     fn dialog(&self) -> Option<Element<'_, Self::Message>> {
         self.transaction.as_ref().and_then(|t| t.dialog())
     }
+
+    fn style(&self) -> Option<cosmic::iced::theme::Style> {
+        Some(cosmic::style::iced::application::style(
+            &cosmic::theme::active(),
+        ))
+    }
 }
 
 impl PakajoApp {
