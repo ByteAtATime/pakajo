@@ -166,25 +166,32 @@ impl Application for PakajoApp {
             Message::Updates(m) => self.handle_updates(m),
             Message::Sysupgrade(m) => self.handle_sysupgrade(m),
             Message::Navigate(page) => self.goto_page(page),
+            Message::DbLockReleased => {
+                eprintln!("[pakajo] db.lck released, refreshing installed state");
+                self.refresh_installed_state();
+                Task::none()
+            }
         }
     }
 
     fn subscription(&self) -> cosmic::iced::Subscription<Self::Message> {
-        cosmic::iced::event::listen_with(|event, _status, _id| match event {
-            cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
-                key,
-                ..
-            }) => match key {
-                cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::ArrowUp) => {
-                    Some(Message::Search(SearchMessage::SelectDelta(-1)))
-                }
-                cosmic::iced::keyboard::Key::Named(
-                    cosmic::iced::keyboard::key::Named::ArrowDown,
-                ) => Some(Message::Search(SearchMessage::SelectDelta(1))),
+        cosmic::iced::Subscription::batch([
+            cosmic::iced::event::listen_with(|event, _status, _id| match event {
+                cosmic::iced::Event::Keyboard(
+                    cosmic::iced::keyboard::Event::KeyPressed { key, .. },
+                ) => match key {
+                    cosmic::iced::keyboard::Key::Named(
+                        cosmic::iced::keyboard::key::Named::ArrowUp,
+                    ) => Some(Message::Search(SearchMessage::SelectDelta(-1))),
+                    cosmic::iced::keyboard::Key::Named(
+                        cosmic::iced::keyboard::key::Named::ArrowDown,
+                    ) => Some(Message::Search(SearchMessage::SelectDelta(1))),
+                    _ => None,
+                },
                 _ => None,
-            },
-            _ => None,
-        })
+            }),
+            background::db_lock_watcher_subscription(),
+        ])
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
@@ -353,6 +360,7 @@ pub enum Message {
     Updates(UpdatesMessage),
     Sysupgrade(SysupgradeMessage),
     Navigate(Page),
+    DbLockReleased,
 }
 
 #[derive(Clone, Copy, Debug)]

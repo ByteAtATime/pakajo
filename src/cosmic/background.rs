@@ -2,12 +2,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use futures::FutureExt as _;
+use futures::SinkExt as _;
+use futures::StreamExt as _;
 
 use pakajo::local_index::{LocalIndex, RefreshOutcome};
 use pakajo::pacman::init_alpm;
 use pakajo::search::engine::SearchEngine;
 
 pub const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
+pub const LOCK_DEBOUNCE: Duration = Duration::from_millis(300);
 
 pub fn begin_aur_sync_in_background(
     local_index: Arc<LocalIndex>,
@@ -64,4 +68,34 @@ pub fn begin_aur_sync_in_background(
             }
         }
     });
+}
+
+struct DbLockWatcher;
+
+pub(crate) fn db_lock_watcher_subscription() -> cosmic::iced::Subscription<crate::Message> {
+    cosmic::iced::Subscription::run_with(std::any::TypeId::of::<DbLockWatcher>(), |_| {
+        cosmic::iced::stream::channel(16, |mut tx: futures::channel::mpsc::Sender<crate::Message>| async move {
+            let (wtx, mut wrx) = futures::channel::mpsc::channel::<()>(16);
+
+            let db_dir = pacmanconf::Config::new()
+                .ok()
+                .map(|c| std::path::PathBuf::from(c.db_path))
+                .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/pacman"));
+
+            pakajo::pacman_watch::spawn_db_lock_watcher(db_dir, wtx);
+
+            while let Some(()) = wrx.next().await {
+                while wrx.next().now_or_never().is_some() {}
+                let (stx, srx) = futures::channel::oneshot::channel::<()>();
+                std::thread::spawn(move || {
+                    std::thread::sleep(LOCK_DEBOUNCE);
+                    let _ = stx.send(());
+                });
+                let _ = srx.await;
+                if tx.send(crate::Message::DbLockReleased).await.is_err() {
+                    break;
+                }
+            }
+        })
+    })
 }
