@@ -4,14 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "wayland", "x11"], rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "ba681dfc8892475c9bf51775fe8dd157b8f31aeb" }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "ba681dfc8892475c9bf51775fe8dd157b8f31aeb" }
 alpm = "5.0.2"
 alpm-utils = "5.0.0"
 pacmanconf = "3.1.0"
-rust-embed = "8.11.0"
 anyhow = "1.0.103"
 regex = "1.12.4"
 libc = "0.2"
@@ -41,7 +36,7 @@ default = ["debug"]
 debug = ["libcosmic/debug"]
 
 [[bin]]
-name = "pakajo-cosmic"
+name = "pakajo"
 path = "src/cosmic/main.rs"
 
 [[bench]]
