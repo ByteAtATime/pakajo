@@ -367,6 +367,11 @@ impl crate::PakajoApp {
                 preview.prepare_error.is_some()
                     || preview.summary.packages.is_empty()
                     || self.transaction.as_ref().is_some_and(|t| t.is_active())
+                    || self
+                        .sysupgrade_review
+                        .as_ref()
+                        .map(|r| r.conflict_checks.iter().any(|&c| !c))
+                        .unwrap_or_else(|| !preview.questions.conflicts.is_empty())
             }
             None => true,
         };
