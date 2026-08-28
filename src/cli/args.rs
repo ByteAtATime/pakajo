@@ -18,6 +18,7 @@ pub enum Command {
     Clean(CleanArgs),
     AurSync,
     Gendb,
+    Completions(CompletionsArgs),
 }
 
 #[derive(Args)]
@@ -67,4 +68,16 @@ pub struct SearchArgs {
 pub struct CleanArgs {
     #[arg(short = 'r', long = "remove")]
     pub remove: bool,
+}
+
+#[derive(Args)]
+pub struct CompletionsArgs {
+    pub shell: Shell,
+}
+
+#[derive(clap::ValueEnum, Clone)]
+pub enum Shell {
+    Bash,
+    Zsh,
+    Fish,
 }

@@ -4,7 +4,7 @@ use crate::install::InstallTarget;
 use clap::Parser;
 
 mod args;
-use self::args::{CleanArgs, InstallArgs, RemoveArgs, SearchArgs, UpgradeArgs};
+use self::args::{CleanArgs, CompletionsArgs, InstallArgs, RemoveArgs, SearchArgs, UpgradeArgs};
 pub use self::args::{Cli, Command};
 
 mod summary;
@@ -34,6 +34,7 @@ use self::commands::{
 };
 
 mod complete;
+mod completions;
 
 pub fn parse() -> Cli {
     let mut argv: Vec<String> = std::env::args().collect();
@@ -55,6 +56,7 @@ pub fn dispatch(cli: Cli) {
         Some(Command::Clean(a)) => clean_subcommand(a),
         Some(Command::AurSync) => aur_sync_subcommand(),
         Some(Command::Gendb) => gendb_subcommand(),
+        Some(Command::Completions(a)) => completions_subcommand(a),
         None => {}
     }
 }
@@ -214,6 +216,10 @@ pub fn aur_sync_subcommand() -> ! {
 
 pub fn gendb_subcommand() -> ! {
     exit_with_result(run_gendb());
+}
+
+pub fn completions_subcommand(args: CompletionsArgs) -> ! {
+    exit_with_result(completions::run(args.shell));
 }
 
 pub fn clean_subcommand(args: CleanArgs) -> ! {
