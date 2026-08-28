@@ -8,6 +8,7 @@ use pakajo::build::{BuildDecision, run_build};
 use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
 use pakajo::events::InstallEvent;
 use pakajo::install::{ChildOutcome, StreamItem, run_install_process};
+use pakajo::remove::run_remove_process;
 use pakajo::upgrade::run_sysupgrade_process;
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
@@ -95,6 +96,19 @@ impl Transaction {
         (Self { model }, task)
     }
 
+    pub(crate) fn start_remove(name: String, source: PackageSource) -> (Self, Task<crate::Message>) {
+        let mut transaction = Transaction {
+            model: TransactionModel::new(name, source, InstallKind::Remove),
+        };
+        eprintln!("[pakajo] transaction: remove started");
+        let action = transaction.launch_remove_subprocess();
+        let task = match action {
+            Action::Run(task) => task,
+            _ => Task::none(),
+        };
+        (transaction, task)
+    }
+
     pub(crate) fn update(
         &mut self,
         message: TransactionMessage,
@@ -103,10 +117,6 @@ impl Transaction {
     ) -> Action {
         match message {
             TransactionMessage::StartInstall => Action::None,
-            TransactionMessage::StartRemove => {
-                eprintln!("[pakajo] transaction: remove");
-                Action::None
-            }
             TransactionMessage::InstallEvent(ev) => {
                 self.model.apply_event(&ev);
                 Action::None
@@ -224,6 +234,7 @@ impl Transaction {
             }
             TransactionMessage::CancelPkgbuild => Action::Finished,
             TransactionMessage::Close => Action::Finished,
+            _ => Action::None,
         }
     }
 
@@ -291,6 +302,49 @@ impl Transaction {
                                         outcome,
                                     ))
                                     .into(),
+                                )
+                                .await;
+                            break;
+                        }
+                    }
+                }
+            },
+        ));
+        Action::Run(stream)
+    }
+
+    fn launch_remove_subprocess(&mut self) -> Action {
+        let exe = match current_exe() {
+            Ok(exe) => exe,
+            Err(e) => {
+                eprintln!("[pakajo] failed to resolve current_exe: {e}");
+                return Action::None;
+            }
+        };
+        self.model.status = TransactionStatus::Running;
+        let name = self.model.name.clone();
+        let (raw_tx, mut raw_rx) = futures::channel::mpsc::channel::<StreamItem>(256);
+        std::thread::spawn(move || {
+            run_remove_process(exe, vec![name], raw_tx);
+        });
+        let stream = Task::stream(cosmic::iced::stream::channel(
+            256,
+            move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
+                while let Some(item) = raw_rx.next().await {
+                    match item {
+                        StreamItem::Event(ev) => {
+                            let _ = tx
+                                .send(
+                                    crate::Message::Transaction(TransactionMessage::InstallEvent(ev))
+                                        .into(),
+                                )
+                                .await;
+                        }
+                        StreamItem::Done(outcome) => {
+                            let _ = tx
+                                .send(
+                                    crate::Message::Transaction(TransactionMessage::InstallDone(outcome))
+                                        .into(),
                                 )
                                 .await;
                             break;
@@ -426,7 +480,11 @@ impl Transaction {
     }
 
     pub(crate) fn view(&self) -> cosmic::Element<'_, crate::Message> {
-        let title = format!("Installing {}", self.model.name);
+        let title = match self.model.kind {
+            InstallKind::Install => format!("Installing {}", self.model.name),
+            InstallKind::Remove => format!("Removing {}", self.model.name),
+            InstallKind::Upgrade => format!("Upgrading {}", self.model.name),
+        };
         let mut panels = Column::new().spacing(6);
         for (i, stage) in self.model.stages.iter().enumerate() {
             panels = panels.push(stage_row(&self.model, i, *stage));

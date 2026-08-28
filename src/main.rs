@@ -260,6 +260,22 @@ impl PakajoApp {
                 self.transaction = Some(txn);
                 task
             }
+            TransactionMessage::StartRemove => {
+                if self
+                    .transaction
+                    .as_ref()
+                    .is_some_and(Transaction::is_active)
+                {
+                    return Task::none();
+                }
+                let (name, source) = match &self.detail {
+                    DetailData::Ready { pkg, .. } => (pkg.name.clone(), pkg.source),
+                    _ => return Task::none(),
+                };
+                let (txn, task) = Transaction::start_remove(name, source);
+                self.transaction = Some(txn);
+                task
+            }
             other => {
                 let action = match self.transaction.as_mut() {
                     Some(t) => {
