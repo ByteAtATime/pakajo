@@ -1,11 +1,14 @@
 use cosmic::app::Task;
+use cosmic::iced::Color;
 use cosmic::widget::{Column, Row, button, checkbox, container, radio, scrollable, space, text};
 
 use anyhow::Context as _;
-use pakajo::dry_run::SysupgradePreview;
+use pakajo::dry_run::{PrepareFailure, SysupgradePreview};
+use pakajo::events::{SummaryPackage, TransactionSummary};
 use pakajo::question::{collect_approvals, default_approve, encode_approvals};
 use pakajo::transaction_state::{Direction, SysupgradePage, next_sysupgrade_step};
 
+use crate::updates::{aur_upgrade_row, muted};
 use crate::transaction::review::{ReviewModel, candidate_label, unsupported_banner};
 use crate::transaction::Transaction;
 
@@ -97,6 +100,9 @@ impl crate::PakajoApp {
         let Some(preview) = &self.sysupgrade_preview else {
             return Task::none();
         };
+        if preview.prepare_error.is_some() {
+            return Task::none();
+        }
         let summary_bytes = serde_json::to_vec(&preview.summary).unwrap_or_default();
         let fingerprint_file = match pakajo::upgrade::write_fingerprint_file(&summary_bytes) {
             Ok(p) => p.to_string_lossy().into_owned(),
@@ -355,20 +361,252 @@ impl crate::PakajoApp {
     pub(crate) fn confirm_page(&self) -> cosmic::Element<'_, crate::Message> {
         let back = button::custom(text("Back"))
             .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Abort));
-        let apply = button::custom(text("Apply"))
-            .class(cosmic::theme::Button::Suggested)
-            .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Apply));
+
+        let apply_disabled = match self.sysupgrade_preview.as_ref() {
+            Some(preview) => {
+                preview.prepare_error.is_some()
+                    || preview.summary.packages.is_empty()
+                    || self.transaction.as_ref().is_some_and(|t| t.is_active())
+            }
+            None => true,
+        };
+        let apply = if apply_disabled {
+            button::custom(text("Apply")).class(cosmic::theme::Button::Suggested)
+        } else {
+            button::custom(text("Apply"))
+                .class(cosmic::theme::Button::Suggested)
+                .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Apply))
+        };
+
         let header = Row::new()
             .spacing(12)
             .push(back)
-            .push(text("Confirm upgrade"))
+            .push(text("Review upgrade"))
             .push(space::horizontal())
             .push(apply);
         let padded_header = container(header).padding([12.0, 12.0]);
-        let column = Column::new().push(padded_header);
+
+        let Some(preview) = self.sysupgrade_preview.as_ref() else {
+            return container(Column::new().push(padded_header).push(no_preview()))
+                .width(cosmic::iced::Length::Fill)
+                .height(cosmic::iced::Length::Fill)
+                .into();
+        };
+
+        let mut body = Column::new().spacing(16).padding([0.0, 12.0]);
+
+        if let Some(failure) = &preview.prepare_error {
+            body = body.push(blocked_banner(failure));
+        }
+
+        body = body.push(manifest_section(&preview.summary));
+
+        if !preview.aur.is_empty() {
+            let mut aur_col = Column::new().spacing(8);
+            aur_col = aur_col.push(
+                text(format!("AUR packages to build ({})", preview.aur.len()))
+                    .font(cosmic::font::semibold()),
+            );
+            for candidate in &preview.aur {
+                aur_col = aur_col.push(aur_upgrade_row(candidate));
+            }
+            body = body.push(aur_col);
+        }
+
+        let column = Column::new()
+            .push(padded_header)
+            .push(scrollable(body).id(crate::page_scroll_id()));
         container(column)
             .width(cosmic::iced::Length::Fill)
             .height(cosmic::iced::Length::Fill)
             .into()
     }
+}
+
+fn accent_color(theme: &cosmic::Theme) -> Color {
+    Color::from(theme.cosmic().accent.base)
+}
+
+fn divider() -> cosmic::Element<'static, crate::Message> {
+    container(text(""))
+        .width(cosmic::iced::Length::Fill)
+        .height(1.0)
+        .style(|theme: &cosmic::Theme| container::Style {
+            background: Some(cosmic::iced::Background::Color(Color::from(
+                theme.cosmic().background(false).divider,
+            ))),
+            ..Default::default()
+        })
+        .into()
+}
+
+fn success_color(theme: &cosmic::Theme) -> Color {
+    Color::from(theme.cosmic().success.base)
+}
+
+fn destructive_color(theme: &cosmic::Theme) -> Color {
+    Color::from(theme.cosmic().destructive.base)
+}
+
+fn op_pill(label: &str, color_fn: fn(&cosmic::Theme) -> Color) -> cosmic::Element<'static, crate::Message> {
+    container(text(label.to_string()))
+        .padding([2.0, 8.0])
+        .style(move |theme: &cosmic::Theme| container::Style {
+            text_color: Some(color_fn(theme)),
+            background: Some(cosmic::iced::Background::Color({
+                let colored = color_fn(theme);
+                Color { a: 0.10, ..colored }
+            })),
+            ..Default::default()
+        })
+        .into()
+}
+
+fn summary_row(pkg: &SummaryPackage) -> cosmic::Element<'_, crate::Message> {
+    let (op_label, color_fn, version_text) = if pkg.is_removal {
+        (
+            "Remove",
+            destructive_color as fn(&cosmic::Theme) -> Color,
+            pkg.old_version.clone().unwrap_or_default(),
+        )
+    } else if pkg.old_version.is_some() {
+        (
+            "Upgrade",
+            accent_color as fn(&cosmic::Theme) -> Color,
+            format!(
+                "{} \u{2192} {}",
+                pkg.old_version.as_deref().unwrap_or("?"),
+                pkg.new_version
+            ),
+        )
+    } else {
+        (
+            "Install",
+            success_color as fn(&cosmic::Theme) -> Color,
+            pkg.new_version.clone(),
+        )
+    };
+
+    let left = text(&pkg.name);
+    let right = Row::new()
+        .align_y(cosmic::iced::Alignment::Center)
+        .spacing(8)
+        .push(muted(version_text))
+        .push(op_pill(op_label, color_fn));
+    Row::new()
+        .align_y(cosmic::iced::Alignment::Center)
+        .width(cosmic::iced::Length::Fill)
+        .spacing(12)
+        .push(left)
+        .push(space::horizontal())
+        .push(right)
+        .into()
+}
+
+fn manifest_section(summary: &TransactionSummary) -> cosmic::Element<'_, crate::Message> {
+    let mut installs = 0u32;
+    let mut upgrades = 0u32;
+    let mut removes = 0u32;
+    for pkg in &summary.packages {
+        if pkg.is_removal {
+            removes += 1;
+        } else if pkg.old_version.is_some() {
+            upgrades += 1;
+        } else {
+            installs += 1;
+        }
+    }
+
+    let mut counts: Vec<String> = Vec::new();
+    if installs > 0 {
+        counts.push(format!("Install {installs}"));
+    }
+    if upgrades > 0 {
+        counts.push(format!("Upgrade {upgrades}"));
+    }
+    if removes > 0 {
+        counts.push(format!("Remove {removes}"));
+    }
+    let counts_left = counts.join(" \u{00b7} ");
+
+    let download_right = if summary.total_download_size > 0 {
+        Some(format!(
+            "\u{2193} {}",
+            pakajo::utils::format_bytes(summary.total_download_size)
+        ))
+    } else {
+        None
+    };
+
+    let net = summary.total_installed_size - summary.total_removed_size;
+    let net_text = if net != 0 {
+        let sign = if net > 0 { "+" } else { "-" };
+        Some(format!(
+            "Net {sign}{}",
+            pakajo::utils::format_bytes(net.abs())
+        ))
+    } else {
+        None
+    };
+
+    let mut card = Column::new().spacing(10);
+
+    let mut top = Row::new()
+        .align_y(cosmic::iced::Alignment::Center)
+        .spacing(8);
+    top = top.push(text(counts_left).font(cosmic::font::semibold()));
+    top = top.push(space::horizontal());
+    if let Some(download) = download_right {
+        top = top.push(muted(download));
+    }
+    card = card.push(top);
+
+    if let Some(net_label) = net_text {
+        card = card.push(muted(net_label));
+    }
+
+    card = card.push(divider());
+
+    let total = summary.packages.len();
+    for pkg in summary.packages.iter().take(6) {
+        card = card.push(summary_row(pkg));
+    }
+
+    let extra = total.saturating_sub(6);
+    if extra > 0 {
+        card = card.push(muted(format!("+{extra} more")));
+    }
+
+    card.into()
+}
+
+fn blocked_banner(failure: &PrepareFailure) -> cosmic::Element<'static, crate::Message> {
+    let mut col = Column::new().spacing(6);
+    col = col.push(text("Cannot complete this upgrade").font(cosmic::font::semibold()));
+    match failure {
+        PrepareFailure::Unsatisfied(deps) => {
+            for dep in deps {
+                col = col.push(muted(format!("{} required by {}", dep.depend, dep.target)));
+            }
+        }
+        PrepareFailure::Other(message) => {
+            col = col.push(muted(message.clone()));
+        }
+    }
+    container(col)
+        .padding(12)
+        .style(|theme: &cosmic::Theme| {
+            let warn = Color::from(theme.cosmic().warning.base);
+            container::Style {
+                text_color: Some(warn),
+                background: Some(cosmic::iced::Background::Color(Color { a: 0.12, ..warn })),
+                border: cosmic::iced::Border {
+                    radius: 8.0.into(),
+                    width: 1.0,
+                    color: warn,
+                },
+                ..Default::default()
+            }
+        })
+        .into()
 }
