@@ -301,7 +301,11 @@ fn completed_row(filename: &str, file: &DownloadFile) -> cosmic::Element<'static
     Row::new()
         .align_y(cosmic::iced::alignment::Vertical::Center)
         .spacing(8)
-        .push(crate::components::icons::circle_check().width(14.0).height(14.0))
+        .push(
+            crate::components::icons::circle_check()
+                .width(14.0)
+                .height(14.0),
+        )
         .push(name_widget)
         .push(space::horizontal())
         .push(muted(text(format_bytes(file.total))))

@@ -198,18 +198,18 @@ impl crate::PakajoApp {
                     .on_press(crate::Message::Updates(UpdatesMessage::RefreshUpdates))
                     .into()
             };
-        let upgrade_all: cosmic::Element<'_, crate::Message> =
-            if self.sysupgrade_preview_in_flight {
-                text("Checking...").into()
+        let upgrade_all: cosmic::Element<'_, crate::Message> = if self.sysupgrade_preview_in_flight
+        {
+            text("Checking...").into()
+        } else {
+            let btn = button::custom(text("Upgrade all"));
+            let btn = if self.pending_count > 0 {
+                btn.on_press(crate::Message::Sysupgrade(SysupgradeMessage::StartPreview))
             } else {
-                let btn = button::custom(text("Upgrade all"));
-                let btn = if self.pending_count > 0 {
-                    btn.on_press(crate::Message::Sysupgrade(SysupgradeMessage::StartPreview))
-                } else {
-                    btn
-                };
-                btn.into()
+                btn
             };
+            btn.into()
+        };
         let header = Row::new()
             .spacing(12)
             .push(back)
@@ -227,8 +227,7 @@ impl crate::PakajoApp {
                     .spacing(6)
                     .push(text("Couldn't check for updates"))
                     .push(
-                        text(msg.clone())
-                            .class(cosmic::iced::Color::from_rgba(0.5, 0.5, 0.5, 1.0)),
+                        text(msg.clone()).class(cosmic::iced::Color::from_rgba(0.5, 0.5, 0.5, 1.0)),
                     ),
             )
             .padding([0.0, 12.0])

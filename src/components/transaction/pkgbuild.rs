@@ -45,9 +45,7 @@ impl PkgbuildModel {
         }
 
         let body = match self.diffs.get(self.current) {
-            Some(diff) => {
-                scrollable(diff_lines_column(diff)).height(Length::Fixed(400.0))
-            }
+            Some(diff) => scrollable(diff_lines_column(diff)).height(Length::Fixed(400.0)),
             None => scrollable(text("No PKGBUILD to review")).height(Length::Fixed(400.0)),
         };
 

@@ -38,10 +38,7 @@ pub fn row_to_result(row: &PackageRow, installed: &HashSet<String>) -> SearchRes
     }
 }
 
-pub fn apply_installed_to_results(
-    results: &mut [SearchResult],
-    installed: &HashSet<String>,
-) {
+pub fn apply_installed_to_results(results: &mut [SearchResult], installed: &HashSet<String>) {
     for result in results.iter_mut() {
         result.installed = installed.contains(&result.name);
     }

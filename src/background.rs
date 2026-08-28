@@ -74,28 +74,31 @@ struct DbLockWatcher;
 
 pub(crate) fn db_lock_watcher_subscription() -> cosmic::iced::Subscription<crate::Message> {
     cosmic::iced::Subscription::run_with(std::any::TypeId::of::<DbLockWatcher>(), |_| {
-        cosmic::iced::stream::channel(16, |mut tx: futures::channel::mpsc::Sender<crate::Message>| async move {
-            let (wtx, mut wrx) = futures::channel::mpsc::channel::<()>(16);
+        cosmic::iced::stream::channel(
+            16,
+            |mut tx: futures::channel::mpsc::Sender<crate::Message>| async move {
+                let (wtx, mut wrx) = futures::channel::mpsc::channel::<()>(16);
 
-            let db_dir = pacmanconf::Config::new()
-                .ok()
-                .map(|c| std::path::PathBuf::from(c.db_path))
-                .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/pacman"));
+                let db_dir = pacmanconf::Config::new()
+                    .ok()
+                    .map(|c| std::path::PathBuf::from(c.db_path))
+                    .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/pacman"));
 
-            pakajo::pacman_watch::spawn_db_lock_watcher(db_dir, wtx);
+                pakajo::pacman_watch::spawn_db_lock_watcher(db_dir, wtx);
 
-            while let Some(()) = wrx.next().await {
-                while wrx.next().now_or_never().is_some() {}
-                let (stx, srx) = futures::channel::oneshot::channel::<()>();
-                std::thread::spawn(move || {
-                    std::thread::sleep(LOCK_DEBOUNCE);
-                    let _ = stx.send(());
-                });
-                let _ = srx.await;
-                if tx.send(crate::Message::DbLockReleased).await.is_err() {
-                    break;
+                while let Some(()) = wrx.next().await {
+                    while wrx.next().now_or_never().is_some() {}
+                    let (stx, srx) = futures::channel::oneshot::channel::<()>();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(LOCK_DEBOUNCE);
+                        let _ = stx.send(());
+                    });
+                    let _ = srx.await;
+                    if tx.send(crate::Message::DbLockReleased).await.is_err() {
+                        break;
+                    }
                 }
-            }
-        })
+            },
+        )
     })
 }

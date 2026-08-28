@@ -8,9 +8,9 @@ use pakajo::events::{SummaryPackage, TransactionSummary};
 use pakajo::question::{collect_approvals, default_approve, encode_approvals};
 use pakajo::transaction_state::{Direction, SysupgradePage, next_sysupgrade_step};
 
-use crate::components::updates::{aur_upgrade_row, muted};
-use crate::components::transaction::review::{ReviewModel, candidate_label, unsupported_banner};
 use crate::components::transaction::Transaction;
+use crate::components::transaction::review::{ReviewModel, candidate_label, unsupported_banner};
+use crate::components::updates::{aur_upgrade_row, muted};
 
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -68,7 +68,8 @@ impl crate::PakajoApp {
                     .syncdbs_mut()
                     .update(false)
                     .context("failed to refresh checkdb sync DBs rootless")?;
-                let mut preview = pakajo::dry_run::compute_sysupgrade_preview(&mut handle, &config)?;
+                let mut preview =
+                    pakajo::dry_run::compute_sysupgrade_preview(&mut handle, &config)?;
                 let aur_names: Vec<String> = preview.aur.iter().map(|c| c.name.clone()).collect();
                 if !aur_names.is_empty() {
                     match pakajo::pkgbuild::prepare_pkgbuild_diffs(&aur_names) {
@@ -130,7 +131,8 @@ impl crate::PakajoApp {
                 }
             }
         };
-        let (transaction, task) = Transaction::start_sysupgrade_repo(fingerprint_file, approvals_b64);
+        let (transaction, task) =
+            Transaction::start_sysupgrade_repo(fingerprint_file, approvals_b64);
         self.transaction = Some(transaction);
         self.active_sysupgrade_phase = Some(pakajo::transaction_state::SysupgradePhase::Repo);
         eprintln!("[pakajo] sysupgrade repo apply started");
@@ -264,7 +266,8 @@ impl crate::PakajoApp {
             if !r.qs.conflicts.is_empty() {
                 body = body.push(text("Conflicts"));
                 for (i, conflict) in r.qs.conflicts.iter().enumerate() {
-                    let label = format!("Replace {} with {}", conflict.removable, conflict.incoming);
+                    let label =
+                        format!("Replace {} with {}", conflict.removable, conflict.incoming);
                     let checked = r.conflict_checks.get(i).copied().unwrap_or(false);
                     let item = checkbox(checked).label(label).on_toggle(move |_| {
                         crate::Message::Sysupgrade(SysupgradeMessage::ToggleConflict(i))
@@ -277,11 +280,7 @@ impl crate::PakajoApp {
                 body = body.push(text("Providers"));
                 for prompt in &r.qs.providers {
                     body = body.push(text(prompt.depend.clone()));
-                    let selected = r
-                        .provider_choices
-                        .get(&prompt.depend)
-                        .copied()
-                        .unwrap_or(0);
+                    let selected = r.provider_choices.get(&prompt.depend).copied().unwrap_or(0);
                     for (idx, candidate) in prompt.candidates.iter().enumerate() {
                         let label = candidate_label(candidate);
                         let depend = prompt.depend.clone();
@@ -444,7 +443,10 @@ fn destructive_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().destructive.base)
 }
 
-fn op_pill(label: &str, color_fn: fn(&cosmic::Theme) -> Color) -> cosmic::Element<'static, crate::Message> {
+fn op_pill(
+    label: &str,
+    color_fn: fn(&cosmic::Theme) -> Color,
+) -> cosmic::Element<'static, crate::Message> {
     container(text(label.to_string()))
         .padding([2.0, 8.0])
         .style(move |theme: &cosmic::Theme| container::Style {

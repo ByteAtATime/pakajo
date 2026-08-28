@@ -56,7 +56,10 @@ pub fn search_bar(query: &str) -> cosmic::Element<'_, crate::Message> {
         .into()
 }
 
-pub fn search_status_text(state: SearchState, count: usize) -> cosmic::Element<'static, crate::Message> {
+pub fn search_status_text(
+    state: SearchState,
+    count: usize,
+) -> cosmic::Element<'static, crate::Message> {
     let header_text = if state == SearchState::Searching {
         "Searching...".to_string()
     } else {

@@ -20,7 +20,9 @@ use pakajo::search::engine::SearchEngine;
 
 use background::begin_aur_sync_in_background;
 use components::detail::{DetailData, DetailMessage, detail_view};
-use components::search::{SearchMessage, SearchState, results_list, search_bar, search_status_text};
+use components::search::{
+    SearchMessage, SearchState, results_list, search_bar, search_status_text,
+};
 use components::sysupgrade::SysupgradeMessage;
 use components::transaction::review::ReviewModel;
 use components::transaction::{Action, Transaction, TransactionMessage};
@@ -172,9 +174,10 @@ impl Application for PakajoApp {
     fn subscription(&self) -> cosmic::iced::Subscription<Self::Message> {
         cosmic::iced::Subscription::batch([
             cosmic::iced::event::listen_with(|event, _status, _id| match event {
-                cosmic::iced::Event::Keyboard(
-                    cosmic::iced::keyboard::Event::KeyPressed { key, .. },
-                ) => match key {
+                cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+                    key,
+                    ..
+                }) => match key {
                     cosmic::iced::keyboard::Key::Named(
                         cosmic::iced::keyboard::key::Named::ArrowUp,
                     ) => Some(Message::Search(SearchMessage::SelectDelta(-1))),
@@ -278,9 +281,11 @@ impl PakajoApp {
             }
             other => {
                 let action = match self.transaction.as_mut() {
-                    Some(t) => {
-                        t.update(other, self.active_sysupgrade_phase, &self.sysupgrade_aur_targets)
-                    }
+                    Some(t) => t.update(
+                        other,
+                        self.active_sysupgrade_phase,
+                        &self.sysupgrade_aur_targets,
+                    ),
                     None => Action::None,
                 };
                 match action {

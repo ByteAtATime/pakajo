@@ -8,12 +8,12 @@ use pakajo::build::{BuildDecision, run_build};
 use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
 use pakajo::events::InstallEvent;
 use pakajo::install::{ChildOutcome, StreamItem, run_install_process};
-use pakajo::remove::run_remove_process;
-use pakajo::upgrade::run_sysupgrade_process;
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
+use pakajo::remove::run_remove_process;
 use pakajo::transaction_state::{InstallKind, SysupgradePhase};
+use pakajo::upgrade::run_sysupgrade_process;
 
 mod state;
 
@@ -23,8 +23,8 @@ mod accordion;
 use accordion::{action_footer, stage_row};
 
 mod pkgbuild;
-use pkgbuild::{PkgbuildMessage, PkgbuildModel};
 pub(crate) use pkgbuild::diff_lines_column;
+use pkgbuild::{PkgbuildMessage, PkgbuildModel};
 
 pub(crate) mod review;
 use review::{ReviewMessage, ReviewModel};
@@ -96,7 +96,10 @@ impl Transaction {
         (Self { model }, task)
     }
 
-    pub(crate) fn start_remove(name: String, source: PackageSource) -> (Self, Task<crate::Message>) {
+    pub(crate) fn start_remove(
+        name: String,
+        source: PackageSource,
+    ) -> (Self, Task<crate::Message>) {
         let mut transaction = Transaction {
             model: TransactionModel::new(name, source, InstallKind::Remove),
         };
@@ -335,16 +338,20 @@ impl Transaction {
                         StreamItem::Event(ev) => {
                             let _ = tx
                                 .send(
-                                    crate::Message::Transaction(TransactionMessage::InstallEvent(ev))
-                                        .into(),
+                                    crate::Message::Transaction(TransactionMessage::InstallEvent(
+                                        ev,
+                                    ))
+                                    .into(),
                                 )
                                 .await;
                         }
                         StreamItem::Done(outcome) => {
                             let _ = tx
                                 .send(
-                                    crate::Message::Transaction(TransactionMessage::InstallDone(outcome))
-                                        .into(),
+                                    crate::Message::Transaction(TransactionMessage::InstallDone(
+                                        outcome,
+                                    ))
+                                    .into(),
                                 )
                                 .await;
                             break;
@@ -419,9 +426,7 @@ impl Transaction {
         (Self { model }, stream)
     }
 
-    pub(crate) fn start_sysupgrade_aur(
-        targets: Vec<String>,
-    ) -> (Self, Task<crate::Message>) {
+    pub(crate) fn start_sysupgrade_aur(targets: Vec<String>) -> (Self, Task<crate::Message>) {
         let mut model = TransactionModel::new(
             "system-aur".to_string(),
             PackageSource::Aur,
