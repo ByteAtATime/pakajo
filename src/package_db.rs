@@ -164,26 +164,76 @@ impl PackageDb {
     pub fn detail(&self, name: &str) -> anyhow::Result<Option<crate::aur::AurInfo>> {
         use rusqlite::OptionalExtension;
         let conn = self.read.lock().expect("read connection poisoned");
-        let json: Option<String> = conn
+        let split_list = |value: Option<String>| -> Vec<String> {
+            match value {
+                None => Vec::new(),
+                Some(text) => text
+                    .split('\n')
+                    .filter(|entry| !entry.is_empty())
+                    .map(|entry| entry.to_string())
+                    .collect(),
+            }
+        };
+        let key = name.to_string();
+        let info: Option<crate::aur::AurInfo> = conn
             .query_row(
-                "SELECT detail_json FROM packages WHERE name = ?1 AND detail_json IS NOT NULL",
-                [name],
-                |row| row.get(0),
+                "SELECT version, description, num_votes, popularity, package_base, \
+                        url, out_of_date, maintainer, license, depends, make_depends, \
+                        check_depends, opt_depends, conflicts, provides, keywords, last_update \
+                 FROM packages WHERE name = ?1 AND source = 'aur'",
+                [key.as_str()],
+                |row| {
+                    Ok(crate::aur::AurInfo {
+                        id: 0,
+                        name: key.clone(),
+                        package_base_id: 0,
+                        package_base: row.get(4)?,
+                        version: row.get(0)?,
+                        description: row.get(1)?,
+                        url: row.get(5)?,
+                        num_votes: row.get::<_, i64>(2)? as u64,
+                        popularity: row.get(3)?,
+                        out_of_date: row.get(6)?,
+                        maintainer: row.get(7)?,
+                        first_submitted: 0,
+                        last_modified: row.get::<_, i64>(16)?,
+                        url_path: None,
+                        submitter: None,
+                        depends: split_list(row.get(9)?),
+                        make_depends: split_list(row.get(10)?),
+                        check_depends: split_list(row.get(11)?),
+                        opt_depends: split_list(row.get(12)?),
+                        conflicts: split_list(row.get(13)?),
+                        provides: split_list(row.get(14)?),
+                        replaces: Vec::new(),
+                        groups: Vec::new(),
+                        license: split_list(row.get(8)?),
+                        keywords: row
+                            .get::<_, String>(15)?
+                            .split_whitespace()
+                            .map(|kw| kw.to_string())
+                            .collect(),
+                        co_maintainers: Vec::new(),
+                    })
+                },
             )
             .optional()?;
-        match json {
-            Some(s) => Ok(Some(serde_json::from_str(&s)?)),
-            None => Ok(None),
-        }
+        Ok(info)
     }
 
     pub fn put_detail(&self, info: &crate::aur::AurInfo) -> anyhow::Result<()> {
         let conn = self.write.lock().expect("write connection poisoned");
-        let json = serde_json::to_string(info)?;
+        let depends = info.depends.join("\n");
+        let make_depends = info.make_depends.join("\n");
+        let check_depends = info.check_depends.join("\n");
+        let opt_depends = info.opt_depends.join("\n");
+        let conflicts = info.conflicts.join("\n");
+        let provides = info.provides.join("\n");
+        let license = info.license.join("\n");
         conn.execute(
             "INSERT INTO packages \
-             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json,keywords) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?) \
+             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,url,out_of_date,maintainer,license,depends,make_depends,check_depends,opt_depends,conflicts,provides,keywords) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
              ON CONFLICT(name) DO UPDATE SET \
              source=excluded.source, \
              repo=excluded.repo, \
@@ -193,7 +243,16 @@ impl PackageDb {
              popularity=excluded.popularity, \
              last_update=excluded.last_update, \
              package_base=excluded.package_base, \
-             detail_json=excluded.detail_json, \
+             url=excluded.url, \
+             out_of_date=excluded.out_of_date, \
+             maintainer=excluded.maintainer, \
+             license=excluded.license, \
+             depends=excluded.depends, \
+             make_depends=excluded.make_depends, \
+             check_depends=excluded.check_depends, \
+             opt_depends=excluded.opt_depends, \
+             conflicts=excluded.conflicts, \
+             provides=excluded.provides, \
              keywords=excluded.keywords",
             rusqlite::params![
                 &info.name,
@@ -205,7 +264,16 @@ impl PackageDb {
                 info.popularity,
                 info.last_modified,
                 &info.package_base,
-                &json,
+                &info.url,
+                info.out_of_date,
+                &info.maintainer,
+                &license,
+                &depends,
+                &make_depends,
+                &check_depends,
+                &opt_depends,
+                &conflicts,
+                &provides,
                 &info.keywords.join(" "),
             ],
         )?;
@@ -226,8 +294,8 @@ impl PackageDb {
 
         let mut pkg_stmt = tx.prepare(
             "INSERT OR REPLACE INTO packages \
-             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json,keywords) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,url,out_of_date,maintainer,license,depends,make_depends,check_depends,opt_depends,conflicts,provides,keywords) \
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )?;
 
         let (aur_count, skipped) = index_aur_rows(&mut pkg_stmt, dump.reader())?;
@@ -244,8 +312,17 @@ impl PackageDb {
         let null_votes: Option<i64> = None;
         let null_popularity: Option<f64> = None;
         let null_base: Option<&str> = None;
-        let null_detail: Option<&str> = None;
         let null_keywords: Option<&str> = None;
+        let null_url: Option<&str> = None;
+        let null_out_of_date: Option<i64> = None;
+        let null_maintainer: Option<&str> = None;
+        let null_license: Option<&str> = None;
+        let null_depends: Option<&str> = None;
+        let null_make_depends: Option<&str> = None;
+        let null_check_depends: Option<&str> = None;
+        let null_opt_depends: Option<&str> = None;
+        let null_conflicts: Option<&str> = None;
+        let null_provides: Option<&str> = None;
         let mut repo_count: usize = 0;
         for db in handle.syncdbs().iter() {
             let repo = db.name();
@@ -260,7 +337,16 @@ impl PackageDb {
                     &null_popularity,
                     pkg.build_date(),
                     &null_base,
-                    &null_detail,
+                    &null_url,
+                    &null_out_of_date,
+                    &null_maintainer,
+                    &null_license,
+                    &null_depends,
+                    &null_make_depends,
+                    &null_check_depends,
+                    &null_opt_depends,
+                    &null_conflicts,
+                    &null_provides,
                     &null_keywords,
                 ])?;
                 repo_count += 1;
@@ -382,6 +468,13 @@ fn index_aur_rows(
         }
         match serde_json::from_str::<crate::aur::AurInfo>(payload) {
             Ok(info) => {
+                let depends = info.depends.join("\n");
+                let make_depends = info.make_depends.join("\n");
+                let check_depends = info.check_depends.join("\n");
+                let opt_depends = info.opt_depends.join("\n");
+                let conflicts = info.conflicts.join("\n");
+                let provides = info.provides.join("\n");
+                let license = info.license.join("\n");
                 pkg_stmt.execute(rusqlite::params![
                     &info.name,
                     "aur",
@@ -392,7 +485,16 @@ fn index_aur_rows(
                     info.popularity,
                     info.last_modified,
                     &info.package_base,
-                    payload,
+                    &info.url,
+                    info.out_of_date,
+                    &info.maintainer,
+                    &license,
+                    &depends,
+                    &make_depends,
+                    &check_depends,
+                    &opt_depends,
+                    &conflicts,
+                    &provides,
                     &info.keywords.join(" "),
                 ])?;
                 aur_count += 1;
@@ -412,7 +514,9 @@ fn apply_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         "CREATE TABLE IF NOT EXISTS packages (\
            name TEXT PRIMARY KEY, source TEXT, repo TEXT, version TEXT, description TEXT,\
            num_votes INTEGER, popularity REAL, last_update INTEGER, package_base TEXT,\
-           detail_json TEXT, keywords TEXT);\
+           url TEXT, out_of_date INTEGER, maintainer TEXT, license TEXT, depends TEXT,\
+           make_depends TEXT, check_depends TEXT, opt_depends TEXT, conflicts TEXT,\
+           provides TEXT, keywords TEXT);\
          CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);",
     )?;
     Ok(())
@@ -496,12 +600,12 @@ mod tests {
     }
 
     const PKG_INSERT_SQL: &str = "INSERT OR REPLACE INTO packages \
-         (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json,keywords) \
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)";
+         (name,source,repo,version,description,num_votes,popularity,last_update,package_base,url,out_of_date,maintainer,license,depends,make_depends,check_depends,opt_depends,conflicts,provides,keywords) \
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
     fn aur_json(id: u64, name: &str) -> String {
         format!(
-            r#"{{"ID":{id},"Name":"{name}","PackageBaseID":{id},"PackageBase":"{name}","Version":"1.0-1","NumVotes":0,"Popularity":0.0,"FirstSubmitted":0,"LastModified":0}}"#
+            r#"{{"ID":{id},"Name":"{name}","PackageBaseID":{id},"PackageBase":"{name}","Version":"1.0-1","NumVotes":0,"Popularity":0.0,"FirstSubmitted":0,"LastModified":0,"URL":"https://example.com/{name}","Maintainer":"maint-{name}","Depends":["a","b"],"MakeDepends":["c"],"OptDepends":["d: thing"]}}"#
         )
     }
 
@@ -552,14 +656,70 @@ mod tests {
             "valid rows should land in packages",
         );
 
-        let alpha_detail: String = check
+        let alpha_depends: Option<String> = check
             .query_row(
-                "SELECT detail_json FROM packages WHERE name = 'alpha'",
+                "SELECT depends FROM packages WHERE name = 'alpha'",
                 [],
                 |row| row.get(0),
             )
-            .expect("alpha detail_json");
-        assert_eq!(alpha_detail, aur_json(1, "alpha"));
+            .expect("alpha depends");
+        assert_eq!(
+            alpha_depends.as_deref(),
+            Some("a\nb"),
+            "depends should be joined with newlines",
+        );
+
+        let alpha_make: Option<String> = check
+            .query_row(
+                "SELECT make_depends FROM packages WHERE name = 'alpha'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("alpha make_depends");
+        assert_eq!(
+            alpha_make.as_deref(),
+            Some("c"),
+            "make_depends should be joined with newlines",
+        );
+
+        let alpha_opt: Option<String> = check
+            .query_row(
+                "SELECT opt_depends FROM packages WHERE name = 'alpha'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("alpha opt_depends");
+        assert_eq!(
+            alpha_opt.as_deref(),
+            Some("d: thing"),
+            "opt_depends should preserve spaces and colon",
+        );
+
+        let alpha_url: Option<String> = check
+            .query_row(
+                "SELECT url FROM packages WHERE name = 'alpha'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("alpha url");
+        assert_eq!(
+            alpha_url.as_deref(),
+            Some("https://example.com/alpha"),
+            "url should be stored from the parsed field",
+        );
+
+        let alpha_maint: Option<String> = check
+            .query_row(
+                "SELECT maintainer FROM packages WHERE name = 'alpha'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("alpha maintainer");
+        assert_eq!(
+            alpha_maint.as_deref(),
+            Some("maint-alpha"),
+            "maintainer should be stored from the parsed field",
+        );
     }
 
     #[test]
@@ -753,64 +913,63 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("aur-meta.sqlite");
         let index = PackageDb::open(&path).expect("open");
-        let conn = rusqlite::Connection::open(&path).expect("seed");
 
         let chrome = r#"{"ID":2154588,"Name":"google-chrome","PackageBaseID":37469,"PackageBase":"google-chrome","Version":"150.0.7871.114-1","Description":"The popular web browser by Google","URL":"https://www.google.com/chrome","NumVotes":2358,"Popularity":11.783191,"OutOfDate":null,"Maintainer":"gromit","Submitter":null,"FirstSubmitted":1274819156,"LastModified":1783555607,"URLPath":"/cgit/aur.git/snapshot/google-chrome.tar.gz","Depends":["alsa-lib","gtk3","libcups","libxss","libxtst","nss","ttf-liberation","xdg-utils"],"OptDepends":["pipewire","kdialog","gnome-keyring","kwallet"],"License":["custom:chrome"],"Keywords":["chromium"]}"#;
         let yay = r#"{"Depends":["pacman>6.1","git"],"Description":"Yet another yogurt.","FirstSubmitted":1475688004,"ID":2131240,"Keywords":["arm"],"LastModified":1781905288,"License":["GPL-3.0-or-later"],"Maintainer":"jguer","MakeDepends":["go>=1.24"],"Name":"yay","NumVotes":2617,"OptDepends":["sudo","doas"],"OutOfDate":null,"PackageBase":"yay","PackageBaseID":115973,"Popularity":40.475635,"Submitter":"jguer","URL":"https://github.com/Jguer/yay","URLPath":"/cgit/aur.git/snapshot/yay.tar.gz","Version":"13.0.1-1"}"#;
         let brave = r#"{"Conflicts":["brave"],"Depends":["alsa-lib","gtk3"],"Description":"Web browser","FirstSubmitted":1459948564,"ID":2163403,"Keywords":["brave"],"LastModified":1784135902,"License":["BSD"],"Maintainer":"brave","Name":"brave-bin","NumVotes":1021,"OptDepends":["cups"],"OutOfDate":null,"PackageBase":"brave-bin","PackageBaseID":109775,"Popularity":25.129281,"Provides":["brave=1.92.140","brave-browser"],"Submitter":"toropisco","URL":"https://www.brave.com","URLPath":"/cgit/aur.git/snapshot/brave-bin.tar.gz","Version":"1:1.92.140-1"}"#;
 
-        for (name, blob) in [
-            ("google-chrome", chrome),
-            ("yay", yay),
-            ("brave-bin", brave),
-        ] {
-            conn.execute(
-                "INSERT INTO packages (name, detail_json) VALUES (?, ?)",
-                rusqlite::params![name, blob],
-            )
-            .expect("seed");
-        }
-        conn.execute("INSERT INTO packages (name) VALUES ('repo-pkg')", [])
-            .expect("seed null blob");
+        let chrome_info = serde_json::from_str::<AurInfo>(chrome).expect("parse chrome");
+        let yay_info = serde_json::from_str::<AurInfo>(yay).expect("parse yay");
+        let brave_info = serde_json::from_str::<AurInfo>(brave).expect("parse brave");
+
+        index.put_detail(&chrome_info).expect("put chrome");
+        index.put_detail(&yay_info).expect("put yay");
+        index.put_detail(&brave_info).expect("put brave");
+
+        let conn = index.write.lock().expect("write connection poisoned");
+        conn.execute(
+            "INSERT INTO packages \
+             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,url,out_of_date,maintainer,license,depends,make_depends,check_depends,opt_depends,conflicts,provides,keywords) \
+             VALUES ('repo-pkg','repo','core','1.0-1',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL)",
+            [],
+        )
+        .expect("seed repo row");
         drop(conn);
 
-        let chrome_info = index
+        let chrome = index
             .detail("google-chrome")
             .expect("chrome query")
             .expect("chrome present");
-        assert_eq!(chrome_info.name, "google-chrome");
-        assert_eq!(chrome_info.version, "150.0.7871.114-1");
-        assert_eq!(chrome_info.depends.len(), 8);
-        assert_eq!(chrome_info.opt_depends.len(), 4);
-        assert_eq!(chrome_info.license, vec!["custom:chrome".to_string()]);
-        assert_eq!(chrome_info.maintainer.as_deref(), Some("gromit"));
+        assert_eq!(chrome.name, "google-chrome");
+        assert_eq!(chrome.version, "150.0.7871.114-1");
+        assert_eq!(chrome.depends.len(), 8);
+        assert_eq!(chrome.opt_depends.len(), 4);
+        assert_eq!(chrome.license, vec!["custom:chrome".to_string()]);
+        assert_eq!(chrome.maintainer.as_deref(), Some("gromit"));
         assert!(
-            chrome_info.make_depends.is_empty(),
-            "omitted MakeDepends must deserialize empty"
+            chrome.make_depends.is_empty(),
+            "omitted MakeDepends must reconstruct empty"
         );
         assert!(
-            chrome_info.provides.is_empty(),
-            "omitted Provides must deserialize empty"
+            chrome.provides.is_empty(),
+            "omitted Provides must reconstruct empty"
         );
         assert!(
-            chrome_info.conflicts.is_empty(),
-            "omitted Conflicts must deserialize empty"
+            chrome.conflicts.is_empty(),
+            "omitted Conflicts must reconstruct empty"
         );
 
-        let yay_info = index
-            .detail("yay")
-            .expect("yay query")
-            .expect("yay present");
-        assert_eq!(yay_info.make_depends, vec!["go>=1.24".to_string()]);
-        assert!(yay_info.depends.contains(&"git".to_string()));
+        let yay = index.detail("yay").expect("yay query").expect("yay present");
+        assert_eq!(yay.make_depends, vec!["go>=1.24".to_string()]);
+        assert!(yay.depends.contains(&"git".to_string()));
 
-        let brave_info = index
+        let brave = index
             .detail("brave-bin")
             .expect("brave query")
             .expect("brave present");
-        assert_eq!(brave_info.conflicts, vec!["brave".to_string()]);
+        assert_eq!(brave.conflicts, vec!["brave".to_string()]);
         assert_eq!(
-            brave_info.provides,
+            brave.provides,
             vec!["brave=1.92.140".to_string(), "brave-browser".to_string()]
         );
 
@@ -820,7 +979,7 @@ mod tests {
         );
         assert!(
             index.detail("repo-pkg").expect("repo query").is_none(),
-            "NULL detail_json must map to None"
+            "non-aur rows must map to None"
         );
     }
 
@@ -880,8 +1039,8 @@ mod tests {
 
         conn.execute(
             "INSERT INTO packages \
-             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,detail_json,keywords) \
-             VALUES ('vim','aur','aur','1.0-1','editor',0,0.0,0,'vim',NULL,NULL)",
+             (name,source,repo,version,description,num_votes,popularity,last_update,package_base,url,out_of_date,maintainer,license,depends,make_depends,check_depends,opt_depends,conflicts,provides,keywords) \
+             VALUES ('vim','aur','aur','1.0-1','editor',0,0.0,0,'vim',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL)",
             [],
         )
         .expect("seed vim");
@@ -912,8 +1071,127 @@ mod tests {
         );
         assert!(
             index.detail("vim").expect("vim query").is_some(),
-            "detail_json must be written after put_detail"
+            "detail columns must be written after put_detail"
         );
+    }
+
+    #[test]
+    fn put_detail_round_trips_detail_columns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = PackageDb::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+
+        let info = AurInfo {
+            id: 0,
+            name: "orphan-pkg".to_string(),
+            package_base_id: 0,
+            package_base: "orphan-pkg".to_string(),
+            version: "1.0-1".to_string(),
+            description: Some("an orphaned package".to_string()),
+            url: Some("https://example.com".to_string()),
+            num_votes: 0,
+            popularity: 0.0,
+            out_of_date: Some(1700000000),
+            maintainer: None,
+            first_submitted: 0,
+            last_modified: 1234,
+            url_path: None,
+            submitter: None,
+            depends: vec![],
+            make_depends: vec![],
+            check_depends: vec![],
+            opt_depends: vec!["foo-utils: extra tools".to_string(), "bar".to_string()],
+            conflicts: vec![],
+            provides: vec![],
+            replaces: vec![],
+            groups: vec![],
+            license: vec![],
+            keywords: vec!["kw1".to_string()],
+            co_maintainers: vec![],
+        };
+        index.put_detail(&info).expect("put_detail");
+
+        let got = index
+            .detail("orphan-pkg")
+            .expect("detail query")
+            .expect("present");
+        assert_eq!(
+            got.url.as_deref(),
+            Some("https://example.com"),
+            "Some url round-trips as Some"
+        );
+        assert_eq!(
+            got.out_of_date,
+            Some(1700000000),
+            "Some out_of_date round-trips as Some with the value"
+        );
+        assert!(got.maintainer.is_none(), "orphaned package maintainer is None");
+        assert_eq!(
+            got.opt_depends,
+            vec!["foo-utils: extra tools".to_string(), "bar".to_string()],
+            "opt_depends entry with spaces and colon round-trips intact"
+        );
+        assert!(got.depends.is_empty(), "empty depends round-trips to vec![]");
+        assert!(
+            got.make_depends.is_empty(),
+            "empty make_depends round-trips to vec![]"
+        );
+        assert!(got.license.is_empty(), "empty license round-trips to vec![]");
+        assert_eq!(
+            got.keywords,
+            vec!["kw1".to_string()],
+            "keywords round-trip through the column"
+        );
+        assert_eq!(
+            got.last_modified, 1234,
+            "last_modified is read back from the last_update column"
+        );
+    }
+
+    #[test]
+    fn index_aur_rows_writes_detail_columns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = PackageDb::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+
+        let row = r#"{"ID":1,"Name":"pkg","PackageBaseID":1,"PackageBase":"pkg","Version":"1.0-1","Description":"d","NumVotes":0,"Popularity":0.0,"FirstSubmitted":0,"LastModified":42,"URL":"https://u","Maintainer":"m","OutOfDate":null,"Depends":["x","y"],"MakeDepends":["z"],"CheckDepends":["w"],"OptDepends":["o: opt"],"Conflicts":["c"],"Provides":["p"],"License":["MIT"],"Keywords":["k"]}"#;
+        let input = format!("[\n{row}\n]");
+        let reader = std::io::Cursor::new(input.into_bytes());
+
+        let mut conn = index.write.lock().expect("write connection poisoned");
+        let tx = conn.transaction().expect("transaction");
+        tx.execute_batch("DELETE FROM packages;").expect("delete");
+        let mut pkg_stmt = tx.prepare(PKG_INSERT_SQL).expect("prepare pkg");
+        let (aur_count, skipped) = index_aur_rows(&mut pkg_stmt, reader).expect("index");
+        drop(pkg_stmt);
+        tx.commit().expect("commit");
+        drop(conn);
+
+        assert_eq!(aur_count, 1, "one valid row should be indexed");
+        assert_eq!(skipped, 0, "no malformed rows");
+
+        let check = rusqlite::Connection::open(dir.path().join("aur-meta.sqlite")).expect("reopen");
+        let cols: (String, Option<String>, Option<String>, String, String, String) = check
+            .query_row(
+                "SELECT depends, url, maintainer, opt_depends, license, check_depends \
+                 FROM packages WHERE name = 'pkg'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .expect("select detail columns");
+        assert_eq!(cols.0, "x\ny", "depends joined with newline");
+        assert_eq!(cols.1.as_deref(), Some("https://u"), "url stored from field");
+        assert_eq!(cols.2.as_deref(), Some("m"), "maintainer stored from field");
+        assert_eq!(cols.3, "o: opt", "opt_depends with colon preserved");
+        assert_eq!(cols.4, "MIT", "license joined with newline");
+        assert_eq!(cols.5, "w", "check_depends joined with newline");
     }
 
     #[test]
