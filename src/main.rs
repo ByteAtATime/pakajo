@@ -243,7 +243,11 @@ impl PakajoApp {
             .push(search_status_text(self.search_state, self.results.len()))
             .push(
                 Row::new()
-                    .push(results_scroller(&self.results, self.selected_index, &self.scroller))
+                    .push(results_scroller(
+                        &self.results,
+                        self.selected_index,
+                        &self.scroller,
+                    ))
                     .push(detail_view(&self.detail, checking)),
             );
 

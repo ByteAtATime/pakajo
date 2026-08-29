@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use cosmic::Element;
 use cosmic::app::Task;
-use cosmic::iced::{Padding, Rectangle};
 use cosmic::iced::widget::scrollable::{AbsoluteOffset, scroll_by, scroll_to};
+use cosmic::iced::{Padding, Rectangle};
 use cosmic::widget::rectangle_tracker::{RectangleTracker, RectangleUpdate};
 use cosmic::widget::{Column, Row, button, scrollable, text, text_input};
 

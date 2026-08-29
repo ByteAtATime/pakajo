@@ -125,13 +125,8 @@ pub fn run_search(query: &str) -> anyhow::Result<()> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let snapshot = crate::pacman::snapshot::get(&config)?;
     let installed: std::collections::HashSet<String> = snapshot.installed.into_iter().collect();
-    let results = crate::search::dispatch_search(
-        &engine,
-        &local,
-        &installed,
-        query,
-        &snapshot.groups,
-    );
+    let results =
+        crate::search::dispatch_search(&engine, &local, &installed, query, &snapshot.groups);
     print_search_results(&results);
     Ok(())
 }

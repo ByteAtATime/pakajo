@@ -185,9 +185,9 @@ mod tests {
     use crate::db::fetch::DecompressedDump;
     use crate::db::pkg_insert_sql;
     use alpm::Alpm;
+    use flate2::Compression;
     use flate2::read::GzDecoder;
     use flate2::write::GzEncoder;
-    use flate2::Compression;
     use std::io::Write;
 
     fn aur_json(id: u64, name: &str) -> String {
@@ -276,7 +276,11 @@ mod tests {
         assert_eq!(text("package_base"), "allinone", "package_base");
         assert_eq!(text("url"), "https://example.com/allinone", "url");
         assert_eq!(opt_num("out_of_date"), Some(1234567890), "out_of_date");
-        assert_eq!(opt_text("maintainer"), Some("mymaint".to_string()), "maintainer");
+        assert_eq!(
+            opt_text("maintainer"),
+            Some("mymaint".to_string()),
+            "maintainer"
+        );
         assert_eq!(text("license"), "MIT\nApache-2.0", "license");
         assert_eq!(text("depends"), "a\nb\nc", "depends");
         assert_eq!(text("make_depends"), "m1\nm2", "make_depends");
@@ -367,7 +371,11 @@ mod tests {
 
         let msg = "too many malformed AUR rows: 3 of 4";
         let err = result.expect_err("gate must return Err");
-        assert_eq!(err.to_string(), msg, "error message must match the gate format");
+        assert_eq!(
+            err.to_string(),
+            msg,
+            "error message must match the gate format"
+        );
 
         let check = rusqlite::Connection::open(&path).expect("reopen");
         let pkg_count: i64 = check
@@ -445,7 +453,10 @@ mod tests {
             Some("test-last-modified".to_string())
         );
         assert!(
-            index.get_meta("last_refreshed").expect("last_refreshed").is_some(),
+            index
+                .get_meta("last_refreshed")
+                .expect("last_refreshed")
+                .is_some(),
             "last_refreshed must be recorded"
         );
         assert_eq!(

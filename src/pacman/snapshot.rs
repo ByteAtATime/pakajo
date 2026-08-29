@@ -221,7 +221,10 @@ mod tests {
         save(&path, &sample_file(key)).unwrap();
         let core = dir.path().join("db/sync/core.db");
         let later = std::time::SystemTime::now() + Duration::from_secs(3600);
-        std::fs::File::open(&core).unwrap().set_modified(later).unwrap();
+        std::fs::File::open(&core)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
         assert!(load(&path, &freshness_key(&conf, &db)).is_none());
     }
 

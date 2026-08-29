@@ -90,8 +90,8 @@ impl super::PackageDb {
 
 #[cfg(test)]
 mod tests {
-    use crate::db::PackageDb;
     use crate::aur::AurInfo;
+    use crate::db::PackageDb;
 
     #[test]
     fn detail_correctly_queried_and_omitted_keys_are_empty() {
@@ -144,7 +144,10 @@ mod tests {
             "omitted Conflicts must reconstruct empty"
         );
 
-        let yay = index.detail("yay").expect("yay query").expect("yay present");
+        let yay = index
+            .detail("yay")
+            .expect("yay query")
+            .expect("yay present");
         assert_eq!(yay.make_depends, vec!["go>=1.24".to_string()]);
         assert!(yay.depends.contains(&"git".to_string()));
 
@@ -211,18 +214,27 @@ mod tests {
             Some(1700000000),
             "Some out_of_date round-trips as Some with the value"
         );
-        assert!(got.maintainer.is_none(), "orphaned package maintainer is None");
+        assert!(
+            got.maintainer.is_none(),
+            "orphaned package maintainer is None"
+        );
         assert_eq!(
             got.opt_depends,
             vec!["foo-utils: extra tools".to_string(), "bar".to_string()],
             "opt_depends entry with spaces and colon round-trips intact"
         );
-        assert!(got.depends.is_empty(), "empty depends round-trips to vec![]");
+        assert!(
+            got.depends.is_empty(),
+            "empty depends round-trips to vec![]"
+        );
         assert!(
             got.make_depends.is_empty(),
             "empty make_depends round-trips to vec![]"
         );
-        assert!(got.license.is_empty(), "empty license round-trips to vec![]");
+        assert!(
+            got.license.is_empty(),
+            "empty license round-trips to vec![]"
+        );
         assert_eq!(
             got.keywords,
             vec!["kw1".to_string()],
@@ -283,7 +295,10 @@ mod tests {
             .expect("vim query")
             .expect("vim present after first put");
         assert_eq!(first.name, "vim");
-        assert_eq!(first.version, "13.0.1-1", "first put_detail writes the version");
+        assert_eq!(
+            first.version, "13.0.1-1",
+            "first put_detail writes the version"
+        );
         assert_eq!(first.make_depends, vec!["go>=1.24".to_string()]);
 
         let mut updated = info.clone();

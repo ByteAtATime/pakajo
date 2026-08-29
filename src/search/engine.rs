@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use crate::search::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE};
-use crate::search::index::{byte_mask, needs_rebuild, PackageIndex};
+use crate::search::index::{PackageIndex, byte_mask, needs_rebuild};
 use crate::search::query::{ParsedQuery, parse_query};
-use crate::search::tiers::{candidate_ordering, tier_at, Candidate, Tier};
+use crate::search::tiers::{Candidate, Tier, candidate_ordering, tier_at};
 
 const RESULT_LIMIT: usize = 30;
 const FUZZY_GATE: usize = 5;
@@ -216,15 +216,21 @@ fn fused_expensive_fuzzy_pass<'a>(
         if name_missing.count_ones() as usize > MAX_EDIT_DISTANCE {
             continue;
         }
-        let name_len_ok =
-            !(q_ascii && index.name(i).is_ascii()) || index.name(i).len().abs_diff(q.len()) <= MAX_EDIT_DISTANCE;
+        let name_len_ok = !(q_ascii && index.name(i).is_ascii())
+            || index.name(i).len().abs_diff(q.len()) <= MAX_EDIT_DISTANCE;
         if name_len_ok
             && let Some(name_d) =
                 matcher.within_distance(index.name(i).as_bytes(), r.name_mask, MAX_EDIT_DISTANCE)
         {
             let seed_first_letter = index.name(i).chars().next() == q_first;
-            let (distance, first_letter_match) =
-                fuzzy_score_from_seed(&mut matcher, index, i, name_d as u8, seed_first_letter, q_first);
+            let (distance, first_letter_match) = fuzzy_score_from_seed(
+                &mut matcher,
+                index,
+                i,
+                name_d as u8,
+                seed_first_letter,
+                q_first,
+            );
             fuzzy_buf.push(Candidate {
                 view: index.view(i),
                 tier: Tier::Fuzzy,
@@ -254,8 +260,14 @@ fn fused_expensive_fuzzy_pass<'a>(
                 continue;
             }
             let seed_first_letter = token.chars().next() == q_first;
-            let (distance, first_letter_match) =
-                fuzzy_score_from_seed(&mut matcher, index, pkg_idx as usize, tok_d as u8, seed_first_letter, q_first);
+            let (distance, first_letter_match) = fuzzy_score_from_seed(
+                &mut matcher,
+                index,
+                pkg_idx as usize,
+                tok_d as u8,
+                seed_first_letter,
+                q_first,
+            );
             fuzzy_buf.push(Candidate {
                 view: index.view(pkg_idx as usize),
                 tier: Tier::Fuzzy,
@@ -299,7 +311,7 @@ fn to_sorted_pairs(mut cands: Vec<Candidate>) -> Vec<(u32, Tier)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::index::{assemble, tokenize, RawPkg};
+    use crate::search::index::{RawPkg, assemble, tokenize};
 
     fn pkg(id: u32, name: &str, is_repo: bool, popularity: u16) -> RawPkg {
         RawPkg {

@@ -53,9 +53,7 @@ impl std::fmt::Debug for DetailMessage {
                 .field("seq", seq)
                 .field("message", message)
                 .finish(),
-            Self::ShowLoading { seq } => {
-                f.debug_struct("ShowLoading").field("seq", seq).finish()
-            }
+            Self::ShowLoading { seq } => f.debug_struct("ShowLoading").field("seq", seq).finish(),
         }
     }
 }
@@ -529,12 +527,55 @@ impl crate::PakajoApp {
                 self.detail_pending = Some(seq);
                 Task::batch([
                     Task::stream(cosmic::iced::stream::channel(
-                    8,
-                    move |mut tx: futures::channel::mpsc::Sender<
-                        cosmic::Action<crate::Message>,
-                    >| async move {
-                        let had_cache = match db.as_ref() {
-                            Some(index) => match index.detail(&name) {
+                        8,
+                        move |mut tx: futures::channel::mpsc::Sender<
+                            cosmic::Action<crate::Message>,
+                        >| async move {
+                            let had_cache = match db.as_ref() {
+                                Some(index) => match index.detail(&name) {
+                                    Ok(Some(info)) => {
+                                        let _ = tx
+                                            .send(
+                                                crate::Message::Detail(
+                                                    DetailMessage::DetailReady {
+                                                        seq,
+                                                        pkg: Box::new(Package::from(info)),
+                                                    },
+                                                )
+                                                .into(),
+                                            )
+                                            .await;
+                                        true
+                                    }
+                                    Ok(None) => false,
+                                    Err(e) => {
+                                        eprintln!("[pakajo] detail cache read failed: {e:#}");
+                                        false
+                                    }
+                                },
+                                None => false,
+                            };
+                            let (otx, orx) = futures::channel::oneshot::channel();
+                            let name_net = name.clone();
+                            let index_net = db.clone();
+                            std::thread::spawn(move || {
+                                if had_cache {
+                                    std::thread::sleep(DETAIL_DEBOUNCE);
+                                }
+                                let fetched = aur_client.info(&name_net);
+                                if let Ok(Some(ref info)) = fetched
+                                    && let Some(index) = index_net.as_ref()
+                                    && let Err(e) = index.put_detail(info)
+                                {
+                                    eprintln!("[pakajo] detail put_detail failed: {e:#}");
+                                }
+                                let _ = otx.send(fetched);
+                            });
+                            let fetched = match orx.await {
+                                Ok(r) => r,
+                                Err(_) => return,
+                            };
+                            match fetched {
                                 Ok(Some(info)) => {
                                     let _ = tx
                                         .send(
@@ -545,74 +586,32 @@ impl crate::PakajoApp {
                                             .into(),
                                         )
                                         .await;
-                                    true
                                 }
-                                Ok(None) => false,
+                                Ok(None) => {
+                                    let _ = tx
+                                        .send(
+                                            crate::Message::Detail(DetailMessage::DetailFailed {
+                                                seq,
+                                                message: format!("package not found: {name}"),
+                                            })
+                                            .into(),
+                                        )
+                                        .await;
+                                }
                                 Err(e) => {
-                                    eprintln!("[pakajo] detail cache read failed: {e:#}");
-                                    false
+                                    let _ = tx
+                                        .send(
+                                            crate::Message::Detail(DetailMessage::DetailFailed {
+                                                seq,
+                                                message: pakajo::search::friendly_search_error(&e),
+                                            })
+                                            .into(),
+                                        )
+                                        .await;
                                 }
-                            },
-                            None => false,
-                        };
-                        let (otx, orx) = futures::channel::oneshot::channel();
-                        let name_net = name.clone();
-                        let index_net = db.clone();
-                        std::thread::spawn(move || {
-                            if had_cache {
-                                std::thread::sleep(DETAIL_DEBOUNCE);
                             }
-                            let fetched = aur_client.info(&name_net);
-                            if let Ok(Some(ref info)) = fetched
-                                && let Some(index) = index_net.as_ref()
-                                && let Err(e) = index.put_detail(info)
-                            {
-                                eprintln!("[pakajo] detail put_detail failed: {e:#}");
-                            }
-                            let _ = otx.send(fetched);
-                        });
-                        let fetched = match orx.await {
-                            Ok(r) => r,
-                            Err(_) => return,
-                        };
-                        match fetched {
-                            Ok(Some(info)) => {
-                                let _ = tx
-                                .send(
-                                    crate::Message::Detail(DetailMessage::DetailReady {
-                                        seq,
-                                        pkg: Box::new(Package::from(info)),
-                                    })
-                                    .into(),
-                                )
-                                .await;
-                            }
-                            Ok(None) => {
-                                let _ = tx
-                                    .send(
-                                        crate::Message::Detail(DetailMessage::DetailFailed {
-                                            seq,
-                                            message: format!("package not found: {name}"),
-                                        })
-                                        .into(),
-                                    )
-                                    .await;
-                            }
-                            Err(e) => {
-                                let _ = tx
-                                    .send(
-                                        crate::Message::Detail(DetailMessage::DetailFailed {
-                                            seq,
-                                            message: pakajo::search::friendly_search_error(&e),
-                                        })
-                                        .into(),
-                                    )
-                                    .await;
-                            }
-                        }
-                    },
-                    ),
-                    ),
+                        },
+                    )),
                     show_loading_after_debounce(seq),
                 ])
             }
@@ -626,7 +625,10 @@ impl crate::PakajoApp {
             .as_ref()
             .map(|a| pakajo::package::is_installed(a, &name))
             .unwrap_or(false);
-        self.detail = DetailData::Ready { pkg: Box::new(pkg), installed };
+        self.detail = DetailData::Ready {
+            pkg: Box::new(pkg),
+            installed,
+        };
     }
 
     pub(crate) fn handle_detail(

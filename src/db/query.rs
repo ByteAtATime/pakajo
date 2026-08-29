@@ -145,10 +145,7 @@ mod tests {
         assert_eq!(prefix_upper_bound("al"), Some("am".to_string()));
         assert_eq!(prefix_upper_bound("z"), Some("{".to_string()));
         assert_eq!(prefix_upper_bound(""), None);
-        assert_eq!(
-            prefix_upper_bound("a\u{10FFFF}"),
-            Some("b".to_string())
-        );
+        assert_eq!(prefix_upper_bound("a\u{10FFFF}"), Some("b".to_string()));
     }
 
     #[test]

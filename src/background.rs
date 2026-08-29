@@ -13,10 +13,7 @@ use pakajo::search::engine::SearchEngine;
 pub const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 pub const LOCK_DEBOUNCE: Duration = Duration::from_millis(300);
 
-pub fn begin_aur_sync_in_background(
-    db: Arc<PackageDb>,
-    search_engine: Option<Arc<SearchEngine>>,
-) {
+pub fn begin_aur_sync_in_background(db: Arc<PackageDb>, search_engine: Option<Arc<SearchEngine>>) {
     std::thread::spawn(move || {
         let reniced = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) };
         if reniced != 0 {

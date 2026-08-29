@@ -53,7 +53,6 @@ impl PackageDb {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
         Some(Duration::from_secs(now.as_secs().saturating_sub(parsed)))
     }
-
 }
 
 fn apply_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -151,10 +150,10 @@ pub(super) fn split_list(value: Option<String>) -> Vec<String> {
     }
 }
 
-pub mod fetch;
-pub mod sync;
 pub mod detail;
+pub mod fetch;
 pub mod query;
+pub mod sync;
 
 pub use fetch::{AUR_META_URL, DecompressedDump, FetchOutcome, fetch};
 pub use query::PackageRow;
