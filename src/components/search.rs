@@ -4,7 +4,7 @@ use std::sync::Arc;
 use cosmic::app::Task;
 use cosmic::widget::{Column, Row, button, text, text_input};
 
-use pakajo::local_index::LocalIndex;
+use pakajo::package_db::PackageDb;
 use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
 
@@ -28,12 +28,12 @@ pub enum SearchMessage {
 
 pub fn execute_search_for(
     search_engine: Option<Arc<SearchEngine>>,
-    local_index: Option<Arc<LocalIndex>>,
+    package_db: Option<Arc<PackageDb>>,
     group_index: Arc<Vec<(String, String)>>,
     installed: Arc<HashSet<String>>,
     text: String,
 ) -> Vec<SearchResult> {
-    let (Some(engine), Some(local)) = (search_engine.as_ref(), local_index.as_ref()) else {
+    let (Some(engine), Some(local)) = (search_engine.as_ref(), package_db.as_ref()) else {
         return Vec::new();
     };
     pakajo::search::dispatch_search(engine, local, &installed, &text, &group_index)
@@ -128,12 +128,12 @@ impl crate::PakajoApp {
 
                 self.search_state = SearchState::Searching;
                 let engine = self.search_engine.clone();
-                let local_index = self.local_index.clone();
+                let package_db = self.package_db.clone();
                 let installed = self.installed_names.clone();
                 let group_index = self.group_index.clone();
 
                 Task::perform(
-                    async move { execute_search_for(engine, local_index, group_index, installed, text) },
+                    async move { execute_search_for(engine, package_db, group_index, installed, text) },
                     move |results| {
                         crate::Message::Search(SearchMessage::ResultsReady { seq, results }).into()
                     },

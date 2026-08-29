@@ -9,7 +9,7 @@ pub mod dry_run;
 pub mod events;
 pub mod git;
 pub mod install;
-pub mod local_index;
+pub mod package_db;
 pub mod lookup;
 pub mod package;
 pub mod pacman;

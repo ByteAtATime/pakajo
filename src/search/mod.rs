@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::local_index::LocalIndex;
+use crate::package_db::PackageDb;
 use crate::package::PackageSource;
 
 use engine::SearchEngine;
@@ -32,7 +32,7 @@ pub struct SearchResult {
 
 pub fn dispatch_search(
     engine: &SearchEngine,
-    sqlite: &LocalIndex,
+    sqlite: &PackageDb,
     installed: &HashSet<String>,
     text: &str,
     group_index: &[(String, String)],

@@ -458,7 +458,7 @@ mod tests {
 #[cfg(test)]
 mod search_engine_tests {
     use super::*;
-    use crate::local_index::LocalIndex;
+    use crate::package_db::PackageDb;
     use crate::search::index::index_path;
     use std::collections::HashMap;
     use std::path::Path;
@@ -493,7 +493,7 @@ mod search_engine_tests {
     fn search_engine_returns_ranked_ids() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sqlite_path = dir.path().join("aur-meta.sqlite");
-        let _local = LocalIndex::open(&sqlite_path).expect("open");
+        let _local = PackageDb::open(&sqlite_path).expect("open");
         let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
         seed_package(&conn, "google-chrome", "aur");
         seed_package(&conn, "chromium", "repo");
@@ -515,7 +515,7 @@ mod search_engine_tests {
     fn ensure_fresh_is_noop_when_index_fresh() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sqlite_path = dir.path().join("aur-meta.sqlite");
-        let _local = LocalIndex::open(&sqlite_path).expect("open");
+        let _local = PackageDb::open(&sqlite_path).expect("open");
         let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
         seed_package(&conn, "google-chrome", "aur");
 
@@ -532,7 +532,7 @@ mod search_engine_tests {
     fn ensure_fresh_rebuilds_when_index_stale() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sqlite_path = dir.path().join("aur-meta.sqlite");
-        let _local = LocalIndex::open(&sqlite_path).expect("open");
+        let _local = PackageDb::open(&sqlite_path).expect("open");
         let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
         seed_package(&conn, "google-chrome", "aur");
 

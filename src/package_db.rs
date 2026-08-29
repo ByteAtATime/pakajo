@@ -69,12 +69,12 @@ pub enum RefreshOutcome {
     },
 }
 
-pub struct LocalIndex {
+pub struct PackageDb {
     read: std::sync::Mutex<rusqlite::Connection>,
     write: std::sync::Mutex<rusqlite::Connection>,
 }
 
-impl LocalIndex {
+impl PackageDb {
     pub fn open(path: &std::path::Path) -> anyhow::Result<Self> {
         let write = rusqlite::Connection::open(path)?;
         write.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=1000;")?;
@@ -463,7 +463,7 @@ mod tests {
     #[test]
     fn meta_round_trip_upserts() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+        let index = PackageDb::open(&dir.path().join("aur-meta.sqlite")).expect("open");
 
         assert_eq!(index.get_meta("foo").expect("get_meta"), None);
         index.set_meta("foo", "bar").expect("set_meta");
@@ -484,7 +484,7 @@ mod tests {
         let config = pacmanconf::Config::new().expect("pacman config");
         let handle = crate::pacman::init_alpm(&config).expect("alpm handle");
         let dir = tempfile::tempdir().expect("tempdir");
-        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+        let index = PackageDb::open(&dir.path().join("aur-meta.sqlite")).expect("open");
 
         let outcome = index.refresh(&handle).expect("refresh");
         let aur_count = match outcome {
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn index_aur_rows_tolerates_delimiters_and_skips_malformed() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+        let index = PackageDb::open(&dir.path().join("aur-meta.sqlite")).expect("open");
 
         let input = format!(
             "[\n\
@@ -565,7 +565,7 @@ mod tests {
     #[test]
     fn index_aur_rows_populates_keywords() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+        let index = PackageDb::open(&dir.path().join("aur-meta.sqlite")).expect("open");
 
         let row = r#"{"ID":7,"Name":"hex-tools","PackageBaseID":7,"PackageBase":"hex-tools","Version":"1.0-1","Description":"hex stuff","NumVotes":0,"Popularity":0.0,"FirstSubmitted":0,"LastModified":0,"Keywords":["hex","binary"]}"#;
         let input = format!("[\n{row}\n]");
@@ -620,7 +620,7 @@ mod tests {
     fn names_with_prefix_range_uses_index() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("aur-meta.sqlite");
-        let index = LocalIndex::open(&path).expect("open");
+        let index = PackageDb::open(&path).expect("open");
 
         let seed = rusqlite::Connection::open(&path).expect("seed");
         for name in ["alpha", "alpine", "al1", "al2", "al3", "beta"] {
@@ -654,7 +654,7 @@ mod tests {
     fn names_with_prefix_filters_and_limits() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("aur-meta.sqlite");
-        let index = LocalIndex::open(&path).expect("open");
+        let index = PackageDb::open(&path).expect("open");
 
         let seed = rusqlite::Connection::open(&path).expect("seed");
         for name in ["alpha", "alpine", "al1", "al2", "al3", "al4", "a_b", "axb"] {
@@ -700,7 +700,7 @@ mod tests {
     #[test]
     fn gate_trip_rolls_back_and_records_error() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+        let index = PackageDb::open(&dir.path().join("aur-meta.sqlite")).expect("open");
 
         let input = format!(
             "[\n{}\nbroken-one\nbroken-two\nbroken-three\n]",
@@ -752,7 +752,7 @@ mod tests {
     fn detail_correctly_queried_and_omitted_keys_are_empty() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("aur-meta.sqlite");
-        let index = LocalIndex::open(&path).expect("open");
+        let index = PackageDb::open(&path).expect("open");
         let conn = rusqlite::Connection::open(&path).expect("seed");
 
         let chrome = r#"{"ID":2154588,"Name":"google-chrome","PackageBaseID":37469,"PackageBase":"google-chrome","Version":"150.0.7871.114-1","Description":"The popular web browser by Google","URL":"https://www.google.com/chrome","NumVotes":2358,"Popularity":11.783191,"OutOfDate":null,"Maintainer":"gromit","Submitter":null,"FirstSubmitted":1274819156,"LastModified":1783555607,"URLPath":"/cgit/aur.git/snapshot/google-chrome.tar.gz","Depends":["alsa-lib","gtk3","libcups","libxss","libxtst","nss","ttf-liberation","xdg-utils"],"OptDepends":["pipewire","kdialog","gnome-keyring","kwallet"],"License":["custom:chrome"],"Keywords":["chromium"]}"#;
@@ -827,7 +827,7 @@ mod tests {
     #[test]
     fn put_detail_writes_then_overwrites() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+        let index = PackageDb::open(&dir.path().join("aur-meta.sqlite")).expect("open");
 
         let blob = r#"{"Depends":["pacman>6.1","git"],"Description":"Yet another yogurt.","FirstSubmitted":1475688004,"ID":2131240,"Keywords":["arm"],"LastModified":1781905288,"License":["GPL-3.0-or-later"],"Maintainer":"jguer","MakeDepends":["go>=1.24"],"Name":"yay","NumVotes":2617,"OptDepends":["sudo","doas"],"OutOfDate":null,"PackageBase":"yay","PackageBaseID":115973,"Popularity":40.475635,"Submitter":"jguer","URL":"https://github.com/Jguer/yay","URLPath":"/cgit/aur.git/snapshot/yay.tar.gz","Version":"13.0.1-1"}"#;
         let info: AurInfo = serde_json::from_str(blob).expect("parse yay");
@@ -875,7 +875,7 @@ mod tests {
     fn put_detail_preserves_rowid_on_conflict() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("aur-meta.sqlite");
-        let index = LocalIndex::open(&path).expect("open");
+        let index = PackageDb::open(&path).expect("open");
         let conn = rusqlite::Connection::open(&path).expect("seed");
 
         conn.execute(
@@ -919,7 +919,7 @@ mod tests {
     #[test]
     fn hydrate_by_ids_empty_returns_empty_map() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+        let index = PackageDb::open(&dir.path().join("aur-meta.sqlite")).expect("open");
         let rows = index.hydrate_by_ids(&[]).expect("hydrate");
         assert!(rows.is_empty());
     }
@@ -928,7 +928,7 @@ mod tests {
     fn hydrate_by_ids_returns_rows_keyed_by_rowid() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("aur-meta.sqlite");
-        let index = LocalIndex::open(&path).expect("open");
+        let index = PackageDb::open(&path).expect("open");
         let conn = rusqlite::Connection::open(&path).expect("seed");
         conn.execute(
             "INSERT INTO packages \
@@ -960,7 +960,7 @@ mod tests {
     fn hydrate_by_ids_skips_unknown_rowids() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("aur-meta.sqlite");
-        let index = LocalIndex::open(&path).expect("open");
+        let index = PackageDb::open(&path).expect("open");
         let conn = rusqlite::Connection::open(&path).expect("seed");
         conn.execute(
             "INSERT INTO packages \
@@ -980,7 +980,7 @@ mod tests {
     #[test]
     fn last_refreshed_age_is_none_when_unset() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let index = LocalIndex::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+        let index = PackageDb::open(&dir.path().join("aur-meta.sqlite")).expect("open");
         assert!(index.last_refreshed_age().is_none());
     }
 
@@ -988,7 +988,7 @@ mod tests {
     fn last_refreshed_age_is_none_for_garbage_value() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("aur-meta.sqlite");
-        let index = LocalIndex::open(&path).expect("open");
+        let index = PackageDb::open(&path).expect("open");
         let conn = rusqlite::Connection::open(&path).expect("seed");
         conn.execute(
             "INSERT INTO meta(key, value) VALUES (?, ?)",

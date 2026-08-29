@@ -13,7 +13,7 @@ use cosmic::{
 };
 use pakajo::aur::AurClient;
 use pakajo::cli;
-use pakajo::local_index::LocalIndex;
+use pakajo::package_db::PackageDb;
 use pakajo::pacman::init_alpm;
 use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
@@ -39,7 +39,7 @@ fn main() -> cosmic::iced::Result {
 pub struct PakajoApp {
     core: Core,
     pub(crate) search_engine: Option<Arc<SearchEngine>>,
-    pub(crate) local_index: Option<Arc<LocalIndex>>,
+    pub(crate) package_db: Option<Arc<PackageDb>>,
     pub(crate) alpm: Option<alpm::Alpm>,
     pub(crate) aur_client: Option<Arc<AurClient>>,
     pub(crate) installed_names: Arc<HashSet<String>>,
@@ -83,14 +83,14 @@ impl Application for PakajoApp {
     fn init(mut core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
         core.window.show_headerbar = false;
         core.window.content_container = false;
-        let search_engine = LocalIndex::db_path()
+        let search_engine = PackageDb::db_path()
             .ok()
             .and_then(|p| SearchEngine::new(p).ok())
             .map(Arc::new);
-        let local_index = LocalIndex::db_path()
+        let package_db = PackageDb::db_path()
             .ok()
             .and_then(|p| {
-                LocalIndex::open(&p)
+                PackageDb::open(&p)
                     .map_err(|e| {
                         eprintln!("local index unavailable, falling back to live search: {e:#}")
                     })
@@ -115,14 +115,14 @@ impl Application for PakajoApp {
 
         let aur_client = Some(Arc::new(AurClient::new()));
 
-        if let Some(index) = &local_index {
+        if let Some(index) = &package_db {
             begin_aur_sync_in_background(index.clone(), search_engine.clone());
         }
 
         let mut app = PakajoApp {
             core,
             search_engine,
-            local_index,
+            package_db,
             alpm,
             aur_client,
             installed_names,

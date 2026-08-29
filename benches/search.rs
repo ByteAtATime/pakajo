@@ -1,12 +1,12 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use pakajo::local_index::LocalIndex;
+use pakajo::package_db::PackageDb;
 use pakajo::search::engine::SearchEngine;
 use std::hint::black_box;
 
 const MIN_LIVE_PACKAGES: i64 = 1_000;
 
 fn live_engine() -> SearchEngine {
-    let sqlite_path = LocalIndex::db_path().expect("resolve pakajo cache db path");
+    let sqlite_path = PackageDb::db_path().expect("resolve pakajo cache db path");
     let count = rusqlite::Connection::open_with_flags(
         &sqlite_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 #[cfg(test)]
 use std::collections::HashMap;
 
-use crate::local_index::PackageRow;
+use crate::package_db::PackageRow;
 use crate::package::PackageSource;
 
 use super::SearchResult;
