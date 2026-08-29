@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use crate::search::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE};
-use crate::search::index::{IndexedPackage, PackageIndex, byte_mask, needs_rebuild};
+use crate::search::index::{byte_mask, needs_rebuild, PackageIndex};
 use crate::search::query::{ParsedQuery, parse_query};
-use crate::search::tiers::{Candidate, Tier, best_concrete_tier_in, candidate_ordering};
+use crate::search::tiers::{candidate_ordering, tier_at, Candidate, Tier};
 
 const RESULT_LIMIT: usize = 30;
 const FUZZY_GATE: usize = 5;
@@ -40,7 +40,7 @@ pub fn search_index_tiered(index: &PackageIndex, text: &str) -> Vec<(u32, Tier)>
             if cheap.len() >= RESULT_LIMIT {
                 return to_sorted_pairs(cheap);
             }
-            let seen: HashSet<u32> = cheap.iter().map(|c| c.pkg.id).collect();
+            let seen: HashSet<u32> = cheap.iter().map(|c| c.view.id).collect();
             let cands = if cheap.len() >= FUZZY_GATE {
                 expensive_only_pass(index, q, cheap, &seen)
             } else {
@@ -105,7 +105,7 @@ fn gather_cheap_candidates<'a>(
     }
     if allowed.contains(&Tier::ExactToken) {
         for i in index.exact_token_range(q_bytes) {
-            idxs.push(index.tokens_sorted[i].0);
+            idxs.push(index.tokens_sorted[i].1);
         }
     }
     if allowed.contains(&Tier::PrefixName) {
@@ -115,17 +115,16 @@ fn gather_cheap_candidates<'a>(
     }
     if allowed.contains(&Tier::PrefixToken) {
         for i in index.prefix_token_range(q_bytes) {
-            idxs.push(index.tokens_sorted[i].0);
+            idxs.push(index.tokens_sorted[i].1);
         }
     }
     idxs.sort_unstable();
     idxs.dedup();
     let mut cands: Vec<Candidate<'a>> = Vec::with_capacity(idxs.len());
     for i in idxs {
-        let p = &index.packages[i as usize];
-        if let Some(tier) = best_concrete_tier_in(p, q, allowed, qmask) {
+        if let Some(tier) = tier_at(index, i as usize, q, allowed, qmask) {
             cands.push(Candidate {
-                pkg: p,
+                view: index.view(i as usize),
                 tier,
                 distance: 0,
                 first_letter_match: false,
@@ -142,13 +141,14 @@ fn expensive_only_pass<'a>(
     seen: &HashSet<u32>,
 ) -> Vec<Candidate<'a>> {
     let qmask = byte_mask(q.as_bytes());
-    for p in &index.packages {
-        if seen.contains(&p.id) {
+    for i in 0..index.len() {
+        let r = index.row(i);
+        if seen.contains(&r.id) {
             continue;
         }
-        if let Some(tier) = best_concrete_tier_in(p, q, EXPENSIVE_TIERS, qmask) {
+        if let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask) {
             cands.push(Candidate {
-                pkg: p,
+                view: index.view(i),
                 tier,
                 distance: 0,
                 first_letter_match: false,
@@ -160,14 +160,16 @@ fn expensive_only_pass<'a>(
 
 fn fuzzy_score_from_seed(
     matcher: &mut FuzzyMatcher,
-    p: &IndexedPackage,
+    index: &PackageIndex,
+    pi: usize,
     seed_distance: u8,
     seed_first_letter: bool,
     q_first: Option<char>,
 ) -> (u8, bool) {
     let mut distance = seed_distance;
     let mut first_letter_match = seed_first_letter;
-    for t in &p.tokens {
+    for k in 0..index.tokens_len(pi) {
+        let t = index.token(pi, k);
         let tmask = byte_mask(t.as_bytes());
         if let Some(d) = matcher.within_distance(t.as_bytes(), tmask, MAX_EDIT_DISTANCE) {
             distance = distance.min(d as u8);
@@ -192,69 +194,70 @@ fn fused_expensive_fuzzy_pass<'a>(
     let mut fuzzy_buf: Vec<Candidate<'a>> = Vec::new();
     let mut placed: HashSet<u32> = HashSet::new();
 
-    for (i, p) in index.packages.iter().enumerate() {
-        let idx = i as u32;
-        if seen.contains(&p.id) {
-            placed.insert(idx);
+    for i in 0..index.len() {
+        let r = index.row(i);
+        if seen.contains(&r.id) {
+            placed.insert(i as u32);
             continue;
         }
-        let name_missing = qmask & !p.name_mask;
-        if (name_missing == 0 || (qmask & !p.kw_mask) == 0)
-            && let Some(tier) = best_concrete_tier_in(p, q, EXPENSIVE_TIERS, qmask)
+        let name_missing = qmask & !r.name_mask;
+        if (name_missing == 0 || (qmask & !r.kw_mask) == 0)
+            && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask)
         {
             cands.push(Candidate {
-                pkg: p,
+                view: index.view(i),
                 tier,
                 distance: 0,
                 first_letter_match: false,
             });
-            placed.insert(idx);
+            placed.insert(i as u32);
             continue;
         }
         if name_missing.count_ones() as usize > MAX_EDIT_DISTANCE {
             continue;
         }
         let name_len_ok =
-            !(q_ascii && p.name.is_ascii()) || p.name.len().abs_diff(q.len()) <= MAX_EDIT_DISTANCE;
+            !(q_ascii && index.name(i).is_ascii()) || index.name(i).len().abs_diff(q.len()) <= MAX_EDIT_DISTANCE;
         if name_len_ok
             && let Some(name_d) =
-                matcher.within_distance(p.name.as_bytes(), p.name_mask, MAX_EDIT_DISTANCE)
+                matcher.within_distance(index.name(i).as_bytes(), r.name_mask, MAX_EDIT_DISTANCE)
         {
-            let seed_first_letter = p.name.chars().next() == q_first;
+            let seed_first_letter = index.name(i).chars().next() == q_first;
             let (distance, first_letter_match) =
-                fuzzy_score_from_seed(&mut matcher, p, name_d as u8, seed_first_letter, q_first);
+                fuzzy_score_from_seed(&mut matcher, index, i, name_d as u8, seed_first_letter, q_first);
             fuzzy_buf.push(Candidate {
-                pkg: p,
+                view: index.view(i),
                 tier: Tier::Fuzzy,
                 distance,
                 first_letter_match,
             });
-            placed.insert(idx);
+            placed.insert(i as u32);
         }
     }
 
-    for (token, token_mask) in &index.unique_tokens {
+    for tid in 0..index.unique_tokens.len() {
+        let token_mask = index.unique_token_masks[tid];
         if (qmask & !token_mask).count_ones() as usize > MAX_EDIT_DISTANCE {
             continue;
         }
+        let token = index.token_str(tid);
         if q_ascii && token.is_ascii() && token.len().abs_diff(q.len()) > MAX_EDIT_DISTANCE {
             continue;
         }
-        let Some(tok_d) = matcher.within_distance(token.as_bytes(), *token_mask, MAX_EDIT_DISTANCE)
+        let Some(tok_d) = matcher.within_distance(token.as_bytes(), token_mask, MAX_EDIT_DISTANCE)
         else {
             continue;
         };
-        for i in index.exact_token_range(token.as_bytes()) {
-            let pkg_idx = index.tokens_sorted[i].0;
+        for j in index.exact_token_range(token.as_bytes()) {
+            let pkg_idx = index.tokens_sorted[j].1;
             if placed.contains(&pkg_idx) {
                 continue;
             }
-            let p = &index.packages[pkg_idx as usize];
             let seed_first_letter = token.chars().next() == q_first;
             let (distance, first_letter_match) =
-                fuzzy_score_from_seed(&mut matcher, p, tok_d as u8, seed_first_letter, q_first);
+                fuzzy_score_from_seed(&mut matcher, index, pkg_idx as usize, tok_d as u8, seed_first_letter, q_first);
             fuzzy_buf.push(Candidate {
-                pkg: p,
+                view: index.view(pkg_idx as usize),
                 tier: Tier::Fuzzy,
                 distance,
                 first_letter_match,
@@ -270,12 +273,10 @@ fn fused_expensive_fuzzy_pass<'a>(
 }
 
 fn quoted_pairs(index: &PackageIndex, q: &str) -> Vec<(u32, Tier)> {
-    let cands: Vec<Candidate> = index
-        .packages
-        .iter()
-        .filter(|p| p.name.contains(q))
-        .map(|p| Candidate {
-            pkg: p,
+    let cands: Vec<Candidate> = (0..index.len())
+        .filter(|&pi| index.name(pi).contains(q))
+        .map(|pi| Candidate {
+            view: index.view(pi),
             tier: Tier::Substring,
             distance: 0,
             first_letter_match: false,
@@ -292,40 +293,27 @@ fn to_sorted_pairs(mut cands: Vec<Candidate>) -> Vec<(u32, Tier)> {
         cands.sort_by(candidate_ordering);
     }
     cands.truncate(RESULT_LIMIT);
-    cands.into_iter().map(|c| (c.pkg.id, c.tier)).collect()
+    cands.into_iter().map(|c| (c.view.id, c.tier)).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::index::{IndexedPackage, tokenize};
+    use crate::search::index::{assemble, tokenize, RawPkg};
 
-    fn pkg(id: u32, name: &str, is_repo: bool, popularity: u16) -> IndexedPackage {
-        let tokens = tokenize(name);
-        let name_mask = byte_mask(name.as_bytes());
-        IndexedPackage {
+    fn pkg(id: u32, name: &str, is_repo: bool, popularity: u16) -> RawPkg {
+        RawPkg {
             id,
             name: name.to_string(),
-            tokens,
+            tokens: tokenize(name),
             keywords: Vec::new(),
             popularity,
             is_repo,
-            name_mask,
-            kw_mask: 0,
         }
     }
 
-    fn index_with(packages: Vec<IndexedPackage>) -> PackageIndex {
-        let mut index = PackageIndex {
-            packages,
-            names_sorted: Vec::new(),
-            tokens_sorted: Vec::new(),
-            unique_tokens: Vec::new(),
-            version: 1,
-            built_at: 0,
-        };
-        index.build_inverted();
-        index
+    fn index_with(raws: Vec<RawPkg>) -> PackageIndex {
+        assemble(raws)
     }
 
     #[test]
@@ -356,7 +344,7 @@ mod tests {
     }
 
     fn ids_of(cands: &[Candidate]) -> Vec<u32> {
-        let mut v: Vec<u32> = cands.iter().map(|c| c.pkg.id).collect();
+        let mut v: Vec<u32> = cands.iter().map(|c| c.view.id).collect();
         v.sort();
         v
     }
@@ -441,7 +429,7 @@ mod tests {
 
     #[test]
     fn result_limit_truncates_to_thirty() {
-        let packages: Vec<IndexedPackage> = (1u32..=40)
+        let packages: Vec<RawPkg> = (1u32..=40)
             .map(|i| pkg(i, &format!("prefix-{i}"), false, 0))
             .collect();
         let index = index_with(packages);
@@ -451,7 +439,7 @@ mod tests {
 
     #[test]
     fn truncation_excludes_substring_only_when_limit_full() {
-        let mut packages: Vec<IndexedPackage> = (1u32..=RESULT_LIMIT as u32)
+        let mut packages: Vec<RawPkg> = (1u32..=RESULT_LIMIT as u32)
             .map(|i| pkg(i, &format!("xxx-{i:03}"), false, 0))
             .collect();
         packages.push(pkg(999, "zzxxxzz", false, 0));

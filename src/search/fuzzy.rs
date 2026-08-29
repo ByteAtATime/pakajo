@@ -1,5 +1,4 @@
-use crate::search::index::{IndexedPackage, byte_mask};
-use crate::search::tiers::Tier;
+use crate::search::index::byte_mask;
 
 pub const MAX_EDIT_DISTANCE: usize = 2;
 
@@ -115,59 +114,10 @@ fn edit_distance_chars(a: &str, b: &str, max: usize) -> Option<usize> {
     (d <= max).then_some(d)
 }
 
-#[allow(dead_code)]
-pub fn fuzzy_tier(pkg: &IndexedPackage, q: &str) -> Option<Tier> {
-    if q.is_empty() {
-        return None;
-    }
-    let mut matcher = FuzzyMatcher::new(q.as_bytes());
-    if matcher
-        .within_distance(pkg.name.as_bytes(), pkg.name_mask, MAX_EDIT_DISTANCE)
-        .is_some()
-    {
-        return Some(Tier::Fuzzy);
-    }
-    if pkg.tokens.iter().any(|t| {
-        matcher
-            .within_distance(t.as_bytes(), byte_mask(t.as_bytes()), MAX_EDIT_DISTANCE)
-            .is_some()
-    }) {
-        return Some(Tier::Fuzzy);
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::search::index::byte_mask;
-
-    fn mk(
-        id: u32,
-        name: &str,
-        tokens: &[&str],
-        keywords: &[&str],
-        popularity: u16,
-        is_repo: bool,
-    ) -> IndexedPackage {
-        let tokens: Vec<String> = tokens.iter().map(|t| t.to_string()).collect();
-        let keywords: Vec<String> = keywords.iter().map(|k| k.to_string()).collect();
-        let name_mask = byte_mask(name.as_bytes());
-        let kw_mask = keywords
-            .iter()
-            .map(|k| byte_mask(k.as_bytes()))
-            .fold(0u64, |acc, m| acc | m);
-        IndexedPackage {
-            id,
-            name: name.to_string(),
-            tokens,
-            keywords,
-            popularity,
-            is_repo,
-            name_mask,
-            kw_mask,
-        }
-    }
 
     fn within(a: &str, b: &str, max: usize) -> bool {
         FuzzyMatcher::new(b.as_bytes())
@@ -208,29 +158,5 @@ mod tests {
     #[test]
     fn edit_distance_length_cutoff() {
         assert!(!within("a", "abcd", 2));
-    }
-
-    #[test]
-    fn fuzzy_tier_via_token_transposition() {
-        let pkg = mk(1, "google-chrome", &["google", "chrome"], &[], 0, false);
-        assert_eq!(fuzzy_tier(&pkg, "chroem"), Some(Tier::Fuzzy));
-    }
-
-    #[test]
-    fn fuzzy_tier_via_name() {
-        let pkg = mk(1, "vim", &[], &[], 0, false);
-        assert_eq!(fuzzy_tier(&pkg, "vom"), Some(Tier::Fuzzy));
-    }
-
-    #[test]
-    fn fuzzy_tier_none() {
-        let pkg = mk(1, "google-chrome", &["google", "chrome"], &[], 0, false);
-        assert_eq!(fuzzy_tier(&pkg, "xyz123"), None);
-    }
-
-    #[test]
-    fn fuzzy_tier_empty_query() {
-        let pkg = mk(1, "google-chrome", &["google", "chrome"], &[], 0, false);
-        assert_eq!(fuzzy_tier(&pkg, ""), None);
     }
 }

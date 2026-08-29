@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use crate::search::index::IndexedPackage;
+use crate::search::index::PackageIndex;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -14,59 +14,15 @@ pub enum Tier {
     Fuzzy = 6,
 }
 
-pub fn exact_name(pkg: &IndexedPackage, q: &str) -> bool {
-    pkg.name == q
-}
-
-pub fn exact_token(pkg: &IndexedPackage, q: &str) -> bool {
-    pkg.tokens.iter().any(|t| t == q)
-}
-
-pub fn prefix_name(pkg: &IndexedPackage, q: &str) -> bool {
-    pkg.name.starts_with(q)
-}
-
-pub fn prefix_token(pkg: &IndexedPackage, q: &str) -> bool {
-    pkg.tokens.iter().any(|t| t.starts_with(q))
-}
-
-pub fn substring(pkg: &IndexedPackage, q: &str) -> bool {
-    pkg.name.contains(q)
-}
-
-pub fn keyword(pkg: &IndexedPackage, q: &str) -> bool {
-    pkg.keywords.iter().any(|k| k.contains(q))
-}
-
-pub fn best_concrete_tier_in(
-    pkg: &IndexedPackage,
-    q: &str,
-    allowed: &[Tier],
-    qmask: u64,
-) -> Option<Tier> {
-    if allowed.contains(&Tier::ExactName) && exact_name(pkg, q) {
-        return Some(Tier::ExactName);
-    }
-    if allowed.contains(&Tier::ExactToken) && exact_token(pkg, q) {
-        return Some(Tier::ExactToken);
-    }
-    if allowed.contains(&Tier::PrefixName) && prefix_name(pkg, q) {
-        return Some(Tier::PrefixName);
-    }
-    if allowed.contains(&Tier::PrefixToken) && prefix_token(pkg, q) {
-        return Some(Tier::PrefixToken);
-    }
-    if allowed.contains(&Tier::Substring) && (qmask & !pkg.name_mask) == 0 && substring(pkg, q) {
-        return Some(Tier::Substring);
-    }
-    if allowed.contains(&Tier::Keyword) && (qmask & !pkg.kw_mask) == 0 && keyword(pkg, q) {
-        return Some(Tier::Keyword);
-    }
-    None
+pub struct PkgView<'a> {
+    pub name: &'a str,
+    pub id: u32,
+    pub popularity: u16,
+    pub is_repo: bool,
 }
 
 pub struct Candidate<'a> {
-    pub pkg: &'a IndexedPackage,
+    pub view: PkgView<'a>,
     pub tier: Tier,
     pub distance: u8,
     pub first_letter_match: bool,
@@ -83,63 +39,108 @@ pub fn candidate_ordering(a: &Candidate<'_>, b: &Candidate<'_>) -> Ordering {
             (Tier::Fuzzy, Tier::Fuzzy) => b.first_letter_match.cmp(&a.first_letter_match),
             _ => std::cmp::Ordering::Equal,
         })
-        .then_with(|| a.pkg.name.chars().count().cmp(&b.pkg.name.chars().count()))
-        .then_with(|| b.pkg.is_repo.cmp(&a.pkg.is_repo))
-        .then_with(|| b.pkg.popularity.cmp(&a.pkg.popularity))
-        .then_with(|| a.pkg.name.cmp(&b.pkg.name))
-        .then_with(|| a.pkg.id.cmp(&b.pkg.id))
+        .then_with(|| {
+            a.view
+                .name
+                .chars()
+                .count()
+                .cmp(&b.view.name.chars().count())
+        })
+        .then_with(|| b.view.is_repo.cmp(&a.view.is_repo))
+        .then_with(|| b.view.popularity.cmp(&a.view.popularity))
+        .then_with(|| a.view.name.cmp(b.view.name))
+        .then_with(|| a.view.id.cmp(&b.view.id))
+}
+
+pub fn tier_at(
+    index: &PackageIndex,
+    pi: usize,
+    q: &str,
+    allowed: &[Tier],
+    qmask: u64,
+) -> Option<Tier> {
+    for &tier in allowed {
+        match tier {
+            Tier::ExactName => {
+                if index.name(pi) == q {
+                    return Some(tier);
+                }
+            }
+            Tier::ExactToken => {
+                if (0..index.tokens_len(pi)).any(|k| index.token(pi, k) == q) {
+                    return Some(tier);
+                }
+            }
+            Tier::PrefixName => {
+                if index.name(pi).starts_with(q) {
+                    return Some(tier);
+                }
+            }
+            Tier::PrefixToken => {
+                if (0..index.tokens_len(pi)).any(|k| index.token(pi, k).starts_with(q)) {
+                    return Some(tier);
+                }
+            }
+            Tier::Substring => {
+                if (qmask & !index.row(pi).name_mask) == 0 && index.name(pi).contains(q) {
+                    return Some(tier);
+                }
+            }
+            Tier::Keyword => {
+                if (qmask & !index.row(pi).kw_mask) == 0
+                    && (0..index.kws_len(pi)).any(|k| index.keyword(pi, k).contains(q))
+                {
+                    return Some(tier);
+                }
+            }
+            Tier::Fuzzy => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::index::byte_mask;
+    use crate::search::index::{RawPkg, assemble, byte_mask};
 
-    fn mk(
-        id: u32,
-        name: &str,
-        tokens: &[&str],
-        keywords: &[&str],
-        popularity: u16,
-        is_repo: bool,
-    ) -> IndexedPackage {
-        let tokens: Vec<String> = tokens.iter().map(|t| t.to_string()).collect();
-        let keywords: Vec<String> = keywords.iter().map(|k| k.to_string()).collect();
-        let name_mask = byte_mask(name.as_bytes());
-        let kw_mask = keywords
-            .iter()
-            .map(|k| byte_mask(k.as_bytes()))
-            .fold(0u64, |acc, m| acc | m);
-        IndexedPackage {
+    const ALL_CONCRETE: &[Tier] = &[
+        Tier::ExactName,
+        Tier::ExactToken,
+        Tier::PrefixName,
+        Tier::PrefixToken,
+        Tier::Substring,
+        Tier::Keyword,
+    ];
+
+    fn v(name: &str, id: u32, popularity: u16, is_repo: bool) -> PkgView<'_> {
+        PkgView {
+            name,
             id,
-            name: name.to_string(),
-            tokens,
-            keywords,
             popularity,
             is_repo,
-            name_mask,
-            kw_mask,
         }
     }
 
-    fn chrome() -> IndexedPackage {
-        mk(
-            1,
-            "google-chrome",
-            &["google", "chrome"],
-            &["browser", "web"],
-            100,
-            false,
-        )
-    }
-
-    fn cand(pkg: &IndexedPackage, tier: Tier) -> Candidate<'_> {
+    fn cand(view: PkgView<'_>, tier: Tier) -> Candidate<'_> {
         Candidate {
-            pkg,
+            view,
             tier,
             distance: 0,
             first_letter_match: false,
         }
+    }
+
+    fn sample_index() -> PackageIndex {
+        let raws = vec![RawPkg {
+            id: 1,
+            name: "google-chrome".to_string(),
+            tokens: vec!["google".to_string(), "chrome".to_string()],
+            keywords: vec!["browser".to_string(), "web".to_string()],
+            popularity: 100,
+            is_repo: false,
+        }];
+        assemble(raws)
     }
 
     #[test]
@@ -153,88 +154,75 @@ mod tests {
     }
 
     #[test]
-    fn predicates_match_and_miss_on_chrome_pkg() {
-        let pkg = chrome();
-        assert!(exact_name(&pkg, "google-chrome"));
-        assert!(!exact_name(&pkg, "chrome"));
-        assert!(exact_token(&pkg, "chrome"));
-        assert!(!exact_token(&pkg, "chromium"));
-        assert!(prefix_name(&pkg, "google"));
-        assert!(!prefix_name(&pkg, "chrome"));
-        assert!(prefix_token(&pkg, "chrom"));
-        assert!(!prefix_token(&pkg, "zilla"));
-        assert!(substring(&pkg, "chrome"));
-        assert!(!substring(&pkg, "zilla"));
-        assert!(keyword(&pkg, "brows"));
-        assert!(!keyword(&pkg, "editor"));
-    }
-
-    #[test]
-    fn best_concrete_tier_chooses_lowest_ordinal_match() {
-        const ALL_CONCRETE: &[Tier] = &[
-            Tier::ExactName,
-            Tier::ExactToken,
-            Tier::PrefixName,
-            Tier::PrefixToken,
-            Tier::Substring,
-            Tier::Keyword,
-        ];
-        let pkg = chrome();
+    fn tier_at_matches_each_concrete_tier() {
+        let index = sample_index();
         assert_eq!(
-            best_concrete_tier_in(
-                &pkg,
+            tier_at(
+                &index,
+                0,
                 "google-chrome",
                 ALL_CONCRETE,
                 byte_mask(b"google-chrome")
             ),
-            Some(Tier::ExactName),
+            Some(Tier::ExactName)
         );
         assert_eq!(
-            best_concrete_tier_in(&pkg, "chrome", ALL_CONCRETE, byte_mask(b"chrome")),
-            Some(Tier::ExactToken),
+            tier_at(&index, 0, "chrome", ALL_CONCRETE, byte_mask(b"chrome")),
+            Some(Tier::ExactToken)
         );
         assert_eq!(
-            best_concrete_tier_in(&pkg, "chrom", ALL_CONCRETE, byte_mask(b"chrom")),
-            Some(Tier::PrefixToken),
+            tier_at(&index, 0, "chrom", ALL_CONCRETE, byte_mask(b"chrom")),
+            Some(Tier::PrefixToken)
         );
         assert_eq!(
-            best_concrete_tier_in(&pkg, "xyz", ALL_CONCRETE, byte_mask(b"xyz")),
-            None,
+            tier_at(&index, 0, "xyz", ALL_CONCRETE, byte_mask(b"xyz")),
+            None
+        );
+        assert_eq!(
+            tier_at(&index, 0, "hrome", ALL_CONCRETE, byte_mask(b"hrome")),
+            Some(Tier::Substring)
+        );
+    }
+
+    #[test]
+    fn tier_at_keyword_respects_qmask() {
+        let index = sample_index();
+        assert_eq!(
+            tier_at(&index, 0, "brows", ALL_CONCRETE, byte_mask(b"brows")),
+            Some(Tier::Keyword)
+        );
+        assert_eq!(
+            tier_at(&index, 0, "brows", ALL_CONCRETE, byte_mask(b"browsz")),
+            None
         );
     }
 
     #[test]
     fn candidate_ordering_tier_dominates() {
-        let a = mk(1, "alpha", &[], &[], 0, false);
-        let b = mk(2, "exact", &[], &[], 0, false);
-        let ca = cand(&a, Tier::ExactName);
-        let cb = cand(&b, Tier::Substring);
+        let ca = cand(v("alpha", 1, 0, false), Tier::ExactName);
+        let cb = cand(v("exact", 2, 0, false), Tier::Substring);
         assert_eq!(candidate_ordering(&ca, &cb), Ordering::Less);
         assert_eq!(candidate_ordering(&cb, &ca), Ordering::Greater);
     }
 
     #[test]
     fn candidate_ordering_shorter_name_first() {
-        let a = mk(1, "vim", &[], &[], 0, false);
-        let b = mk(2, "vim-plugins", &[], &[], 0, false);
-        let ca = cand(&a, Tier::Substring);
-        let cb = cand(&b, Tier::Substring);
+        let ca = cand(v("vim", 1, 0, false), Tier::Substring);
+        let cb = cand(v("vim-plugins", 2, 0, false), Tier::Substring);
         assert_eq!(candidate_ordering(&ca, &cb), Ordering::Less);
         assert_eq!(candidate_ordering(&cb, &ca), Ordering::Greater);
     }
 
     #[test]
     fn candidate_ordering_fuzzy_lower_distance_first() {
-        let a = mk(1, "alpha", &[], &[], 0, false);
-        let b = mk(2, "alpha", &[], &[], 0, false);
         let ca = Candidate {
-            pkg: &a,
+            view: v("alpha", 1, 0, false),
             tier: Tier::Fuzzy,
             distance: 1,
             first_letter_match: false,
         };
         let cb = Candidate {
-            pkg: &b,
+            view: v("alpha", 2, 0, false),
             tier: Tier::Fuzzy,
             distance: 2,
             first_letter_match: false,
@@ -245,16 +233,14 @@ mod tests {
 
     #[test]
     fn candidate_ordering_fuzzy_first_letter_uses_matching_token() {
-        let token_match = mk(1, "alpha-beta", &["chrome"], &[], 0, false);
-        let token_miss = mk(2, "cedar-delta", &["zhrom"], &[], 0, false);
         let ca = Candidate {
-            pkg: &token_match,
+            view: v("alpha-beta", 1, 0, false),
             tier: Tier::Fuzzy,
             distance: 1,
             first_letter_match: true,
         };
         let cb = Candidate {
-            pkg: &token_miss,
+            view: v("cedar-delta", 2, 0, false),
             tier: Tier::Fuzzy,
             distance: 1,
             first_letter_match: false,
@@ -265,34 +251,26 @@ mod tests {
 
     #[test]
     fn candidate_ordering_repo_before_non_repo() {
-        let a = mk(1, "foo", &[], &[], 0, true);
-        let b = mk(2, "foo", &[], &[], 0, false);
-        let ca = cand(&a, Tier::Substring);
-        let cb = cand(&b, Tier::Substring);
+        let ca = cand(v("foo", 1, 0, true), Tier::Substring);
+        let cb = cand(v("foo", 2, 0, false), Tier::Substring);
         assert_eq!(candidate_ordering(&ca, &cb), Ordering::Less);
     }
 
     #[test]
     fn candidate_ordering_higher_popularity_first() {
-        let a = mk(1, "foo", &[], &[], 10, false);
-        let b = mk(2, "foo", &[], &[], 90, false);
-        let ca = cand(&a, Tier::Substring);
-        let cb = cand(&b, Tier::Substring);
+        let ca = cand(v("foo", 1, 10, false), Tier::Substring);
+        let cb = cand(v("foo", 2, 90, false), Tier::Substring);
         assert_eq!(candidate_ordering(&ca, &cb), Ordering::Greater);
     }
 
     #[test]
     fn candidate_ordering_name_then_id_tiebreak() {
-        let a = mk(1, "alpha", &[], &[], 5, false);
-        let b = mk(2, "zebra", &[], &[], 5, false);
-        let ca = cand(&a, Tier::Substring);
-        let cb = cand(&b, Tier::Substring);
+        let ca = cand(v("alpha", 1, 5, false), Tier::Substring);
+        let cb = cand(v("zebra", 2, 5, false), Tier::Substring);
         assert_eq!(candidate_ordering(&ca, &cb), Ordering::Less);
 
-        let c = mk(1, "same", &[], &[], 5, false);
-        let d = mk(2, "same", &[], &[], 5, false);
-        let cc = cand(&c, Tier::Substring);
-        let cd = cand(&d, Tier::Substring);
+        let cc = cand(v("same", 1, 5, false), Tier::Substring);
+        let cd = cand(v("same", 2, 5, false), Tier::Substring);
         assert_eq!(candidate_ordering(&cc, &cd), Ordering::Less);
     }
 }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,15 +17,42 @@ fn next_prefix_bound(q: &[u8]) -> Option<Vec<u8>> {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub struct IndexedPackage {
-    pub id: u32,
-    pub name: String,
-    pub tokens: Vec<String>,
-    pub keywords: Vec<String>,
-    pub popularity: u16,
-    pub is_repo: bool,
-    pub name_mask: u64,
-    pub kw_mask: u64,
+pub(crate) struct PkgRow {
+    pub(crate) id: u32,
+    name_off: u32,
+    name_len: u16,
+    tokens_start: u32,
+    tokens_len: u16,
+    kws_start: u32,
+    kws_len: u16,
+    pub(crate) popularity: u16,
+    pub(crate) is_repo: bool,
+    pub(crate) name_mask: u64,
+    pub(crate) kw_mask: u64,
+}
+
+pub(crate) struct RawPkg {
+    pub(crate) id: u32,
+    pub(crate) name: String,
+    pub(crate) tokens: Vec<String>,
+    pub(crate) keywords: Vec<String>,
+    pub(crate) popularity: u16,
+    pub(crate) is_repo: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct PackageIndex {
+    pub(crate) rows: Vec<PkgRow>,
+    pub(crate) arena: Box<str>,
+    pub(crate) token_ids: Box<[u32]>,
+    pub(crate) kw_ids: Box<[u32]>,
+    pub(crate) unique_tokens: Box<[(u32, u16)]>,
+    pub(crate) unique_token_masks: Box<[u64]>,
+    pub(crate) unique_kws: Box<[(u32, u16)]>,
+    pub(crate) names_sorted: Vec<u32>,
+    pub(crate) tokens_sorted: Vec<(u32, u32)>,
+    pub(crate) version: u32,
+    pub(crate) built_at: u64,
 }
 
 pub fn byte_mask(bytes: &[u8]) -> u64 {
@@ -45,24 +73,6 @@ fn char_bit(b: u8) -> u64 {
         b'+' => 1u64 << 39,
         _ => 0,
     }
-}
-
-pub struct IndexRow {
-    pub id: u32,
-    pub name: String,
-    pub source: String,
-    pub popularity: Option<f64>,
-    pub keywords: Option<String>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct PackageIndex {
-    pub packages: Vec<IndexedPackage>,
-    pub names_sorted: Vec<u32>,
-    pub tokens_sorted: Vec<(u32, u32)>,
-    pub unique_tokens: Vec<(String, u64)>,
-    pub version: u32,
-    pub built_at: u64,
 }
 
 pub fn tokenize(name: &str) -> Vec<String> {
@@ -112,6 +122,14 @@ pub fn needs_rebuild(sqlite_path: &Path) -> bool {
     idx_mod < sqlite_mod
 }
 
+pub struct IndexRow {
+    pub id: u32,
+    pub name: String,
+    pub source: String,
+    pub popularity: Option<f64>,
+    pub keywords: Option<String>,
+}
+
 fn scan_packages(conn: &rusqlite::Connection) -> anyhow::Result<Vec<IndexRow>> {
     let mut stmt =
         conn.prepare("SELECT rowid AS id, name, source, popularity, keywords FROM packages")?;
@@ -130,98 +148,240 @@ fn scan_packages(conn: &rusqlite::Connection) -> anyhow::Result<Vec<IndexRow>> {
 }
 
 pub fn build_from_rows(rows: Vec<IndexRow>) -> PackageIndex {
-    let packages = rows
+    let raws: Vec<RawPkg> = rows
         .into_iter()
         .map(|row| {
             let is_repo = row.source == "repo";
             let name = row.name.to_lowercase();
             let tokens = tokenize(&row.name);
             let keywords = parse_keywords(row.keywords);
-            let name_mask = byte_mask(name.as_bytes());
-            let kw_mask = keywords
-                .iter()
-                .map(|k| byte_mask(k.as_bytes()))
-                .fold(0u64, |acc, m| acc | m);
-            IndexedPackage {
+            let popularity = normalize_popularity(row.popularity, is_repo);
+            RawPkg {
                 id: row.id,
                 name,
                 tokens,
                 keywords,
-                popularity: normalize_popularity(row.popularity, is_repo),
+                popularity,
                 is_repo,
-                name_mask,
-                kw_mask,
             }
         })
         .collect();
-    let built_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    assemble(raws)
+}
+
+pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
+    let n = raws.len();
+    let mut arena: String = String::new();
+    let mut rows: Vec<PkgRow> = Vec::with_capacity(n);
+
+    for raw in &raws {
+        let name_off: u32 = arena.len().try_into().expect("arena offset exceeds u32");
+        arena.push_str(&raw.name);
+        let name_len: u16 = raw.name.len().try_into().expect("package name exceeds u16");
+        let kw_mask = raw
+            .keywords
+            .iter()
+            .map(|k| byte_mask(k.as_bytes()))
+            .fold(0u64, |acc, m| acc | m);
+        let name_mask = byte_mask(raw.name.as_bytes());
+        let tokens_len: u16 = raw
+            .tokens
+            .len()
+            .try_into()
+            .expect("token count exceeds u16");
+        let kws_len: u16 = raw
+            .keywords
+            .len()
+            .try_into()
+            .expect("keyword count exceeds u16");
+        rows.push(PkgRow {
+            id: raw.id,
+            name_off,
+            name_len,
+            tokens_start: 0,
+            tokens_len,
+            kws_start: 0,
+            kws_len,
+            popularity: raw.popularity,
+            is_repo: raw.is_repo,
+            name_mask,
+            kw_mask,
+        });
+    }
+
+    let mut occ: Vec<(u32, u32)> = Vec::new();
+    for (pi, raw) in raws.iter().enumerate() {
+        for ti in 0..raw.tokens.len() {
+            occ.push((pi as u32, ti as u32));
+        }
+    }
+    occ.sort_by(|&(pa, ta), &(pb, tb)| {
+        let sa = raws[pa as usize].tokens[ta as usize].as_bytes();
+        let sb = raws[pb as usize].tokens[tb as usize].as_bytes();
+        sa.cmp(sb).then((pa, ta).cmp(&(pb, tb)))
+    });
+
+    let mut unique_tokens: Vec<(u32, u16)> = Vec::new();
+    let mut unique_token_masks: Vec<u64> = Vec::new();
+    let mut occ_ids: Vec<u32> = Vec::with_capacity(occ.len());
+    let mut tokens_sorted: Vec<(u32, u32)> = Vec::with_capacity(occ.len());
+    let mut prev_span: Option<(u32, u16)> = None;
+
+    for &(pi, ti) in &occ {
+        let s = &raws[pi as usize].tokens[ti as usize];
+        let is_dup = match prev_span {
+            Some((off, len)) => &arena[off as usize..off as usize + len as usize] == s.as_str(),
+            None => false,
+        };
+        if is_dup {
+            let id = (unique_tokens.len() - 1) as u32;
+            occ_ids.push(id);
+            tokens_sorted.push((id, pi));
+        } else {
+            let off: u32 = arena.len().try_into().expect("arena offset exceeds u32");
+            arena.push_str(s);
+            let len: u16 = s.len().try_into().expect("token exceeds u16");
+            unique_tokens.push((off, len));
+            unique_token_masks.push(byte_mask(s.as_bytes()));
+            let id = (unique_tokens.len() - 1) as u32;
+            occ_ids.push(id);
+            tokens_sorted.push((id, pi));
+            prev_span = Some((off, len));
+        }
+    }
+
+    let mut starts: Vec<u32> = Vec::with_capacity(n);
+    let mut acc: u32 = 0;
+    for r in &rows {
+        starts.push(acc);
+        acc += r.tokens_len as u32;
+    }
+    let mut cursor = starts.clone();
+    let mut token_ids: Vec<u32> = vec![0u32; occ.len()];
+    for (i, &(pi, _)) in occ.iter().enumerate() {
+        token_ids[cursor[pi as usize] as usize] = occ_ids[i];
+        cursor[pi as usize] += 1;
+    }
+    for (i, r) in rows.iter_mut().enumerate() {
+        r.tokens_start = starts[i];
+    }
+
+    let mut kw_map: HashMap<&str, u32> = HashMap::new();
+    let mut unique_kws: Vec<(u32, u16)> = Vec::new();
+    let mut kw_ids: Vec<u32> = Vec::new();
+    for (pi, raw) in raws.iter().enumerate() {
+        rows[pi].kws_start = kw_ids.len() as u32;
+        for k in &raw.keywords {
+            let id = match kw_map.get(k.as_str()) {
+                Some(&id) => id,
+                None => {
+                    let off: u32 = arena.len().try_into().expect("arena offset exceeds u32");
+                    arena.push_str(k);
+                    let len: u16 = k.len().try_into().expect("keyword exceeds u16");
+                    let id = unique_kws.len() as u32;
+                    unique_kws.push((off, len));
+                    kw_map.insert(k.as_str(), id);
+                    id
+                }
+            };
+            kw_ids.push(id);
+        }
+    }
+
     let mut index = PackageIndex {
-        packages,
+        rows,
+        arena: arena.into_boxed_str(),
+        token_ids: token_ids.into_boxed_slice(),
+        kw_ids: kw_ids.into_boxed_slice(),
+        unique_tokens: unique_tokens.into_boxed_slice(),
+        unique_token_masks: unique_token_masks.into_boxed_slice(),
+        unique_kws: unique_kws.into_boxed_slice(),
         names_sorted: Vec::new(),
-        tokens_sorted: Vec::new(),
-        unique_tokens: Vec::new(),
+        tokens_sorted,
         version: 1,
-        built_at,
+        built_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
     };
-    index.build_inverted();
+
+    let mut names_sorted: Vec<u32> = (0..n as u32).collect();
+    names_sorted.sort_by(|&a, &b| {
+        index
+            .name(a as usize)
+            .as_bytes()
+            .cmp(index.name(b as usize).as_bytes())
+            .then(a.cmp(&b))
+    });
+    index.names_sorted = names_sorted;
+
     index
 }
 
 impl PackageIndex {
-    pub fn build_inverted(&mut self) {
-        let pkgs = &self.packages;
-        let mut names_sorted: Vec<u32> = (0..pkgs.len() as u32).collect();
-        names_sorted.sort_by(|&a, &b| {
-            pkgs[a as usize]
-                .name
-                .cmp(&pkgs[b as usize].name)
-                .then(a.cmp(&b))
-        });
+    pub(crate) fn len(&self) -> usize {
+        self.rows.len()
+    }
 
-        let mut tokens_sorted: Vec<(u32, u32)> = Vec::new();
-        for (pi, p) in pkgs.iter().enumerate() {
-            for ti in 0..p.tokens.len() {
-                tokens_sorted.push((pi as u32, ti as u32));
-            }
+    pub(crate) fn row(&self, pi: usize) -> &PkgRow {
+        &self.rows[pi]
+    }
+
+    fn slice(&self, off: u32, len: u16) -> &str {
+        &self.arena[off as usize..off as usize + len as usize]
+    }
+
+    pub(crate) fn name(&self, pi: usize) -> &str {
+        let r = &self.rows[pi];
+        self.slice(r.name_off, r.name_len)
+    }
+
+    pub(crate) fn tokens_len(&self, pi: usize) -> usize {
+        self.rows[pi].tokens_len as usize
+    }
+
+    pub(crate) fn token(&self, pi: usize, k: usize) -> &str {
+        let start = self.rows[pi].tokens_start as usize;
+        let id = self.token_ids[start + k];
+        self.token_str(id as usize)
+    }
+
+    pub(crate) fn kws_len(&self, pi: usize) -> usize {
+        self.rows[pi].kws_len as usize
+    }
+
+    pub(crate) fn keyword(&self, pi: usize, k: usize) -> &str {
+        let start = self.rows[pi].kws_start as usize;
+        let id = self.kw_ids[start + k];
+        let (off, len) = self.unique_kws[id as usize];
+        self.slice(off, len)
+    }
+
+    pub(crate) fn token_str(&self, id: usize) -> &str {
+        let (off, len) = self.unique_tokens[id];
+        self.slice(off, len)
+    }
+
+    pub(crate) fn view(&self, pi: usize) -> crate::search::tiers::PkgView<'_> {
+        let r = &self.rows[pi];
+        crate::search::tiers::PkgView {
+            name: self.name(pi),
+            id: r.id,
+            popularity: r.popularity,
+            is_repo: r.is_repo,
         }
-        tokens_sorted.sort_by(|&(pa, ta), &(pb, tb)| {
-            let sa = pkgs[pa as usize].tokens[ta as usize].as_bytes();
-            let sb = pkgs[pb as usize].tokens[tb as usize].as_bytes();
-            sa.cmp(sb).then((pa, ta).cmp(&(pb, tb)))
-        });
-
-        let mut unique_tokens: Vec<(String, u64)> = Vec::new();
-        for &(p, t) in &tokens_sorted {
-            let s = pkgs[p as usize].tokens[t as usize].as_str();
-            let is_dup = unique_tokens
-                .last()
-                .map(|(ls, _)| ls.as_str() == s)
-                .unwrap_or(false);
-            if is_dup {
-                continue;
-            }
-            unique_tokens.push((s.to_string(), byte_mask(s.as_bytes())));
-        }
-
-        self.names_sorted = names_sorted;
-        self.tokens_sorted = tokens_sorted;
-        self.unique_tokens = unique_tokens;
     }
 
     pub fn exact_name_range(&self, q: &[u8]) -> Range<usize> {
         if q.is_empty() {
             return 0..0;
         }
-        let pkgs = &self.packages;
         let lo = self
             .names_sorted
-            .partition_point(|&i| pkgs[i as usize].name.as_bytes() < q);
+            .partition_point(|&i| self.name(i as usize).as_bytes() < q);
         let hi = self
             .names_sorted
-            .partition_point(|&i| pkgs[i as usize].name.as_bytes() <= q);
+            .partition_point(|&i| self.name(i as usize).as_bytes() <= q);
         lo..hi
     }
 
@@ -229,16 +389,15 @@ impl PackageIndex {
         if q.is_empty() {
             return 0..0;
         }
-        let pkgs = &self.packages;
         let upper = next_prefix_bound(q);
         let lo = self
             .names_sorted
-            .partition_point(|&i| pkgs[i as usize].name.as_bytes() < q);
+            .partition_point(|&i| self.name(i as usize).as_bytes() < q);
         let hi = match upper {
             None => self.names_sorted.len(),
             Some(u) => self
                 .names_sorted
-                .partition_point(|&i| pkgs[i as usize].name.as_bytes() < u.as_slice()),
+                .partition_point(|&i| self.name(i as usize).as_bytes() < u.as_slice()),
         };
         lo..hi
     }
@@ -247,13 +406,12 @@ impl PackageIndex {
         if q.is_empty() {
             return 0..0;
         }
-        let pkgs = &self.packages;
         let lo = self
             .tokens_sorted
-            .partition_point(|&(p, t)| pkgs[p as usize].tokens[t as usize].as_bytes() < q);
+            .partition_point(|&(tid, _)| self.token_str(tid as usize).as_bytes() < q);
         let hi = self
             .tokens_sorted
-            .partition_point(|&(p, t)| pkgs[p as usize].tokens[t as usize].as_bytes() <= q);
+            .partition_point(|&(tid, _)| self.token_str(tid as usize).as_bytes() <= q);
         lo..hi
     }
 
@@ -261,15 +419,14 @@ impl PackageIndex {
         if q.is_empty() {
             return 0..0;
         }
-        let pkgs = &self.packages;
         let upper = next_prefix_bound(q);
         let lo = self
             .tokens_sorted
-            .partition_point(|&(p, t)| pkgs[p as usize].tokens[t as usize].as_bytes() < q);
+            .partition_point(|&(tid, _)| self.token_str(tid as usize).as_bytes() < q);
         let hi = match upper {
             None => self.tokens_sorted.len(),
-            Some(u) => self.tokens_sorted.partition_point(|&(p, t)| {
-                pkgs[p as usize].tokens[t as usize].as_bytes() < u.as_slice()
+            Some(u) => self.tokens_sorted.partition_point(|&(tid, _)| {
+                self.token_str(tid as usize).as_bytes() < u.as_slice()
             }),
         };
         lo..hi
@@ -295,7 +452,13 @@ impl PackageIndex {
             &bytes[INDEX_MAGIC.len()..],
             bincode::config::standard(),
         ) {
-            Ok((pkg, _)) => Ok(pkg),
+            Ok((pkg, _)) => {
+                if !pkg.validate() {
+                    let _ = std::fs::remove_file(path);
+                    anyhow::bail!("index validation failed");
+                }
+                Ok(pkg)
+            }
             Err(e) => {
                 let _ = std::fs::remove_file(path);
                 Err(anyhow::Error::from(e))
@@ -320,6 +483,65 @@ impl PackageIndex {
         let pkg = build_from_rows(rows);
         let _ = pkg.save(&idx);
         Ok(pkg)
+    }
+
+    fn validate(&self) -> bool {
+        let arena = &self.arena;
+        let ok_span = |off: u32, len: u16| -> bool {
+            let start = off as usize;
+            let end = start + len as usize;
+            end <= arena.len() && arena.is_char_boundary(start) && arena.is_char_boundary(end)
+        };
+        if self.unique_token_masks.len() != self.unique_tokens.len() {
+            return false;
+        }
+        for &(off, len) in &self.unique_tokens {
+            if !ok_span(off, len) {
+                return false;
+            }
+        }
+        for &(off, len) in &self.unique_kws {
+            if !ok_span(off, len) {
+                return false;
+            }
+        }
+        for r in &self.rows {
+            if !ok_span(r.name_off, r.name_len) {
+                return false;
+            }
+            if (r.tokens_start as usize + r.tokens_len as usize) > self.token_ids.len() {
+                return false;
+            }
+            if (r.kws_start as usize + r.kws_len as usize) > self.kw_ids.len() {
+                return false;
+            }
+            for k in 0..r.tokens_len as usize {
+                let id = self.token_ids[r.tokens_start as usize + k];
+                if id as usize >= self.unique_tokens.len() {
+                    return false;
+                }
+            }
+            for k in 0..r.kws_len as usize {
+                let id = self.kw_ids[r.kws_start as usize + k];
+                if id as usize >= self.unique_kws.len() {
+                    return false;
+                }
+            }
+        }
+        for &pi in &self.names_sorted {
+            if pi as usize >= self.rows.len() {
+                return false;
+            }
+        }
+        for &(tid, pi) in &self.tokens_sorted {
+            if tid as usize >= self.unique_tokens.len() {
+                return false;
+            }
+            if pi as usize >= self.rows.len() {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -362,98 +584,114 @@ mod tests {
     fn save_and_load_round_trip() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("index.bin");
-        let mut original = PackageIndex {
-            packages: vec![IndexedPackage {
-                id: 7,
+        let raws = vec![
+            RawPkg {
+                id: 1,
+                name: "vim".to_string(),
+                tokens: vec!["vim".to_string()],
+                keywords: vec![],
+                popularity: 0,
+                is_repo: false,
+            },
+            RawPkg {
+                id: 2,
                 name: "google-chrome".to_string(),
                 tokens: vec!["google".to_string(), "chrome".to_string()],
-                keywords: vec!["browser".to_string()],
-                popularity: 32768,
+                keywords: vec!["browser".to_string(), "web".to_string()],
+                popularity: 100,
                 is_repo: false,
-                name_mask: byte_mask("google-chrome".as_bytes()),
-                kw_mask: byte_mask("browser".as_bytes()),
-            }],
-            names_sorted: Vec::new(),
-            tokens_sorted: Vec::new(),
-            unique_tokens: Vec::new(),
-            version: 1,
-            built_at: 12345,
-        };
-        original.build_inverted();
+            },
+        ];
+        let original = assemble(raws);
         original.save(&path).expect("save");
 
         let loaded = PackageIndex::load(&path).expect("load");
 
-        assert_eq!(loaded.version, original.version);
-        assert_eq!(loaded.built_at, original.built_at);
-        assert_eq!(loaded.packages.len(), 1);
-        let got = &loaded.packages[0];
-        let want = &original.packages[0];
-        assert_eq!(got.id, want.id);
-        assert_eq!(got.name, want.name);
-        assert_eq!(got.tokens, want.tokens);
-        assert_eq!(got.keywords, want.keywords);
-        assert_eq!(got.popularity, want.popularity);
-        assert_eq!(got.is_repo, want.is_repo);
-        assert_eq!(got.name_mask, want.name_mask);
-        assert_eq!(got.kw_mask, want.kw_mask);
-        assert_eq!(loaded.names_sorted, original.names_sorted);
-        assert_eq!(loaded.tokens_sorted, original.tokens_sorted);
-        assert_eq!(loaded.unique_tokens, original.unique_tokens);
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded.name(0), "vim");
+        assert_eq!(loaded.tokens_len(0), 1);
+        assert_eq!(loaded.token(0, 0), "vim");
+        assert_eq!(loaded.kws_len(0), 0);
+        let v0 = loaded.view(0);
+        assert_eq!(v0.id, 1);
+        assert_eq!(v0.popularity, 0);
+        assert!(!v0.is_repo);
+
+        assert_eq!(loaded.name(1), "google-chrome");
+        assert_eq!(loaded.tokens_len(1), 2);
+        let mut toks: Vec<&str> = (0..loaded.tokens_len(1))
+            .map(|k| loaded.token(1, k))
+            .collect();
+        toks.sort_unstable();
+        assert_eq!(toks, vec!["chrome", "google"]);
+        assert_eq!(loaded.kws_len(1), 2);
+        let mut kws: Vec<&str> = (0..loaded.kws_len(1))
+            .map(|k| loaded.keyword(1, k))
+            .collect();
+        kws.sort_unstable();
+        assert_eq!(kws, vec!["browser", "web"]);
+        let v1 = loaded.view(1);
+        assert_eq!(v1.id, 2);
+        assert_eq!(v1.popularity, 100);
+        assert!(!v1.is_repo);
+
+        let utoks: Vec<&str> = (0..loaded.unique_tokens.len())
+            .map(|id| loaded.token_str(id))
+            .collect();
+        assert_eq!(utoks, vec!["chrome", "google", "vim"]);
+
+        assert_eq!(loaded.names_sorted, vec![1, 0]);
+        assert_eq!(loaded.exact_name_range(b"vim"), 1..2);
+
+        let range = loaded.prefix_token_range(b"ch");
+        let mut hit_pkgs = std::collections::HashSet::new();
+        for i in range {
+            hit_pkgs.insert(loaded.tokens_sorted[i].1);
+        }
+        assert_eq!(hit_pkgs.len(), 1);
+
+        assert!(loaded.exact_name_range(b"").is_empty());
+        assert!(loaded.prefix_name_range(b"").is_empty());
+        assert!(loaded.exact_token_range(b"").is_empty());
+        assert!(loaded.prefix_token_range(b"").is_empty());
+        assert!(loaded.exact_name_range(b"nope").is_empty());
+        assert!(loaded.prefix_token_range(b"zz").is_empty());
     }
 
     #[test]
     fn build_inverted_populates_derived_arrays() {
-        let mut index = PackageIndex {
-            packages: vec![
-                IndexedPackage {
-                    id: 1,
-                    name: "vim".to_string(),
-                    tokens: vec!["vim".to_string()],
-                    keywords: Vec::new(),
-                    popularity: 0,
-                    is_repo: false,
-                    name_mask: byte_mask(b"vim"),
-                    kw_mask: 0,
-                },
-                IndexedPackage {
-                    id: 2,
-                    name: "google-chrome".to_string(),
-                    tokens: vec!["google".to_string(), "chrome".to_string()],
-                    keywords: Vec::new(),
-                    popularity: 0,
-                    is_repo: false,
-                    name_mask: byte_mask(b"google-chrome"),
-                    kw_mask: 0,
-                },
-            ],
-            names_sorted: Vec::new(),
-            tokens_sorted: Vec::new(),
-            unique_tokens: Vec::new(),
-            version: 1,
-            built_at: 0,
-        };
-        index.build_inverted();
+        let raws = vec![
+            RawPkg {
+                id: 1,
+                name: "vim".to_string(),
+                tokens: vec!["vim".to_string()],
+                keywords: vec![],
+                popularity: 0,
+                is_repo: false,
+            },
+            RawPkg {
+                id: 2,
+                name: "google-chrome".to_string(),
+                tokens: vec!["google".to_string(), "chrome".to_string()],
+                keywords: vec![],
+                popularity: 0,
+                is_repo: false,
+            },
+        ];
+        let index = assemble(raws);
 
         assert_eq!(index.names_sorted, vec![1, 0]);
         assert_eq!(index.tokens_sorted.len(), 3);
+        assert_eq!(index.token_str(index.tokens_sorted[0].0 as usize), "chrome");
         assert_eq!(index.tokens_sorted[0].1, 1);
-        assert_eq!(
-            index.packages[index.tokens_sorted[0].0 as usize].tokens[1],
-            "chrome"
-        );
-        assert_eq!(
-            index.unique_tokens,
-            vec![
-                ("chrome".to_string(), byte_mask(b"chrome")),
-                ("google".to_string(), byte_mask(b"google")),
-                ("vim".to_string(), byte_mask(b"vim")),
-            ]
-        );
+
+        let utoks: Vec<&str> = (0..index.unique_tokens.len())
+            .map(|id| index.token_str(id))
+            .collect();
+        assert_eq!(utoks, vec!["chrome", "google", "vim"]);
 
         assert_eq!(index.exact_name_range(b"vim"), 1..2);
         assert!(index.exact_name_range(b"nope").is_empty());
-        assert_eq!(index.prefix_name_range(b"vim"), 1..2);
         assert_eq!(index.exact_token_range(b"chrome").len(), 1);
         assert!(index.exact_token_range(b"nope").is_empty());
         assert_eq!(index.prefix_token_range(b"ch").len(), 1);
