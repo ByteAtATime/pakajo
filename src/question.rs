@@ -98,7 +98,6 @@ impl QuestionSet {
     }
 }
 
-#[allow(dead_code)]
 pub fn default_approve(qs: &QuestionSet) -> anyhow::Result<Approvals> {
     let conflicts: Vec<usize> = (0..qs.conflicts.len()).collect();
     let providers: Vec<(usize, usize)> = (0..qs.providers.len()).map(|i| (i, 0)).collect();

@@ -42,7 +42,6 @@ impl PackageDb {
         .unwrap_or(false)
     }
 
-    #[allow(dead_code)]
     pub fn get_meta(&self, key: &str) -> anyhow::Result<Option<String>> {
         let conn = self.read.lock().expect("read connection poisoned");
         meta_get(&conn, key)

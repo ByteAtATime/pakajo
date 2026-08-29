@@ -7,7 +7,6 @@ const AUR_RPC_URL: &str = "https://aur.archlinux.org/rpc/v5";
 const MAX_BATCH: usize = 200;
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct RpcResponse<T> {
     pub version: u8,
     #[serde(rename = "type")]
@@ -20,7 +19,6 @@ pub struct RpcResponse<T> {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
-#[allow(dead_code)]
 pub struct AurInfo {
     #[serde(rename = "ID")]
     pub id: u64,

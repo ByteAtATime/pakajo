@@ -14,7 +14,6 @@ pub enum PackageSource {
     Group,
 }
 
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct Package {
     pub source: PackageSource,

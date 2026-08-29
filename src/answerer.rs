@@ -137,7 +137,6 @@ impl QuestionAnswerer for NonInteractiveAnswerer {
 }
 
 // mock answerer used for tests
-#[allow(dead_code)]
 pub struct DenyAllAnswerer;
 
 impl QuestionAnswerer for DenyAllAnswerer {

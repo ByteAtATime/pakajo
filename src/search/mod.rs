@@ -26,7 +26,6 @@ pub struct SearchResult {
     pub installed: bool,
     pub num_votes: Option<i64>,
     pub popularity: Option<f64>,
-    #[allow(dead_code)]
     pub last_update: Option<i64>,
 }
 

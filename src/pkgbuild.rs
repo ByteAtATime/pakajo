@@ -15,7 +15,6 @@ pub struct PkgbuildInfo {
 #[derive(Clone, Debug)]
 pub struct PkgbuildDiff {
     pub name: String,
-    #[allow(dead_code)]
     pub pkgbase: String,
     pub dir: PathBuf,
     pub is_new: bool,

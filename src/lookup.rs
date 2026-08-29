@@ -1,7 +1,6 @@
 use crate::{aur::AurClient, package::Package, pacman::find_pkg};
 use alpm::Alpm;
 
-#[allow(dead_code)]
 pub fn lookup(alpm: &Alpm, aur: &AurClient, name: &str) -> Option<Package> {
     if let Some(pkg) = find_pkg(alpm, name) {
         return Some(Package::from(pkg));
