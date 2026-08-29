@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use cosmic::widget::{Column, Row, container, scrollable};
+use cosmic::widget::{Column, Row, container};
 use cosmic::{
     Application, Element,
     app::{self, Core, Settings, Task},
@@ -21,7 +21,8 @@ use pakajo::search::engine::SearchEngine;
 use background::begin_aur_sync_in_background;
 use components::detail::{DetailData, DetailMessage, detail_view};
 use components::search::{
-    SearchMessage, SearchState, results_list, search_bar, search_status_text,
+    ListRect, SearchMessage, SearchState, SelectionScroller, results_scroller, search_bar,
+    search_status_text,
 };
 use components::sysupgrade::SysupgradeMessage;
 use components::transaction::review::ReviewModel;
@@ -49,6 +50,7 @@ pub struct PakajoApp {
     pub(crate) search_state: SearchState,
     pub(crate) search_seq: u64,
     pub(crate) selected_index: Option<usize>,
+    pub(crate) scroller: SelectionScroller,
     pub(crate) detail: DetailData,
     pub(crate) detail_seq: u64,
     pub(crate) transaction: Option<Transaction>,
@@ -132,6 +134,7 @@ impl Application for PakajoApp {
             search_state: SearchState::Idle,
             search_seq: 0,
             selected_index: None,
+            scroller: SelectionScroller::new(),
             detail: DetailData::None,
             detail_seq: 0,
             transaction: None,
@@ -189,6 +192,10 @@ impl Application for PakajoApp {
                 _ => None,
             }),
             background::db_lock_watcher_subscription(),
+            cosmic::widget::rectangle_tracker::subscription::<ListRect, ListRect>(
+                ListRect::Viewport,
+            )
+            .map(|(_, update)| Message::Search(SearchMessage::Rects(update))),
         ])
     }
 
@@ -234,11 +241,7 @@ impl PakajoApp {
             .push(search_status_text(self.search_state, self.results.len()))
             .push(
                 Row::new()
-                    .push(
-                        scrollable(results_list(&self.results, self.selected_index))
-                            .width(384.)
-                            .id(page_scroll_id()),
-                    )
+                    .push(results_scroller(&self.results, self.selected_index, &self.scroller))
                     .push(detail_view(&self.detail, checking)),
             );
 
@@ -370,6 +373,7 @@ impl PakajoApp {
 
     pub(crate) fn goto_page(&mut self, page: Page) -> Task<Message> {
         self.page = page;
+        self.scroller.reset_offset();
         scroll_to_top()
     }
 }
