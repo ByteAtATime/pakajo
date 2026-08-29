@@ -73,13 +73,13 @@ fn group_name_tier(name: &str, q: &str) -> Option<Tier> {
     }
 }
 
-fn group_search_result(name: &String, repo: &String) -> SearchResult {
+fn group_search_result(name: &str, repo: &str) -> SearchResult {
     SearchResult {
-        name: name.clone(),
+        name: name.to_owned(),
         source: PackageSource::Group,
         description: Some("group".to_string()),
         version: String::new(),
-        repo: Some(repo.clone()),
+        repo: Some(repo.to_owned()),
         installed: false,
         num_votes: None,
         popularity: None,

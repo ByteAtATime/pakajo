@@ -804,8 +804,10 @@ mod tests {
         use crate::answerer::{ConflictDecision, ProviderDecision, QuestionAnswerer};
         use crate::question::ProviderCandidate;
 
+        type RecordedProviders = Arc<Mutex<Vec<(String, Vec<ProviderCandidate>)>>>;
+
         struct RecordingAnswerer {
-            recorded: Arc<Mutex<Vec<(String, Vec<ProviderCandidate>)>>>,
+            recorded: RecordedProviders,
         }
 
         impl QuestionAnswerer for RecordingAnswerer {
@@ -832,8 +834,7 @@ mod tests {
             }
         }
 
-        let recorded: Arc<Mutex<Vec<(String, Vec<ProviderCandidate>)>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let recorded: RecordedProviders = Arc::new(Mutex::new(Vec::new()));
         let mut handle = setup_fake_root("provider");
         let result = install_into(
             &mut handle,

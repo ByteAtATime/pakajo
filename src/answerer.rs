@@ -54,6 +54,12 @@ impl StdioAnswerer {
     }
 }
 
+impl Default for StdioAnswerer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QuestionAnswerer for StdioAnswerer {
     fn answer_conflict(
         &self,

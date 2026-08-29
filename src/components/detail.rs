@@ -17,7 +17,7 @@ pub enum DetailData {
     None,
     Loading,
     Ready {
-        pkg: Package,
+        pkg: Box<Package>,
         installed: bool,
     },
     Error(String),
@@ -36,7 +36,7 @@ pub struct GroupMember {
 
 #[derive(Clone)]
 pub enum DetailMessage {
-    DetailReady { seq: u64, pkg: Package },
+    DetailReady { seq: u64, pkg: Box<Package> },
     DetailFailed { seq: u64, message: String },
 }
 
@@ -530,7 +530,7 @@ impl crate::PakajoApp {
                                         .send(
                                             crate::Message::Detail(DetailMessage::DetailReady {
                                                 seq,
-                                                pkg: Package::from(info),
+                                                pkg: Box::new(Package::from(info)),
                                             })
                                             .into(),
                                         )
@@ -568,14 +568,14 @@ impl crate::PakajoApp {
                         match fetched {
                             Ok(Some(info)) => {
                                 let _ = tx
-                                    .send(
-                                        crate::Message::Detail(DetailMessage::DetailReady {
-                                            seq,
-                                            pkg: Package::from(info),
-                                        })
-                                        .into(),
-                                    )
-                                    .await;
+                                .send(
+                                    crate::Message::Detail(DetailMessage::DetailReady {
+                                        seq,
+                                        pkg: Box::new(Package::from(info)),
+                                    })
+                                    .into(),
+                                )
+                                .await;
                             }
                             Ok(None) => {
                                 let _ = tx
@@ -613,7 +613,7 @@ impl crate::PakajoApp {
             .as_ref()
             .map(|a| pakajo::package::is_installed(a, &name))
             .unwrap_or(false);
-        self.detail = DetailData::Ready { pkg, installed };
+        self.detail = DetailData::Ready { pkg: Box::new(pkg), installed };
     }
 
     pub(crate) fn handle_detail(
@@ -623,7 +623,7 @@ impl crate::PakajoApp {
         match message {
             DetailMessage::DetailReady { seq, pkg } => {
                 if seq == self.detail_seq {
-                    self.set_detail_pkg(pkg);
+                    self.set_detail_pkg(*pkg);
                 }
                 Task::none()
             }

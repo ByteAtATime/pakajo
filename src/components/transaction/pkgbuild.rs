@@ -52,7 +52,7 @@ impl PkgbuildModel {
         let col = Column::new()
             .spacing(16)
             .push(text("Review PKGBUILD"))
-            .push_maybe((self.diffs.len() > 1).then(|| tabs))
+            .push_maybe((self.diffs.len() > 1).then_some(tabs))
             .push(body)
             .push(pkgbuild_footer(self.current, self.diffs.len()));
 

@@ -258,6 +258,12 @@ impl ConsoleSink {
     }
 }
 
+impl Default for ConsoleSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InstallSink for ConsoleSink {
     fn event(&mut self, event: InstallEvent) {
         self.print_event(&event);
