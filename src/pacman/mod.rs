@@ -105,6 +105,16 @@ pub fn init_alpm_rootless(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
 
 static CHECKDB_REFRESH_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+fn lock_is_stale(path: &std::path::Path) -> bool {
+    let Ok(modified) = std::fs::metadata(path).and_then(|m| m.modified()) else {
+        return true;
+    };
+    modified
+        .elapsed()
+        .map(|e| e.as_secs() >= 60)
+        .unwrap_or(false)
+}
+
 pub fn refresh_sync_dbs_rootless(handle: &mut Alpm) -> anyhow::Result<()> {
     let _guard = CHECKDB_REFRESH_GUARD
         .lock()
@@ -113,11 +123,31 @@ pub fn refresh_sync_dbs_rootless(handle: &mut Alpm) -> anyhow::Result<()> {
         Ok(_) => Ok(()),
         Err(alpm::Error::HandleLock) => {
             let lock_path = lock::db_lck_path(handle.dbpath());
+            let checkdb = crate::build::cache_root()?.join("checkdb");
+            if lock_path.parent() != Some(checkdb.as_path()) {
+                anyhow::bail!(
+                    "refusing to remove non-checkdb lock at {}",
+                    lock_path.display()
+                );
+            }
+            if !lock_is_stale(&lock_path) {
+                anyhow::bail!(
+                    "checkdb lock at {} is fresh, another pakajo refresh may be in progress",
+                    lock_path.display()
+                );
+            }
+            let age = std::fs::metadata(&lock_path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .map(|e| e.as_secs())
+                .unwrap_or(0);
             match std::fs::remove_file(&lock_path) {
                 Ok(()) => {
                     eprintln!(
-                        "[pakajo] removed stale checkdb lock at {}",
-                        lock_path.display()
+                        "[pakajo] removed stale checkdb lock at {} (held for {}s)",
+                        lock_path.display(),
+                        age
                     );
                     handle
                         .syncdbs_mut()
@@ -127,7 +157,7 @@ pub fn refresh_sync_dbs_rootless(handle: &mut Alpm) -> anyhow::Result<()> {
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     anyhow::bail!(
-                        "could not acquire checkdb lock and no stale lock file was present at {}",
+                        "could not acquire checkdb lock and no stale lock file was present at {} (check that the directory is writable and not full)",
                         lock_path.display()
                     )
                 }
