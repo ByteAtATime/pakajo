@@ -519,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "integration: needs live pacman sync DBs; run with --ignored sysupgrade_apply"]
+    #[ignore]
     fn sysupgrade_apply_replays_approvals_without_live_write() {
         use crate::answerer::{
             ApprovalsAnswerer, ConflictDecision, ProviderDecision, QuestionAnswerer,
