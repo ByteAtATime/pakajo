@@ -15,6 +15,7 @@ pub const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
 #[derive(Clone)]
 pub enum DetailData {
     None,
+    Pending,
     Loading,
     Ready {
         pkg: Box<Package>,
@@ -38,6 +39,7 @@ pub struct GroupMember {
 pub enum DetailMessage {
     DetailReady { seq: u64, pkg: Box<Package> },
     DetailFailed { seq: u64, message: String },
+    ShowLoading { seq: u64 },
 }
 
 impl std::fmt::Debug for DetailMessage {
@@ -51,6 +53,9 @@ impl std::fmt::Debug for DetailMessage {
                 .field("seq", seq)
                 .field("message", message)
                 .finish(),
+            Self::ShowLoading { seq } => {
+                f.debug_struct("ShowLoading").field("seq", seq).finish()
+            }
         }
     }
 }
@@ -66,6 +71,7 @@ pub fn detail_view<'a>(
             .align_x(Alignment::Center)
             .align_y(Alignment::Center)
             .into(),
+        DetailData::Pending => Space::new().width(Length::Fill).height(Length::Fill).into(),
         DetailData::Loading => container(text("Loading..."))
             .width(Length::Fill)
             .height(Length::Fill)
@@ -475,7 +481,9 @@ impl crate::PakajoApp {
     ) -> cosmic::app::Task<crate::Message> {
         self.detail_seq = self.detail_seq.wrapping_add(1);
         let seq = self.detail_seq;
-        self.detail = DetailData::Loading;
+        if matches!(self.detail, DetailData::None) {
+            self.detail = DetailData::Pending;
+        }
         match source {
             PackageSource::Repo => {
                 let resolved = self
@@ -518,7 +526,9 @@ impl crate::PakajoApp {
                     return Task::none();
                 };
                 let db = self.db.clone();
-                Task::stream(cosmic::iced::stream::channel(
+                self.detail_pending = Some(seq);
+                Task::batch([
+                    Task::stream(cosmic::iced::stream::channel(
                     8,
                     move |mut tx: futures::channel::mpsc::Sender<
                         cosmic::Action<crate::Message>,
@@ -601,7 +611,10 @@ impl crate::PakajoApp {
                             }
                         }
                     },
-                ))
+                    ),
+                    ),
+                    show_loading_after_debounce(seq),
+                ])
             }
         }
     }
@@ -623,16 +636,42 @@ impl crate::PakajoApp {
         match message {
             DetailMessage::DetailReady { seq, pkg } => {
                 if seq == self.detail_seq {
+                    self.detail_pending = None;
                     self.set_detail_pkg(*pkg);
                 }
                 Task::none()
             }
             DetailMessage::DetailFailed { seq, message } => {
                 if seq == self.detail_seq {
+                    self.detail_pending = None;
                     self.detail = DetailData::Error(message);
+                }
+                Task::none()
+            }
+            DetailMessage::ShowLoading { seq } => {
+                if seq == self.detail_seq && self.detail_pending == Some(seq) {
+                    self.detail = DetailData::Loading;
                 }
                 Task::none()
             }
         }
     }
+}
+
+fn show_loading_after_debounce(seq: u64) -> cosmic::app::Task<crate::Message> {
+    Task::stream(cosmic::iced::stream::channel(
+        1,
+        move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
+            let (fire_tx, fire_rx) = futures::channel::oneshot::channel::<()>();
+            std::thread::spawn(move || {
+                std::thread::sleep(DETAIL_DEBOUNCE);
+                let _ = fire_tx.send(());
+            });
+            if fire_rx.await.is_ok() {
+                let _ = tx
+                    .send(crate::Message::Detail(DetailMessage::ShowLoading { seq }).into())
+                    .await;
+            }
+        },
+    ))
 }

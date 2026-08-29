@@ -53,6 +53,7 @@ pub struct PakajoApp {
     pub(crate) scroller: SelectionScroller,
     pub(crate) detail: DetailData,
     pub(crate) detail_seq: u64,
+    pub(crate) detail_pending: Option<u64>,
     pub(crate) transaction: Option<Transaction>,
     pub(crate) updates_state: UpdatesState,
     pub(crate) pending_updates: pakajo::updates::PendingUpdates,
@@ -137,6 +138,7 @@ impl Application for PakajoApp {
             scroller: SelectionScroller::new(),
             detail: DetailData::None,
             detail_seq: 0,
+            detail_pending: None,
             transaction: None,
             updates_state: UpdatesState::Idle,
             pending_updates: pakajo::updates::PendingUpdates {
