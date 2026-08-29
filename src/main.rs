@@ -248,7 +248,11 @@ impl PakajoApp {
                         self.selected_index,
                         &self.scroller,
                     ))
-                    .push(detail_view(&self.detail, checking)),
+                    .push(detail_view(
+                        &self.detail,
+                        checking,
+                        self.detail_pending.is_some(),
+                    )),
             );
 
         container(content).into()
@@ -261,6 +265,7 @@ impl PakajoApp {
                     .transaction
                     .as_ref()
                     .is_some_and(Transaction::is_active)
+                    || self.detail_pending.is_some()
                 {
                     return Task::none();
                 }
@@ -277,6 +282,7 @@ impl PakajoApp {
                     .transaction
                     .as_ref()
                     .is_some_and(Transaction::is_active)
+                    || self.detail_pending.is_some()
                 {
                     return Task::none();
                 }

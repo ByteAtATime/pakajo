@@ -61,6 +61,7 @@ impl std::fmt::Debug for DetailMessage {
 pub fn detail_view<'a>(
     detail: &'a DetailData,
     checking: Option<&'a str>,
+    pending: bool,
 ) -> cosmic::Element<'a, crate::Message> {
     let content: cosmic::Element<'a, crate::Message> = match detail {
         DetailData::None => container(muted("Select a package"))
@@ -83,7 +84,7 @@ pub fn detail_view<'a>(
             .align_y(Alignment::Center)
             .into(),
         DetailData::Group { name, members } => render_group(name, members),
-        DetailData::Ready { pkg, installed } => render_package(pkg, *installed, checking),
+        DetailData::Ready { pkg, installed } => render_package(pkg, *installed, checking, pending),
     };
 
     scrollable(content)
@@ -141,8 +142,9 @@ fn render_package<'a>(
     pkg: &'a Package,
     installed: bool,
     checking: Option<&'a str>,
+    pending: bool,
 ) -> cosmic::Element<'a, crate::Message> {
-    let header = render_header(pkg, installed, checking);
+    let header = render_header(pkg, installed, checking, pending);
     let details = render_details(pkg);
     let dependencies = render_dependencies(pkg);
     let opt_dependencies = render_opt_dependencies(pkg);
@@ -164,6 +166,7 @@ fn render_header<'a>(
     pkg: &'a Package,
     installed: bool,
     checking: Option<&'a str>,
+    pending: bool,
 ) -> cosmic::Element<'a, crate::Message> {
     let formatted_name = if let Some(repo) = pkg.repo.as_ref() {
         format!("{repo}/{}", pkg.name)
@@ -183,7 +186,7 @@ fn render_header<'a>(
         )
     };
 
-    let busy = checking == Some(pkg.name.as_str());
+    let busy = pending || checking == Some(pkg.name.as_str());
     let action = if busy {
         button::custom(text("Loading..."))
     } else if installed {
@@ -478,6 +481,7 @@ impl crate::PakajoApp {
         source: PackageSource,
     ) -> cosmic::app::Task<crate::Message> {
         self.detail_seq = self.detail_seq.wrapping_add(1);
+        self.detail_pending = None;
         let seq = self.detail_seq;
         if matches!(self.detail, DetailData::None) {
             self.detail = DetailData::Pending;
