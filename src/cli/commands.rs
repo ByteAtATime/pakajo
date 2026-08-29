@@ -122,10 +122,16 @@ pub fn run_search(query: &str) -> anyhow::Result<()> {
     let sqlite_path = crate::local_index::LocalIndex::db_path()?;
     let local = crate::local_index::LocalIndex::open(&sqlite_path)?;
     let engine = crate::search::engine::SearchEngine::new(sqlite_path)?;
-    let handle = alpm_handle()?;
-    let installed = crate::package::installed_names(&handle);
-    let group_index = crate::pacman::collect_group_index(&handle);
-    let results = crate::search::dispatch_search(&engine, &local, &installed, query, &group_index);
+    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
+    let snapshot = crate::pacman::snapshot::get(&config)?;
+    let installed: std::collections::HashSet<String> = snapshot.installed.into_iter().collect();
+    let results = crate::search::dispatch_search(
+        &engine,
+        &local,
+        &installed,
+        query,
+        &snapshot.groups,
+    );
     print_search_results(&results);
     Ok(())
 }

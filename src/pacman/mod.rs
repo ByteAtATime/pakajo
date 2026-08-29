@@ -2,6 +2,7 @@ use alpm::{Alpm, SigLevel};
 use anyhow::Context as _;
 
 pub mod lock;
+pub mod snapshot;
 
 fn parse_siglevel(sig_strings: &[String]) -> SigLevel {
     if sig_strings.is_empty() {
