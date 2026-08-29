@@ -13,7 +13,7 @@ use cosmic::{
 };
 use pakajo::aur::AurClient;
 use pakajo::cli;
-use pakajo::package_db::PackageDb;
+use pakajo::db::PackageDb;
 use pakajo::pacman::init_alpm;
 use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
@@ -39,7 +39,7 @@ fn main() -> cosmic::iced::Result {
 pub struct PakajoApp {
     core: Core,
     pub(crate) search_engine: Option<Arc<SearchEngine>>,
-    pub(crate) package_db: Option<Arc<PackageDb>>,
+    pub(crate) db: Option<Arc<PackageDb>>,
     pub(crate) alpm: Option<alpm::Alpm>,
     pub(crate) aur_client: Option<Arc<AurClient>>,
     pub(crate) installed_names: Arc<HashSet<String>>,
@@ -87,7 +87,7 @@ impl Application for PakajoApp {
             .ok()
             .and_then(|p| SearchEngine::new(p).ok())
             .map(Arc::new);
-        let package_db = PackageDb::db_path()
+        let db = PackageDb::db_path()
             .ok()
             .and_then(|p| {
                 PackageDb::open(&p)
@@ -115,14 +115,14 @@ impl Application for PakajoApp {
 
         let aur_client = Some(Arc::new(AurClient::new()));
 
-        if let Some(index) = &package_db {
+        if let Some(index) = &db {
             begin_aur_sync_in_background(index.clone(), search_engine.clone());
         }
 
         let mut app = PakajoApp {
             core,
             search_engine,
-            package_db,
+            db,
             alpm,
             aur_client,
             installed_names,

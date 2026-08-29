@@ -16,10 +16,10 @@ pub fn alpm_handle() -> anyhow::Result<alpm::Alpm> {
 
 pub fn run_aur_sync() -> anyhow::Result<()> {
     let handle = alpm_handle()?;
-    let index = crate::package_db::PackageDb::open(&crate::package_db::PackageDb::db_path()?)?;
+    let index = crate::db::PackageDb::open(&crate::db::PackageDb::db_path()?)?;
     match index.refresh(&handle)? {
-        crate::package_db::RefreshOutcome::NotModified => println!("index up to date"),
-        crate::package_db::RefreshOutcome::Updated {
+        crate::db::RefreshOutcome::NotModified => println!("index up to date"),
+        crate::db::RefreshOutcome::Updated {
             aur_count,
             repo_count,
             skipped,
@@ -119,8 +119,8 @@ fn fetch_base_devel_info(base: &str, arch: &str) -> anyhow::Result<Option<crate:
 }
 
 pub fn run_search(query: &str) -> anyhow::Result<()> {
-    let sqlite_path = crate::package_db::PackageDb::db_path()?;
-    let local = crate::package_db::PackageDb::open(&sqlite_path)?;
+    let sqlite_path = crate::db::PackageDb::db_path()?;
+    let local = crate::db::PackageDb::open(&sqlite_path)?;
     let engine = crate::search::engine::SearchEngine::new(sqlite_path)?;
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let snapshot = crate::pacman::snapshot::get(&config)?;

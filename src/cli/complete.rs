@@ -41,8 +41,8 @@ fn print_available(prefix: &str) -> anyhow::Result<()> {
 }
 
 fn indexed_names_with_prefix(prefix: &str) -> Option<Vec<String>> {
-    let path = crate::package_db::PackageDb::db_path().ok()?;
-    let index = crate::package_db::PackageDb::open(&path).ok()?;
+    let path = crate::db::PackageDb::db_path().ok()?;
+    let index = crate::db::PackageDb::open(&path).ok()?;
     if !index.is_populated() {
         return None;
     }

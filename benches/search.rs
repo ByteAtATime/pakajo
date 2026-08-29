@@ -1,5 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use pakajo::package_db::PackageDb;
+use pakajo::db::PackageDb;
 use pakajo::search::engine::SearchEngine;
 use std::hint::black_box;
 

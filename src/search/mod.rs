@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::package_db::PackageDb;
+use crate::db::PackageDb;
 use crate::package::PackageSource;
 
 use engine::SearchEngine;

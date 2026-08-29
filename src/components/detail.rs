@@ -517,13 +517,13 @@ impl crate::PakajoApp {
                     self.detail = DetailData::Error("aur unavailable".to_string());
                     return Task::none();
                 };
-                let package_db = self.package_db.clone();
+                let db = self.db.clone();
                 Task::stream(cosmic::iced::stream::channel(
                     8,
                     move |mut tx: futures::channel::mpsc::Sender<
                         cosmic::Action<crate::Message>,
                     >| async move {
-                        let had_cache = match package_db.as_ref() {
+                        let had_cache = match db.as_ref() {
                             Some(index) => match index.detail(&name) {
                                 Ok(Some(info)) => {
                                     let _ = tx
@@ -547,7 +547,7 @@ impl crate::PakajoApp {
                         };
                         let (otx, orx) = futures::channel::oneshot::channel();
                         let name_net = name.clone();
-                        let index_net = package_db.clone();
+                        let index_net = db.clone();
                         std::thread::spawn(move || {
                             if had_cache {
                                 std::thread::sleep(DETAIL_DEBOUNCE);

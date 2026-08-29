@@ -458,7 +458,7 @@ mod tests {
 #[cfg(test)]
 mod search_engine_tests {
     use super::*;
-    use crate::package_db::PackageDb;
+    use crate::db::PackageDb;
     use crate::search::index::index_path;
     use std::collections::HashMap;
     use std::path::Path;
