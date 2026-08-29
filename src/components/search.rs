@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use cosmic::Element;
 use cosmic::app::Task;
-use cosmic::iced::Rectangle;
-use cosmic::iced::widget::scrollable::{scroll_by, scroll_to, AbsoluteOffset};
+use cosmic::iced::{Padding, Rectangle};
+use cosmic::iced::widget::scrollable::{AbsoluteOffset, scroll_by, scroll_to};
 use cosmic::widget::rectangle_tracker::{RectangleTracker, RectangleUpdate};
 use cosmic::widget::{Column, Row, button, scrollable, text, text_input};
 
@@ -13,7 +13,7 @@ use pakajo::db::PackageDb;
 use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
 
-const LIST_SPACING: f32 = 6.0;
+const ROW_GAP: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ListRect {
@@ -53,10 +53,6 @@ impl SelectionScroller {
 
     pub fn reset_offset(&mut self) {
         self.offset = 0.0;
-    }
-
-    pub fn clear_rects(&mut self) {
-        self.rects.clear();
     }
 
     pub fn wrap_row<'a>(
@@ -116,7 +112,7 @@ impl SelectionScroller {
                     prev_signed as usize
                 };
                 if let Some(prev) = self.rects.get(&ListRect::Row(prev_index)) {
-                    let pitch = prev.height + LIST_SPACING;
+                    let pitch = prev.height;
                     let y = delta.signum() as f32 * pitch;
                     self.offset = (self.offset + y).max(0.0);
                     return scroll_by(crate::page_scroll_id(), AbsoluteOffset { x: 0.0, y });
@@ -190,12 +186,12 @@ pub fn search_status_text(
     text(header_text).into()
 }
 
-pub fn results_list<'a>(
+fn results_list<'a>(
     results: &'a [SearchResult],
     selected_index: Option<usize>,
     scroller: &SelectionScroller,
 ) -> Element<'a, crate::Message> {
-    let mut list = Column::new().spacing(LIST_SPACING);
+    let mut list = Column::new();
     for (index, result) in results.iter().enumerate() {
         let is_selected = selected_index == Some(index);
         let row = search_result_row(result, index, is_selected);
@@ -253,6 +249,12 @@ pub fn search_result_row(
         .on_press(crate::Message::Search(SearchMessage::SelectIndex(index)))
         .selected(is_selected)
         .class(cosmic::theme::Button::ListItem([0.0; 4]))
+        .padding(Padding {
+            top: 5.0 + ROW_GAP / 2.0,
+            bottom: 5.0 + ROW_GAP / 2.0,
+            left: 5.0,
+            right: 5.0,
+        })
         .width(cosmic::iced::Length::Fill)
         .into()
 }
@@ -272,7 +274,6 @@ impl crate::PakajoApp {
                     self.results.clear();
                     self.selected_index = None;
                     self.search_state = SearchState::Idle;
-                    self.scroller.clear_rects();
                     return Task::none();
                 }
 
@@ -298,7 +299,6 @@ impl crate::PakajoApp {
                         Some(0)
                     };
                     self.search_state = SearchState::Done;
-                    self.scroller.clear_rects();
                     self.scroller.reset_offset();
                     let mut tasks: Vec<cosmic::app::Task<crate::Message>> = Vec::new();
                     if let Some(first) = self.results.first() {
@@ -310,8 +310,12 @@ impl crate::PakajoApp {
                 Task::none()
             }
             SearchMessage::SelectDelta(delta) => {
-                let Some(i) =
-                    next_selected_index(self.results.len(), self.selected_index, delta)
+                if !matches!(self.page, crate::Page::Search)
+                    || self.transaction.as_ref().is_some_and(|t| !t.is_checking())
+                {
+                    return Task::none();
+                }
+                let Some(i) = next_selected_index(self.results.len(), self.selected_index, delta)
                 else {
                     return Task::none();
                 };
@@ -324,15 +328,13 @@ impl crate::PakajoApp {
                 Task::batch([detail, scroll])
             }
             SearchMessage::SelectIndex(i) => {
-                if i < self.results.len() {
-                    self.selected_index = Some(i);
-                    if let Some(result) = self.results.get(i) {
-                        let detail = self.load_detail(result.name.clone(), result.source);
-                        let scroll = self.scroller.scroll_to_visible(i, None);
-                        return Task::batch([detail, scroll]);
-                    }
-                }
-                Task::none()
+                let Some(result) = self.results.get(i) else {
+                    return Task::none();
+                };
+                self.selected_index = Some(i);
+                let detail = self.load_detail(result.name.clone(), result.source);
+                let scroll = self.scroller.scroll_to_visible(i, None);
+                Task::batch([detail, scroll])
             }
             SearchMessage::Rects(update) => {
                 self.scroller.track(update);
