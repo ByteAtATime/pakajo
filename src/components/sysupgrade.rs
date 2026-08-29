@@ -64,10 +64,7 @@ impl crate::PakajoApp {
             let result = (|| -> anyhow::Result<SysupgradePreview> {
                 let config = pacmanconf::Config::new().context("failed to read pacman config")?;
                 let mut handle = pakajo::pacman::init_alpm_rootless(&config)?;
-                handle
-                    .syncdbs_mut()
-                    .update(false)
-                    .context("failed to refresh checkdb sync DBs rootless")?;
+                pakajo::pacman::refresh_sync_dbs_rootless(&mut handle)?;
                 let mut preview =
                     pakajo::dry_run::compute_sysupgrade_preview(&mut handle, &config)?;
                 let aur_names: Vec<String> = preview.aur.iter().map(|c| c.name.clone()).collect();

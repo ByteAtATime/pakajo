@@ -61,10 +61,7 @@ pub fn compute_repo_upgrades(
 pub fn pending_updates() -> anyhow::Result<UpdatesFetch> {
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let mut handle = pacman::init_alpm_rootless(&config)?;
-    handle
-        .syncdbs_mut()
-        .update(false)
-        .context("failed to refresh sync DBs rootless")?;
+    pacman::refresh_sync_dbs_rootless(&mut handle)?;
     let repo = compute_repo_upgrades(&handle, &config)?;
     let aur_client = crate::aur::AurClient::new();
     let (aur, aur_error) = match crate::upgrade::compute_aur_upgrades(&handle, &aur_client) {

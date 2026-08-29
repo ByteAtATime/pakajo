@@ -103,6 +103,43 @@ pub fn init_alpm_rootless(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
     Ok(handle)
 }
 
+static CHECKDB_REFRESH_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn refresh_sync_dbs_rootless(handle: &mut Alpm) -> anyhow::Result<()> {
+    let _guard = CHECKDB_REFRESH_GUARD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    match handle.syncdbs_mut().update(false) {
+        Ok(_) => Ok(()),
+        Err(alpm::Error::HandleLock) => {
+            let lock_path = lock::db_lck_path(handle.dbpath());
+            match std::fs::remove_file(&lock_path) {
+                Ok(()) => {
+                    eprintln!(
+                        "[pakajo] removed stale checkdb lock at {}",
+                        lock_path.display()
+                    );
+                    handle
+                        .syncdbs_mut()
+                        .update(false)
+                        .context("failed to refresh sync DBs rootless after stale lock removal")?;
+                    Ok(())
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    anyhow::bail!(
+                        "could not acquire checkdb lock and no stale lock file was present at {}",
+                        lock_path.display()
+                    )
+                }
+                Err(e) => Err(e).with_context(|| {
+                    format!("removing stale checkdb lock at {}", lock_path.display())
+                }),
+            }
+        }
+        Err(e) => Err(anyhow::Error::new(e).context("failed to refresh sync DBs rootless")),
+    }
+}
+
 pub fn find_pkg<'a>(handle: &'a Alpm, name: &str) -> Option<&'a alpm::Package> {
     handle.syncdbs().iter().find_map(|db| db.pkg(name).ok())
 }
