@@ -145,8 +145,10 @@ fn refresh_index_if_stale(local: &crate::db::PackageDb) {
             return;
         }
     };
-    eprintln!("refreshing package index...");
-    match local.refresh(&handle) {
+    let spinner = super::spinner::Spinner::start("refreshing package index");
+    let outcome = local.refresh(&handle);
+    spinner.stop();
+    match outcome {
         Ok(crate::db::RefreshOutcome::NotModified) => {}
         Ok(crate::db::RefreshOutcome::Updated {
             aur_count,

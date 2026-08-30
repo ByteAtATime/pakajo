@@ -18,6 +18,7 @@ mod review;
 
 mod chomp;
 mod sinks;
+mod spinner;
 pub use self::sinks::ConsoleSink;
 use self::sinks::{EscalatedSink, JsonSink};
 
