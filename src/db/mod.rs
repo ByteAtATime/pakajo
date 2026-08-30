@@ -2,6 +2,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 
+pub const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
+
 pub struct PackageDb {
     read: std::sync::Mutex<rusqlite::Connection>,
     write: std::sync::Mutex<rusqlite::Connection>,

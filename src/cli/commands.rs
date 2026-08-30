@@ -121,6 +121,7 @@ fn fetch_base_devel_info(base: &str, arch: &str) -> anyhow::Result<Option<crate:
 pub fn run_search(query: &str) -> anyhow::Result<()> {
     let sqlite_path = crate::db::PackageDb::db_path()?;
     let local = crate::db::PackageDb::open(&sqlite_path)?;
+    refresh_index_if_stale(&local);
     let engine = crate::search::engine::SearchEngine::new(sqlite_path)?;
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let snapshot = crate::pacman::snapshot::get(&config)?;
@@ -129,6 +130,35 @@ pub fn run_search(query: &str) -> anyhow::Result<()> {
         crate::search::dispatch_search(&engine, &local, &installed, query, &snapshot.groups);
     print_search_results(&results);
     Ok(())
+}
+
+fn refresh_index_if_stale(local: &crate::db::PackageDb) {
+    if let Some(age) = local.last_refreshed_age()
+        && age < crate::db::AUR_SYNC_MIN_INTERVAL
+    {
+        return;
+    }
+    let handle = match alpm_handle() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("warning: skipping index refresh: {e:#}");
+            return;
+        }
+    };
+    eprintln!("refreshing package index...");
+    match local.refresh(&handle) {
+        Ok(crate::db::RefreshOutcome::NotModified) => {}
+        Ok(crate::db::RefreshOutcome::Updated {
+            aur_count,
+            repo_count,
+            skipped,
+        }) => {
+            eprintln!("indexed {aur_count} aur + {repo_count} repo packages (skipped {skipped})");
+        }
+        Err(e) => {
+            eprintln!("warning: index refresh failed, searching stale index: {e:#}");
+        }
+    }
 }
 
 fn print_search_results(rows: &[SearchResult]) {

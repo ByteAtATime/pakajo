@@ -6,11 +6,10 @@ use futures::FutureExt as _;
 use futures::SinkExt as _;
 use futures::StreamExt as _;
 
-use pakajo::db::{PackageDb, RefreshOutcome};
+use pakajo::db::{AUR_SYNC_MIN_INTERVAL, PackageDb, RefreshOutcome};
 use pakajo::pacman::init_alpm;
 use pakajo::search::engine::SearchEngine;
 
-pub const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 pub const LOCK_DEBOUNCE: Duration = Duration::from_millis(300);
 
 pub fn begin_aur_sync_in_background(db: Arc<PackageDb>, search_engine: Option<Arc<SearchEngine>>) {
