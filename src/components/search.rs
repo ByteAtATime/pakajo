@@ -4,10 +4,12 @@ use std::sync::Arc;
 
 use cosmic::Element;
 use cosmic::app::Task;
+use cosmic::iced::Alignment;
 use cosmic::iced::widget::scrollable::{AbsoluteOffset, scroll_by, scroll_to};
 use cosmic::iced::{Padding, Rectangle};
 use cosmic::widget::rectangle_tracker::{RectangleTracker, RectangleUpdate};
-use cosmic::widget::{Column, Row, button, scrollable, text, text_input};
+use cosmic::widget::row;
+use cosmic::widget::{Column, Row, button, scrollable, space, text, text_input};
 
 use pakajo::db::PackageDb;
 use pakajo::search::SearchResult;
@@ -225,25 +227,59 @@ pub fn scroll_offset_for(row: &Rectangle, viewport: &Rectangle, offset: f32) -> 
     }
 }
 
+fn secondary_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
+    cosmic::iced::widget::text::Style {
+        color: Some(theme.cosmic().background(false).component.on.into()),
+        ..cosmic::iced::widget::text::Style::default()
+    }
+}
+
+fn repo_text(repo: &str) -> cosmic::Element<'_, crate::Message> {
+    text(repo.to_string()).font(cosmic::font::semibold()).into()
+}
+
 pub fn search_result_row(
     result: &SearchResult,
     index: usize,
     is_selected: bool,
 ) -> cosmic::Element<'_, crate::Message> {
-    let badge = result.repo.as_deref().unwrap_or("aur");
+    let repo = result.repo.as_deref().unwrap_or("aur");
 
     let top = Row::new()
         .spacing(8)
-        .align_y(cosmic::iced::Alignment::Center)
-        .push(text(result.name.clone()).font(cosmic::font::semibold()))
-        .push(text(badge.to_string()))
-        .push(text(result.version.clone()))
-        .push_maybe(result.installed.then(|| text("installed")));
+        .align_y(cosmic::iced::Alignment::End)
+        .push(
+            text(result.name.clone())
+                .font(cosmic::font::semibold())
+                .size(16),
+        )
+        .push(text(result.version.clone()).class(cosmic::theme::Text::Custom(secondary_text)))
+        .push(space::Space::new().width(cosmic::iced::Length::Fill))
+        .push(
+            row![
+                result.installed.then(|| {
+                    super::icons::circle_check()
+                        .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
+                            |theme: &cosmic::Theme| cosmic::widget::svg::Style {
+                                color: Some(theme.cosmic().success.base.into()),
+                            },
+                        )))
+                        .width(16.)
+                }),
+                repo_text(repo)
+            ]
+            .align_y(Alignment::Center)
+            .spacing(4.),
+        );
 
     let content = Column::new()
         .spacing(4)
         .push(top)
-        .push_maybe(result.description.as_ref().map(|d| text(d.clone())));
+        .push_maybe(result.description.as_ref().map(|d| {
+            text(d.clone())
+                .size(13)
+                .class(cosmic::theme::Text::Custom(secondary_text))
+        }));
 
     button::custom(content)
         .on_press(crate::Message::Search(SearchMessage::SelectIndex(index)))
