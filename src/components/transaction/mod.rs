@@ -65,6 +65,43 @@ impl pakajo::events::InstallSink for CosmicBuildSink {
     }
 }
 
+fn spawn_transaction_stream(
+    worker: impl FnOnce(futures::channel::mpsc::Sender<StreamItem>) + Send + 'static,
+) -> Task<crate::Message> {
+    let (raw_tx, mut raw_rx) = futures::channel::mpsc::channel::<StreamItem>(256);
+    std::thread::spawn(move || {
+        worker(raw_tx);
+    });
+    Task::stream(cosmic::iced::stream::channel(
+        256,
+        move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
+            while let Some(item) = raw_rx.next().await {
+                match item {
+                    StreamItem::Event(ev) => {
+                        let _ = tx
+                            .send(
+                                crate::Message::Transaction(TransactionMessage::InstallEvent(ev))
+                                    .into(),
+                            )
+                            .await;
+                    }
+                    StreamItem::Done(outcome) => {
+                        let _ = tx
+                            .send(
+                                crate::Message::Transaction(TransactionMessage::InstallDone(
+                                    outcome,
+                                ))
+                                .into(),
+                            )
+                            .await;
+                        break;
+                    }
+                }
+            }
+        },
+    ))
+}
+
 pub(crate) struct Transaction {
     model: TransactionModel,
 }
@@ -279,40 +316,9 @@ impl Transaction {
         };
         self.model.status = TransactionStatus::Running;
         let name = self.model.name.clone();
-        let (raw_tx, mut raw_rx) = futures::channel::mpsc::channel::<StreamItem>(256);
-        std::thread::spawn(move || {
-            run_install_process(exe, vec![name], raw_tx, approvals_b64);
+        let stream = spawn_transaction_stream(move |tx| {
+            run_install_process(exe, vec![name], tx, approvals_b64);
         });
-        let stream = Task::stream(cosmic::iced::stream::channel(
-            256,
-            move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
-                while let Some(item) = raw_rx.next().await {
-                    match item {
-                        StreamItem::Event(ev) => {
-                            let _ = tx
-                                .send(
-                                    crate::Message::Transaction(TransactionMessage::InstallEvent(
-                                        ev,
-                                    ))
-                                    .into(),
-                                )
-                                .await;
-                        }
-                        StreamItem::Done(outcome) => {
-                            let _ = tx
-                                .send(
-                                    crate::Message::Transaction(TransactionMessage::InstallDone(
-                                        outcome,
-                                    ))
-                                    .into(),
-                                )
-                                .await;
-                            break;
-                        }
-                    }
-                }
-            },
-        ));
         Action::Run(stream)
     }
 
@@ -326,40 +332,9 @@ impl Transaction {
         };
         self.model.status = TransactionStatus::Running;
         let name = self.model.name.clone();
-        let (raw_tx, mut raw_rx) = futures::channel::mpsc::channel::<StreamItem>(256);
-        std::thread::spawn(move || {
-            run_remove_process(exe, vec![name], raw_tx);
+        let stream = spawn_transaction_stream(move |tx| {
+            run_remove_process(exe, vec![name], tx);
         });
-        let stream = Task::stream(cosmic::iced::stream::channel(
-            256,
-            move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
-                while let Some(item) = raw_rx.next().await {
-                    match item {
-                        StreamItem::Event(ev) => {
-                            let _ = tx
-                                .send(
-                                    crate::Message::Transaction(TransactionMessage::InstallEvent(
-                                        ev,
-                                    ))
-                                    .into(),
-                                )
-                                .await;
-                        }
-                        StreamItem::Done(outcome) => {
-                            let _ = tx
-                                .send(
-                                    crate::Message::Transaction(TransactionMessage::InstallDone(
-                                        outcome,
-                                    ))
-                                    .into(),
-                                )
-                                .await;
-                            break;
-                        }
-                    }
-                }
-            },
-        ));
         Action::Run(stream)
     }
 
@@ -389,40 +364,9 @@ impl Transaction {
             InstallKind::Upgrade,
         );
         model.status = TransactionStatus::Running;
-        let (raw_tx, mut raw_rx) = futures::channel::mpsc::channel::<StreamItem>(256);
-        std::thread::spawn(move || {
-            run_sysupgrade_process(exe, fingerprint_file, raw_tx, approvals_b64);
+        let stream = spawn_transaction_stream(move |tx| {
+            run_sysupgrade_process(exe, fingerprint_file, tx, approvals_b64);
         });
-        let stream = Task::stream(cosmic::iced::stream::channel(
-            256,
-            move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
-                while let Some(item) = raw_rx.next().await {
-                    match item {
-                        StreamItem::Event(ev) => {
-                            let _ = tx
-                                .send(
-                                    crate::Message::Transaction(TransactionMessage::InstallEvent(
-                                        ev,
-                                    ))
-                                    .into(),
-                                )
-                                .await;
-                        }
-                        StreamItem::Done(outcome) => {
-                            let _ = tx
-                                .send(
-                                    crate::Message::Transaction(TransactionMessage::InstallDone(
-                                        outcome,
-                                    ))
-                                    .into(),
-                                )
-                                .await;
-                            break;
-                        }
-                    }
-                }
-            },
-        ));
         (Self { model }, stream)
     }
 
@@ -433,8 +377,7 @@ impl Transaction {
             InstallKind::Upgrade,
         );
         model.status = TransactionStatus::Running;
-        let (mut raw_tx, mut raw_rx) = futures::channel::mpsc::channel::<StreamItem>(256);
-        std::thread::spawn(move || {
+        let stream = spawn_transaction_stream(move |mut raw_tx| {
             let mut sink = CosmicBuildSink { tx: raw_tx.clone() };
             let result = run_build(
                 &targets,
@@ -451,36 +394,6 @@ impl Transaction {
             };
             let _ = raw_tx.try_send(StreamItem::Done(outcome));
         });
-        let stream = Task::stream(cosmic::iced::stream::channel(
-            256,
-            move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
-                while let Some(item) = raw_rx.next().await {
-                    match item {
-                        StreamItem::Event(ev) => {
-                            let _ = tx
-                                .send(
-                                    crate::Message::Transaction(TransactionMessage::InstallEvent(
-                                        ev,
-                                    ))
-                                    .into(),
-                                )
-                                .await;
-                        }
-                        StreamItem::Done(outcome) => {
-                            let _ = tx
-                                .send(
-                                    crate::Message::Transaction(TransactionMessage::InstallDone(
-                                        outcome,
-                                    ))
-                                    .into(),
-                                )
-                                .await;
-                            break;
-                        }
-                    }
-                }
-            },
-        ));
         (Self { model }, stream)
     }
 

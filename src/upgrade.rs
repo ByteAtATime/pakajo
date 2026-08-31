@@ -1,8 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::io::{self, BufRead};
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::rc::Rc;
 
 use anyhow::Context as _;
@@ -12,7 +10,7 @@ use crate::aur::AurInfo;
 use crate::cli::escalation_command;
 use crate::events::{InstallEvent, InstallSink, LogLevel, TransactionSummary, summaries_match};
 use crate::install::{
-    ChildOutcome, QuestionState, StreamItem, build_summary, map_outcome, register_callbacks,
+    QuestionState, StreamItem, build_summary, register_callbacks, run_json_child,
 };
 use crate::resolve::AurQuery;
 
@@ -54,22 +52,9 @@ pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
 pub fn run_sysupgrade_process(
     exe: PathBuf,
     fingerprint_file: String,
-    mut tx: mpsc::Sender<StreamItem>,
+    tx: mpsc::Sender<StreamItem>,
     approvals_b64: Option<String>,
 ) {
-    let mut send_event = |mut item: StreamItem| loop {
-        match tx.try_send(item) {
-            Ok(()) => return,
-            Err(err) => {
-                if err.is_disconnected() {
-                    return;
-                }
-                item = err.into_inner();
-                std::thread::yield_now();
-            }
-        }
-    };
-
     let mut cmd = escalation_command(&exe.to_string_lossy());
     cmd.arg("upgrade")
         .arg("--json")
@@ -79,31 +64,7 @@ pub fn run_sysupgrade_process(
     if let Some(b64) = &approvals_b64 {
         cmd.arg("--approvals").arg(b64);
     }
-    let outcome = match cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-    {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => ChildOutcome::NotFound,
-        Err(error) => ChildOutcome::Failed(error.to_string()),
-        Ok(mut child) => {
-            let stdout = child.stdout.take().expect("piped");
-            let reader = std::io::BufReader::new(stdout);
-            for line in reader.lines() {
-                match line {
-                    Ok(l) => {
-                        if let Ok(ev) = serde_json::from_str::<InstallEvent>(&l) {
-                            send_event(StreamItem::Event(ev));
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            map_outcome(child.wait())
-        }
-    };
-    send_event(StreamItem::Done(outcome));
+    run_json_child(cmd, tx);
 }
 
 pub fn apply_ignores(handle: &mut alpm::Alpm, config: &pacmanconf::Config, extra: &[String]) {
