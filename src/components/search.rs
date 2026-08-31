@@ -5,8 +5,8 @@ use std::sync::Arc;
 use cosmic::Element;
 use cosmic::app::Task;
 use cosmic::iced::Alignment;
+use cosmic::iced::Rectangle;
 use cosmic::iced::widget::scrollable::{AbsoluteOffset, scroll_by, scroll_to};
-use cosmic::iced::{Padding, Rectangle};
 use cosmic::widget::rectangle_tracker::{RectangleTracker, RectangleUpdate};
 use cosmic::widget::row;
 use cosmic::widget::{Column, Row, button, scrollable, space, text, text_input};
@@ -14,8 +14,6 @@ use cosmic::widget::{Column, Row, button, scrollable, space, text, text_input};
 use pakajo::db::PackageDb;
 use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
-
-const ROW_GAP: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ListRect {
@@ -210,6 +208,8 @@ pub fn results_scroller<'a>(
 ) -> Element<'a, crate::Message> {
     let list = results_list(results, selected_index, scroller);
     let scroll = scrollable(list)
+        .scrollbar_width(4)
+        .scroller_width(4)
         .width(384.)
         .id(crate::page_scroll_id())
         .on_scroll(|vp| crate::Message::Search(SearchMessage::Scrolled(vp.absolute_offset().y)));
@@ -285,12 +285,7 @@ pub fn search_result_row(
         .on_press(crate::Message::Search(SearchMessage::SelectIndex(index)))
         .selected(is_selected)
         .class(cosmic::theme::Button::ListItem([0.0; 4]))
-        .padding(Padding {
-            top: 5.0 + ROW_GAP / 2.0,
-            bottom: 5.0 + ROW_GAP / 2.0,
-            left: 5.0,
-            right: 5.0,
-        })
+        .padding([8, 16])
         .width(cosmic::iced::Length::Fill)
         .into()
 }
