@@ -69,13 +69,7 @@ pub fn install_subcommand(args: InstallArgs) -> ! {
         usage_error();
     }
 
-    let handle = match alpm_handle() {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    };
+    let handle = alpm_handle_or_exit();
     let positionals = expand_groups(&handle, &positionals, stdin_is_tty() && !args.json);
 
     if is_root() {
@@ -223,13 +217,7 @@ pub fn remove_subcommand(args: RemoveArgs) -> ! {
         std::process::exit(2);
     }
 
-    let handle = match alpm_handle() {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    };
+    let handle = alpm_handle_or_exit();
     let positionals = expand_remove_groups(&handle, &positionals, stdin_is_tty() && !args.json);
 
     if is_root() {
@@ -287,13 +275,7 @@ pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {
         }
     }
 
-    let handle = match alpm_handle() {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    };
+    let handle = alpm_handle_or_exit();
     let aur = crate::aur::AurClient::new();
     let mut aur_targets = match crate::upgrade::compute_aur_upgrades(&handle, &aur) {
         Ok(candidates) => candidates,
@@ -496,6 +478,16 @@ fn dedup_positionals(positionals: Vec<String>) -> Vec<String> {
 fn usage_error() -> ! {
     eprintln!("usage: pakajo install [--json] <package>...");
     std::process::exit(2);
+}
+
+fn alpm_handle_or_exit() -> alpm::Alpm {
+    match alpm_handle() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn decode_approvals_or_exit(approvals_b64: Option<&str>) -> Option<crate::question::Approvals> {

@@ -77,9 +77,6 @@ impl PtySession {
                 Err(e) => return Err(e).context("failed to read makepkg output"),
             }
         }
-        if let Some(line) = self.ready.pop_front() {
-            return Ok(Some(line));
-        }
         Ok(flush_pending(&mut self.pending))
     }
 
@@ -107,7 +104,7 @@ fn strip_trailing_cr(text: &mut String) {
     }
 }
 
-pub(crate) fn drain_lines(pending: &mut Vec<u8>, chunk: &[u8], out: &mut Vec<String>) {
+fn drain_lines(pending: &mut Vec<u8>, chunk: &[u8], out: &mut Vec<String>) {
     pending.extend_from_slice(chunk);
     while let Some(pos) = pending.iter().position(|&b| b == b'\n') {
         let line_bytes: Vec<u8> = pending.drain(..=pos).collect();
