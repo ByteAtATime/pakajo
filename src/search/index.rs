@@ -244,19 +244,15 @@ fn build_token_inversion(
             Some((off, len)) => &arena[off as usize..off as usize + len as usize] == s.as_str(),
             None => false,
         };
-        if is_dup {
-            let id = (unique_tokens.len() - 1) as u32;
-            occ_ids.push(id);
-            tokens_sorted.push((id, pi));
-        } else {
+        if !is_dup {
             let (off, len) = push_span(arena, s);
             unique_tokens.push((off, len));
             unique_token_masks.push(byte_mask(s.as_bytes()));
-            let id = (unique_tokens.len() - 1) as u32;
-            occ_ids.push(id);
-            tokens_sorted.push((id, pi));
             prev_span = Some((off, len));
         }
+        let id = (unique_tokens.len() - 1) as u32;
+        occ_ids.push(id);
+        tokens_sorted.push((id, pi));
     }
 
     let mut starts: Vec<u32> = Vec::with_capacity(n);
