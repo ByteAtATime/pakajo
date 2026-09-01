@@ -16,6 +16,24 @@ struct DownloadStat {
     eta: u64,
 }
 
+impl DownloadStat {
+    fn observe(&mut self, now: Instant, downloaded: i64, total: i64) {
+        let timediff = now.duration_since(self.sync_time).as_millis() as i64;
+        if timediff >= 200 {
+            let chunk = downloaded - self.sync_xfered;
+            if chunk > 0 {
+                let chunk_rate = chunk as f64 * 1000.0 / timediff as f64;
+                self.rate = (chunk_rate + 2.0 * self.rate) / 3.0;
+                if self.rate > 0.0 && total > self.sync_xfered {
+                    self.eta = ((total - self.sync_xfered) as f64 / self.rate) as u64;
+                }
+            }
+            self.sync_xfered = downloaded;
+            self.sync_time = now;
+        }
+    }
+}
+
 pub struct ConsoleSink {
     last_progress: Option<(ProgressPhase, String, i32)>,
     hooks_header_done: bool,
@@ -65,51 +83,7 @@ impl ConsoleSink {
                 downloaded,
                 total,
             } => {
-                let percent = if *total > 0 {
-                    ((*downloaded * 100 / *total).min(100)) as i32
-                } else {
-                    100
-                };
-                let now = Instant::now();
-                let stat = self
-                    .downloads
-                    .entry(filename.clone())
-                    .or_insert_with(|| DownloadStat {
-                        sync_xfered: *downloaded,
-                        sync_time: now,
-                        rate: 0.0,
-                        eta: 0,
-                    });
-                let timediff = now.duration_since(stat.sync_time).as_millis() as i64;
-                if timediff >= 200 {
-                    let chunk = *downloaded - stat.sync_xfered;
-                    if chunk > 0 {
-                        let chunk_rate = chunk as f64 * 1000.0 / timediff as f64;
-                        stat.rate = (chunk_rate + 2.0 * stat.rate) / 3.0;
-                        if stat.rate > 0.0 && *total > stat.sync_xfered {
-                            stat.eta = ((*total - stat.sync_xfered) as f64 / stat.rate) as u64;
-                        }
-                    }
-                    stat.sync_xfered = *downloaded;
-                    stat.sync_time = now;
-                }
-                let rate = stat.rate;
-                let eta = stat.eta;
-                let cols = crate::utils::terminal_cols();
-                let infolen = (cols * 6 / 10).max(50);
-                let filenamelen = infolen.saturating_sub(30);
-                let cell_width = cols.saturating_sub(infolen).saturating_sub(8);
-                let fitted_name = fit_subject(clean_pkg_filename(filename), filenamelen);
-                let (xval, xunit) = humanize_size(*downloaded);
-                let (rval, runit) = humanize_size(rate as i64);
-                let rate_str = format_rate(rval);
-                let eta_str = format_eta(eta);
-                let bar = super::chomp::render(percent, cell_width, self.color);
-                let clear = if self.color { "\x1b[K" } else { "" };
-                print!(
-                    "\r {fitted_name} {xval:>6.1} {xunit:>3}  {rate_str} {runit:>3}/s {eta_str} {bar} {percent:>3}%{clear}"
-                );
-                let _ = std::io::stdout().flush();
+                self.download_progress(filename, *downloaded, *total);
             }
             InstallEvent::DownloadRetry { filename, resume } => {
                 let kind = if *resume { "resumable" } else { "full" };
@@ -256,6 +230,42 @@ impl ConsoleSink {
             }
         }
     }
+
+    fn download_progress(&mut self, filename: &str, downloaded: i64, total: i64) {
+        let now = Instant::now();
+        let stat = self
+            .downloads
+            .entry(filename.to_string())
+            .or_insert_with(|| DownloadStat {
+                sync_xfered: downloaded,
+                sync_time: now,
+                rate: 0.0,
+                eta: 0,
+            });
+        stat.observe(now, downloaded, total);
+        let percent = if total > 0 {
+            ((downloaded * 100 / total).min(100)) as i32
+        } else {
+            100
+        };
+        let rate = stat.rate;
+        let eta = stat.eta;
+        let cols = crate::utils::terminal_cols();
+        let infolen = (cols * 6 / 10).max(50);
+        let filenamelen = infolen.saturating_sub(30);
+        let cell_width = cols.saturating_sub(infolen).saturating_sub(8);
+        let fitted_name = fit_subject(clean_pkg_filename(filename), filenamelen);
+        let (xval, xunit) = humanize_size(downloaded);
+        let (rval, runit) = humanize_size(rate as i64);
+        let rate_str = format_rate(rval);
+        let eta_str = format_eta(eta);
+        let bar = super::chomp::render(percent, cell_width, self.color);
+        let clear = if self.color { "\x1b[K" } else { "" };
+        print!(
+            "\r {fitted_name} {xval:>6.1} {xunit:>3}  {rate_str} {runit:>3}/s {eta_str} {bar} {percent:>3}%{clear}"
+        );
+        let _ = std::io::stdout().flush();
+    }
 }
 
 impl Default for ConsoleSink {
@@ -391,6 +401,7 @@ fn progress_phase_label(phase: ProgressPhase) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn count_digits_handles_boundaries() {
@@ -413,5 +424,66 @@ mod tests {
     #[test]
     fn fit_subject_keeps_exact_fit() {
         assert_eq!(fit_subject("hello", 5), "hello");
+    }
+
+    #[test]
+    fn observe_is_noop_within_200ms() {
+        let base = Instant::now();
+        let mut stat = DownloadStat {
+            sync_xfered: 1000,
+            sync_time: base,
+            rate: 5.0,
+            eta: 42,
+        };
+        let before_rate = stat.rate;
+        let before_eta = stat.eta;
+        let before_sync = stat.sync_xfered;
+        stat.observe(base + Duration::from_millis(100), 2000, 10000);
+        assert_eq!(stat.rate, before_rate);
+        assert_eq!(stat.eta, before_eta);
+        assert_eq!(stat.sync_xfered, before_sync);
+        assert_eq!(stat.sync_time, base);
+    }
+
+    #[test]
+    fn observe_updates_rate_and_eta_on_first_sample() {
+        let base = Instant::now();
+        let mut stat = DownloadStat {
+            sync_xfered: 0,
+            sync_time: base,
+            rate: 0.0,
+            eta: 0,
+        };
+        stat.observe(base + Duration::from_millis(300), 1000, 10000);
+        let chunk_rate = 1000.0 * 1000.0 / 300.0;
+        let expected_rate = (chunk_rate + 2.0 * 0.0) / 3.0;
+        assert_eq!(stat.rate, expected_rate);
+        assert_eq!(stat.eta, (10000.0 / expected_rate) as u64);
+        assert_eq!(stat.sync_xfered, 1000);
+        assert_eq!(stat.sync_time, base + Duration::from_millis(300));
+    }
+
+    #[test]
+    fn observe_ema_accumulates_across_samples() {
+        let base = Instant::now();
+        let mut stat = DownloadStat {
+            sync_xfered: 0,
+            sync_time: base,
+            rate: 0.0,
+            eta: 0,
+        };
+        stat.observe(base + Duration::from_millis(300), 1000, 10000);
+        let chunk_rate0 = 1000.0 * 1000.0 / 300.0;
+        let expected0 = (chunk_rate0 + 2.0 * 0.0) / 3.0;
+        assert_eq!(stat.rate, expected0);
+        assert_eq!(stat.eta, (10000.0 / expected0) as u64);
+        assert_eq!(stat.sync_xfered, 1000);
+        stat.observe(base + Duration::from_millis(600), 3000, 10000);
+        let chunk_rate1 = 2000.0 * 1000.0 / 300.0;
+        let expected1 = (chunk_rate1 + 2.0 * expected0) / 3.0;
+        assert_eq!(stat.rate, expected1);
+        assert_eq!(stat.eta, ((10000 - 1000) as f64 / expected1) as u64);
+        assert_eq!(stat.sync_xfered, 3000);
+        assert_eq!(stat.sync_time, base + Duration::from_millis(600));
     }
 }
