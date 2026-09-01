@@ -5,16 +5,18 @@ use std::sync::Arc;
 use cosmic::Element;
 use cosmic::app::Task;
 use cosmic::iced::Alignment;
+use cosmic::iced::Color;
 use cosmic::iced::Rectangle;
 use cosmic::iced::widget::scrollable::{AbsoluteOffset, scroll_by, scroll_to};
 use cosmic::widget::rectangle_tracker::{RectangleTracker, RectangleUpdate};
-use cosmic::widget::row;
-use cosmic::widget::{Column, Row, button, scrollable, space, text, text_input};
+use cosmic::widget::{Column, Row, button, container, scrollable, search_input, space, text};
 
 use pakajo::db::PackageDb;
 use pakajo::search::SearchFilter;
 use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
+
+use crate::components::divider::divider;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ListRect {
@@ -172,7 +174,7 @@ pub fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Op
 }
 
 pub fn search_bar(query: &str) -> cosmic::Element<'_, crate::Message> {
-    text_input("Search packages", query)
+    search_input("Search packages", query)
         .on_input(|s| crate::Message::Search(SearchMessage::QueryChanged(s)))
         .into()
 }
@@ -182,50 +184,60 @@ fn filter_pill(
     value: SearchFilter,
     selected: bool,
 ) -> cosmic::Element<'static, crate::Message> {
-    let mut pill = button::custom(text(label.to_string()))
+    let mut pill = button::custom(text(label.to_string()).size(13))
         .on_press(crate::Message::Search(SearchMessage::FilterChanged(value)))
         .padding([2, 8]);
     if selected {
-        pill = pill.class(cosmic::theme::Button::Suggested);
+        pill = pill.class(cosmic::theme::Button::Standard);
+    } else {
+        pill = pill.class(cosmic::theme::Button::Text);
     }
     pill.into()
 }
 
-pub fn search_status_bar(
+pub fn search_status_bar<'a>(
     state: SearchState,
     count: usize,
     filter: SearchFilter,
-) -> cosmic::Element<'static, crate::Message> {
+    query: &'a str,
+) -> cosmic::Element<'a, crate::Message> {
     let header_text = if state == SearchState::Searching {
         "Searching...".to_string()
+    } else if query.trim().is_empty() {
+        "Search the repositories".to_string()
     } else {
-        format!("{} result(s)", count)
+        format!("{count} results for \"{query}\"")
     };
-    Row::new()
+    Column::new()
         .spacing(8)
-        .align_y(Alignment::Center)
-        .push(text(header_text))
-        .push(space::horizontal())
-        .push(filter_pill(
-            "All",
-            SearchFilter::All,
-            filter == SearchFilter::All,
-        ))
-        .push(filter_pill(
-            "Official",
-            SearchFilter::Official,
-            filter == SearchFilter::Official,
-        ))
-        .push(filter_pill(
-            "AUR",
-            SearchFilter::Aur,
-            filter == SearchFilter::Aur,
-        ))
-        .push(filter_pill(
-            "Installed",
-            SearchFilter::Installed,
-            filter == SearchFilter::Installed,
-        ))
+        .push(
+            Row::new()
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .padding([0, 12])
+                .push(text(header_text).size(13))
+                .push(space::horizontal())
+                .push(filter_pill(
+                    "All",
+                    SearchFilter::All,
+                    filter == SearchFilter::All,
+                ))
+                .push(filter_pill(
+                    "Official",
+                    SearchFilter::Official,
+                    filter == SearchFilter::Official,
+                ))
+                .push(filter_pill(
+                    "AUR",
+                    SearchFilter::Aur,
+                    filter == SearchFilter::Aur,
+                ))
+                .push(filter_pill(
+                    "Installed",
+                    SearchFilter::Installed,
+                    filter == SearchFilter::Installed,
+                )),
+        )
         .into()
 }
 
@@ -239,6 +251,9 @@ fn results_list<'a>(
         let is_selected = selected_index == Some(index);
         let row = search_result_row(result, index, is_selected);
         let row = scroller.wrap_row(index, row);
+        if index > 0 {
+            list = list.push(divider());
+        }
         list = list.push(row);
     }
     list.into()
@@ -249,10 +264,11 @@ pub fn results_scroller<'a>(
     selected_index: Option<usize>,
     scroller: &SelectionScroller,
 ) -> Element<'a, crate::Message> {
-    let list = results_list(results, selected_index, scroller);
+    let list = container(results_list(results, selected_index, scroller)).padding([0, 4, 0, 0]);
     let scroll = scrollable(list)
         .scrollbar_width(4)
         .scroller_width(4)
+        .scrollbar_padding(0)
         .width(384.)
         .id(crate::page_scroll_id())
         .on_scroll(|vp| crate::Message::Search(SearchMessage::Scrolled(vp.absolute_offset().y)));
@@ -277,58 +293,111 @@ fn secondary_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
     }
 }
 
-fn repo_text(repo: &str) -> cosmic::Element<'_, crate::Message> {
-    text(repo.to_string()).font(cosmic::font::semibold()).into()
-}
-
 pub fn search_result_row(
     result: &SearchResult,
     index: usize,
     is_selected: bool,
 ) -> cosmic::Element<'_, crate::Message> {
+    let app_theme = cosmic::theme::active();
     let repo = result.repo.as_deref().unwrap_or("aur");
+    let is_aur = result.repo.is_none();
 
-    let top = Row::new()
+    let name_color: Color = if is_selected {
+        Color::from(app_theme.cosmic().accent.base)
+    } else {
+        Color::from(app_theme.cosmic().background(false).on)
+    };
+    let version_color: Color = if is_aur {
+        Color::from(app_theme.cosmic().warning.base)
+    } else {
+        Color::from(app_theme.cosmic().background(false).component.on)
+    };
+
+    let accent_bar = container(
+        space::Space::new()
+            .width(cosmic::iced::Length::Fixed(3.0))
+            .height(cosmic::iced::Length::Fill),
+    )
+    .class(cosmic::theme::Container::custom(
+        move |theme: &cosmic::Theme| cosmic::iced::widget::container::Style {
+            background: Some(cosmic::iced::Background::Color(if is_selected {
+                Color::from(theme.cosmic().accent.base)
+            } else {
+                Color::TRANSPARENT
+            })),
+            ..Default::default()
+        },
+    ));
+
+    let top_row = Row::new()
         .spacing(8)
-        .align_y(cosmic::iced::Alignment::End)
+        .align_y(Alignment::Center)
         .push(
             text(result.name.clone())
-                .font(cosmic::font::semibold())
-                .size(16),
+                .font(cosmic::font::bold())
+                .size(16)
+                .class(cosmic::theme::Text::Color(name_color)),
         )
-        .push(text(result.version.clone()).class(cosmic::theme::Text::Custom(secondary_text)))
-        .push(space::Space::new().width(cosmic::iced::Length::Fill))
         .push(
-            row![
-                result.installed.then(|| {
-                    super::icons::circle_check()
-                        .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
-                            |theme: &cosmic::Theme| cosmic::widget::svg::Style {
-                                color: Some(theme.cosmic().success.base.into()),
-                            },
-                        )))
-                        .width(16.)
-                }),
-                repo_text(repo)
-            ]
-            .align_y(Alignment::Center)
-            .spacing(4.),
+            text(result.version.clone())
+                .size(13)
+                .width(cosmic::iced::Length::Fill)
+                .wrapping(cosmic::iced::widget::text::Wrapping::None)
+                .ellipsize(cosmic::iced::widget::text::Ellipsize::End(
+                    cosmic::iced::core::text::EllipsizeHeightLimit::Lines(1),
+                ))
+                .class(cosmic::theme::Text::Color(version_color)),
+        )
+        .push(space::Space::new().width(cosmic::iced::Length::Fixed(8.0)))
+        .push_maybe(result.installed.then(|| {
+            super::icons::circle_check()
+                .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
+                    |theme: &cosmic::Theme| cosmic::widget::svg::Style {
+                        color: Some(theme.cosmic().success.base.into()),
+                    },
+                )))
+                .width(16)
+        }))
+        .push(
+            container(text(repo.to_string()).size(12))
+                .padding([2, 6])
+                .class(cosmic::theme::Container::custom(
+                    move |theme: &cosmic::Theme| cosmic::iced::widget::container::Style {
+                        background: Some(cosmic::iced::Background::Color(if is_aur {
+                            Color::from(theme.cosmic().warning.base)
+                        } else {
+                            Color::from(theme.cosmic().background(false).component.base)
+                        })),
+                        text_color: Some(if is_aur {
+                            Color::from(theme.cosmic().warning.on)
+                        } else {
+                            Color::from(theme.cosmic().background(false).component.on)
+                        }),
+                        border: cosmic::iced::Border::default().rounded(4.0_f32),
+                        ..Default::default()
+                    },
+                )),
         );
 
     let content = Column::new()
+        .padding([12, 16])
         .spacing(4)
-        .push(top)
-        .push_maybe(result.description.as_ref().map(|d| {
+        .width(cosmic::iced::Length::Fill)
+        .push(top_row)
+        .push(result.description.as_ref().map(|d| {
             text(d.clone())
                 .size(13)
                 .class(cosmic::theme::Text::Custom(secondary_text))
+                .width(cosmic::iced::Length::Fill)
         }));
 
-    button::custom(content)
+    let inner = Row::new().push(accent_bar).push(content);
+
+    button::custom(inner)
         .on_press(crate::Message::Search(SearchMessage::SelectIndex(index)))
         .selected(is_selected)
         .class(cosmic::theme::Button::ListItem([0.0; 4]))
-        .padding([8, 16])
+        .padding(0)
         .width(cosmic::iced::Length::Fill)
         .into()
 }

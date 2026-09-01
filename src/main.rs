@@ -30,6 +30,8 @@ use components::transaction::review::ReviewModel;
 use components::transaction::{Action, Transaction, TransactionMessage};
 use components::updates::{UpdatesMessage, UpdatesState};
 
+use crate::components::divider::divider;
+
 fn main() -> cosmic::iced::Result {
     let cli = cli::parse();
     cli::dispatch(cli);
@@ -247,19 +249,22 @@ impl PakajoApp {
                 self.search_state,
                 self.results.len(),
                 self.search_filter,
+                &self.query,
             ))
             .push(
-                Row::new()
-                    .push(results_scroller(
-                        &self.results,
-                        self.selected_index,
-                        &self.scroller,
-                    ))
-                    .push(detail_view(
-                        &self.detail,
-                        checking,
-                        self.detail_pending.is_some(),
-                    )),
+                Column::new().push(divider()).push(
+                    Row::new()
+                        .push(results_scroller(
+                            &self.results,
+                            self.selected_index,
+                            &self.scroller,
+                        ))
+                        .push(detail_view(
+                            &self.detail,
+                            checking,
+                            self.detail_pending.is_some(),
+                        )),
+                ),
             );
 
         container(content).into()
