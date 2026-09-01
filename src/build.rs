@@ -1,8 +1,7 @@
-use std::io::Read as _;
-use std::os::unix::io::AsRawFd as _;
+mod pty;
+
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::time::Duration;
 
 use anyhow::Context as _;
 
@@ -263,86 +262,16 @@ fn run_makepkg_streaming<S: InstallSink + ?Sized>(
     package: &str,
     sink: &mut S,
 ) -> anyhow::Result<()> {
-    let win_size = crate::utils::terminal_winsize();
-    let pty = nix::pty::openpty(&win_size, None).context("failed to open pseudoterminal")?;
-    let slave_stdout = pty.slave.try_clone().context("failed to clone pty slave")?;
-    let slave_stderr = pty.slave.try_clone().context("failed to clone pty slave")?;
-
-    let mut cmd = std::process::Command::new("makepkg");
-    cmd.args(["--noconfirm", "-f"]);
-    if no_check {
-        cmd.arg("--nocheck");
-    }
-    cmd.current_dir(dir)
-        .env("PKGDEST", dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(slave_stdout))
-        .stderr(Stdio::from(slave_stderr));
-
-    let mut child = cmd.spawn().context("failed to spawn makepkg")?;
-    drop(pty.slave);
-
+    let mut cmd = makepkg_command(dir, no_check);
+    let mut session = pty::PtySession::spawn(&mut cmd)?;
     let package = package.to_string();
-    let mut master = std::fs::File::from(pty.master);
-    set_nonblocking(&master).context("failed to set pty master non-blocking")?;
-
-    let mut buf = [0u8; 4096];
-    let mut pending_line: Vec<u8> = Vec::new();
-    let mut child_gone = false;
-
-    let mut emit = |line: &mut Vec<u8>| {
-        let mut text = String::from_utf8_lossy(line).into_owned();
-        if text.ends_with('\r') {
-            text.pop();
-        }
+    while let Some(line) = session.next_line()? {
         sink.event(InstallEvent::BuildOutput {
             package: package.clone(),
-            line: text,
+            line,
         });
-        line.clear();
-    };
-
-    loop {
-        match master.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                for &byte in &buf[..n] {
-                    if byte == b'\n' {
-                        emit(&mut pending_line);
-                    } else {
-                        pending_line.push(byte);
-                    }
-                }
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if !child_gone {
-                    match child.try_wait()? {
-                        None => {
-                            std::thread::sleep(Duration::from_millis(5));
-                            continue;
-                        }
-                        Some(_) => child_gone = true,
-                    }
-                }
-                let mut pfd = libc::pollfd {
-                    fd: master.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                let ready = unsafe { libc::poll(&mut pfd, 1, 200) };
-                if ready <= 0 {
-                    break;
-                }
-            }
-            Err(e) => return Err(e).context("failed to read makepkg output"),
-        }
     }
-
-    if !pending_line.is_empty() {
-        emit(&mut pending_line);
-    }
-
-    let status = child.wait().context("makepkg did not complete")?;
+    let status = session.wait()?;
     if !status.success() {
         anyhow::bail!(
             "makepkg failed for {package} (exit {})",
@@ -352,17 +281,16 @@ fn run_makepkg_streaming<S: InstallSink + ?Sized>(
     Ok(())
 }
 
-fn set_nonblocking(file: &std::fs::File) -> anyhow::Result<()> {
-    let fd = file.as_raw_fd();
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags < 0 {
-        return Err(std::io::Error::last_os_error()).context("fcntl F_GETFL on pty master");
+fn makepkg_command(dir: &Path, no_check: bool) -> std::process::Command {
+    let mut cmd = std::process::Command::new("makepkg");
+    cmd.args(["--noconfirm", "-f"]);
+    if no_check {
+        cmd.arg("--nocheck");
     }
-    let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
-    if rc < 0 {
-        return Err(std::io::Error::last_os_error()).context("fcntl F_SETFL on pty master");
-    }
-    Ok(())
+    cmd.current_dir(dir)
+        .env("PKGDEST", dir)
+        .stdin(Stdio::null());
+    cmd
 }
 
 pub fn spawn_install_child(
