@@ -50,63 +50,13 @@ impl super::PackageDb {
             return Err(anyhow::Error::msg(msg));
         }
 
-        let null_votes: Option<i64> = None;
-        let null_popularity: Option<f64> = None;
-        let null_base: Option<&str> = None;
-        let null_keywords: Option<&str> = None;
-        let null_url: Option<&str> = None;
-        let null_out_of_date: Option<i64> = None;
-        let null_maintainer: Option<&str> = None;
-        let null_license: Option<&str> = None;
-        let null_depends: Option<&str> = None;
-        let null_make_depends: Option<&str> = None;
-        let null_check_depends: Option<&str> = None;
-        let null_opt_depends: Option<&str> = None;
-        let null_conflicts: Option<&str> = None;
-        let null_provides: Option<&str> = None;
-        let mut repo_count: usize = 0;
-        for db in handle.syncdbs().iter() {
-            let repo = db.name();
-            for pkg in db.pkgs().iter() {
-                pkg_stmt.execute(rusqlite::params![
-                    pkg.name(),
-                    "repo",
-                    repo,
-                    pkg.version().as_str(),
-                    pkg.desc(),
-                    &null_votes,
-                    &null_popularity,
-                    pkg.build_date(),
-                    &null_base,
-                    &null_url,
-                    &null_out_of_date,
-                    &null_maintainer,
-                    &null_license,
-                    &null_depends,
-                    &null_make_depends,
-                    &null_check_depends,
-                    &null_opt_depends,
-                    &null_conflicts,
-                    &null_provides,
-                    &null_keywords,
-                ])?;
-                repo_count += 1;
-            }
-        }
+        let repo_count = insert_repo_rows(&mut pkg_stmt, handle)?;
 
         drop(pkg_stmt);
         tx.commit()?;
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        meta_set(conn, "last_modified", dump.last_modified())?;
-        meta_set(conn, "last_refreshed", &now.to_string())?;
-        meta_set(conn, "aur_count", &aur_count.to_string())?;
-        meta_set(conn, "repo_count", &repo_count.to_string())?;
-        meta_set(conn, "last_error", "")?;
+        record_sync_meta(conn, dump, aur_count, repo_count)?;
 
         Ok(RefreshOutcome::Updated {
             aur_count,
@@ -124,54 +74,134 @@ fn index_aur_rows(
     let mut skipped: usize = 0;
     for line in reader.lines() {
         let line = line?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        let Some(payload) = strip_json_container(&line) else {
             continue;
-        }
-        let payload = trimmed
-            .trim_start_matches('[')
-            .trim_end_matches([',', ']'])
-            .trim();
-        if payload.is_empty() {
-            continue;
-        }
+        };
         match serde_json::from_str::<crate::aur::AurInfo>(payload) {
             Ok(info) => {
-                let depends = join_list(&info.depends);
-                let make_depends = join_list(&info.make_depends);
-                let check_depends = join_list(&info.check_depends);
-                let opt_depends = join_list(&info.opt_depends);
-                let conflicts = join_list(&info.conflicts);
-                let provides = join_list(&info.provides);
-                let license = join_list(&info.license);
-                pkg_stmt.execute(rusqlite::params![
-                    &info.name,
-                    "aur",
-                    "aur",
-                    &info.version,
-                    &info.description,
-                    info.num_votes as i64,
-                    info.popularity,
-                    info.last_modified,
-                    &info.package_base,
-                    &info.url,
-                    info.out_of_date,
-                    &info.maintainer,
-                    &license,
-                    &depends,
-                    &make_depends,
-                    &check_depends,
-                    &opt_depends,
-                    &conflicts,
-                    &provides,
-                    &info.keywords.join(" "),
-                ])?;
+                insert_aur_info(pkg_stmt, &info)?;
                 aur_count += 1;
             }
             Err(_) => skipped += 1,
         }
     }
     Ok((aur_count, skipped))
+}
+
+fn strip_json_container(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let payload = trimmed
+        .trim_start_matches('[')
+        .trim_end_matches([',', ']'])
+        .trim();
+    if payload.is_empty() {
+        return None;
+    }
+    Some(payload)
+}
+
+fn insert_aur_info(
+    stmt: &mut rusqlite::Statement,
+    info: &crate::aur::AurInfo,
+) -> anyhow::Result<()> {
+    let depends = join_list(&info.depends);
+    let make_depends = join_list(&info.make_depends);
+    let check_depends = join_list(&info.check_depends);
+    let opt_depends = join_list(&info.opt_depends);
+    let conflicts = join_list(&info.conflicts);
+    let provides = join_list(&info.provides);
+    let license = join_list(&info.license);
+    stmt.execute(rusqlite::params![
+        &info.name,
+        "aur",
+        "aur",
+        &info.version,
+        &info.description,
+        info.num_votes as i64,
+        info.popularity,
+        info.last_modified,
+        &info.package_base,
+        &info.url,
+        info.out_of_date,
+        &info.maintainer,
+        &license,
+        &depends,
+        &make_depends,
+        &check_depends,
+        &opt_depends,
+        &conflicts,
+        &provides,
+        &info.keywords.join(" "),
+    ])?;
+    Ok(())
+}
+
+fn insert_repo_rows(stmt: &mut rusqlite::Statement, handle: &alpm::Alpm) -> anyhow::Result<usize> {
+    let null_votes: Option<i64> = None;
+    let null_popularity: Option<f64> = None;
+    let null_base: Option<&str> = None;
+    let null_keywords: Option<&str> = None;
+    let null_url: Option<&str> = None;
+    let null_out_of_date: Option<i64> = None;
+    let null_maintainer: Option<&str> = None;
+    let null_license: Option<&str> = None;
+    let null_depends: Option<&str> = None;
+    let null_make_depends: Option<&str> = None;
+    let null_check_depends: Option<&str> = None;
+    let null_opt_depends: Option<&str> = None;
+    let null_conflicts: Option<&str> = None;
+    let null_provides: Option<&str> = None;
+    let mut repo_count: usize = 0;
+    for db in handle.syncdbs().iter() {
+        let repo = db.name();
+        for pkg in db.pkgs().iter() {
+            stmt.execute(rusqlite::params![
+                pkg.name(),
+                "repo",
+                repo,
+                pkg.version().as_str(),
+                pkg.desc(),
+                &null_votes,
+                &null_popularity,
+                pkg.build_date(),
+                &null_base,
+                &null_url,
+                &null_out_of_date,
+                &null_maintainer,
+                &null_license,
+                &null_depends,
+                &null_make_depends,
+                &null_check_depends,
+                &null_opt_depends,
+                &null_conflicts,
+                &null_provides,
+                &null_keywords,
+            ])?;
+            repo_count += 1;
+        }
+    }
+    Ok(repo_count)
+}
+
+fn record_sync_meta(
+    conn: &rusqlite::Connection,
+    dump: &DecompressedDump,
+    aur_count: usize,
+    repo_count: usize,
+) -> anyhow::Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    meta_set(conn, "last_modified", dump.last_modified())?;
+    meta_set(conn, "last_refreshed", &now.to_string())?;
+    meta_set(conn, "aur_count", &aur_count.to_string())?;
+    meta_set(conn, "repo_count", &repo_count.to_string())?;
+    meta_set(conn, "last_error", "")?;
+    Ok(())
 }
 
 fn fail_loud(aur: usize, skipped: usize) -> bool {
@@ -472,5 +502,20 @@ mod tests {
             Some("".to_string()),
             "last_error must be cleared after a successful sync"
         );
+    }
+
+    #[test]
+    fn strip_json_container_edge_cases() {
+        assert_eq!(strip_json_container(""), None);
+        assert_eq!(strip_json_container("["), None);
+        assert_eq!(strip_json_container("],"), None);
+        let comma_then_bracket = String::from(",") + "]";
+        assert_eq!(strip_json_container(&comma_then_bracket), None);
+        assert_eq!(strip_json_container("[["), None);
+        assert_eq!(strip_json_container("]]"), None);
+        let row = r#"{"Name":"foo"}"#;
+        assert_eq!(strip_json_container(row), Some(row));
+        let padded = format!("  [{row},]  ");
+        assert_eq!(strip_json_container(&padded), Some(row));
     }
 }
