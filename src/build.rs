@@ -5,7 +5,9 @@ use std::process::{Child, Stdio};
 
 use anyhow::Context as _;
 
-use crate::events::{AurDepSource, InstallEvent, InstallSink};
+use crate::aur::AurInfo;
+use crate::events::{AurDepSource, InstallEvent, InstallSink, PkgbuildReviewEntry};
+use crate::pkgbuild::PkgbuildInfo;
 use crate::resolve::BuildPlan;
 
 pub enum BuildDecision {
@@ -20,9 +22,46 @@ pub fn run_build<S: InstallSink + ?Sized>(
     user_as_deps: bool,
     sink: &mut S,
     confirm: impl FnOnce(&BuildPlan) -> BuildDecision,
-    review: impl FnOnce(&[crate::pkgbuild::PkgbuildInfo]) -> bool,
+    review: impl FnOnce(&[PkgbuildInfo]) -> bool,
     approvals_b64: Option<&str>,
 ) -> anyhow::Result<()> {
+    let (alpm, plan) = resolve_and_report(targets, no_check, sink)?;
+
+    let decision = confirm(&plan);
+    if matches!(decision, BuildDecision::Abort) {
+        anyhow::bail!("build cancelled by user");
+    }
+
+    let pkgbuilds = crate::pkgbuild::collect_for_review(&plan, sink)?;
+    review_if_requested(decision, &pkgbuilds, sink, review)?;
+
+    let total_layers = plan.layers.len();
+    let arch = alpm.architectures().first();
+    for (idx, layer) in plan.layers.iter().enumerate() {
+        sink.event(InstallEvent::LayerBoundary {
+            layer: idx,
+            total: total_layers,
+        });
+
+        if !layer.repo_deps.is_empty() {
+            run_install_child(&layer.repo_deps, true, sink, None)?;
+        }
+
+        for info in &layer.aur {
+            let dir = clone_dir(&info.package_base)?;
+            let as_deps = user_as_deps || !plan.targets.iter().any(|t| t == &info.name);
+            build_and_install_aur(info, &dir, no_check, as_deps, approvals_b64, arch, sink)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_and_report<S: InstallSink + ?Sized>(
+    targets: &[String],
+    no_check: bool,
+    sink: &mut S,
+) -> anyhow::Result<(alpm::Alpm, BuildPlan)> {
     for target in targets {
         sink.event(InstallEvent::ResolvingAurDependencies {
             target: target.to_string(),
@@ -56,96 +95,97 @@ pub fn run_build<S: InstallSink + ?Sized>(
         repo_deps,
     });
 
-    let decision = confirm(&plan);
-    if matches!(decision, BuildDecision::Abort) {
-        anyhow::bail!("build cancelled by user");
-    }
+    Ok((alpm, plan))
+}
 
-    let pkgbuilds = crate::pkgbuild::collect_for_review(&plan, sink)?;
-    if matches!(decision, BuildDecision::Review) {
-        use crate::events::{InstallEvent, PkgbuildReviewEntry};
-        let to_review: Vec<crate::pkgbuild::PkgbuildInfo> = pkgbuilds
-            .iter()
-            .filter(|p| p.needs_review)
-            .cloned()
-            .collect();
-        if to_review.is_empty() {
-            sink.event(InstallEvent::PkgbuildAllUpToDate {
-                packages: pkgbuilds.iter().map(|p| p.name.clone()).collect(),
-            });
-        } else {
-            sink.event(InstallEvent::PkgbuildReviewStarted {
-                packages: to_review
-                    .iter()
-                    .map(|p| PkgbuildReviewEntry {
-                        name: p.name.clone(),
-                        pkgbase: p.pkgbase.clone(),
-                        is_new: p.is_new,
-                    })
-                    .collect(),
-            });
-            if !review(&to_review) {
-                anyhow::bail!("PKGBUILD review rejected by user");
-            }
-            for pb in &to_review {
-                crate::pkgbuild::mark_seen(&pb.dir)?;
-            }
-            sink.event(InstallEvent::PkgbuildReviewAccepted {
-                packages: to_review.iter().map(|p| p.name.clone()).collect(),
-            });
-        }
+fn review_if_requested<S: InstallSink + ?Sized>(
+    decision: BuildDecision,
+    pkgbuilds: &[PkgbuildInfo],
+    sink: &mut S,
+    review: impl FnOnce(&[PkgbuildInfo]) -> bool,
+) -> anyhow::Result<()> {
+    if !matches!(decision, BuildDecision::Review) {
+        return Ok(());
     }
-
-    let total_layers = plan.layers.len();
-    let arch = alpm.architectures().first();
-    for (idx, layer) in plan.layers.iter().enumerate() {
-        sink.event(InstallEvent::LayerBoundary {
-            layer: idx,
-            total: total_layers,
+    let to_review: Vec<PkgbuildInfo> = pkgbuilds
+        .iter()
+        .filter(|p| p.needs_review)
+        .cloned()
+        .collect();
+    if to_review.is_empty() {
+        sink.event(InstallEvent::PkgbuildAllUpToDate {
+            packages: pkgbuilds.iter().map(|p| p.name.clone()).collect(),
         });
-
-        if !layer.repo_deps.is_empty() {
-            run_install_child(&layer.repo_deps, true, sink, None)?;
-        }
-
-        for info in &layer.aur {
-            let pkgbase = &info.package_base;
-            let dir = clone_dir(pkgbase)?;
-
-            sink.event(InstallEvent::BuildStarted {
-                package: info.name.clone(),
-            });
-            run_makepkg_streaming(&dir, no_check, &info.name, sink)?;
-
-            let expected = expected_artifacts(&dir)
-                .with_context(|| format!("failed to enumerate artifacts for {}", info.name))?;
-            let artifacts = collect_artifacts(&dir, &expected)?;
-            let parsed: Vec<(String, String)> = expected
+    } else {
+        sink.event(InstallEvent::PkgbuildReviewStarted {
+            packages: to_review
                 .iter()
-                .filter_map(|basename| parse_package_filename(basename))
-                .collect();
-            let version = parsed
-                .iter()
-                .find(|(pkgname, _)| pkgname == &info.name)
-                .or_else(|| parsed.first())
-                .map(|(_, version)| version.clone());
-            sink.event(InstallEvent::BuildCompleted {
-                package: info.name.clone(),
-                artifacts: artifacts.clone(),
-                version,
-            });
-
-            if let Some(arch) = arch
-                && let Err(e) = crate::devel::refresh_baseline(&dir, arch)
-            {
-                eprintln!("warning: devel baseline refresh failed for {pkgbase}: {e:#}");
-            }
-
-            let as_deps = user_as_deps || !plan.targets.iter().any(|t| t == &info.name);
-            run_install_child(&artifacts, as_deps, sink, approvals_b64)?;
+                .map(|p| PkgbuildReviewEntry {
+                    name: p.name.clone(),
+                    pkgbase: p.pkgbase.clone(),
+                    is_new: p.is_new,
+                })
+                .collect(),
+        });
+        if !review(&to_review) {
+            anyhow::bail!("PKGBUILD review rejected by user");
         }
+        for pb in &to_review {
+            crate::pkgbuild::mark_seen(&pb.dir)?;
+        }
+        sink.event(InstallEvent::PkgbuildReviewAccepted {
+            packages: to_review.iter().map(|p| p.name.clone()).collect(),
+        });
+    }
+    Ok(())
+}
+
+fn resolved_version(expected: &[String], package: &str) -> Option<String> {
+    let parsed: Vec<(String, String)> = expected
+        .iter()
+        .filter_map(|basename| parse_package_filename(basename))
+        .collect();
+    parsed
+        .iter()
+        .find(|(pkgname, _)| pkgname.as_str() == package)
+        .or_else(|| parsed.first())
+        .map(|(_, version)| version.clone())
+}
+
+fn build_and_install_aur<S: InstallSink + ?Sized>(
+    info: &AurInfo,
+    dir: &Path,
+    no_check: bool,
+    as_deps: bool,
+    approvals_b64: Option<&str>,
+    arch: Option<&str>,
+    sink: &mut S,
+) -> anyhow::Result<()> {
+    sink.event(InstallEvent::BuildStarted {
+        package: info.name.clone(),
+    });
+    run_makepkg_streaming(dir, no_check, &info.name, sink)?;
+
+    let expected = expected_artifacts(dir)
+        .with_context(|| format!("failed to enumerate artifacts for {}", info.name))?;
+    let artifacts = collect_artifacts(dir, &expected)?;
+    let version = resolved_version(&expected, &info.name);
+    sink.event(InstallEvent::BuildCompleted {
+        package: info.name.clone(),
+        artifacts: artifacts.clone(),
+        version,
+    });
+
+    if let Some(arch) = arch
+        && let Err(e) = crate::devel::refresh_baseline(dir, arch)
+    {
+        eprintln!(
+            "warning: devel baseline refresh failed for {}: {e:#}",
+            info.package_base
+        );
     }
 
+    run_install_child(&artifacts, as_deps, sink, approvals_b64)?;
     Ok(())
 }
 
@@ -380,5 +420,36 @@ mod tests {
     fn parse_package_filename_rejects_too_few_segments() {
         assert!(parse_package_filename("foo-1.pkg.tar.zst").is_none());
         assert!(parse_package_filename("foo-1-2").is_none());
+    }
+
+    #[test]
+    fn resolved_version_prefers_exact_match_over_first() {
+        let expected = vec![
+            "bar-1.0-1-x86_64.pkg.tar.zst".to_string(),
+            "foo-2.5-1-x86_64.pkg.tar.zst".to_string(),
+        ];
+        let version = resolved_version(&expected, "foo").expect("exact name match should be found");
+        assert_eq!(version, "2.5-1");
+    }
+
+    #[test]
+    fn resolved_version_falls_back_to_first_when_no_exact_match() {
+        let expected = vec![
+            "bar-1.0-1-x86_64.pkg.tar.zst".to_string(),
+            "baz-2.0-1-any.pkg.tar.zst".to_string(),
+        ];
+        let version =
+            resolved_version(&expected, "missing").expect("first parsed entry used as fallback");
+        assert_eq!(version, "1.0-1");
+    }
+
+    #[test]
+    fn resolved_version_skips_unparseable_basenames() {
+        let expected = vec![
+            "too-few-segments.pkg.tar.zst".to_string(),
+            "foo-2.5-1-x86_64.pkg.tar.zst".to_string(),
+        ];
+        let version = resolved_version(&expected, "foo").expect("match after skipping unparseable");
+        assert_eq!(version, "2.5-1");
     }
 }
