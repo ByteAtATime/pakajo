@@ -79,18 +79,7 @@ pub fn install_subcommand(args: InstallArgs) -> ! {
     let positionals = expand_groups(&handle, &positionals, stdin_is_tty() && !args.json);
 
     if is_root() {
-        let approvals = match args
-            .approvals_b64
-            .as_deref()
-            .map(decode_approvals)
-            .transpose()
-        {
-            Ok(opt) => opt,
-            Err(e) => {
-                eprintln!("{e:#}");
-                std::process::exit(1);
-            }
-        };
+        let approvals = decode_approvals_or_exit(args.approvals_b64.as_deref());
         exit_with_result(root_install(
             &handle,
             &positionals,
@@ -100,106 +89,105 @@ pub fn install_subcommand(args: InstallArgs) -> ! {
         ));
     }
 
-    let mut repo_or_file: Vec<String> = Vec::new();
-    let mut aur: Vec<String> = Vec::new();
-    for s in &positionals {
-        match classify_target(s) {
-            InstallTarget::File(_) => repo_or_file.push(s.clone()),
-            InstallTarget::Repo(ref name) => {
-                if crate::pacman::find_pkg(&handle, name).is_some() {
-                    repo_or_file.push(s.clone());
-                } else {
-                    aur.push(s.clone());
-                }
-            }
-        }
-    }
+    let (repo_or_file, aur) = split_install_targets(&handle, &positionals);
 
     if aur.is_empty() {
-        if !args.json {
-            print_sync_preamble(&handle, &positionals);
-        }
-        escalate(
+        install_repo_only(
+            &handle,
             &positionals,
             args.as_deps,
             args.json,
             args.approvals_b64.as_deref(),
         );
     } else if repo_or_file.is_empty() {
-        let mut sink: Box<dyn InstallSink> = sink_for(args.json);
-        let json = args.json;
-        let skip_review = args.skip_review;
-        let confirm = move |plan: &crate::resolve::BuildPlan| -> crate::build::BuildDecision {
-            if json {
-                crate::build::BuildDecision::Review
-            } else if skip_review {
-                confirm_build(plan)
-            } else {
-                confirm_proceed_to_review(plan)
-            }
-        };
-        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if json {
-            |_| true
-        } else {
-            self::review::review_pkgbuilds
-        };
-        exit_with_result(crate::build::run_build(
+        install_aur_only(
             &aur,
-            false,
-            args.as_deps,
-            &mut *sink,
-            confirm,
-            review,
-            args.approvals_b64.as_deref(),
-        ));
-    } else {
-        if !args.json {
-            print_sync_preamble(&handle, &repo_or_file);
-        }
-        match escalate_result(
-            &repo_or_file,
             args.as_deps,
             args.json,
-            args.approvals_b64.as_deref(),
-        ) {
-            Ok(0) => {}
-            Ok(code) => std::process::exit(code),
-            Err(e) => {
-                eprintln!("{e:#}");
-                std::process::exit(1);
-            }
-        }
-        let mut sink: Box<dyn InstallSink> = sink_for(args.json);
-        let json = args.json;
-        let skip_review = args.skip_review;
-        let confirm = move |plan: &crate::resolve::BuildPlan| -> crate::build::BuildDecision {
-            if json {
-                crate::build::BuildDecision::Review
-            } else if skip_review {
-                confirm_build(plan)
-            } else {
-                confirm_proceed_to_review(plan)
-            }
-        };
-        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if json {
-            |_| true
-        } else {
-            self::review::review_pkgbuilds
-        };
-        let result = crate::build::run_build(
-            &aur,
-            false,
-            args.as_deps,
-            &mut *sink,
-            confirm,
-            review,
+            args.skip_review,
             args.approvals_b64.as_deref(),
         );
-        if let Err(e) = &result {
-            eprintln!("warning: repo packages installed; AUR phase failed: {e:#}");
-        }
-        exit_with_result(result);
+    } else {
+        install_mixed(
+            &handle,
+            &repo_or_file,
+            &aur,
+            args.as_deps,
+            args.json,
+            args.skip_review,
+            args.approvals_b64.as_deref(),
+        );
     }
+}
+
+fn install_repo_only(
+    handle: &alpm::Alpm,
+    positionals: &[String],
+    as_deps: bool,
+    json: bool,
+    approvals_b64: Option<&str>,
+) -> ! {
+    if !json {
+        print_sync_preamble(handle, positionals);
+    }
+    escalate(positionals, as_deps, json, approvals_b64);
+}
+
+fn install_aur_only(
+    aur: &[String],
+    as_deps: bool,
+    json: bool,
+    skip_review: bool,
+    approvals_b64: Option<&str>,
+) -> ! {
+    let mut sink: Box<dyn InstallSink> = sink_for(json);
+    let (confirm, review) = build_callbacks(json, skip_review);
+    exit_with_result(crate::build::run_build(
+        aur,
+        false,
+        as_deps,
+        &mut *sink,
+        confirm,
+        review,
+        approvals_b64,
+    ));
+}
+
+fn install_mixed(
+    handle: &alpm::Alpm,
+    repo_or_file: &[String],
+    aur: &[String],
+    as_deps: bool,
+    json: bool,
+    skip_review: bool,
+    approvals_b64: Option<&str>,
+) -> ! {
+    if !json {
+        print_sync_preamble(handle, repo_or_file);
+    }
+    match escalate_result(repo_or_file, as_deps, json, approvals_b64) {
+        Ok(0) => {}
+        Ok(code) => std::process::exit(code),
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    }
+    let mut sink: Box<dyn InstallSink> = sink_for(json);
+    let (confirm, review) = build_callbacks(json, skip_review);
+    let result = crate::build::run_build(
+        aur,
+        false,
+        as_deps,
+        &mut *sink,
+        confirm,
+        review,
+        approvals_b64,
+    );
+    if let Err(e) = &result {
+        eprintln!("warning: repo packages installed; AUR phase failed: {e:#}");
+    }
+    exit_with_result(result);
 }
 
 pub fn search_subcommand(args: SearchArgs) -> ! {
@@ -277,18 +265,7 @@ pub fn remove_subcommand(args: RemoveArgs) -> ! {
 }
 
 pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {
-    let approvals = match args
-        .approvals_b64
-        .as_deref()
-        .map(decode_approvals)
-        .transpose()
-    {
-        Ok(opt) => opt,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    };
+    let approvals = decode_approvals_or_exit(args.approvals_b64.as_deref());
     if args.repo_only {
         let answerer = answerer_for(approvals);
         if args.json {
@@ -335,22 +312,7 @@ pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {
     if exit_code == 0 && !aur_targets.is_empty() {
         let aur_names: Vec<String> = aur_targets.iter().map(|c| c.name.clone()).collect();
         let mut build_sink: Box<dyn InstallSink> = sink_for(args.json);
-        let json = args.json;
-        let skip_review = args.skip_review;
-        let confirm = move |plan: &crate::resolve::BuildPlan| -> crate::build::BuildDecision {
-            if json {
-                crate::build::BuildDecision::Review
-            } else if skip_review {
-                confirm_build(plan)
-            } else {
-                confirm_proceed_to_review(plan)
-            }
-        };
-        let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if json {
-            |_| true
-        } else {
-            self::review::review_pkgbuilds
-        };
+        let (confirm, review) = build_callbacks(args.json, args.skip_review);
         let result = crate::build::run_build(
             &aur_names,
             false,
@@ -366,6 +328,30 @@ pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {
         exit_with_result(result);
     }
     std::process::exit(exit_code);
+}
+
+fn build_callbacks(
+    json: bool,
+    skip_review: bool,
+) -> (
+    impl FnOnce(&crate::resolve::BuildPlan) -> crate::build::BuildDecision,
+    fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool,
+) {
+    let confirm = move |plan: &crate::resolve::BuildPlan| -> crate::build::BuildDecision {
+        if json {
+            crate::build::BuildDecision::Review
+        } else if skip_review {
+            confirm_build(plan)
+        } else {
+            confirm_proceed_to_review(plan)
+        }
+    };
+    let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if json {
+        |_| true
+    } else {
+        self::review::review_pkgbuilds
+    };
+    (confirm, review)
 }
 
 fn sink_for(json: bool) -> Box<dyn InstallSink> {
@@ -458,6 +444,27 @@ fn classify_target(s: &str) -> InstallTarget {
     }
 }
 
+fn split_install_targets(
+    handle: &alpm::Alpm,
+    positionals: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let mut repo_or_file: Vec<String> = Vec::new();
+    let mut aur: Vec<String> = Vec::new();
+    for s in positionals {
+        match classify_target(s) {
+            InstallTarget::File(_) => repo_or_file.push(s.clone()),
+            InstallTarget::Repo(ref name) => {
+                if crate::pacman::find_pkg(handle, name).is_some() {
+                    repo_or_file.push(s.clone());
+                } else {
+                    aur.push(s.clone());
+                }
+            }
+        }
+    }
+    (repo_or_file, aur)
+}
+
 fn print_sync_preamble(handle: &alpm::Alpm, targets: &[String]) {
     let labeled: Vec<String> = targets
         .iter()
@@ -489,6 +496,16 @@ fn dedup_positionals(positionals: Vec<String>) -> Vec<String> {
 fn usage_error() -> ! {
     eprintln!("usage: pakajo install [--json] <package>...");
     std::process::exit(2);
+}
+
+fn decode_approvals_or_exit(approvals_b64: Option<&str>) -> Option<crate::question::Approvals> {
+    match approvals_b64.map(decode_approvals).transpose() {
+        Ok(opt) => opt,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn exit_with_result(result: anyhow::Result<()>) -> ! {
