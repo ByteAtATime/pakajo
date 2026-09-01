@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use crate::search::SearchFilter;
 use crate::search::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE};
 use crate::search::index::{PackageIndex, byte_mask, needs_rebuild};
 use crate::search::query::{ParsedQuery, parse_query};
@@ -21,30 +22,41 @@ const EXPENSIVE_TIERS: &[Tier] = &[Tier::Substring, Tier::Keyword];
 
 #[cfg(test)]
 pub fn search_index(index: &PackageIndex, text: &str) -> Vec<u32> {
-    search_index_tiered(index, text)
+    search_index_tiered(index, text, SearchFilter::All, &HashSet::new())
         .into_iter()
         .map(|(id, _)| id)
         .collect()
 }
 
-pub fn search_index_tiered(index: &PackageIndex, text: &str) -> Vec<(u32, Tier)> {
+pub fn search_index_tiered(
+    index: &PackageIndex,
+    text: &str,
+    filter: SearchFilter,
+    installed: &HashSet<String>,
+) -> Vec<(u32, Tier)> {
     let Some(pq) = parse_query(text) else {
         return Vec::new();
     };
     let q = pq.text();
     match &pq {
-        ParsedQuery::Quoted(_) => quoted_pairs(index, q),
-        ParsedQuery::Short(_) => to_sorted_pairs(gather_cheap_candidates(index, q, SHORT_TIERS)),
+        ParsedQuery::Quoted(_) => quoted_pairs(index, q, filter, installed),
+        ParsedQuery::Short(_) => to_sorted_pairs(gather_cheap_candidates(
+            index,
+            q,
+            SHORT_TIERS,
+            filter,
+            installed,
+        )),
         ParsedQuery::Normal(_) => {
-            let cheap = gather_cheap_candidates(index, q, CHEAP_TIERS_ALL);
+            let cheap = gather_cheap_candidates(index, q, CHEAP_TIERS_ALL, filter, installed);
             if cheap.len() >= RESULT_LIMIT {
                 return to_sorted_pairs(cheap);
             }
             let seen: HashSet<u32> = cheap.iter().map(|c| c.view.id).collect();
             let cands = if cheap.len() >= FUZZY_GATE {
-                expensive_only_pass(index, q, cheap, &seen)
+                expensive_only_pass(index, q, cheap, &seen, filter, installed)
             } else {
-                fused_expensive_fuzzy_pass(index, q, cheap, &seen)
+                fused_expensive_fuzzy_pass(index, q, cheap, &seen, filter, installed)
             };
             to_sorted_pairs(cands)
         }
@@ -71,9 +83,14 @@ impl SearchEngine {
         search_index(&snapshot, text)
     }
 
-    pub fn search_tiered(&self, text: &str) -> Vec<(u32, Tier)> {
+    pub fn search_tiered(
+        &self,
+        text: &str,
+        filter: SearchFilter,
+        installed: &HashSet<String>,
+    ) -> Vec<(u32, Tier)> {
         let snapshot = self.index.read().expect("index lock poisoned").clone();
-        search_index_tiered(&snapshot, text)
+        search_index_tiered(&snapshot, text, filter, installed)
     }
 
     pub fn ensure_fresh(&self) -> anyhow::Result<()> {
@@ -94,6 +111,8 @@ fn gather_cheap_candidates<'a>(
     index: &'a PackageIndex,
     q: &str,
     allowed: &[Tier],
+    filter: SearchFilter,
+    installed: &HashSet<String>,
 ) -> Vec<Candidate<'a>> {
     let qmask = byte_mask(q.as_bytes());
     let q_bytes = q.as_bytes();
@@ -122,7 +141,9 @@ fn gather_cheap_candidates<'a>(
     idxs.dedup();
     let mut cands: Vec<Candidate<'a>> = Vec::with_capacity(idxs.len());
     for i in idxs {
-        if let Some(tier) = tier_at(index, i as usize, q, allowed, qmask) {
+        if filter.matches(index.view(i as usize), installed)
+            && let Some(tier) = tier_at(index, i as usize, q, allowed, qmask)
+        {
             cands.push(Candidate {
                 view: index.view(i as usize),
                 tier,
@@ -139,6 +160,8 @@ fn expensive_only_pass<'a>(
     q: &str,
     mut cands: Vec<Candidate<'a>>,
     seen: &HashSet<u32>,
+    filter: SearchFilter,
+    installed: &HashSet<String>,
 ) -> Vec<Candidate<'a>> {
     let qmask = byte_mask(q.as_bytes());
     for i in 0..index.len() {
@@ -146,7 +169,9 @@ fn expensive_only_pass<'a>(
         if seen.contains(&r.id) {
             continue;
         }
-        if let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask) {
+        if filter.matches(index.view(i), installed)
+            && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask)
+        {
             cands.push(Candidate {
                 view: index.view(i),
                 tier,
@@ -186,6 +211,8 @@ fn fused_expensive_fuzzy_pass<'a>(
     q: &str,
     mut cands: Vec<Candidate<'a>>,
     seen: &HashSet<u32>,
+    filter: SearchFilter,
+    installed: &HashSet<String>,
 ) -> Vec<Candidate<'a>> {
     let qmask = byte_mask(q.as_bytes());
     let q_ascii = q.is_ascii();
@@ -204,12 +231,14 @@ fn fused_expensive_fuzzy_pass<'a>(
         if (name_missing == 0 || (qmask & !r.kw_mask) == 0)
             && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask)
         {
-            cands.push(Candidate {
-                view: index.view(i),
-                tier,
-                distance: 0,
-                first_letter_match: false,
-            });
+            if filter.matches(index.view(i), installed) {
+                cands.push(Candidate {
+                    view: index.view(i),
+                    tier,
+                    distance: 0,
+                    first_letter_match: false,
+                });
+            }
             placed.insert(i as u32);
             continue;
         }
@@ -222,6 +251,10 @@ fn fused_expensive_fuzzy_pass<'a>(
             && let Some(name_d) =
                 matcher.within_distance(index.name(i).as_bytes(), r.name_mask, MAX_EDIT_DISTANCE)
         {
+            if !filter.matches(index.view(i), installed) {
+                placed.insert(i as u32);
+                continue;
+            }
             let seed_first_letter = index.name(i).chars().next() == q_first;
             let (distance, first_letter_match) = fuzzy_score_from_seed(
                 &mut matcher,
@@ -259,6 +292,10 @@ fn fused_expensive_fuzzy_pass<'a>(
             if placed.contains(&pkg_idx) {
                 continue;
             }
+            if !filter.matches(index.view(pkg_idx as usize), installed) {
+                placed.insert(pkg_idx);
+                continue;
+            }
             let seed_first_letter = token.chars().next() == q_first;
             let (distance, first_letter_match) = fuzzy_score_from_seed(
                 &mut matcher,
@@ -284,8 +321,14 @@ fn fused_expensive_fuzzy_pass<'a>(
     cands
 }
 
-fn quoted_pairs(index: &PackageIndex, q: &str) -> Vec<(u32, Tier)> {
+fn quoted_pairs(
+    index: &PackageIndex,
+    q: &str,
+    filter: SearchFilter,
+    installed: &HashSet<String>,
+) -> Vec<(u32, Tier)> {
     let cands: Vec<Candidate> = (0..index.len())
+        .filter(|&pi| filter.matches(index.view(pi), installed))
         .filter(|&pi| index.name(pi).contains(q))
         .map(|pi| Candidate {
             view: index.view(pi),
@@ -312,6 +355,7 @@ fn to_sorted_pairs(mut cands: Vec<Candidate>) -> Vec<(u32, Tier)> {
 mod tests {
     use super::*;
     use crate::search::index::{RawPkg, assemble, tokenize};
+    use std::collections::HashMap;
 
     fn pkg(id: u32, name: &str, is_repo: bool, popularity: u16) -> RawPkg {
         RawPkg {
@@ -337,20 +381,51 @@ mod tests {
             pkg(4, "binary", false, 0),
             pkg(5, "visual-vim", false, 0),
         ]);
+        let installed: HashSet<String> = HashSet::new();
 
-        let exact_name = gather_cheap_candidates(&index, "vim", &[Tier::ExactName]);
+        let exact_name = gather_cheap_candidates(
+            &index,
+            "vim",
+            &[Tier::ExactName],
+            SearchFilter::All,
+            &installed,
+        );
         assert_eq!(ids_of(&exact_name), vec![1]);
 
-        let exact_token = gather_cheap_candidates(&index, "bin", &[Tier::ExactToken]);
+        let exact_token = gather_cheap_candidates(
+            &index,
+            "bin",
+            &[Tier::ExactToken],
+            SearchFilter::All,
+            &installed,
+        );
         assert_eq!(ids_of(&exact_token), vec![3]);
 
-        let prefix_name = gather_cheap_candidates(&index, "vim", &[Tier::PrefixName]);
+        let prefix_name = gather_cheap_candidates(
+            &index,
+            "vim",
+            &[Tier::PrefixName],
+            SearchFilter::All,
+            &installed,
+        );
         assert_eq!(ids_of(&prefix_name), vec![1, 2]);
 
-        let prefix_token = gather_cheap_candidates(&index, "vi", &[Tier::PrefixToken]);
+        let prefix_token = gather_cheap_candidates(
+            &index,
+            "vi",
+            &[Tier::PrefixToken],
+            SearchFilter::All,
+            &installed,
+        );
         assert_eq!(ids_of(&prefix_token), vec![1, 2, 5]);
 
-        let all_cheap = gather_cheap_candidates(&index, "vim", CHEAP_TIERS_ALL);
+        let all_cheap = gather_cheap_candidates(
+            &index,
+            "vim",
+            CHEAP_TIERS_ALL,
+            SearchFilter::All,
+            &installed,
+        );
         assert_eq!(ids_of(&all_cheap), vec![1, 2, 5]);
         assert!(all_cheap.iter().all(|c| c.tier != Tier::Substring));
     }
@@ -464,6 +539,125 @@ mod tests {
             !ids.contains(&999),
             "substring-only package must be dropped once the limit is full"
         );
+    }
+
+    fn ids_of_pairs(pairs: &[(u32, Tier)]) -> Vec<u32> {
+        let mut v: Vec<u32> = pairs.iter().map(|(id, _)| *id).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn filter_official_returns_only_repo_packages() {
+        let index = index_with(vec![pkg(1, "vim", true, 0), pkg(2, "vim", false, 0)]);
+        let installed: HashSet<String> = HashSet::new();
+        let ids = ids_of_pairs(&search_index_tiered(
+            &index,
+            "vim",
+            SearchFilter::Official,
+            &installed,
+        ));
+        assert_eq!(ids, vec![1]);
+    }
+
+    #[test]
+    fn filter_aur_returns_only_non_repo_packages() {
+        let index = index_with(vec![pkg(1, "vim", true, 0), pkg(2, "vim", false, 0)]);
+        let installed: HashSet<String> = HashSet::new();
+        let ids = ids_of_pairs(&search_index_tiered(
+            &index,
+            "vim",
+            SearchFilter::Aur,
+            &installed,
+        ));
+        assert_eq!(ids, vec![2]);
+    }
+
+    #[test]
+    fn filter_installed_returns_only_installed_names() {
+        let index = index_with(vec![pkg(1, "vim", false, 0), pkg(2, "vile", false, 0)]);
+        let installed: HashSet<String> = ["vim".to_string()].into_iter().collect();
+        let ids = ids_of_pairs(&search_index_tiered(
+            &index,
+            "vi",
+            SearchFilter::Installed,
+            &installed,
+        ));
+        assert_eq!(ids, vec![1]);
+    }
+
+    #[test]
+    fn filter_fill_to_limit_when_all_admitted() {
+        let mut raws: Vec<RawPkg> = (1u32..=35)
+            .map(|i| pkg(i, &format!("prefix-{i}"), false, 0))
+            .collect();
+        for (i, c) in (36u32..=40).zip("abcde".chars()) {
+            raws.push(pkg(i, &format!("prefix{c}"), false, 0));
+        }
+        let by_id: HashMap<u32, String> = raws.iter().map(|p| (p.id, p.name.clone())).collect();
+        let installed: HashSet<String> = (1u32..=35).map(|i| format!("prefix-{i}")).collect();
+        let index = index_with(raws);
+        let pairs = search_index_tiered(&index, "prefix", SearchFilter::Installed, &installed);
+        assert_eq!(
+            pairs.len(),
+            RESULT_LIMIT,
+            "filter must admit enough installed packages to fill the result limit"
+        );
+        assert!(
+            pairs
+                .iter()
+                .all(|(id, _)| installed.contains(by_id[id].as_str())),
+            "every returned package must be an installed package"
+        );
+    }
+
+    #[test]
+    fn gate_semantics_fuzzy_runs_when_filter_empties_cheap_below_gate() {
+        let index = index_with(vec![
+            pkg(1, "cava", true, 0),
+            pkg(2, "cava-foo", false, 0),
+            pkg(3, "cava-bar", false, 0),
+            pkg(4, "cava-baz", false, 0),
+            pkg(5, "cava-qux", false, 0),
+            pkg(6, "cava-quux", false, 0),
+            pkg(7, "cavb", true, 0),
+        ]);
+        let installed: HashSet<String> = HashSet::new();
+        let ids = ids_of_pairs(&search_index_tiered(
+            &index,
+            "cava",
+            SearchFilter::Official,
+            &installed,
+        ));
+        assert!(ids.contains(&1), "exact official match must be present");
+        assert!(ids.contains(&7), "fuzzy official match must be present");
+        assert!(
+            !ids.iter().any(|&id| (2..=6).contains(&id)),
+            "AUR packages must be excluded"
+        );
+    }
+
+    #[test]
+    fn quoted_query_respects_filter() {
+        let index = index_with(vec![
+            pkg(1, "google-chrome", true, 0),
+            pkg(2, "google-chrome", false, 0),
+        ]);
+        let installed: HashSet<String> = HashSet::new();
+        let official_ids = ids_of_pairs(&search_index_tiered(
+            &index,
+            "\"chrome\"",
+            SearchFilter::Official,
+            &installed,
+        ));
+        assert_eq!(official_ids, vec![1]);
+        let aur_ids = ids_of_pairs(&search_index_tiered(
+            &index,
+            "\"chrome\"",
+            SearchFilter::Aur,
+            &installed,
+        ));
+        assert_eq!(aur_ids, vec![2]);
     }
 }
 

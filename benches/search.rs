@@ -1,6 +1,8 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use pakajo::db::PackageDb;
+use pakajo::search::SearchFilter;
 use pakajo::search::engine::SearchEngine;
+use std::collections::HashSet;
 use std::hint::black_box;
 
 const MIN_LIVE_PACKAGES: i64 = 1_000;
@@ -29,6 +31,7 @@ fn live_engine() -> SearchEngine {
 
 fn criterion_benchmark(c: &mut Criterion) {
     let engine = live_engine();
+    let empty_installed: HashSet<String> = HashSet::new();
     let queries = [
         "vi",
         "git",
@@ -46,7 +49,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     for q in queries {
         c.bench_function(&format!("search {q:?}"), |b| {
-            b.iter(|| engine.search_tiered(black_box(q)));
+            b.iter(|| engine.search_tiered(black_box(q), SearchFilter::All, &empty_installed));
         });
     }
 }

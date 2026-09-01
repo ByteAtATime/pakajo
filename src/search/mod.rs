@@ -4,7 +4,7 @@ use crate::db::PackageDb;
 use crate::package::PackageSource;
 
 use engine::SearchEngine;
-use tiers::Tier;
+use tiers::{PkgView, Tier};
 
 pub mod engine;
 pub mod fuzzy;
@@ -29,15 +29,41 @@ pub struct SearchResult {
     pub last_update: Option<i64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchFilter {
+    All,
+    Official,
+    Aur,
+    Installed,
+}
+
+impl SearchFilter {
+    pub fn matches(self, view: PkgView<'_>, installed: &HashSet<String>) -> bool {
+        match self {
+            SearchFilter::All => true,
+            SearchFilter::Official => view.is_repo,
+            SearchFilter::Aur => !view.is_repo,
+            SearchFilter::Installed => installed.contains(view.name),
+        }
+    }
+}
+
 pub fn dispatch_search(
     engine: &SearchEngine,
     sqlite: &PackageDb,
     installed: &HashSet<String>,
     text: &str,
     group_index: &[(String, String)],
+    filter: SearchFilter,
 ) -> Vec<SearchResult> {
     let _span = perf::PerfSpan::new("search");
-    let pairs = engine.search_tiered(text);
+    let lowered: Option<HashSet<String>> = if filter == SearchFilter::Installed {
+        Some(installed.iter().map(|name| name.to_lowercase()).collect())
+    } else {
+        None
+    };
+    let engine_installed = lowered.as_ref().unwrap_or(installed);
+    let pairs = engine.search_tiered(text, filter, engine_installed);
     let ids: Vec<u32> = pairs.iter().map(|(id, _)| *id).collect();
     let mut entries: Vec<(Tier, SearchResult)> = Vec::with_capacity(pairs.len());
     if !ids.is_empty()
@@ -50,7 +76,7 @@ pub fn dispatch_search(
         }
     }
     let q = text.to_lowercase();
-    if !q.is_empty() {
+    if !q.is_empty() && filter == SearchFilter::All {
         for (name, repo) in group_index {
             if let Some(tier) = group_name_tier(&name.to_lowercase(), &q) {
                 entries.push((tier, group_search_result(name, repo)));
@@ -112,5 +138,43 @@ mod tests {
         );
         assert_eq!(group_name_tier("x-gnome-y", "gnome"), Some(Tier::Substring));
         assert_eq!(group_name_tier("kde", "gnome"), None);
+    }
+
+    fn view(name: &str, id: u32, is_repo: bool) -> PkgView<'_> {
+        PkgView {
+            name,
+            id,
+            popularity: 0,
+            is_repo,
+        }
+    }
+
+    #[test]
+    fn filter_matches_all_admits_everything() {
+        let installed: HashSet<String> = HashSet::new();
+        assert!(SearchFilter::All.matches(view("vim", 1, true), &installed));
+        assert!(SearchFilter::All.matches(view("vim", 1, false), &installed));
+    }
+
+    #[test]
+    fn filter_matches_official_admits_only_repo() {
+        let installed: HashSet<String> = HashSet::new();
+        assert!(SearchFilter::Official.matches(view("vim", 1, true), &installed));
+        assert!(!SearchFilter::Official.matches(view("vim", 2, false), &installed));
+    }
+
+    #[test]
+    fn filter_matches_aur_admits_only_non_repo() {
+        let installed: HashSet<String> = HashSet::new();
+        assert!(SearchFilter::Aur.matches(view("vim", 1, false), &installed));
+        assert!(!SearchFilter::Aur.matches(view("vim", 2, true), &installed));
+    }
+
+    #[test]
+    fn filter_matches_installed_checks_set_membership() {
+        let mut installed = HashSet::new();
+        installed.insert("vim".to_string());
+        assert!(SearchFilter::Installed.matches(view("vim", 1, true), &installed));
+        assert!(!SearchFilter::Installed.matches(view("emacs", 2, true), &installed));
     }
 }

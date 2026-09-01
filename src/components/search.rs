@@ -154,7 +154,14 @@ pub fn execute_search_for(
     let (Some(engine), Some(local)) = (search_engine.as_ref(), db.as_ref()) else {
         return Vec::new();
     };
-    pakajo::search::dispatch_search(engine, local, &installed, &text, &group_index)
+    pakajo::search::dispatch_search(
+        engine,
+        local,
+        &installed,
+        &text,
+        &group_index,
+        pakajo::search::SearchFilter::All,
+    )
 }
 
 pub fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Option<usize> {
