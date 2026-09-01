@@ -169,15 +169,18 @@ pub fn build_from_rows(rows: Vec<IndexRow>) -> PackageIndex {
     assemble(raws)
 }
 
-pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
-    let n = raws.len();
-    let mut arena: String = String::new();
-    let mut rows: Vec<PkgRow> = Vec::with_capacity(n);
+fn push_span(arena: &mut String, s: &str) -> (u32, u16) {
+    let off: u32 = arena.len().try_into().expect("arena offset exceeds u32");
+    arena.push_str(s);
+    let len: u16 = s.len().try_into().expect("span length exceeds u16");
+    (off, len)
+}
 
-    for raw in &raws {
-        let name_off: u32 = arena.len().try_into().expect("arena offset exceeds u32");
-        arena.push_str(&raw.name);
-        let name_len: u16 = raw.name.len().try_into().expect("package name exceeds u16");
+fn build_rows(raws: &[RawPkg], arena: &mut String) -> Vec<PkgRow> {
+    let n = raws.len();
+    let mut rows: Vec<PkgRow> = Vec::with_capacity(n);
+    for raw in raws {
+        let (name_off, name_len) = push_span(arena, &raw.name);
         let kw_mask = raw
             .keywords
             .iter()
@@ -208,7 +211,15 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
             kw_mask,
         });
     }
+    rows
+}
 
+fn build_token_inversion(
+    raws: &[RawPkg],
+    arena: &mut String,
+    rows: &mut [PkgRow],
+) -> (Vec<u32>, Vec<(u32, u16)>, Vec<u64>, Vec<(u32, u32)>) {
+    let n = raws.len();
     let mut occ: Vec<(u32, u32)> = Vec::new();
     for (pi, raw) in raws.iter().enumerate() {
         for ti in 0..raw.tokens.len() {
@@ -238,9 +249,7 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
             occ_ids.push(id);
             tokens_sorted.push((id, pi));
         } else {
-            let off: u32 = arena.len().try_into().expect("arena offset exceeds u32");
-            arena.push_str(s);
-            let len: u16 = s.len().try_into().expect("token exceeds u16");
+            let (off, len) = push_span(arena, s);
             unique_tokens.push((off, len));
             unique_token_masks.push(byte_mask(s.as_bytes()));
             let id = (unique_tokens.len() - 1) as u32;
@@ -252,7 +261,7 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
 
     let mut starts: Vec<u32> = Vec::with_capacity(n);
     let mut acc: u32 = 0;
-    for r in &rows {
+    for r in rows.iter() {
         starts.push(acc);
         acc += r.tokens_len as u32;
     }
@@ -266,6 +275,14 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
         r.tokens_start = starts[i];
     }
 
+    (token_ids, unique_tokens, unique_token_masks, tokens_sorted)
+}
+
+fn build_keyword_ids(
+    raws: &[RawPkg],
+    arena: &mut String,
+    rows: &mut [PkgRow],
+) -> (Vec<u32>, Vec<(u32, u16)>) {
     let mut kw_map: HashMap<&str, u32> = HashMap::new();
     let mut unique_kws: Vec<(u32, u16)> = Vec::new();
     let mut kw_ids: Vec<u32> = Vec::new();
@@ -275,9 +292,7 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
             let id = match kw_map.get(k.as_str()) {
                 Some(&id) => id,
                 None => {
-                    let off: u32 = arena.len().try_into().expect("arena offset exceeds u32");
-                    arena.push_str(k);
-                    let len: u16 = k.len().try_into().expect("keyword exceeds u16");
+                    let (off, len) = push_span(arena, k);
                     let id = unique_kws.len() as u32;
                     unique_kws.push((off, len));
                     kw_map.insert(k.as_str(), id);
@@ -287,6 +302,17 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
             kw_ids.push(id);
         }
     }
+    (kw_ids, unique_kws)
+}
+
+pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
+    let n = raws.len();
+    let mut arena: String = String::new();
+
+    let mut rows = build_rows(&raws, &mut arena);
+    let (token_ids, unique_tokens, unique_token_masks, tokens_sorted) =
+        build_token_inversion(&raws, &mut arena, &mut rows);
+    let (kw_ids, unique_kws) = build_keyword_ids(&raws, &mut arena, &mut rows);
 
     let mut index = PackageIndex {
         rows,
