@@ -15,6 +15,7 @@ use pakajo::aur::AurClient;
 use pakajo::cli;
 use pakajo::db::PackageDb;
 use pakajo::pacman::init_alpm;
+use pakajo::search::SearchFilter;
 use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
 
@@ -22,7 +23,7 @@ use background::begin_aur_sync_in_background;
 use components::detail::{DetailData, DetailMessage, detail_view};
 use components::search::{
     ListRect, SearchMessage, SearchState, SelectionScroller, results_scroller, search_bar,
-    search_status_text,
+    search_status_bar,
 };
 use components::sysupgrade::SysupgradeMessage;
 use components::transaction::review::ReviewModel;
@@ -49,6 +50,7 @@ pub struct PakajoApp {
     pub(crate) results: Vec<SearchResult>,
     pub(crate) search_state: SearchState,
     pub(crate) search_seq: u64,
+    pub(crate) search_filter: SearchFilter,
     pub(crate) selected_index: Option<usize>,
     pub(crate) scroller: SelectionScroller,
     pub(crate) detail: DetailData,
@@ -134,6 +136,7 @@ impl Application for PakajoApp {
             results: Vec::new(),
             search_state: SearchState::Idle,
             search_seq: 0,
+            search_filter: SearchFilter::All,
             selected_index: None,
             scroller: SelectionScroller::new(),
             detail: DetailData::None,
@@ -240,7 +243,11 @@ impl PakajoApp {
         let content = Column::new()
             .spacing(12)
             .push(header)
-            .push(search_status_text(self.search_state, self.results.len()))
+            .push(search_status_bar(
+                self.search_state,
+                self.results.len(),
+                self.search_filter,
+            ))
             .push(
                 Row::new()
                     .push(results_scroller(

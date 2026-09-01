@@ -12,6 +12,7 @@ use cosmic::widget::row;
 use cosmic::widget::{Column, Row, button, scrollable, space, text, text_input};
 
 use pakajo::db::PackageDb;
+use pakajo::search::SearchFilter;
 use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
 
@@ -138,6 +139,7 @@ pub enum SearchMessage {
         seq: u64,
         results: Vec<SearchResult>,
     },
+    FilterChanged(SearchFilter),
     SelectDelta(i32),
     SelectIndex(usize),
     Rects(RectangleUpdate<ListRect>),
@@ -150,18 +152,12 @@ pub fn execute_search_for(
     group_index: Arc<Vec<(String, String)>>,
     installed: Arc<HashSet<String>>,
     text: String,
+    filter: SearchFilter,
 ) -> Vec<SearchResult> {
     let (Some(engine), Some(local)) = (search_engine.as_ref(), db.as_ref()) else {
         return Vec::new();
     };
-    pakajo::search::dispatch_search(
-        engine,
-        local,
-        &installed,
-        &text,
-        &group_index,
-        pakajo::search::SearchFilter::All,
-    )
+    pakajo::search::dispatch_search(engine, local, &installed, &text, &group_index, filter)
 }
 
 pub fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Option<usize> {
@@ -181,16 +177,56 @@ pub fn search_bar(query: &str) -> cosmic::Element<'_, crate::Message> {
         .into()
 }
 
-pub fn search_status_text(
+fn filter_pill(
+    label: &str,
+    value: SearchFilter,
+    selected: bool,
+) -> cosmic::Element<'static, crate::Message> {
+    let mut pill = button::custom(text(label.to_string()))
+        .on_press(crate::Message::Search(SearchMessage::FilterChanged(value)))
+        .padding([2, 8]);
+    if selected {
+        pill = pill.class(cosmic::theme::Button::Suggested);
+    }
+    pill.into()
+}
+
+pub fn search_status_bar(
     state: SearchState,
     count: usize,
+    filter: SearchFilter,
 ) -> cosmic::Element<'static, crate::Message> {
     let header_text = if state == SearchState::Searching {
         "Searching...".to_string()
     } else {
         format!("{} result(s)", count)
     };
-    text(header_text).into()
+    Row::new()
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .push(text(header_text))
+        .push(space::horizontal())
+        .push(filter_pill(
+            "All",
+            SearchFilter::All,
+            filter == SearchFilter::All,
+        ))
+        .push(filter_pill(
+            "Official",
+            SearchFilter::Official,
+            filter == SearchFilter::Official,
+        ))
+        .push(filter_pill(
+            "AUR",
+            SearchFilter::Aur,
+            filter == SearchFilter::Aur,
+        ))
+        .push(filter_pill(
+            "Installed",
+            SearchFilter::Installed,
+            filter == SearchFilter::Installed,
+        ))
+        .into()
 }
 
 fn results_list<'a>(
@@ -306,7 +342,6 @@ impl crate::PakajoApp {
             SearchMessage::QueryChanged(text) => {
                 self.query = text.clone();
                 self.search_seq = self.search_seq.wrapping_add(1);
-                let seq = self.search_seq;
 
                 if text.trim().is_empty() {
                     self.results.clear();
@@ -315,18 +350,19 @@ impl crate::PakajoApp {
                     return Task::none();
                 }
 
-                self.search_state = SearchState::Searching;
-                let engine = self.search_engine.clone();
-                let db = self.db.clone();
-                let installed = self.installed_names.clone();
-                let group_index = self.group_index.clone();
-
-                Task::perform(
-                    async move { execute_search_for(engine, db, group_index, installed, text) },
-                    move |results| {
-                        crate::Message::Search(SearchMessage::ResultsReady { seq, results }).into()
-                    },
-                )
+                self.begin_search()
+            }
+            SearchMessage::FilterChanged(filter) => {
+                if filter == self.search_filter {
+                    return Task::none();
+                }
+                self.search_filter = filter;
+                self.search_seq += 1;
+                if self.query.trim().is_empty() {
+                    Task::none()
+                } else {
+                    self.begin_search()
+                }
             }
             SearchMessage::ResultsReady { seq, results } => {
                 if seq == self.search_seq {
@@ -383,6 +419,23 @@ impl crate::PakajoApp {
                 Task::none()
             }
         }
+    }
+
+    fn begin_search(&mut self) -> cosmic::app::Task<crate::Message> {
+        self.search_state = SearchState::Searching;
+        let engine = self.search_engine.clone();
+        let db = self.db.clone();
+        let installed = self.installed_names.clone();
+        let group_index = self.group_index.clone();
+        let text = self.query.clone();
+        let filter = self.search_filter;
+        let seq = self.search_seq;
+        Task::perform(
+            async move { execute_search_for(engine, db, group_index, installed, text, filter) },
+            move |results| {
+                crate::Message::Search(SearchMessage::ResultsReady { seq, results }).into()
+            },
+        )
     }
 }
 
