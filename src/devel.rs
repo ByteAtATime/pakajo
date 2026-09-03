@@ -239,7 +239,7 @@ fn srcinfo_for_dir(dir: &std::path::Path) -> anyhow::Result<srcinfo::Srcinfo> {
     }
 }
 
-pub(crate) fn fetch_base_devel_info(base: &str, arch: &str) -> anyhow::Result<Option<PkgInfo>> {
+fn fetch_base_devel_info(base: &str, arch: &str) -> anyhow::Result<Option<PkgInfo>> {
     let dir = crate::build::clone_dir(base)?;
     crate::build::git_clone_or_pull(&dir, base)?;
     let srcinfo = srcinfo_for_dir(&dir)?;
@@ -262,7 +262,7 @@ fn group_by_base(infos: &[AurInfo]) -> std::collections::HashMap<String, Vec<Str
     base_to_names
 }
 
-pub(crate) fn record_devel_infos(devel: &mut DevelInfo, infos: &[AurInfo], arch: &str) -> usize {
+fn record_devel_infos(devel: &mut DevelInfo, infos: &[AurInfo], arch: &str) -> usize {
     let base_to_names = group_by_base(infos);
     let mut recorded = 0usize;
     for (base, names) in &base_to_names {
@@ -280,6 +280,39 @@ pub(crate) fn record_devel_infos(devel: &mut DevelInfo, infos: &[AurInfo], arch:
         recorded += 1;
     }
     recorded
+}
+
+pub enum GendbOutcome {
+    NoForeign,
+    LookupFailed,
+    Recorded(usize),
+}
+
+pub fn generate_db(
+    handle: &alpm::Alpm,
+    aur: &impl crate::resolve::AurQuery,
+) -> anyhow::Result<GendbOutcome> {
+    let arch = handle
+        .architectures()
+        .first()
+        .context("no architecture configured in alpm")?;
+    let foreign: Vec<String> = crate::pacman::foreign_package_names(handle);
+    let mut devel = load_devel_info();
+    if foreign.is_empty() {
+        save_devel_info(&devel)?;
+        return Ok(GendbOutcome::NoForeign);
+    }
+    let infos = match aur.info_many(&foreign) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("warning: AUR info lookup failed: {e:#}");
+            save_devel_info(&devel)?;
+            return Ok(GendbOutcome::LookupFailed);
+        }
+    };
+    let recorded = record_devel_infos(&mut devel, &infos, arch);
+    save_devel_info(&devel)?;
+    Ok(GendbOutcome::Recorded(recorded))
 }
 
 pub fn possible_devel_updates_from(info: &DevelInfo) -> Vec<String> {

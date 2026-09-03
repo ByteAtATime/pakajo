@@ -32,39 +32,20 @@ pub fn run_aur_sync() -> anyhow::Result<()> {
 
 pub fn run_gendb() -> anyhow::Result<()> {
     let handle = alpm_handle()?;
-    let arch = handle
-        .architectures()
-        .first()
-        .context("no architecture configured in alpm")?;
-
-    let foreign: Vec<String> = crate::pacman::foreign_package_names(&handle);
-
-    let mut devel = crate::devel::load_devel_info();
-
-    if foreign.is_empty() {
-        crate::devel::save_devel_info(&devel)?;
-        println!(
-            "no foreign packages installed; wrote {}",
-            crate::devel::state_path().display()
-        );
-        return Ok(());
-    }
-
     let aur = crate::aur::AurClient::new();
-    let infos = match aur.info_many(&foreign) {
-        Ok(i) => i,
-        Err(e) => {
-            eprintln!("warning: AUR info lookup failed: {e:#}");
-            crate::devel::save_devel_info(&devel)?;
-            return Ok(());
+    match crate::devel::generate_db(&handle, &aur)? {
+        crate::devel::GendbOutcome::NoForeign => {
+            println!(
+                "no foreign packages installed; wrote {}",
+                crate::devel::state_path().display()
+            );
         }
-    };
-
-    let recorded = crate::devel::record_devel_infos(&mut devel, &infos, arch);
-
-    let path = crate::devel::state_path();
-    crate::devel::save_devel_info(&devel)?;
-    println!("recorded {recorded} devel package(s) to {}", path.display());
+        crate::devel::GendbOutcome::LookupFailed => {}
+        crate::devel::GendbOutcome::Recorded(recorded) => {
+            let path = crate::devel::state_path();
+            println!("recorded {recorded} devel package(s) to {}", path.display());
+        }
+    }
     Ok(())
 }
 
