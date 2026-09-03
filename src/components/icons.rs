@@ -27,3 +27,4 @@ icon!(package_check, "package-check.svg");
 icon!(circle_check, "circle-check.svg");
 icon!(refresh_cw, "refresh-cw.svg");
 icon!(arrow_right, "arrow-right.svg");
+icon!(external_link, "external-link.svg");

@@ -221,6 +221,14 @@ impl Application for PakajoApp {
             Message::Updates(m) => self.handle_updates(m),
             Message::Sysupgrade(m) => self.handle_sysupgrade(m),
             Message::Navigate(page) => self.goto_page(page),
+            Message::OpenUrl(url) => {
+                std::thread::spawn(move || {
+                    if let Err(e) = std::process::Command::new("xdg-open").arg(&url).spawn() {
+                        eprintln!("[pakajo] failed to open {url}: {e}");
+                    }
+                });
+                Task::none()
+            }
             Message::DbLockReleased => {
                 eprintln!("[pakajo] db.lck released, refreshing installed state");
                 self.refresh_installed_state();
@@ -465,6 +473,7 @@ pub enum Message {
     Updates(UpdatesMessage),
     Sysupgrade(SysupgradeMessage),
     Navigate(Page),
+    OpenUrl(String),
     DbLockReleased,
 }
 

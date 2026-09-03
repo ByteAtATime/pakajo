@@ -200,13 +200,31 @@ fn render_header<'a>(
             .on_press(intent)
     };
 
+    let mut actions = Row::new().spacing(8).align_y(Alignment::Center);
+
+    if let Some(url) = &pkg.upstream_url {
+        actions = actions.push(
+            button::custom(
+                Row::new()
+                    .spacing(6)
+                    .align_y(Alignment::Center)
+                    .push(text("Upstream"))
+                    .push(icons::external_link().width(16).height(16)),
+            )
+            .class(cosmic::theme::Button::Standard)
+            .on_press(crate::Message::OpenUrl(url.clone())),
+        );
+    }
+
+    actions = actions.push(action);
+
     let title_row = Row::new()
         .spacing(12)
         .align_y(Alignment::Center)
         .push(text(formatted_name).font(cosmic::font::bold()).size(24.0))
         .push(muted(&pkg.version))
         .push(Space::new().width(Length::Fill))
-        .push(action);
+        .push(actions);
 
     let mut col = Column::new().spacing(12).push(title_row);
 
