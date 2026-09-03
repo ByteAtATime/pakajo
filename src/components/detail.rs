@@ -1,6 +1,6 @@
 use cosmic::app::Task;
 use cosmic::iced::{Alignment, Background, Color, Length};
-use cosmic::widget::{Column, Row, Space, button, container, scrollable, text};
+use cosmic::widget::{Column, Row, Space, button, container, responsive, scrollable, text};
 use futures::SinkExt as _;
 use pakajo::package::{Package, PackageSource};
 use pakajo::pacman::{find_groups, find_pkg};
@@ -264,24 +264,35 @@ fn render_info_bar<'a>(pkg: &'a Package) -> cosmic::Element<'a, crate::Message> 
 }
 
 fn render_details<'a>(pkg: &'a Package) -> cosmic::Element<'a, crate::Message> {
-    let provides_col = render_badge_section(
-        format!("Provides ({})", pkg.provides.len()),
-        &pkg.provides,
-        accent_color,
-    );
+    responsive(move |size| {
+        let provides_col = render_badge_section(
+            format!("Provides ({})", pkg.provides.len()),
+            &pkg.provides,
+            accent_color,
+        );
 
-    let conflicts_col = render_badge_section(
-        format!("Conflicts ({})", pkg.conflicts.len()),
-        &pkg.conflicts,
-        destructive_color,
-    );
+        let conflicts_col = render_badge_section(
+            format!("Conflicts ({})", pkg.conflicts.len()),
+            &pkg.conflicts,
+            destructive_color,
+        );
 
-    Row::new()
-        .spacing(16)
-        .width(Length::Fill)
-        .push(container(provides_col).width(Length::Fill))
-        .push(container(conflicts_col).width(Length::Fill))
-        .into()
+        if size.width < 480.0 {
+            Column::new()
+                .spacing(16)
+                .push(provides_col)
+                .push(conflicts_col)
+                .into()
+        } else {
+            Row::new()
+                .spacing(16)
+                .push(container(provides_col).width(Length::Fill))
+                .push(container(conflicts_col).width(Length::Fill))
+                .into()
+        }
+    })
+    .width(Length::Fill)
+    .into()
 }
 
 fn render_badge_section<'a>(
