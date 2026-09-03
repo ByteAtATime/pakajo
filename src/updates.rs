@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Context as _;
 
 use crate::pacman;
-use crate::upgrade::AurUpgradeCandidate;
+use crate::upgrade::{AurUpgradeCandidate, DevelSource};
 
 pub const REPO_REVALIDATE_AFTER: Duration = Duration::from_secs(60 * 60);
 pub const DEVEL_RECHECK_AFTER: Duration = Duration::from_secs(6 * 60 * 60);
@@ -130,6 +130,7 @@ pub struct UpdatesFetch {
     pub aur: Vec<AurUpgradeCandidate>,
     pub devel_names: Vec<String>,
     pub aur_error: Option<String>,
+    pub devel_live: bool,
 }
 
 pub fn compute_repo_upgrades(
@@ -165,14 +166,15 @@ pub fn compute_repo_upgrades(
     Ok(repo)
 }
 
-pub fn pending_updates() -> anyhow::Result<UpdatesFetch> {
+pub fn pending_updates(devel: DevelSource) -> anyhow::Result<UpdatesFetch> {
+    let devel_live = matches!(devel, DevelSource::Live);
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
     let mut handle = pacman::init_alpm_rootless(&config)?;
     pacman::refresh_sync_dbs_rootless(&mut handle)?;
     let repo = compute_repo_upgrades(&handle, &config)?;
     let aur_client = crate::aur::AurClient::new();
     let (aur, devel_names, aur_error) =
-        match crate::upgrade::compute_aur_upgrades(&handle, &aur_client) {
+        match crate::upgrade::compute_aur_upgrades(&handle, &aur_client, devel) {
             Ok((v, devel)) => (v, devel, None),
             Err(e) => {
                 let msg = format!("{e:#}");
@@ -185,6 +187,7 @@ pub fn pending_updates() -> anyhow::Result<UpdatesFetch> {
         aur,
         devel_names,
         aur_error,
+        devel_live,
     })
 }
 

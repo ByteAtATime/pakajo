@@ -116,9 +116,16 @@ fn select_upgradable_candidates(
     candidates
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DevelSource {
+    Live,
+    Cached(Vec<String>),
+}
+
 pub fn compute_aur_upgrades(
     handle: &alpm::Alpm,
     aur: &impl AurQuery,
+    devel: DevelSource,
 ) -> anyhow::Result<(Vec<AurUpgradeCandidate>, Vec<String>)> {
     let sync_names: HashSet<String> = handle
         .syncdbs()
@@ -145,7 +152,10 @@ pub fn compute_aur_upgrades(
         infos.into_iter().map(|i| (i.name.clone(), i)).collect();
     let mut candidates = select_upgradable_candidates(installed, &sync_names, &aur_infos);
 
-    let devel_updates = crate::devel::possible_devel_updates();
+    let devel_updates = match devel {
+        DevelSource::Live => crate::devel::possible_devel_updates(),
+        DevelSource::Cached(names) => names,
+    };
     let mut devel_names: Vec<String> = devel_updates
         .into_iter()
         .collect::<HashSet<_>>()
@@ -520,7 +530,9 @@ mod tests {
         let config = pacmanconf::Config::new().expect("pacman config");
         let handle = crate::pacman::init_alpm(&config).expect("alpm");
         let aur = crate::aur::AurClient::new();
-        let candidates = compute_aur_upgrades(&handle, &aur).expect("rpc succeeds").0;
+        let candidates = compute_aur_upgrades(&handle, &aur, DevelSource::Live)
+            .expect("rpc succeeds")
+            .0;
         println!("candidates: {candidates:?}");
     }
 

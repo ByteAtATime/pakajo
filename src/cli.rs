@@ -277,7 +277,11 @@ pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {
 
     let handle = alpm_handle_or_exit();
     let aur = crate::aur::AurClient::new();
-    let mut aur_targets = match crate::upgrade::compute_aur_upgrades(&handle, &aur) {
+    let mut aur_targets = match crate::upgrade::compute_aur_upgrades(
+        &handle,
+        &aur,
+        crate::upgrade::DevelSource::Live,
+    ) {
         Ok((candidates, _)) => candidates,
         Err(e) => {
             eprintln!("warning: AUR upgrade detection failed: {e:#}");

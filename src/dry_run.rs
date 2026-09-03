@@ -68,7 +68,11 @@ pub fn compute_sysupgrade_preview(
     config: &pacmanconf::Config,
 ) -> anyhow::Result<SysupgradePreview> {
     let aur_client = crate::aur::AurClient::new();
-    let aur = match crate::upgrade::compute_aur_upgrades(handle, &aur_client) {
+    let aur = match crate::upgrade::compute_aur_upgrades(
+        handle,
+        &aur_client,
+        crate::upgrade::DevelSource::Live,
+    ) {
         Ok((v, _)) => v,
         Err(e) => {
             eprintln!(

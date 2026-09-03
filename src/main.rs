@@ -28,7 +28,7 @@ use components::search::{
 use components::sysupgrade::SysupgradeMessage;
 use components::transaction::review::ReviewModel;
 use components::transaction::{Action, Transaction, TransactionMessage};
-use components::updates::{UpdatesMessage, UpdatesState};
+use components::updates::{RefreshKind, UpdatesMessage, UpdatesState};
 
 use crate::components::divider::{divider, vdivider};
 
@@ -63,6 +63,10 @@ pub struct PakajoApp {
     pub(crate) pending_updates: pakajo::updates::PendingUpdates,
     pub(crate) pending_count: u32,
     pub(crate) updates_aur_error: Option<String>,
+    pub(crate) last_cache: Option<pakajo::updates::UpdatesCache>,
+    pub(crate) updates_refreshing: bool,
+    pub(crate) updates_refresh_error: Option<String>,
+    pub(crate) pending_force_refresh: Option<RefreshKind>,
     pub(crate) page: Page,
     pub(crate) sysupgrade_preview: Option<pakajo::dry_run::SysupgradePreview>,
     pub(crate) sysupgrade_preview_error: Option<String>,
@@ -153,6 +157,10 @@ impl Application for PakajoApp {
             },
             pending_count: 0,
             updates_aur_error: None,
+            last_cache: None,
+            updates_refreshing: false,
+            updates_refresh_error: None,
+            pending_force_refresh: None,
             page: Page::Search,
             sysupgrade_preview: None,
             sysupgrade_preview_error: None,
@@ -165,6 +173,8 @@ impl Application for PakajoApp {
         };
         let task = match pakajo::updates::load_cached() {
             Some(cache) => {
+                app.last_cache = Some(cache);
+                let cache = app.last_cache.as_ref().expect("cache stored above");
                 let now = pakajo::updates::now_unix_seconds();
                 app.pending_updates = pakajo::updates::PendingUpdates {
                     repo: cache.repo.clone(),
@@ -189,10 +199,10 @@ impl Application for PakajoApp {
                         cache.repo.len(),
                         cache.aur.len()
                     );
-                    app.start_updates_check()
+                    app.start_updates_check(RefreshKind::Launch)
                 }
             }
-            None => app.start_updates_check(),
+            None => app.start_updates_check(RefreshKind::Launch),
         };
         (app, task)
     }

@@ -19,6 +19,12 @@ pub enum UpdatesState {
     Error(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RefreshKind {
+    Launch,
+    Interactive,
+}
+
 pub enum UpdatesEntry<'a> {
     Header(String),
     Repo(&'a RepoUpgrade),
@@ -190,14 +196,13 @@ impl crate::PakajoApp {
     pub(crate) fn updates_page(&self) -> cosmic::Element<'_, crate::Message> {
         let back =
             button::custom(text("Back")).on_press(crate::Message::Navigate(crate::Page::Search));
-        let refresh: cosmic::Element<'_, crate::Message> =
-            if matches!(self.updates_state, UpdatesState::Loading) {
-                text("Refreshing...").into()
-            } else {
-                button::custom(text("Refresh"))
-                    .on_press(crate::Message::Updates(UpdatesMessage::RefreshUpdates))
-                    .into()
-            };
+        let refresh: cosmic::Element<'_, crate::Message> = if self.updates_refreshing {
+            text("Refreshing...").into()
+        } else {
+            button::custom(text("Refresh"))
+                .on_press(crate::Message::Updates(UpdatesMessage::RefreshUpdates))
+                .into()
+        };
         let upgrade_all: cosmic::Element<'_, crate::Message> = if self.sysupgrade_preview_in_flight
         {
             text("Checking...").into()
@@ -233,12 +238,14 @@ impl crate::PakajoApp {
             .padding([0.0, 12.0])
             .into(),
             UpdatesState::Idle => {
+                let mut body = Column::new().padding([0.0, 12.0]).spacing(16);
+                if let Some(msg) = &self.updates_refresh_error {
+                    body = body.push(destructive(format!("Update check failed: {msg}")));
+                }
                 if self.pending_count == 0 {
-                    container(text("Your system is up to date"))
-                        .padding([0.0, 12.0])
-                        .into()
+                    body = body.push(text("Your system is up to date"));
                 } else {
-                    let mut list = Column::new().padding([0.0, 12.0]).spacing(16);
+                    let mut list = Column::new().spacing(16);
                     if let Some(msg) = &self.updates_aur_error {
                         list = list.push(destructive(format!("AUR check failed: {msg}")));
                     }
@@ -251,12 +258,14 @@ impl crate::PakajoApp {
                             UpdatesEntry::Aur(c) => list = list.push(aur_upgrade_row(c)),
                         }
                     }
-                    scrollable(list)
-                        .id(crate::page_scroll_id())
-                        .width(cosmic::iced::Length::Fill)
-                        .height(cosmic::iced::Length::Fill)
-                        .into()
+                    body = body.push(
+                        scrollable(list)
+                            .id(crate::page_scroll_id())
+                            .width(cosmic::iced::Length::Fill)
+                            .height(cosmic::iced::Length::Fill),
+                    );
                 }
+                body.into()
             }
         };
         let column = Column::new().push(padded_header).push(body);
@@ -271,7 +280,7 @@ impl crate::PakajoApp {
         message: UpdatesMessage,
     ) -> cosmic::app::Task<crate::Message> {
         match message {
-            UpdatesMessage::RefreshUpdates => self.start_updates_check(),
+            UpdatesMessage::RefreshUpdates => self.start_updates_check(RefreshKind::Interactive),
             UpdatesMessage::Fetched(result) => match result {
                 Ok(fetch) => {
                     let count = (fetch.repo.len() + fetch.aur.len()) as u32;
@@ -281,15 +290,27 @@ impl crate::PakajoApp {
                         fetch.repo.len(),
                         fetch.aur.len()
                     );
+                    self.updates_refreshing = false;
+                    self.updates_refresh_error = None;
                     if fetch.aur_error.is_none() {
                         let now = pakajo::updates::now_unix_seconds();
-                        pakajo::updates::store(&pakajo::updates::UpdatesCache {
+                        let devel_checked_at = if fetch.devel_live {
+                            now
+                        } else {
+                            self.last_cache
+                                .as_ref()
+                                .map(|c| c.devel_checked_at)
+                                .unwrap_or(now)
+                        };
+                        let cache = pakajo::updates::UpdatesCache {
                             checked_at: now,
-                            devel_checked_at: now,
+                            devel_checked_at,
                             repo: fetch.repo.clone(),
                             aur: fetch.aur.clone(),
                             devel: fetch.devel_names.clone(),
-                        });
+                        };
+                        self.last_cache = Some(cache.clone());
+                        pakajo::updates::store(&cache);
                     } else {
                         eprintln!("[pakajo] skipping updates cache write due to degraded fetch");
                     }
@@ -300,25 +321,65 @@ impl crate::PakajoApp {
                     self.updates_aur_error = fetch.aur_error;
                     self.pending_count = count;
                     self.updates_state = UpdatesState::Idle;
-                    Task::none()
+                    self.drain_pending_force_refresh()
                 }
                 Err(msg) => {
                     eprintln!("[pakajo] updates checker failed: {msg}");
-                    self.updates_state = UpdatesState::Error(msg);
-                    Task::none()
+                    self.updates_refreshing = false;
+                    if self.has_displayable_updates() {
+                        self.updates_refresh_error = Some(msg);
+                    } else {
+                        self.updates_state = UpdatesState::Error(msg);
+                    }
+                    self.drain_pending_force_refresh()
                 }
             },
         }
     }
 
-    pub(crate) fn start_updates_check(&mut self) -> cosmic::app::Task<crate::Message> {
-        if matches!(self.updates_state, UpdatesState::Loading) {
+    fn drain_pending_force_refresh(&mut self) -> cosmic::app::Task<crate::Message> {
+        match self.pending_force_refresh.take() {
+            Some(kind) => self.start_updates_check(kind),
+            None => Task::none(),
+        }
+    }
+
+    fn has_displayable_updates(&self) -> bool {
+        self.last_cache.is_some()
+            || !self.pending_updates.repo.is_empty()
+            || !self.pending_updates.aur.is_empty()
+    }
+
+    pub(crate) fn start_updates_check(
+        &mut self,
+        kind: RefreshKind,
+    ) -> cosmic::app::Task<crate::Message> {
+        if self.updates_refreshing {
+            self.pending_force_refresh = match self.pending_force_refresh {
+                Some(existing) if existing >= kind => Some(existing),
+                _ => Some(kind),
+            };
             return Task::none();
         }
-        self.updates_state = UpdatesState::Loading;
+        self.updates_refreshing = true;
+        let now = pakajo::updates::now_unix_seconds();
+        let devel_source = match (kind, self.last_cache.as_ref()) {
+            (RefreshKind::Launch, Some(cache)) if !cache.devel_stale(now) => {
+                let age = now.saturating_sub(cache.devel_checked_at);
+                eprintln!("[pakajo] devel updates from cache (age {age}s)");
+                pakajo::upgrade::DevelSource::Cached(cache.devel.clone())
+            }
+            _ => {
+                eprintln!("[pakajo] devel updates live");
+                pakajo::upgrade::DevelSource::Live
+            }
+        };
+        if !self.has_displayable_updates() {
+            self.updates_state = UpdatesState::Loading;
+        }
         let (tx, rx) = futures::channel::oneshot::channel();
         std::thread::spawn(move || {
-            let result = pakajo::updates::pending_updates();
+            let result = pakajo::updates::pending_updates(devel_source);
             let _ = tx.send(result);
         });
         Task::perform(
