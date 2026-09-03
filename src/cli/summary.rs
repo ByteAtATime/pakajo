@@ -107,20 +107,40 @@ fn build_columns(rows: &[SummaryRow], count: usize) -> Vec<SummaryColumn> {
     columns
 }
 
-fn append_table_line(out: &mut String, cells: &[String], aligns: &[Align], widths: &[usize]) {
+fn column_widths(columns: &[SummaryColumn]) -> Vec<usize> {
+    columns
+        .iter()
+        .map(|col| {
+            let mut w = col.header.chars().count();
+            for cell in &col.cells {
+                w = w.max(cell.chars().count());
+            }
+            w
+        })
+        .collect()
+}
+
+fn append_table_line(
+    out: &mut String,
+    cells: &[String],
+    aligns: &[Align],
+    widths: &[usize],
+    bold: bool,
+    colored: bool,
+) {
     for (i, (cell, width)) in cells.iter().zip(widths.iter()).enumerate() {
         if i > 0 {
             out.push_str("  ");
         }
-        let target = *width
-            + cell
-                .chars()
-                .count()
-                .saturating_sub(color::visible_width(cell));
-        if aligns[i] == Align::Right {
-            out.push_str(&format!("{:>t$}", cell, t = target));
+        let padded = if aligns[i] == Align::Right {
+            format!("{:>t$}", cell, t = *width)
         } else {
-            out.push_str(&format!("{:<t$}", cell, t = target));
+            format!("{:<t$}", cell, t = *width)
+        };
+        if bold {
+            out.push_str(&color::paint(colored, color::BOLD, &padded));
+        } else {
+            out.push_str(&padded);
         }
     }
     out.push('\n');
@@ -132,32 +152,20 @@ pub fn render_summary(summary: &TransactionSummary, colored: bool) -> String {
     let rows = summary_rows(summary);
     let columns = build_columns(&rows, count);
 
-    let widths: Vec<usize> = columns
-        .iter()
-        .map(|col| {
-            let mut w = col.header.len();
-            for cell in &col.cells {
-                w = w.max(cell.len());
-            }
-            w
-        })
-        .collect();
+    let widths: Vec<usize> = column_widths(&columns);
 
     let num_rows = rows.len();
     let mut out = String::new();
 
     out.push('\n');
-    let header_cells: Vec<String> = columns
-        .iter()
-        .map(|c| color::paint(colored, color::BOLD, &c.header))
-        .collect();
+    let headers: Vec<String> = columns.iter().map(|c| c.header.clone()).collect();
     let header_align: Vec<Align> = columns.iter().map(|_| Align::Left).collect();
-    append_table_line(&mut out, &header_cells, &header_align, &widths);
+    append_table_line(&mut out, &headers, &header_align, &widths, true, colored);
     out.push('\n');
     let data_align: Vec<Align> = columns.iter().map(|c| c.align).collect();
     for row_idx in 0..num_rows {
         let row_cells: Vec<String> = columns.iter().map(|c| c.cells[row_idx].clone()).collect();
-        append_table_line(&mut out, &row_cells, &data_align, &widths);
+        append_table_line(&mut out, &row_cells, &data_align, &widths, false, colored);
     }
     out.push('\n');
 
@@ -421,6 +429,28 @@ mod tests {
             + "\n";
 
         let actual = render_summary(&summary, false);
+        assert_eq!(actual, expected, "rendered summary table mismatch");
+    }
+
+    #[test]
+    fn render_summary_colored_wide_name() {
+        let summary = TransactionSummary {
+            packages: vec![SummaryPackage {
+                name: "something-longpkg".to_string(),
+                repository: Some("extra".to_string()),
+                new_version: "2.0-1".to_string(),
+                old_version: Some("1.0-1".to_string()),
+                download_size: 0,
+                installed_size: 1048576,
+                old_installed_size: 786432,
+                is_removal: false,
+            }],
+            total_download_size: 0,
+            total_installed_size: 1048576,
+            total_removed_size: 786432,
+        };
+        let expected = "\n\x1b[0;1mPackage (1)            \x1b[0m  \x1b[0;1mOld Version\x1b[0m  \x1b[0;1mNew Version\x1b[0m  \x1b[0;1mNet Change\x1b[0m\n\nextra/something-longpkg  1.0-1        2.0-1          0.25 MiB\n\n\x1b[0;1mTotal Installed Size:\x1b[0m  1.00 MiB\n\x1b[0;1mNet Upgrade Size:\x1b[0m      0.25 MiB\n";
+        let actual = render_summary(&summary, true);
         assert_eq!(actual, expected, "rendered summary table mismatch");
     }
 }
