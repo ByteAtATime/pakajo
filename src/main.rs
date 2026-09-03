@@ -23,7 +23,7 @@ use background::begin_aur_sync_in_background;
 use components::detail::{DetailData, DetailMessage, detail_view};
 use components::search::{
     ListRect, SearchMessage, SearchState, SelectionScroller, results_scroller, search_bar,
-    search_status_bar,
+    search_input_id, search_status_bar,
 };
 use components::sysupgrade::SysupgradeMessage;
 use components::transaction::review::ReviewModel;
@@ -67,6 +67,7 @@ pub struct PakajoApp {
     pub(crate) sysupgrade_preview: Option<pakajo::dry_run::SysupgradePreview>,
     pub(crate) sysupgrade_preview_error: Option<String>,
     pub(crate) sysupgrade_preview_in_flight: bool,
+    initial_focus_done: bool,
     pub(crate) sysupgrade_aur_targets: Vec<String>,
     pub(crate) sysupgrade_review: Option<ReviewModel>,
     pub(crate) pkgbuild_review_index: usize,
@@ -156,6 +157,7 @@ impl Application for PakajoApp {
             sysupgrade_preview: None,
             sysupgrade_preview_error: None,
             sysupgrade_preview_in_flight: false,
+            initial_focus_done: false,
             sysupgrade_aur_targets: Vec::new(),
             sysupgrade_review: None,
             pkgbuild_review_index: 0,
@@ -166,7 +168,13 @@ impl Application for PakajoApp {
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
-        match message {
+        let focus = if self.initial_focus_done {
+            Task::none()
+        } else {
+            self.initial_focus_done = true;
+            cosmic::widget::text_input::focus(search_input_id())
+        };
+        let task = match message {
             Message::Search(m) => self.handle_search(m),
             Message::Detail(m) => self.handle_detail(m),
             Message::Transaction(m) => self.handle_transaction(m),
@@ -178,7 +186,8 @@ impl Application for PakajoApp {
                 self.refresh_installed_state();
                 Task::none()
             }
-        }
+        };
+        Task::batch([focus, task])
     }
 
     fn subscription(&self) -> cosmic::iced::Subscription<Self::Message> {

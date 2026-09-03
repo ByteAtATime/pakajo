@@ -175,8 +175,13 @@ pub fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Op
 
 pub fn search_bar(query: &str) -> cosmic::Element<'_, crate::Message> {
     search_input("Search packages", query)
+        .id(search_input_id())
         .on_input(|s| crate::Message::Search(SearchMessage::QueryChanged(s)))
         .into()
+}
+
+pub fn search_input_id() -> cosmic::iced::widget::Id {
+    cosmic::iced::widget::Id::new("search-input")
 }
 
 fn filter_pill(
