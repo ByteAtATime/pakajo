@@ -146,27 +146,42 @@ pub fn compute_aur_upgrades(
     let mut candidates = select_upgradable_candidates(installed, &sync_names, &aur_infos);
 
     let devel_updates = crate::devel::possible_devel_updates();
-    let devel_names: HashSet<String> = devel_updates.into_iter().collect();
+    let devel_names: Vec<String> = devel_updates
+        .into_iter()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    merge_devel_candidates(&mut candidates, &devel_names, |name| {
+        let pkg = handle.localdb().pkg(name).ok()?;
+        Some((pkg.version().to_string(), pkg.base().map(str::to_string)))
+    });
+
+    Ok(candidates)
+}
+
+fn merge_devel_candidates(
+    candidates: &mut Vec<AurUpgradeCandidate>,
+    devel_names: &[String],
+    lookup: impl Fn(&str) -> Option<(String, Option<String>)>,
+) {
+    let existing: HashSet<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
     let stale_devel_names: Vec<String> = devel_names
         .iter()
-        .filter(|name| !candidates.iter().any(|c| &c.name == *name))
+        .filter(|name| !existing.contains(name.as_str()))
         .cloned()
         .collect();
     for name in &stale_devel_names {
-        let pkg = match handle.localdb().pkg(name.as_str()) {
-            Ok(pkg) => pkg,
-            Err(_) => continue,
+        let Some((local_version, package_base)) = lookup(name) else {
+            continue;
         };
         candidates.push(AurUpgradeCandidate {
             name: name.clone(),
-            local_version: pkg.version().to_string(),
+            local_version,
             remote_version: "latest-commit".to_string(),
-            package_base: pkg.base().unwrap_or(name).to_string(),
+            package_base: package_base.unwrap_or_else(|| name.clone()),
         });
     }
     candidates.sort_by(|a, b| a.name.cmp(&b.name));
-
-    Ok(candidates)
 }
 
 fn repo_sysupgrade_into<S: InstallSink + 'static>(
@@ -429,6 +444,73 @@ mod tests {
             keywords: Vec::new(),
             co_maintainers: Vec::new(),
         }
+    }
+
+    fn candidate(name: &str) -> AurUpgradeCandidate {
+        AurUpgradeCandidate {
+            name: name.to_string(),
+            local_version: "1.0".to_string(),
+            remote_version: "2.0".to_string(),
+            package_base: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn merge_devel_candidates_skips_existing_names() {
+        let mut candidates = vec![candidate("foo-git")];
+        let devel_names = vec!["foo-git".to_string()];
+        merge_devel_candidates(&mut candidates, &devel_names, |_| {
+            Some(("1.5".to_string(), Some("foo-git".to_string())))
+        });
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].remote_version, "2.0");
+    }
+
+    #[test]
+    fn merge_devel_candidates_skips_missing_local_pkgs() {
+        let mut candidates = vec![candidate("aaa")];
+        let devel_names = vec!["gone-git".to_string()];
+        merge_devel_candidates(&mut candidates, &devel_names, |_| None);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "aaa");
+    }
+
+    #[test]
+    fn merge_devel_candidates_adds_latest_commit_with_base_fallback() {
+        let mut candidates = Vec::new();
+        let devel_names = vec!["baseless-git".to_string(), "based-git".to_string()];
+        let mut bases = HashMap::new();
+        bases.insert("baseless-git", None::<String>);
+        bases.insert("based-git", Some("based".to_string()));
+        merge_devel_candidates(&mut candidates, &devel_names, |name| {
+            bases
+                .get(name)
+                .map(|base| ("r100.g0".to_string(), base.clone()))
+        });
+        assert_eq!(candidates.len(), 2);
+        let by_name = |n: &str| candidates.iter().find(|c| c.name == n).unwrap();
+        let baseless = by_name("baseless-git");
+        assert_eq!(baseless.remote_version, "latest-commit");
+        assert_eq!(baseless.local_version, "r100.g0");
+        assert_eq!(baseless.package_base, "baseless-git");
+        let based = by_name("based-git");
+        assert_eq!(based.package_base, "based");
+    }
+
+    #[test]
+    fn merge_devel_candidates_sorts_final_result_by_name() {
+        let mut candidates = vec![candidate("zeta")];
+        let devel_names = vec!["alpha-git".to_string(), "mid-git".to_string()];
+        merge_devel_candidates(&mut candidates, &devel_names, |name| {
+            Some((("1.0".to_string()), Some(name.to_string())))
+        });
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha-git", "mid-git", "zeta"]
+        );
     }
 
     #[test]
