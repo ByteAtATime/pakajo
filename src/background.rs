@@ -6,6 +6,8 @@ use futures::FutureExt as _;
 use futures::SinkExt as _;
 use futures::StreamExt as _;
 
+use cosmic::iced::Subscription;
+use cosmic::iced::stream::channel;
 use pakajo::db::{AUR_SYNC_MIN_INTERVAL, PackageDb, RefreshOutcome};
 use pakajo::pacman::init_alpm;
 use pakajo::search::engine::SearchEngine;
@@ -68,9 +70,9 @@ pub fn begin_aur_sync_in_background(db: Arc<PackageDb>, search_engine: Option<Ar
 
 struct DbLockWatcher;
 
-pub(crate) fn db_lock_watcher_subscription() -> cosmic::iced::Subscription<crate::Message> {
-    cosmic::iced::Subscription::run_with(std::any::TypeId::of::<DbLockWatcher>(), |_| {
-        cosmic::iced::stream::channel(
+pub(crate) fn db_lock_watcher_subscription() -> Subscription<crate::Message> {
+    Subscription::run_with(std::any::TypeId::of::<DbLockWatcher>(), |_| {
+        channel(
             16,
             |mut tx: futures::channel::mpsc::Sender<crate::Message>| async move {
                 let (wtx, mut wrx) = futures::channel::mpsc::channel::<()>(16);

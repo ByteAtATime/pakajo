@@ -1,6 +1,7 @@
 use cosmic::app::Task;
 use cosmic::iced::core::text::Wrapping;
-use cosmic::iced::{Alignment, Background, Color, Length};
+use cosmic::iced::stream::channel;
+use cosmic::iced::{Alignment, Background, Border, Color, Length};
 use cosmic::widget::{Column, Row, Space, button, container, icon, responsive, scrollable, text};
 use futures::SinkExt as _;
 use pakajo::package::{Package, PackageSource};
@@ -123,7 +124,7 @@ fn render_group<'a>(name: &'a str, members: &'a [GroupMember]) -> Element<'a> {
                     background: Some(Background::Color(Color::from(
                         cosmic.background(false).small_widget,
                     ))),
-                    border: cosmic::iced::Border {
+                    border: Border {
                         radius: 6.0.into(),
                         ..Default::default()
                     },
@@ -360,7 +361,7 @@ fn render_opt_dependencies<'a>(pkg: &'a Package) -> Element<'a> {
                     background: Some(Background::Color(Color::from(
                         cosmic.background(false).small_widget,
                     ))),
-                    border: cosmic::iced::Border {
+                    border: Border {
                         radius: 6.0.into(),
                         ..Default::default()
                     },
@@ -391,7 +392,7 @@ fn badge_tag<'a>(label: String, color_fn: fn(&cosmic::Theme) -> Color) -> Elemen
             container::Style {
                 background: Some(Background::Color(Color { a: 0.12, ..c })),
                 text_color: Some(c),
-                border: cosmic::iced::Border {
+                border: Border {
                     radius: 4.0.into(),
                     ..Default::default()
                 },
@@ -411,7 +412,7 @@ fn secondary_tag<'a>(label: String) -> Element<'a> {
             container::Style {
                 background: Some(Background::Color(bg)),
                 text_color: Some(on),
-                border: cosmic::iced::Border {
+                border: Border {
                     radius: 4.0.into(),
                     ..Default::default()
                 },
@@ -448,7 +449,7 @@ fn card_style(theme: &cosmic::Theme) -> container::Style {
     container::Style {
         text_color: Some(on),
         background: Some(Background::Color(bg)),
-        border: cosmic::iced::Border {
+        border: Border {
             radius: 8.0.into(),
             width: 1.0,
             color: border,
@@ -483,7 +484,7 @@ impl crate::PakajoApp {
         &mut self,
         name: String,
         source: PackageSource,
-    ) -> cosmic::app::Task<crate::Message> {
+    ) -> Task<crate::Message> {
         self.detail_seq = self.detail_seq.wrapping_add(1);
         self.detail_pending = None;
         let seq = self.detail_seq;
@@ -534,7 +535,7 @@ impl crate::PakajoApp {
                 let db = self.db.clone();
                 self.detail_pending = Some(seq);
                 Task::batch([
-                    Task::stream(cosmic::iced::stream::channel(
+                    Task::stream(channel(
                         8,
                         move |mut tx: futures::channel::mpsc::Sender<
                             cosmic::Action<crate::Message>,
@@ -639,10 +640,7 @@ impl crate::PakajoApp {
         };
     }
 
-    pub(crate) fn handle_detail(
-        &mut self,
-        message: DetailMessage,
-    ) -> cosmic::app::Task<crate::Message> {
+    pub(crate) fn handle_detail(&mut self, message: DetailMessage) -> Task<crate::Message> {
         match message {
             DetailMessage::DetailReady { seq, pkg } => {
                 if seq == self.detail_seq {
@@ -668,8 +666,8 @@ impl crate::PakajoApp {
     }
 }
 
-fn show_loading_after_debounce(seq: u64) -> cosmic::app::Task<crate::Message> {
-    Task::stream(cosmic::iced::stream::channel(
+fn show_loading_after_debounce(seq: u64) -> Task<crate::Message> {
+    Task::stream(channel(
         1,
         move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
             let (fire_tx, fire_rx) = futures::channel::oneshot::channel::<()>();

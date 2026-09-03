@@ -5,11 +5,13 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use cosmic::widget::{Column, Row, container};
+use cosmic::iced::widget::{Id, scrollable};
+use cosmic::widget::{Column, Row, container, rectangle_tracker, text_input};
 use cosmic::{
     Application,
     app::{self, Core, Settings, Task},
     executor,
+    iced::{self, Event, Length, Subscription, event, keyboard},
 };
 use pakajo::aur::AurClient;
 use pakajo::cli;
@@ -34,7 +36,7 @@ use crate::components::divider::{divider, vdivider};
 
 pub type Element<'a> = cosmic::Element<'a, Message>;
 
-fn main() -> cosmic::iced::Result {
+fn main() -> iced::Result {
     let cli = cli::parse();
     cli::dispatch(cli);
     let settings = Settings::default().client_decorations(false);
@@ -214,7 +216,7 @@ impl Application for PakajoApp {
             Task::none()
         } else {
             self.initial_focus_done = true;
-            cosmic::widget::text_input::focus(search_input_id())
+            text_input::focus(search_input_id())
         };
         let task = match message {
             Message::Search(m) => self.handle_search(m),
@@ -245,28 +247,23 @@ impl Application for PakajoApp {
         Task::batch([focus, task])
     }
 
-    fn subscription(&self) -> cosmic::iced::Subscription<Self::Message> {
-        cosmic::iced::Subscription::batch([
-            cosmic::iced::event::listen_with(|event, _status, _id| match event {
-                cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
-                    key,
-                    ..
-                }) => match key {
-                    cosmic::iced::keyboard::Key::Named(
-                        cosmic::iced::keyboard::key::Named::ArrowUp,
-                    ) => Some(Message::Search(SearchMessage::SelectDelta(-1))),
-                    cosmic::iced::keyboard::Key::Named(
-                        cosmic::iced::keyboard::key::Named::ArrowDown,
-                    ) => Some(Message::Search(SearchMessage::SelectDelta(1))),
+    fn subscription(&self) -> Subscription<Self::Message> {
+        Subscription::batch([
+            event::listen_with(|event, _status, _id| match event {
+                Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) => match key {
+                    keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
+                        Some(Message::Search(SearchMessage::SelectDelta(-1)))
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
+                        Some(Message::Search(SearchMessage::SelectDelta(1)))
+                    }
                     _ => None,
                 },
                 _ => None,
             }),
             background::db_lock_watcher_subscription(),
-            cosmic::widget::rectangle_tracker::subscription::<ListRect, ListRect>(
-                ListRect::Viewport,
-            )
-            .map(|(_, update)| Message::Search(SearchMessage::Rects(update))),
+            rectangle_tracker::subscription::<ListRect, ListRect>(ListRect::Viewport)
+                .map(|(_, update)| Message::Search(SearchMessage::Rects(update))),
         ])
     }
 
@@ -275,8 +272,8 @@ impl Application for PakajoApp {
             && !t.is_checking()
         {
             return container(t.view())
-                .width(cosmic::iced::Length::Fill)
-                .height(cosmic::iced::Length::Fill)
+                .width(Length::Fill)
+                .height(Length::Fill)
                 .into();
         }
         match self.page {
@@ -488,14 +485,14 @@ pub enum Page {
     Confirm,
 }
 
-pub(crate) fn page_scroll_id() -> cosmic::iced::widget::Id {
-    cosmic::iced::widget::Id::new("page-scroll")
+pub(crate) fn page_scroll_id() -> Id {
+    Id::new("page-scroll")
 }
 
 pub(crate) fn scroll_to_top() -> Task<Message> {
-    cosmic::iced::widget::scrollable::scroll_to(
+    scrollable::scroll_to(
         page_scroll_id(),
-        cosmic::iced::widget::scrollable::AbsoluteOffset {
+        scrollable::AbsoluteOffset {
             x: Some(0.0),
             y: Some(0.0),
         },

@@ -1,5 +1,5 @@
 use cosmic::app::Task;
-use cosmic::iced::Color;
+use cosmic::iced::{Alignment, Background, Border, Color, Length};
 use cosmic::widget::{Column, Row, button, checkbox, container, radio, scrollable, space, text};
 
 use anyhow::Context as _;
@@ -45,8 +45,8 @@ fn view_to_sysupgrade_page(page: &crate::Page) -> Option<SysupgradePage> {
 
 fn no_preview() -> Element<'static> {
     container(text("No preview available"))
-        .width(cosmic::iced::Length::Fill)
-        .height(cosmic::iced::Length::Fill)
+        .width(Length::Fill)
+        .height(Length::Fill)
         .into()
 }
 
@@ -302,8 +302,8 @@ impl crate::PakajoApp {
             .push(padded_header)
             .push(scrollable(body).id(crate::page_scroll_id()));
         container(column)
-            .width(cosmic::iced::Length::Fill)
-            .height(cosmic::iced::Length::Fill)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .into()
     }
 
@@ -341,8 +341,8 @@ impl crate::PakajoApp {
             .push(padded_header)
             .push(scrollable(body).id(crate::page_scroll_id()));
         container(column)
-            .width(cosmic::iced::Length::Fill)
-            .height(cosmic::iced::Length::Fill)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .into()
     }
 
@@ -380,8 +380,8 @@ impl crate::PakajoApp {
 
         let Some(preview) = self.sysupgrade_preview.as_ref() else {
             return container(Column::new().push(padded_header).push(no_preview()))
-                .width(cosmic::iced::Length::Fill)
-                .height(cosmic::iced::Length::Fill)
+                .width(Length::Fill)
+                .height(Length::Fill)
                 .into();
         };
 
@@ -409,8 +409,8 @@ impl crate::PakajoApp {
             .push(padded_header)
             .push(scrollable(body).id(crate::page_scroll_id()));
         container(column)
-            .width(cosmic::iced::Length::Fill)
-            .height(cosmic::iced::Length::Fill)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .into()
     }
 }
@@ -421,10 +421,10 @@ fn accent_color(theme: &cosmic::Theme) -> Color {
 
 fn divider() -> Element<'static> {
     container(text(""))
-        .width(cosmic::iced::Length::Fill)
+        .width(Length::Fill)
         .height(1.0)
         .style(|theme: &cosmic::Theme| container::Style {
-            background: Some(cosmic::iced::Background::Color(Color::from(
+            background: Some(Background::Color(Color::from(
                 theme.cosmic().background(false).divider,
             ))),
             ..Default::default()
@@ -445,7 +445,7 @@ fn op_pill(label: &str, color_fn: fn(&cosmic::Theme) -> Color) -> Element<'stati
         .padding([2.0, 8.0])
         .style(move |theme: &cosmic::Theme| container::Style {
             text_color: Some(color_fn(theme)),
-            background: Some(cosmic::iced::Background::Color({
+            background: Some(Background::Color({
                 let colored = color_fn(theme);
                 Color { a: 0.10, ..colored }
             })),
@@ -481,13 +481,13 @@ fn summary_row(pkg: &SummaryPackage) -> Element<'_> {
 
     let left = text(&pkg.name);
     let right = Row::new()
-        .align_y(cosmic::iced::Alignment::Center)
+        .align_y(Alignment::Center)
         .spacing(8)
         .push(muted(version_text))
         .push(op_pill(op_label, color_fn));
     Row::new()
-        .align_y(cosmic::iced::Alignment::Center)
-        .width(cosmic::iced::Length::Fill)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
         .spacing(12)
         .push(left)
         .push(space::horizontal())
@@ -543,9 +543,7 @@ fn manifest_section(summary: &TransactionSummary) -> Element<'_> {
 
     let mut card = Column::new().spacing(10);
 
-    let mut top = Row::new()
-        .align_y(cosmic::iced::Alignment::Center)
-        .spacing(8);
+    let mut top = Row::new().align_y(Alignment::Center).spacing(8);
     top = top.push(text(counts_left).font(cosmic::font::semibold()));
     top = top.push(space::horizontal());
     if let Some(download) = download_right {
@@ -591,8 +589,8 @@ fn blocked_banner(failure: &PrepareFailure) -> Element<'static> {
             let warn = Color::from(theme.cosmic().warning.base);
             container::Style {
                 text_color: Some(warn),
-                background: Some(cosmic::iced::Background::Color(Color { a: 0.12, ..warn })),
-                border: cosmic::iced::Border {
+                background: Some(Background::Color(Color { a: 0.12, ..warn })),
+                border: Border {
                     radius: 8.0.into(),
                     width: 1.0,
                     color: warn,

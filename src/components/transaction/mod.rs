@@ -1,6 +1,7 @@
 use std::env::current_exe;
 
 use cosmic::app::Task;
+use cosmic::iced::stream::channel;
 use cosmic::widget::{Column, scrollable, text};
 use futures::{SinkExt as _, StreamExt as _, channel::oneshot};
 
@@ -74,7 +75,7 @@ fn spawn_transaction_stream(
     std::thread::spawn(move || {
         worker(raw_tx);
     });
-    Task::stream(cosmic::iced::stream::channel(
+    Task::stream(channel(
         256,
         move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
             while let Some(item) = raw_rx.next().await {

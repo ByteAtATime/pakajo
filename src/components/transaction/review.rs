@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use cosmic::iced::{Background, Color, Length};
+use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, Row, button, checkbox, container, radio, scrollable, space, text};
 use pakajo::question::{ProviderCandidate, QuestionSet};
 
@@ -131,7 +131,7 @@ pub(crate) fn unsupported_banner(summary: &str) -> Element<'static> {
         .style(|theme: &cosmic::Theme| container::Style {
             text_color: Some(Color::from(theme.cosmic().warning.on)),
             background: Some(Background::Color(Color::from(theme.cosmic().warning.base))),
-            border: cosmic::iced::Border {
+            border: Border {
                 radius: 8.0.into(),
                 width: 1.0,
                 color: Color::from(theme.cosmic().warning.base),

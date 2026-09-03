@@ -1,4 +1,5 @@
 use cosmic::app::Task;
+use cosmic::iced::{Alignment, Color, Length};
 use cosmic::widget::{Column, Row, Space, button, container, scrollable, text};
 
 use pakajo::updates::RepoUpgrade;
@@ -96,7 +97,7 @@ pub fn success<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Elemen
 pub fn colored_version_delta(old: &str, new: &str) -> Element<'static> {
     let (common, old_suffix, new_suffix) = pakajo::utils::version_diff(old, new);
     Row::new()
-        .align_y(cosmic::iced::Alignment::Center)
+        .align_y(Alignment::Center)
         .spacing(4)
         .push(
             Row::new()
@@ -111,7 +112,7 @@ pub fn colored_version_delta(old: &str, new: &str) -> Element<'static> {
 pub fn aur_version_delta<'a>(candidate: &'a AurUpgradeCandidate) -> Element<'a> {
     if candidate.remote_version == "latest-commit" {
         Row::new()
-            .align_y(cosmic::iced::Alignment::Center)
+            .align_y(Alignment::Center)
             .spacing(4)
             .push(success(&candidate.local_version))
             .push(text(" \u{2192} "))
@@ -129,26 +130,26 @@ pub fn repo_upgrade_row(r: &RepoUpgrade) -> Element<'_> {
         .push(muted(&r.repo));
     let right = Row::new()
         .spacing(8)
-        .align_y(cosmic::iced::Alignment::Center)
+        .align_y(Alignment::Center)
         .push(colored_version_delta(&r.old, &r.new))
         .push(muted(pakajo::utils::format_bytes(r.download_size)));
     Row::new()
-        .align_y(cosmic::iced::Alignment::Center)
-        .width(cosmic::iced::Length::Fill)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
         .spacing(12)
         .push(left)
-        .push(Space::new().width(cosmic::iced::Length::Fill))
+        .push(Space::new().width(Length::Fill))
         .push(right)
         .into()
 }
 
 pub fn aur_upgrade_row(c: &AurUpgradeCandidate) -> Element<'_> {
     Row::new()
-        .align_y(cosmic::iced::Alignment::Center)
-        .width(cosmic::iced::Length::Fill)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
         .spacing(12)
         .push(text(&c.name).font(cosmic::font::semibold()))
-        .push(Space::new().width(cosmic::iced::Length::Fill))
+        .push(Space::new().width(Length::Fill))
         .push(aur_version_delta(c))
         .into()
 }
@@ -211,7 +212,7 @@ impl crate::PakajoApp {
             .spacing(12)
             .push(back)
             .push(text("Updates"))
-            .push(Space::new().width(cosmic::iced::Length::Fill))
+            .push(Space::new().width(Length::Fill))
             .push(upgrade_all)
             .push(refresh);
         let padded_header = container(header).padding([12.0, 12.0]);
@@ -223,9 +224,7 @@ impl crate::PakajoApp {
                 Column::new()
                     .spacing(6)
                     .push(text("Couldn't check for updates"))
-                    .push(
-                        text(msg.clone()).class(cosmic::iced::Color::from_rgba(0.5, 0.5, 0.5, 1.0)),
-                    ),
+                    .push(text(msg.clone()).class(Color::from_rgba(0.5, 0.5, 0.5, 1.0))),
             )
             .padding([0.0, 12.0])
             .into(),
@@ -253,8 +252,8 @@ impl crate::PakajoApp {
                     body = body.push(
                         scrollable(list)
                             .id(crate::page_scroll_id())
-                            .width(cosmic::iced::Length::Fill)
-                            .height(cosmic::iced::Length::Fill),
+                            .width(Length::Fill)
+                            .height(Length::Fill),
                     );
                 }
                 body.into()
@@ -272,15 +271,12 @@ impl crate::PakajoApp {
         }
         column = column.push(body);
         container(column)
-            .width(cosmic::iced::Length::Fill)
-            .height(cosmic::iced::Length::Fill)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .into()
     }
 
-    pub(crate) fn handle_updates(
-        &mut self,
-        message: UpdatesMessage,
-    ) -> cosmic::app::Task<crate::Message> {
+    pub(crate) fn handle_updates(&mut self, message: UpdatesMessage) -> Task<crate::Message> {
         match message {
             UpdatesMessage::RefreshUpdates => self.start_updates_check(RefreshKind::Interactive),
             UpdatesMessage::Fetched(result) => match result {
@@ -339,7 +335,7 @@ impl crate::PakajoApp {
         }
     }
 
-    fn drain_pending_force_refresh(&mut self) -> cosmic::app::Task<crate::Message> {
+    fn drain_pending_force_refresh(&mut self) -> Task<crate::Message> {
         match self.pending_force_refresh.take() {
             Some(kind) => self.start_updates_check(kind),
             None => Task::none(),
@@ -352,10 +348,7 @@ impl crate::PakajoApp {
             || !self.pending_updates.aur.is_empty()
     }
 
-    pub(crate) fn start_updates_check(
-        &mut self,
-        kind: RefreshKind,
-    ) -> cosmic::app::Task<crate::Message> {
+    pub(crate) fn start_updates_check(&mut self, kind: RefreshKind) -> Task<crate::Message> {
         if self.updates_refreshing {
             self.pending_force_refresh = match self.pending_force_refresh {
                 Some(existing) if existing >= kind => Some(existing),

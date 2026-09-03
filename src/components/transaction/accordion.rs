@@ -1,4 +1,6 @@
-use cosmic::iced::{Background, Border, Color, Length, Shadow, widget::progress_bar};
+use cosmic::iced::alignment::Vertical;
+use cosmic::iced::widget::{Stack, progress_bar};
+use cosmic::iced::{Background, Border, Color, Length, Shadow};
 use cosmic::widget::{Column, Row, button, container, space, text};
 use pakajo::transaction_state::{DownloadFile, RepoStage, RepoState};
 use pakajo::utils::{format_bytes, format_eta, humanize_size};
@@ -63,7 +65,7 @@ pub(super) fn stage_row(model: &TransactionModel, i: usize, stage: RepoStage) ->
     };
 
     let body = Row::new()
-        .align_y(cosmic::iced::alignment::Vertical::Top)
+        .align_y(Vertical::Top)
         .push(gutter)
         .push(container(content).width(Length::Fill));
 
@@ -151,7 +153,7 @@ fn stage_panel_style(theme: &cosmic::Theme, state: StageState) -> container::Sty
             container::Style {
                 text_color: Some(on),
                 background: Some(Background::Color(surface_base)),
-                border: cosmic::iced::Border {
+                border: Border {
                     radius: 8.0.into(),
                     width: 2.0,
                     color: accent,
@@ -169,7 +171,7 @@ fn stage_panel_style(theme: &cosmic::Theme, state: StageState) -> container::Sty
             container::Style {
                 text_color: Some(on),
                 background: Some(Background::Color(surface_base)),
-                border: cosmic::iced::Border {
+                border: Border {
                     radius: 8.0.into(),
                     width: 2.0,
                     color: destructive,
@@ -180,7 +182,7 @@ fn stage_panel_style(theme: &cosmic::Theme, state: StageState) -> container::Sty
         StageState::Done => container::Style {
             text_color: Some(on),
             background: Some(Background::Color(surface_high)),
-            border: cosmic::iced::Border {
+            border: Border {
                 radius: 8.0.into(),
                 width: 1.0,
                 color: divider,
@@ -193,7 +195,7 @@ fn stage_panel_style(theme: &cosmic::Theme, state: StageState) -> container::Sty
                 a: 0.35,
                 ..surface_mid
             })),
-            border: cosmic::iced::Border {
+            border: Border {
                 radius: 8.0.into(),
                 width: 1.0,
                 color: Color { a: 0.4, ..divider },
@@ -245,7 +247,7 @@ fn active_card(filename: &str, file: &DownloadFile) -> Element<'static> {
         0.0
     };
     let name = text(filename.to_string()).font(cosmic::font::mono());
-    let name = cosmic::widget::container(name)
+    let name = container(name)
         .width(Length::Fill)
         .style(|t: &cosmic::Theme| container::Style {
             text_color: Some(on_color(t)),
@@ -253,11 +255,11 @@ fn active_card(filename: &str, file: &DownloadFile) -> Element<'static> {
         });
     let pct_text = tinted(text(format!("{:.0}%", pct)), accent_color);
     let top = Row::new()
-        .align_y(cosmic::iced::alignment::Vertical::Center)
+        .align_y(Vertical::Center)
         .push(name)
         .push(space::horizontal())
         .push(pct_text);
-    let bar = cosmic::iced::widget::progress_bar(0.0..=100.0, pct as f32)
+    let bar = progress_bar(0.0..=100.0, pct as f32)
         .length(Length::Fill)
         .girth(6.0);
     let eta_str = if file.total > file.downloaded && file.rate > 0.0 {
@@ -269,7 +271,7 @@ fn active_card(filename: &str, file: &DownloadFile) -> Element<'static> {
         "--:--".to_string()
     };
     let bottom = Row::new()
-        .align_y(cosmic::iced::alignment::Vertical::Center)
+        .align_y(Vertical::Center)
         .push(muted(text(format!(
             "{} / {}",
             format_bytes(file.downloaded),
@@ -294,7 +296,7 @@ fn completed_row(filename: &str, file: &DownloadFile) -> Element<'static> {
             ..Default::default()
         });
     Row::new()
-        .align_y(cosmic::iced::alignment::Vertical::Center)
+        .align_y(Vertical::Center)
         .spacing(8)
         .push(cosmic::widget::icon(crate::components::icons::circle_check()).size(14))
         .push(name_widget)
@@ -342,7 +344,7 @@ fn stream_row(filename: &str, file: &DownloadFile) -> Element<'static> {
             ..Default::default()
         });
     let foreground = Row::new()
-        .align_y(cosmic::iced::alignment::Vertical::Center)
+        .align_y(Vertical::Center)
         .padding([0.0, 12.0])
         .width(Length::Fill)
         .height(Length::Fill)
@@ -354,7 +356,7 @@ fn stream_row(filename: &str, file: &DownloadFile) -> Element<'static> {
                 ..Default::default()
             }),
         );
-    cosmic::iced::widget::Stack::new()
+    Stack::new()
         .push(background)
         .push(foreground)
         .width(Length::Fill)
@@ -390,7 +392,7 @@ fn compact_view(state: &RepoState) -> Element<'_> {
     };
 
     let top_row = Row::new()
-        .align_y(cosmic::iced::alignment::Vertical::Center)
+        .align_y(Vertical::Center)
         .push(muted(text("Overall Progress")))
         .push(space::horizontal())
         .push(tinted(text(format!("{:.0}%", pct)), accent_color));
@@ -409,7 +411,7 @@ fn compact_view(state: &RepoState) -> Element<'_> {
     };
 
     let bottom_row = Row::new()
-        .align_y(cosmic::iced::alignment::Vertical::Center)
+        .align_y(Vertical::Center)
         .push(muted(text(format!(
             "{} / {} packages",
             state.download_done, state.download_total

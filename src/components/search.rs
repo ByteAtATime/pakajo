@@ -3,10 +3,10 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use cosmic::app::Task;
-use cosmic::iced::Alignment;
-use cosmic::iced::Color;
-use cosmic::iced::Rectangle;
+use cosmic::iced::core::text::EllipsizeHeightLimit;
+use cosmic::iced::widget::Id;
 use cosmic::iced::widget::scrollable::{AbsoluteOffset, scroll_by, scroll_to};
+use cosmic::iced::{Alignment, Background, Border, Color, Length, Rectangle};
 use cosmic::widget::rectangle_tracker::{RectangleTracker, RectangleUpdate};
 use cosmic::widget::{Column, Row, button, container, scrollable, search_input, space, text};
 
@@ -62,7 +62,7 @@ impl SelectionScroller {
         match &self.tracker {
             Some(tracker) => tracker
                 .container(ListRect::Row(index), row)
-                .width(cosmic::iced::Length::Fill)
+                .width(Length::Fill)
                 .into(),
             None => row.into(),
         }
@@ -72,7 +72,7 @@ impl SelectionScroller {
         match &self.tracker {
             Some(tracker) => tracker
                 .container(ListRect::Viewport, scrollable)
-                .width(cosmic::iced::Length::Fixed(384.))
+                .width(Length::Fixed(384.))
                 .into(),
             None => scrollable.into(),
         }
@@ -82,7 +82,7 @@ impl SelectionScroller {
         &mut self,
         index: usize,
         fallback_delta: Option<i32>,
-    ) -> cosmic::app::Task<crate::Message> {
+    ) -> Task<crate::Message> {
         let Some(viewport) = self.rects.get(&ListRect::Viewport) else {
             return Task::none();
         };
@@ -173,8 +173,8 @@ pub fn search_bar(query: &str) -> Element<'_> {
         .into()
 }
 
-pub fn search_input_id() -> cosmic::iced::widget::Id {
-    cosmic::iced::widget::Id::new("search-input")
+pub fn search_input_id() -> Id {
+    Id::new("search-input")
 }
 
 fn filter_pill(label: &str, value: SearchFilter, selected: bool) -> Element<'static> {
@@ -308,12 +308,12 @@ pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool)
 
     let accent_bar = container(
         space::Space::new()
-            .width(cosmic::iced::Length::Fixed(3.0))
-            .height(cosmic::iced::Length::Fill),
+            .width(Length::Fixed(3.0))
+            .height(Length::Fill),
     )
     .class(cosmic::theme::Container::custom(
         move |theme: &cosmic::Theme| cosmic::iced::widget::container::Style {
-            background: Some(cosmic::iced::Background::Color(if is_selected {
+            background: Some(Background::Color(if is_selected {
                 Color::from(theme.cosmic().accent.base)
             } else {
                 Color::TRANSPARENT
@@ -334,14 +334,14 @@ pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool)
         .push(
             text(result.version.clone())
                 .size(13)
-                .width(cosmic::iced::Length::Fill)
+                .width(Length::Fill)
                 .wrapping(cosmic::iced::widget::text::Wrapping::None)
                 .ellipsize(cosmic::iced::widget::text::Ellipsize::End(
-                    cosmic::iced::core::text::EllipsizeHeightLimit::Lines(1),
+                    EllipsizeHeightLimit::Lines(1),
                 ))
                 .class(cosmic::theme::Text::Color(version_color)),
         )
-        .push(space::Space::new().width(cosmic::iced::Length::Fixed(8.0)))
+        .push(space::Space::new().width(Length::Fixed(8.0)))
         .push_maybe(result.installed.then(|| {
             cosmic::widget::icon(super::icons::circle_check())
                 .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
@@ -356,7 +356,7 @@ pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool)
                 .padding([2, 6])
                 .class(cosmic::theme::Container::custom(
                     move |theme: &cosmic::Theme| cosmic::iced::widget::container::Style {
-                        background: Some(cosmic::iced::Background::Color(if is_aur {
+                        background: Some(Background::Color(if is_aur {
                             Color::from(theme.cosmic().warning.base)
                         } else {
                             Color::from(theme.cosmic().background(false).component.base)
@@ -366,7 +366,7 @@ pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool)
                         } else {
                             Color::from(theme.cosmic().background(false).component.on)
                         }),
-                        border: cosmic::iced::Border::default().rounded(4.0_f32),
+                        border: Border::default().rounded(4.0_f32),
                         ..Default::default()
                     },
                 )),
@@ -375,13 +375,13 @@ pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool)
     let content = Column::new()
         .padding([12, 16])
         .spacing(4)
-        .width(cosmic::iced::Length::Fill)
+        .width(Length::Fill)
         .push(top_row)
         .push(result.description.as_ref().map(|d| {
             text(d.clone())
                 .size(13)
                 .class(cosmic::theme::Text::Custom(secondary_text))
-                .width(cosmic::iced::Length::Fill)
+                .width(Length::Fill)
         }));
 
     let inner = Row::new().push(accent_bar).push(content);
@@ -391,15 +391,12 @@ pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool)
         .selected(is_selected)
         .class(cosmic::theme::Button::ListItem([0.0; 4]))
         .padding(0)
-        .width(cosmic::iced::Length::Fill)
+        .width(Length::Fill)
         .into()
 }
 
 impl crate::PakajoApp {
-    pub(crate) fn handle_search(
-        &mut self,
-        message: SearchMessage,
-    ) -> cosmic::app::Task<crate::Message> {
+    pub(crate) fn handle_search(&mut self, message: SearchMessage) -> Task<crate::Message> {
         match message {
             SearchMessage::QueryChanged(text) => {
                 self.query = text.clone();
@@ -436,7 +433,7 @@ impl crate::PakajoApp {
                     };
                     self.search_state = SearchState::Done;
                     self.scroller.reset_offset();
-                    let mut tasks: Vec<cosmic::app::Task<crate::Message>> = Vec::new();
+                    let mut tasks: Vec<Task<crate::Message>> = Vec::new();
                     if let Some(first) = self.results.first() {
                         tasks.push(self.load_detail(first.name.clone(), first.source));
                     }
@@ -483,7 +480,7 @@ impl crate::PakajoApp {
         }
     }
 
-    fn begin_search(&mut self) -> cosmic::app::Task<crate::Message> {
+    fn begin_search(&mut self) -> Task<crate::Message> {
         self.search_state = SearchState::Searching;
         let engine = self.search_engine.clone();
         let db = self.db.clone();
