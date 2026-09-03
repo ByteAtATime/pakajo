@@ -30,7 +30,7 @@ use components::transaction::review::ReviewModel;
 use components::transaction::{Action, Transaction, TransactionMessage};
 use components::updates::{UpdatesMessage, UpdatesState};
 
-use crate::components::divider::divider;
+use crate::components::divider::{divider, vdivider};
 
 fn main() -> cosmic::iced::Result {
     let cli = cli::parse();
@@ -268,6 +268,7 @@ impl PakajoApp {
                             self.selected_index,
                             &self.scroller,
                         ))
+                        .push(vdivider())
                         .push(detail_view(
                             &self.detail,
                             checking,

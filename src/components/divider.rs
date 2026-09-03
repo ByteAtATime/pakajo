@@ -18,3 +18,18 @@ pub fn divider() -> cosmic::Element<'static, crate::Message> {
         )
         .into()
 }
+
+pub fn vdivider() -> cosmic::Element<'static, crate::Message> {
+    container(text(""))
+        .width(1.0)
+        .height(cosmic::iced::Length::Fill)
+        .style(
+            |theme: &cosmic::Theme| cosmic::iced::widget::container::Style {
+                background: Some(cosmic::iced::Background::Color(Color::from(
+                    theme.cosmic().background(false).divider,
+                ))),
+                ..Default::default()
+            },
+        )
+        .into()
+}

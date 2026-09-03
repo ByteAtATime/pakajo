@@ -269,10 +269,13 @@ pub fn results_scroller<'a>(
     selected_index: Option<usize>,
     scroller: &SelectionScroller,
 ) -> Element<'a, crate::Message> {
-    let list = container(results_list(results, selected_index, scroller)).padding([0, 4, 0, 0]);
-    let scroll = scrollable(list)
-        .scrollbar_width(4)
-        .scroller_width(4)
+    let scroll = scrollable(results_list(results, selected_index, scroller))
+        .direction(cosmic::iced::widget::scrollable::Direction::Vertical(
+            cosmic::iced::widget::scrollable::Scrollbar::new()
+                .width(4.0)
+                .scroller_width(4.0)
+                .spacing(0.0),
+        ))
         .scrollbar_padding(0)
         .width(384.)
         .id(crate::page_scroll_id())
