@@ -87,7 +87,7 @@ impl From<&alpm::Package> for Package {
             num_votes: None,
             popularity: None,
             out_of_date: None,
-            upstream_url: None,
+            upstream_url: pkg.url().map(|x| x.to_string()),
             package_base: None,
         }
     }
