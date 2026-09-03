@@ -163,7 +163,37 @@ impl Application for PakajoApp {
             pkgbuild_review_index: 0,
             active_sysupgrade_phase: None,
         };
-        let task = app.start_updates_check();
+        let task = match pakajo::updates::load_cached() {
+            Some(cache) => {
+                let now = pakajo::updates::now_unix_seconds();
+                app.pending_updates = pakajo::updates::PendingUpdates {
+                    repo: cache.repo.clone(),
+                    aur: cache.aur.clone(),
+                };
+                app.pending_count = (cache.repo.len() + cache.aur.len()) as u32;
+                app.updates_state = UpdatesState::Idle;
+                app.updates_aur_error = None;
+                let skip = !cache.repo_stale(now)
+                    && !cache.devel_stale(now)
+                    && pakajo::updates::localdb_unchanged_since(cache.checked_at);
+                if skip {
+                    eprintln!(
+                        "[pakajo] updates cache fresh (repo age {}s, devel age {}s), skipping revalidation",
+                        now.saturating_sub(cache.checked_at),
+                        now.saturating_sub(cache.devel_checked_at)
+                    );
+                    Task::none()
+                } else {
+                    eprintln!(
+                        "[pakajo] serving cached updates (repo={} aur={})",
+                        cache.repo.len(),
+                        cache.aur.len()
+                    );
+                    app.start_updates_check()
+                }
+            }
+            None => app.start_updates_check(),
+        };
         (app, task)
     }
 
