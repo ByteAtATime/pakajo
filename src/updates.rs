@@ -1,7 +1,49 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use anyhow::Context as _;
 
 use crate::pacman;
 use crate::upgrade::AurUpgradeCandidate;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UpdatesCache {
+    pub checked_at: u64,
+    pub devel_checked_at: u64,
+    pub repo: Vec<RepoUpgrade>,
+    pub aur: Vec<AurUpgradeCandidate>,
+    pub devel: Vec<String>,
+}
+
+pub fn now_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+pub fn store(cache: &UpdatesCache) {
+    match store_inner(cache) {
+        Ok(path) => eprintln!(
+            "[pakajo] updates cache written to {} (repo={} aur={} devel={})",
+            path.display(),
+            cache.repo.len(),
+            cache.aur.len(),
+            cache.devel.len()
+        ),
+        Err(e) => eprintln!("[pakajo] failed to write updates cache: {e:#}"),
+    }
+}
+
+fn store_inner(cache: &UpdatesCache) -> anyhow::Result<std::path::PathBuf> {
+    let dir = crate::build::cache_root()?;
+    std::fs::create_dir_all(&dir)?;
+    let target = dir.join("updates.json");
+    let tmp = dir.join("updates.json.tmp");
+    let bytes = serde_json::to_vec(cache).context("failed to serialize updates cache")?;
+    std::fs::write(&tmp, bytes).context("failed to write updates cache temp file")?;
+    std::fs::rename(&tmp, &target).context("failed to rename updates cache into place")?;
+    Ok(target)
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RepoUpgrade {
@@ -22,6 +64,7 @@ pub struct PendingUpdates {
 pub struct UpdatesFetch {
     pub repo: Vec<RepoUpgrade>,
     pub aur: Vec<AurUpgradeCandidate>,
+    pub devel_names: Vec<String>,
     pub aur_error: Option<String>,
 }
 
@@ -64,17 +107,19 @@ pub fn pending_updates() -> anyhow::Result<UpdatesFetch> {
     pacman::refresh_sync_dbs_rootless(&mut handle)?;
     let repo = compute_repo_upgrades(&handle, &config)?;
     let aur_client = crate::aur::AurClient::new();
-    let (aur, aur_error) = match crate::upgrade::compute_aur_upgrades(&handle, &aur_client) {
-        Ok(v) => (v, None),
-        Err(e) => {
-            let msg = format!("{e:#}");
-            eprintln!("[pakajo] aur update check failed, showing repo updates only: {msg}");
-            (Vec::new(), Some(msg))
-        }
-    };
+    let (aur, devel_names, aur_error) =
+        match crate::upgrade::compute_aur_upgrades(&handle, &aur_client) {
+            Ok((v, devel)) => (v, devel, None),
+            Err(e) => {
+                let msg = format!("{e:#}");
+                eprintln!("[pakajo] aur update check failed, showing repo updates only: {msg}");
+                (Vec::new(), Vec::new(), Some(msg))
+            }
+        };
     Ok(UpdatesFetch {
         repo,
         aur,
+        devel_names,
         aur_error,
     })
 }

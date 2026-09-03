@@ -69,7 +69,7 @@ pub fn compute_sysupgrade_preview(
 ) -> anyhow::Result<SysupgradePreview> {
     let aur_client = crate::aur::AurClient::new();
     let aur = match crate::upgrade::compute_aur_upgrades(handle, &aur_client) {
-        Ok(v) => v,
+        Ok((v, _)) => v,
         Err(e) => {
             eprintln!(
                 "[pakajo] aur upgrade check failed, sysupgrade preview shows repo only: {e:#}"

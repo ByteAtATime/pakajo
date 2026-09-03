@@ -119,7 +119,7 @@ fn select_upgradable_candidates(
 pub fn compute_aur_upgrades(
     handle: &alpm::Alpm,
     aur: &impl AurQuery,
-) -> anyhow::Result<Vec<AurUpgradeCandidate>> {
+) -> anyhow::Result<(Vec<AurUpgradeCandidate>, Vec<String>)> {
     let sync_names: HashSet<String> = handle
         .syncdbs()
         .iter()
@@ -138,7 +138,7 @@ pub fn compute_aur_upgrades(
         .filter(|name| !sync_names.contains(name))
         .collect();
     if foreign_names.is_empty() {
-        return Ok(vec![]);
+        return Ok((vec![], vec![]));
     }
     let infos = aur.info_many(&foreign_names)?;
     let aur_infos: HashMap<String, AurInfo> =
@@ -146,17 +146,18 @@ pub fn compute_aur_upgrades(
     let mut candidates = select_upgradable_candidates(installed, &sync_names, &aur_infos);
 
     let devel_updates = crate::devel::possible_devel_updates();
-    let devel_names: Vec<String> = devel_updates
+    let mut devel_names: Vec<String> = devel_updates
         .into_iter()
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
+    devel_names.sort();
     merge_devel_candidates(&mut candidates, &devel_names, |name| {
         let pkg = handle.localdb().pkg(name).ok()?;
         Some((pkg.version().to_string(), pkg.base().map(str::to_string)))
     });
 
-    Ok(candidates)
+    Ok((candidates, devel_names))
 }
 
 fn merge_devel_candidates(
@@ -519,7 +520,7 @@ mod tests {
         let config = pacmanconf::Config::new().expect("pacman config");
         let handle = crate::pacman::init_alpm(&config).expect("alpm");
         let aur = crate::aur::AurClient::new();
-        let candidates = compute_aur_upgrades(&handle, &aur).expect("rpc succeeds");
+        let candidates = compute_aur_upgrades(&handle, &aur).expect("rpc succeeds").0;
         println!("candidates: {candidates:?}");
     }
 

@@ -281,6 +281,18 @@ impl crate::PakajoApp {
                         fetch.repo.len(),
                         fetch.aur.len()
                     );
+                    if fetch.aur_error.is_none() {
+                        let now = pakajo::updates::now_unix_seconds();
+                        pakajo::updates::store(&pakajo::updates::UpdatesCache {
+                            checked_at: now,
+                            devel_checked_at: now,
+                            repo: fetch.repo.clone(),
+                            aur: fetch.aur.clone(),
+                            devel: fetch.devel_names.clone(),
+                        });
+                    } else {
+                        eprintln!("[pakajo] skipping updates cache write due to degraded fetch");
+                    }
                     self.pending_updates = pakajo::updates::PendingUpdates {
                         repo: fetch.repo,
                         aur: fetch.aur,
