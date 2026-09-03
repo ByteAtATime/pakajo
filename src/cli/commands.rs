@@ -37,19 +37,7 @@ pub fn run_gendb() -> anyhow::Result<()> {
         .first()
         .context("no architecture configured in alpm")?;
 
-    let sync_names: std::collections::HashSet<String> = handle
-        .syncdbs()
-        .iter()
-        .flat_map(|db| db.pkgs().iter())
-        .map(|p| p.name().to_string())
-        .collect();
-    let foreign: Vec<String> = handle
-        .localdb()
-        .pkgs()
-        .iter()
-        .map(|p| p.name().to_string())
-        .filter(|name| !sync_names.contains(name))
-        .collect();
+    let foreign: Vec<String> = crate::pacman::foreign_package_names(&handle);
 
     let mut devel = crate::devel::load_devel_info();
 
@@ -72,50 +60,12 @@ pub fn run_gendb() -> anyhow::Result<()> {
         }
     };
 
-    let mut base_to_names: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    for info in &infos {
-        base_to_names
-            .entry(info.package_base.clone())
-            .or_default()
-            .push(info.name.clone());
-    }
-
-    let mut recorded = 0usize;
-    for (base, names) in &base_to_names {
-        let pkg_info = match fetch_base_devel_info(base, arch) {
-            Ok(Some(p)) => p,
-            Ok(None) => continue,
-            Err(e) => {
-                eprintln!("warning: skipping {base}: {e:#}");
-                continue;
-            }
-        };
-        for name in names {
-            devel.info.insert(name.clone(), pkg_info.clone());
-        }
-        recorded += 1;
-    }
+    let recorded = crate::devel::record_devel_infos(&mut devel, &infos, arch);
 
     let path = crate::devel::state_path();
     crate::devel::save_devel_info(&devel)?;
     println!("recorded {recorded} devel package(s) to {}", path.display());
     Ok(())
-}
-
-fn fetch_base_devel_info(base: &str, arch: &str) -> anyhow::Result<Option<crate::devel::PkgInfo>> {
-    let dir = crate::build::clone_dir(base)?;
-    crate::build::git_clone_or_pull(&dir, base)?;
-    let srcinfo = if dir.join(".SRCINFO").exists() {
-        crate::srcinfo_io::read_from_dir(&dir)?
-    } else {
-        crate::srcinfo_io::generate(&dir)?
-    };
-    let pkg_info = crate::devel::fetch_devel_info(arch, &srcinfo)?;
-    if pkg_info.repos.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(pkg_info))
 }
 
 pub fn run_search(query: &str) -> anyhow::Result<()> {

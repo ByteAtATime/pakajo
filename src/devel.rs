@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Context as _;
 
+use crate::aur::AurInfo;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RepoInfo {
     pub url: String,
@@ -213,11 +215,7 @@ pub fn fetch_devel_info(arch: &str, srcinfo: &srcinfo::Srcinfo) -> anyhow::Resul
 }
 
 pub fn refresh_baseline(build_dir: &std::path::Path, arch: &str) -> anyhow::Result<()> {
-    let srcinfo = if build_dir.join(".SRCINFO").exists() {
-        crate::srcinfo_io::read_from_dir(build_dir)?
-    } else {
-        crate::srcinfo_io::generate(build_dir)?
-    };
+    let srcinfo = srcinfo_for_dir(build_dir)?;
     let pkg_info = fetch_devel_info(arch, &srcinfo)?;
     if pkg_info.repos.is_empty() {
         return Ok(());
@@ -231,6 +229,57 @@ fn merge_baseline(devel: &mut DevelInfo, srcinfo: &srcinfo::Srcinfo, pkg_info: P
     for name in srcinfo.pkgnames() {
         devel.info.insert(name.to_string(), pkg_info.clone());
     }
+}
+
+fn srcinfo_for_dir(dir: &std::path::Path) -> anyhow::Result<srcinfo::Srcinfo> {
+    if dir.join(".SRCINFO").exists() {
+        crate::srcinfo_io::read_from_dir(dir)
+    } else {
+        crate::srcinfo_io::generate(dir)
+    }
+}
+
+pub(crate) fn fetch_base_devel_info(base: &str, arch: &str) -> anyhow::Result<Option<PkgInfo>> {
+    let dir = crate::build::clone_dir(base)?;
+    crate::build::git_clone_or_pull(&dir, base)?;
+    let srcinfo = srcinfo_for_dir(&dir)?;
+    let pkg_info = fetch_devel_info(arch, &srcinfo)?;
+    if pkg_info.repos.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(pkg_info))
+}
+
+fn group_by_base(infos: &[AurInfo]) -> std::collections::HashMap<String, Vec<String>> {
+    let mut base_to_names: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for info in infos {
+        base_to_names
+            .entry(info.package_base.clone())
+            .or_default()
+            .push(info.name.clone());
+    }
+    base_to_names
+}
+
+pub(crate) fn record_devel_infos(devel: &mut DevelInfo, infos: &[AurInfo], arch: &str) -> usize {
+    let base_to_names = group_by_base(infos);
+    let mut recorded = 0usize;
+    for (base, names) in &base_to_names {
+        let pkg_info = match fetch_base_devel_info(base, arch) {
+            Ok(Some(p)) => p,
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("warning: skipping {base}: {e:#}");
+                continue;
+            }
+        };
+        for name in names {
+            devel.info.insert(name.clone(), pkg_info.clone());
+        }
+        recorded += 1;
+    }
+    recorded
 }
 
 pub fn possible_devel_updates_from(info: &DevelInfo) -> Vec<String> {
@@ -553,5 +602,55 @@ mod tests {
     #[test]
     fn import_yay_from_corrupt_json_returns_none() {
         assert!(import_yay_from(b"{ not valid").is_none());
+    }
+
+    fn test_aur_info(name: &str, base: &str) -> AurInfo {
+        AurInfo {
+            id: 0,
+            name: name.to_string(),
+            package_base_id: 0,
+            package_base: base.to_string(),
+            version: "1.0".to_string(),
+            description: None,
+            url: None,
+            num_votes: 0,
+            popularity: 0.0,
+            out_of_date: None,
+            maintainer: None,
+            first_submitted: 0,
+            last_modified: 0,
+            url_path: None,
+            submitter: None,
+            depends: Vec::new(),
+            make_depends: Vec::new(),
+            check_depends: Vec::new(),
+            opt_depends: Vec::new(),
+            conflicts: Vec::new(),
+            provides: Vec::new(),
+            replaces: Vec::new(),
+            groups: Vec::new(),
+            license: Vec::new(),
+            keywords: Vec::new(),
+            co_maintainers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn group_by_base_collapses_shared_base_in_order() {
+        let infos = vec![
+            test_aur_info("foo", "shared"),
+            test_aur_info("bar", "shared"),
+            test_aur_info("baz", "other"),
+        ];
+        let grouped = group_by_base(&infos);
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(
+            grouped.get("shared").expect("shared present"),
+            &vec!["foo".to_string(), "bar".to_string()]
+        );
+        assert_eq!(
+            grouped.get("other").expect("other present"),
+            &vec!["baz".to_string()]
+        );
     }
 }

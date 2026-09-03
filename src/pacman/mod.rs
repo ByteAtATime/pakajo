@@ -195,6 +195,22 @@ pub fn collect_group_index(handle: &Alpm) -> Vec<(String, String)> {
         .collect()
 }
 
+pub fn foreign_package_names(handle: &alpm::Alpm) -> Vec<String> {
+    let sync_names: std::collections::HashSet<String> = handle
+        .syncdbs()
+        .iter()
+        .flat_map(|db| db.pkgs().iter())
+        .map(|p| p.name().to_string())
+        .collect();
+    handle
+        .localdb()
+        .pkgs()
+        .iter()
+        .map(|p| p.name().to_string())
+        .filter(|name| !sync_names.contains(name))
+        .collect()
+}
+
 pub fn local_group<'a>(handle: &'a Alpm, name: &str) -> Option<(&'a alpm::Db, &'a alpm::Group)> {
     let db = handle.localdb();
     db.group(name).ok().map(|g| (db, g))
