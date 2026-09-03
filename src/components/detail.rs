@@ -1,4 +1,5 @@
 use cosmic::app::Task;
+use cosmic::iced::core::text::Wrapping;
 use cosmic::iced::{Alignment, Background, Color, Length};
 use cosmic::widget::{Column, Row, Space, button, container, responsive, scrollable, text};
 use futures::SinkExt as _;
@@ -389,7 +390,7 @@ fn badge_tag<'a>(
     label: String,
     color_fn: fn(&cosmic::Theme) -> Color,
 ) -> cosmic::Element<'a, crate::Message> {
-    container(text(label).size(13.0))
+    container(text(label).size(13.0).wrapping(Wrapping::None))
         .padding([4.0, 8.0])
         .style(move |theme: &cosmic::Theme| {
             let c = color_fn(theme);
