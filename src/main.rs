@@ -7,7 +7,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use cosmic::widget::{Column, Row, container};
 use cosmic::{
-    Application, Element,
+    Application,
     app::{self, Core, Settings, Task},
     executor,
 };
@@ -31,6 +31,8 @@ use components::transaction::{Action, Transaction, TransactionMessage};
 use components::updates::{RefreshKind, UpdatesMessage, UpdatesState};
 
 use crate::components::divider::{divider, vdivider};
+
+pub type Element<'a> = cosmic::Element<'a, Message>;
 
 fn main() -> cosmic::iced::Result {
     let cli = cli::parse();
@@ -268,7 +270,7 @@ impl Application for PakajoApp {
         ])
     }
 
-    fn view(&self) -> Element<'_, Self::Message> {
+    fn view(&self) -> Element<'_> {
         if let Some(t) = self.transaction.as_ref()
             && !t.is_checking()
         {
@@ -286,7 +288,7 @@ impl Application for PakajoApp {
         }
     }
 
-    fn dialog(&self) -> Option<Element<'_, Self::Message>> {
+    fn dialog(&self) -> Option<Element<'_>> {
         self.transaction.as_ref().and_then(|t| t.dialog())
     }
 
@@ -298,7 +300,7 @@ impl Application for PakajoApp {
 }
 
 impl PakajoApp {
-    fn search_page(&self) -> Element<'_, Message> {
+    fn search_page(&self) -> Element<'_> {
         let checking = self.transaction.as_ref().map(|t| t.name());
         let header = Row::new()
             .spacing(8)

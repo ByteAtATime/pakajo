@@ -4,6 +4,7 @@ use cosmic::widget::{Column, Row, Space, button, container, scrollable, text};
 use pakajo::updates::RepoUpgrade;
 use pakajo::upgrade::AurUpgradeCandidate;
 
+use crate::Element;
 use crate::components::sysupgrade::SysupgradeMessage;
 
 #[derive(Clone, Debug)]
@@ -74,31 +75,25 @@ pub fn success_text_style(theme: &cosmic::Theme) -> cosmic::iced::widget::text::
 pub fn themed_text<'a>(
     content: impl Into<std::borrow::Cow<'a, str>> + 'a,
     style_fn: fn(&cosmic::Theme) -> cosmic::iced::widget::text::Style,
-) -> cosmic::Element<'a, crate::Message> {
+) -> Element<'a> {
     text(content)
         .class(cosmic::theme::Text::Custom(style_fn))
         .into()
 }
 
-pub fn muted<'a>(
-    content: impl Into<std::borrow::Cow<'a, str>> + 'a,
-) -> cosmic::Element<'a, crate::Message> {
+pub fn muted<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
     themed_text(content, muted_text_style)
 }
 
-pub fn destructive<'a>(
-    content: impl Into<std::borrow::Cow<'a, str>> + 'a,
-) -> cosmic::Element<'a, crate::Message> {
+pub fn destructive<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
     themed_text(content, destructive_text_style)
 }
 
-pub fn success<'a>(
-    content: impl Into<std::borrow::Cow<'a, str>> + 'a,
-) -> cosmic::Element<'a, crate::Message> {
+pub fn success<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
     themed_text(content, success_text_style)
 }
 
-pub fn colored_version_delta(old: &str, new: &str) -> cosmic::Element<'static, crate::Message> {
+pub fn colored_version_delta(old: &str, new: &str) -> Element<'static> {
     let (common, old_suffix, new_suffix) = pakajo::utils::version_diff(old, new);
     Row::new()
         .align_y(cosmic::iced::Alignment::Center)
@@ -113,9 +108,7 @@ pub fn colored_version_delta(old: &str, new: &str) -> cosmic::Element<'static, c
         .into()
 }
 
-pub fn aur_version_delta<'a>(
-    candidate: &'a AurUpgradeCandidate,
-) -> cosmic::Element<'a, crate::Message> {
+pub fn aur_version_delta<'a>(candidate: &'a AurUpgradeCandidate) -> Element<'a> {
     if candidate.remote_version == "latest-commit" {
         Row::new()
             .align_y(cosmic::iced::Alignment::Center)
@@ -129,7 +122,7 @@ pub fn aur_version_delta<'a>(
     }
 }
 
-pub fn repo_upgrade_row(r: &RepoUpgrade) -> cosmic::Element<'_, crate::Message> {
+pub fn repo_upgrade_row(r: &RepoUpgrade) -> Element<'_> {
     let left = Row::new()
         .spacing(6)
         .push(text(&r.name).font(cosmic::font::semibold()))
@@ -149,7 +142,7 @@ pub fn repo_upgrade_row(r: &RepoUpgrade) -> cosmic::Element<'_, crate::Message> 
         .into()
 }
 
-pub fn aur_upgrade_row(c: &AurUpgradeCandidate) -> cosmic::Element<'_, crate::Message> {
+pub fn aur_upgrade_row(c: &AurUpgradeCandidate) -> Element<'_> {
     Row::new()
         .align_y(cosmic::iced::Alignment::Center)
         .width(cosmic::iced::Length::Fill)
@@ -160,7 +153,7 @@ pub fn aur_upgrade_row(c: &AurUpgradeCandidate) -> cosmic::Element<'_, crate::Me
         .into()
 }
 
-pub fn updates_section_header(title: &str) -> cosmic::Element<'static, crate::Message> {
+pub fn updates_section_header(title: &str) -> Element<'static> {
     Column::new()
         .spacing(4)
         .push(Space::new().height(16.0))
@@ -169,7 +162,7 @@ pub fn updates_section_header(title: &str) -> cosmic::Element<'static, crate::Me
 }
 
 impl crate::PakajoApp {
-    pub(crate) fn updates_badge(&self) -> cosmic::Element<'_, crate::Message> {
+    pub(crate) fn updates_badge(&self) -> Element<'_> {
         let (label, class) = match &self.updates_state {
             UpdatesState::Loading => ("...".to_string(), cosmic::theme::Button::Standard),
             UpdatesState::Error(_) => ("!".to_string(), cosmic::theme::Button::Destructive),
@@ -194,17 +187,16 @@ impl crate::PakajoApp {
             .into()
     }
 
-    pub(crate) fn updates_page(&self) -> cosmic::Element<'_, crate::Message> {
+    pub(crate) fn updates_page(&self) -> Element<'_> {
         let back = button::standard("Back").on_press(crate::Message::Navigate(crate::Page::Search));
-        let refresh: cosmic::Element<'_, crate::Message> = if self.updates_refreshing {
+        let refresh: Element<'_> = if self.updates_refreshing {
             text("Refreshing...").into()
         } else {
             button::standard("Refresh")
                 .on_press(crate::Message::Updates(UpdatesMessage::RefreshUpdates))
                 .into()
         };
-        let upgrade_all: cosmic::Element<'_, crate::Message> = if self.sysupgrade_preview_in_flight
-        {
+        let upgrade_all: Element<'_> = if self.sysupgrade_preview_in_flight {
             text("Checking...").into()
         } else {
             let btn = button::standard("Upgrade all");
@@ -223,7 +215,7 @@ impl crate::PakajoApp {
             .push(upgrade_all)
             .push(refresh);
         let padded_header = container(header).padding([12.0, 12.0]);
-        let body: cosmic::Element<'_, crate::Message> = match &self.updates_state {
+        let body: Element<'_> = match &self.updates_state {
             UpdatesState::Loading => container(text("Checking for updates..."))
                 .padding([0.0, 12.0])
                 .into(),
@@ -272,7 +264,7 @@ impl crate::PakajoApp {
             let now = pakajo::updates::now_unix_seconds();
             pakajo::utils::humanize_age(now.saturating_sub(c.checked_at))
         });
-        let last_checked_line: Option<cosmic::Element<'_, crate::Message>> =
+        let last_checked_line: Option<Element<'_>> =
             last_checked.map(|age| muted(format!("Last checked {age}")));
         let mut column = Column::new().push(padded_header);
         if let Some(line) = last_checked_line {

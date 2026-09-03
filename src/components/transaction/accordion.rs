@@ -5,8 +5,9 @@ use pakajo::utils::{format_bytes, format_eta, humanize_size};
 
 use super::TransactionMessage;
 use super::state::{StageState, TransactionModel};
+use crate::Element;
 
-pub(super) fn action_footer() -> cosmic::Element<'static, crate::Message> {
+pub(super) fn action_footer() -> Element<'static> {
     let divider = container(space::horizontal())
         .width(Length::Fill)
         .height(1.0)
@@ -23,17 +24,13 @@ pub(super) fn action_footer() -> cosmic::Element<'static, crate::Message> {
         .into()
 }
 
-pub(super) fn stage_row(
-    model: &TransactionModel,
-    i: usize,
-    stage: RepoStage,
-) -> cosmic::Element<'_, crate::Message> {
+pub(super) fn stage_row(model: &TransactionModel, i: usize, stage: RepoStage) -> Element<'_> {
     let state = model.stage_state(i);
     let label = stage_label(stage);
     let gutter = stage_glyph(state);
     let header = header_row(state, label);
 
-    let content: cosmic::Element<'_, crate::Message> = match state {
+    let content: Element<'_> = match state {
         StageState::Pending => header,
         StageState::Active => Column::new()
             .spacing(6)
@@ -80,7 +77,7 @@ pub(super) fn stage_row(
 const GLYPH_GUTTER_WIDTH: f32 = 18.0;
 const STREAM_ROW_HEIGHT: f32 = 36.0;
 
-fn stage_glyph(state: StageState) -> cosmic::Element<'static, crate::Message> {
+fn stage_glyph(state: StageState) -> Element<'static> {
     let glyph_text: &'static str = match state {
         StageState::Done => "✓",
         StageState::Active => "●",
@@ -98,7 +95,7 @@ fn stage_glyph(state: StageState) -> cosmic::Element<'static, crate::Message> {
         .into()
 }
 
-fn header_row(state: StageState, label: &'static str) -> cosmic::Element<'static, crate::Message> {
+fn header_row(state: StageState, label: &'static str) -> Element<'static> {
     let label_widget = match state {
         StageState::Active => text(label).font(cosmic::font::bold()).size(18.0),
         StageState::Done => text(label).font(cosmic::font::semibold()),
@@ -119,9 +116,7 @@ fn header_row(state: StageState, label: &'static str) -> cosmic::Element<'static
         .into()
 }
 
-fn muted<'a>(
-    content: impl Into<cosmic::Element<'a, crate::Message>>,
-) -> cosmic::Element<'a, crate::Message> {
+fn muted<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
     container(content)
         .style(|t: &cosmic::Theme| container::Style {
             text_color: Some(muted_color(t)),
@@ -131,9 +126,9 @@ fn muted<'a>(
 }
 
 fn tinted<'a>(
-    content: impl Into<cosmic::Element<'a, crate::Message>>,
+    content: impl Into<Element<'a>>,
     color_fn: fn(&cosmic::Theme) -> Color,
-) -> cosmic::Element<'a, crate::Message> {
+) -> Element<'a> {
     container(content.into())
         .style(move |theme: &cosmic::Theme| container::Style {
             text_color: Some(color_fn(theme)),
@@ -229,7 +224,7 @@ fn divider_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().background(false).divider)
 }
 
-fn active_view(state: &RepoState, stage: RepoStage) -> cosmic::Element<'_, crate::Message> {
+fn active_view(state: &RepoState, stage: RepoStage) -> Element<'_> {
     match stage {
         RepoStage::Download => download_view(state),
         _ => text(format!("running phase {}", stage_label(stage))).into(),
@@ -243,7 +238,7 @@ fn files_in_order(state: &RepoState) -> impl Iterator<Item = (&str, &DownloadFil
         .filter_map(|name| state.download_files.get(name).map(|f| (name.as_str(), f)))
 }
 
-fn active_card(filename: &str, file: &DownloadFile) -> cosmic::Element<'static, crate::Message> {
+fn active_card(filename: &str, file: &DownloadFile) -> Element<'static> {
     let pct = if file.total > 0 {
         (file.downloaded as f64 / file.total as f64 * 100.0).clamp(0.0, 100.0)
     } else {
@@ -291,7 +286,7 @@ fn active_card(filename: &str, file: &DownloadFile) -> cosmic::Element<'static, 
         .into()
 }
 
-fn completed_row(filename: &str, file: &DownloadFile) -> cosmic::Element<'static, crate::Message> {
+fn completed_row(filename: &str, file: &DownloadFile) -> Element<'static> {
     let name_widget = container(text(filename.to_string()).font(cosmic::font::mono()))
         .width(Length::Fill)
         .style(|t: &cosmic::Theme| container::Style {
@@ -308,7 +303,7 @@ fn completed_row(filename: &str, file: &DownloadFile) -> cosmic::Element<'static
         .into()
 }
 
-fn stream_row(filename: &str, file: &DownloadFile) -> cosmic::Element<'static, crate::Message> {
+fn stream_row(filename: &str, file: &DownloadFile) -> Element<'static> {
     let pct = if file.total > 0 {
         (file.downloaded as f64 / file.total as f64 * 100.0).clamp(0.0, 100.0)
     } else {
@@ -366,7 +361,7 @@ fn stream_row(filename: &str, file: &DownloadFile) -> cosmic::Element<'static, c
         .into()
 }
 
-fn rich_view(state: &RepoState) -> cosmic::Element<'_, crate::Message> {
+fn rich_view(state: &RepoState) -> Element<'_> {
     let mut col = Column::new().spacing(8);
     let completed: Vec<(&str, &DownloadFile)> =
         files_in_order(state).filter(|(_, f)| f.completed).collect();
@@ -385,7 +380,7 @@ fn rich_view(state: &RepoState) -> cosmic::Element<'_, crate::Message> {
     col.into()
 }
 
-fn compact_view(state: &RepoState) -> cosmic::Element<'_, crate::Message> {
+fn compact_view(state: &RepoState) -> Element<'_> {
     let total = state.download_bytes_total.max(0);
     let done = state.download_bytes_done.max(0);
     let pct = if total > 0 {
@@ -446,7 +441,7 @@ fn compact_view(state: &RepoState) -> cosmic::Element<'_, crate::Message> {
     col.into()
 }
 
-fn download_view(state: &RepoState) -> cosmic::Element<'_, crate::Message> {
+fn download_view(state: &RepoState) -> Element<'_> {
     if state.download_total < 4 {
         return rich_view(state);
     }

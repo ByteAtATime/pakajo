@@ -15,6 +15,8 @@ use pakajo::remove::run_remove_process;
 use pakajo::transaction_state::{InstallKind, SysupgradePhase};
 use pakajo::upgrade::run_sysupgrade_process;
 
+use crate::Element;
+
 mod state;
 
 pub(crate) use state::{TransactionModel, TransactionStatus};
@@ -397,7 +399,7 @@ impl Transaction {
         (Self { model }, stream)
     }
 
-    pub(crate) fn view(&self) -> cosmic::Element<'_, crate::Message> {
+    pub(crate) fn view(&self) -> Element<'_> {
         let title = match self.model.kind {
             InstallKind::Install => format!("Installing {}", self.model.name),
             InstallKind::Remove => format!("Removing {}", self.model.name),
@@ -414,7 +416,7 @@ impl Transaction {
         scrollable(col).into()
     }
 
-    pub(crate) fn dialog(&self) -> Option<cosmic::Element<'_, crate::Message>> {
+    pub(crate) fn dialog(&self) -> Option<Element<'_>> {
         if let Some(r) = self.model.review.as_ref() {
             return Some(r.view(&self.model.name));
         }

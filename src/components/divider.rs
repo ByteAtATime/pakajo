@@ -1,9 +1,10 @@
+use crate::Element;
 use cosmic::{
     iced::Color,
     widget::{container, text},
 };
 
-pub fn divider() -> cosmic::Element<'static, crate::Message> {
+pub fn divider() -> Element<'static> {
     // TODO: is this the proper way to do this?
     container(text(""))
         .width(cosmic::iced::Length::Fill)
@@ -19,7 +20,7 @@ pub fn divider() -> cosmic::Element<'static, crate::Message> {
         .into()
 }
 
-pub fn vdivider() -> cosmic::Element<'static, crate::Message> {
+pub fn vdivider() -> Element<'static> {
     container(text(""))
         .width(1.0)
         .height(cosmic::iced::Length::Fill)

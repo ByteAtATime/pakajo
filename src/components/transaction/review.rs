@@ -5,6 +5,7 @@ use cosmic::widget::{Column, Row, button, checkbox, container, radio, scrollable
 use pakajo::question::{ProviderCandidate, QuestionSet};
 
 use super::TransactionMessage;
+use crate::Element;
 
 #[derive(Clone, Debug)]
 pub enum ReviewMessage {
@@ -56,7 +57,7 @@ impl ReviewModel {
         self.update(ReviewMessage::SelectProvider { depend, idx });
     }
 
-    pub(crate) fn view(&self, name: &str) -> cosmic::Element<'_, crate::Message> {
+    pub(crate) fn view(&self, name: &str) -> Element<'_> {
         let title = format!("Review installation of {}", name);
         let mut col = Column::new().spacing(16).push(text(title));
 
@@ -123,7 +124,7 @@ pub(crate) fn candidate_label(candidate: &ProviderCandidate) -> String {
     }
 }
 
-pub(crate) fn unsupported_banner(summary: &str) -> cosmic::Element<'static, crate::Message> {
+pub(crate) fn unsupported_banner(summary: &str) -> Element<'static> {
     container(text(summary.to_string()))
         .padding([12.0, 16.0])
         .width(Length::Fill)
@@ -140,7 +141,7 @@ pub(crate) fn unsupported_banner(summary: &str) -> cosmic::Element<'static, crat
         .into()
 }
 
-fn review_footer(approving: bool) -> cosmic::Element<'static, crate::Message> {
+fn review_footer(approving: bool) -> Element<'static> {
     let cancel = button::standard("Cancel").on_press(crate::Message::Transaction(
         TransactionMessage::CancelReview,
     ));

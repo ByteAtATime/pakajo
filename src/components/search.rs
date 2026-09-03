@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use cosmic::Element;
 use cosmic::app::Task;
 use cosmic::iced::Alignment;
 use cosmic::iced::Color;
@@ -16,6 +15,7 @@ use pakajo::search::SearchFilter;
 use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
 
+use crate::Element;
 use crate::components::divider::divider;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -58,11 +58,7 @@ impl SelectionScroller {
         self.offset = 0.0;
     }
 
-    pub fn wrap_row<'a>(
-        &self,
-        index: usize,
-        row: impl Into<Element<'a, crate::Message>>,
-    ) -> Element<'a, crate::Message> {
+    pub fn wrap_row<'a>(&self, index: usize, row: impl Into<Element<'a>>) -> Element<'a> {
         match &self.tracker {
             Some(tracker) => tracker
                 .container(ListRect::Row(index), row)
@@ -72,10 +68,7 @@ impl SelectionScroller {
         }
     }
 
-    pub fn wrap_viewport<'a>(
-        &self,
-        scrollable: impl Into<Element<'a, crate::Message>>,
-    ) -> Element<'a, crate::Message> {
+    pub fn wrap_viewport<'a>(&self, scrollable: impl Into<Element<'a>>) -> Element<'a> {
         match &self.tracker {
             Some(tracker) => tracker
                 .container(ListRect::Viewport, scrollable)
@@ -173,7 +166,7 @@ pub fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Op
     }
 }
 
-pub fn search_bar(query: &str) -> cosmic::Element<'_, crate::Message> {
+pub fn search_bar(query: &str) -> Element<'_> {
     search_input("Search packages", query)
         .id(search_input_id())
         .on_input(|s| crate::Message::Search(SearchMessage::QueryChanged(s)))
@@ -184,11 +177,7 @@ pub fn search_input_id() -> cosmic::iced::widget::Id {
     cosmic::iced::widget::Id::new("search-input")
 }
 
-fn filter_pill(
-    label: &str,
-    value: SearchFilter,
-    selected: bool,
-) -> cosmic::Element<'static, crate::Message> {
+fn filter_pill(label: &str, value: SearchFilter, selected: bool) -> Element<'static> {
     let mut pill = button::custom(text(label.to_string()).size(13))
         .on_press(crate::Message::Search(SearchMessage::FilterChanged(value)))
         .padding([2, 8]);
@@ -205,7 +194,7 @@ pub fn search_status_bar<'a>(
     count: usize,
     filter: SearchFilter,
     query: &'a str,
-) -> cosmic::Element<'a, crate::Message> {
+) -> Element<'a> {
     let header_text = if state == SearchState::Searching {
         "Searching...".to_string()
     } else if query.trim().is_empty() {
@@ -250,7 +239,7 @@ fn results_list<'a>(
     results: &'a [SearchResult],
     selected_index: Option<usize>,
     scroller: &SelectionScroller,
-) -> Element<'a, crate::Message> {
+) -> Element<'a> {
     let mut list = Column::new();
     for (index, result) in results.iter().enumerate() {
         let is_selected = selected_index == Some(index);
@@ -268,7 +257,7 @@ pub fn results_scroller<'a>(
     results: &'a [SearchResult],
     selected_index: Option<usize>,
     scroller: &SelectionScroller,
-) -> Element<'a, crate::Message> {
+) -> Element<'a> {
     let scroll = scrollable(results_list(results, selected_index, scroller))
         .direction(cosmic::iced::widget::scrollable::Direction::Vertical(
             cosmic::iced::widget::scrollable::Scrollbar::new()
@@ -301,11 +290,7 @@ fn secondary_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
     }
 }
 
-pub fn search_result_row(
-    result: &SearchResult,
-    index: usize,
-    is_selected: bool,
-) -> cosmic::Element<'_, crate::Message> {
+pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool) -> Element<'_> {
     let app_theme = cosmic::theme::active();
     let repo = result.repo.as_deref().unwrap_or("aur");
     let is_aur = result.repo.is_none();

@@ -8,6 +8,7 @@ use pakajo::events::{SummaryPackage, TransactionSummary};
 use pakajo::question::{collect_approvals, default_approve, encode_approvals};
 use pakajo::transaction_state::{Direction, SysupgradePage, next_sysupgrade_step};
 
+use crate::Element;
 use crate::components::transaction::Transaction;
 use crate::components::transaction::review::{ReviewModel, candidate_label, unsupported_banner};
 use crate::components::updates::{aur_upgrade_row, muted};
@@ -42,7 +43,7 @@ fn view_to_sysupgrade_page(page: &crate::Page) -> Option<SysupgradePage> {
     }
 }
 
-fn no_preview() -> cosmic::Element<'static, crate::Message> {
+fn no_preview() -> Element<'static> {
     container(text("No preview available"))
         .width(cosmic::iced::Length::Fill)
         .height(cosmic::iced::Length::Fill)
@@ -244,7 +245,7 @@ impl crate::PakajoApp {
         self.goto_page(sysupgrade_page_to_view(next))
     }
 
-    pub(crate) fn resolve_page(&self) -> cosmic::Element<'_, crate::Message> {
+    pub(crate) fn resolve_page(&self) -> Element<'_> {
         let back =
             button::standard("Back").on_press(crate::Message::Sysupgrade(SysupgradeMessage::Back));
         let continue_btn = button::standard("Continue")
@@ -306,7 +307,7 @@ impl crate::PakajoApp {
             .into()
     }
 
-    pub(crate) fn pkgbuild_review_page(&self) -> cosmic::Element<'_, crate::Message> {
+    pub(crate) fn pkgbuild_review_page(&self) -> Element<'_> {
         let back =
             button::standard("Back").on_press(crate::Message::Sysupgrade(SysupgradeMessage::Back));
         let continue_btn = button::standard("Continue")
@@ -345,7 +346,7 @@ impl crate::PakajoApp {
             .into()
     }
 
-    pub(crate) fn confirm_page(&self) -> cosmic::Element<'_, crate::Message> {
+    pub(crate) fn confirm_page(&self) -> Element<'_> {
         let back =
             button::standard("Back").on_press(crate::Message::Sysupgrade(SysupgradeMessage::Back));
 
@@ -418,7 +419,7 @@ fn accent_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().accent.base)
 }
 
-fn divider() -> cosmic::Element<'static, crate::Message> {
+fn divider() -> Element<'static> {
     container(text(""))
         .width(cosmic::iced::Length::Fill)
         .height(1.0)
@@ -439,10 +440,7 @@ fn destructive_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().destructive.base)
 }
 
-fn op_pill(
-    label: &str,
-    color_fn: fn(&cosmic::Theme) -> Color,
-) -> cosmic::Element<'static, crate::Message> {
+fn op_pill(label: &str, color_fn: fn(&cosmic::Theme) -> Color) -> Element<'static> {
     container(text(label.to_string()))
         .padding([2.0, 8.0])
         .style(move |theme: &cosmic::Theme| container::Style {
@@ -456,7 +454,7 @@ fn op_pill(
         .into()
 }
 
-fn summary_row(pkg: &SummaryPackage) -> cosmic::Element<'_, crate::Message> {
+fn summary_row(pkg: &SummaryPackage) -> Element<'_> {
     let (op_label, color_fn, version_text) = if pkg.is_removal {
         (
             "Remove",
@@ -497,7 +495,7 @@ fn summary_row(pkg: &SummaryPackage) -> cosmic::Element<'_, crate::Message> {
         .into()
 }
 
-fn manifest_section(summary: &TransactionSummary) -> cosmic::Element<'_, crate::Message> {
+fn manifest_section(summary: &TransactionSummary) -> Element<'_> {
     let mut installs = 0u32;
     let mut upgrades = 0u32;
     let mut removes = 0u32;
@@ -574,7 +572,7 @@ fn manifest_section(summary: &TransactionSummary) -> cosmic::Element<'_, crate::
     card.into()
 }
 
-fn blocked_banner(failure: &PrepareFailure) -> cosmic::Element<'static, crate::Message> {
+fn blocked_banner(failure: &PrepareFailure) -> Element<'static> {
     let mut col = Column::new().spacing(6);
     col = col.push(text("Cannot complete this upgrade").font(cosmic::font::semibold()));
     match failure {

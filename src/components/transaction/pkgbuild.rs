@@ -4,6 +4,7 @@ use cosmic::widget::{Column, Row, button, container, scrollable, space, text};
 use pakajo::pkgbuild::PkgbuildDiff;
 
 use super::TransactionMessage;
+use crate::Element;
 
 #[derive(Clone, Debug)]
 pub enum PkgbuildMessage {
@@ -30,7 +31,7 @@ impl PkgbuildModel {
         }
     }
 
-    pub(crate) fn view(&self) -> cosmic::Element<'_, crate::Message> {
+    pub(crate) fn view(&self) -> Element<'_> {
         let mut tabs = Row::new().spacing(4);
         for (i, diff) in self.diffs.iter().enumerate() {
             let label = if diff.is_new {
@@ -71,11 +72,11 @@ enum DiffTone {
     Removed,
 }
 
-pub(crate) fn diff_lines_column(diff: &PkgbuildDiff) -> cosmic::Element<'_, crate::Message> {
+pub(crate) fn diff_lines_column(diff: &PkgbuildDiff) -> Element<'_> {
     let mut lines = Column::new().spacing(0);
     for line in diff.diff.lines() {
         let line_widget = text(line.to_string()).font(cosmic::font::mono());
-        let element: cosmic::Element<'_, crate::Message> = match diff_tone(line) {
+        let element: Element<'_> = match diff_tone(line) {
             Some(tone) => container(line_widget)
                 .style(move |theme: &cosmic::Theme| tone_style(theme, tone))
                 .into(),
@@ -115,7 +116,7 @@ fn muted_color(theme: &cosmic::Theme) -> Color {
     Color { a: 0.5, ..on }
 }
 
-fn pkgbuild_footer(current: usize, len: usize) -> cosmic::Element<'static, crate::Message> {
+fn pkgbuild_footer(current: usize, len: usize) -> Element<'static> {
     let cancel = button::standard("Cancel").on_press(crate::Message::Transaction(
         TransactionMessage::CancelPkgbuild,
     ));

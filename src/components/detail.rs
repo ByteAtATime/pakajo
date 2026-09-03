@@ -8,6 +8,7 @@ use pakajo::pacman::{find_groups, find_pkg};
 use pakajo::utils::format_bytes;
 use std::time::Duration;
 
+use crate::Element;
 use crate::components::icons;
 use crate::components::transaction::TransactionMessage;
 
@@ -63,8 +64,8 @@ pub fn detail_view<'a>(
     detail: &'a DetailData,
     checking: Option<&'a str>,
     pending: bool,
-) -> cosmic::Element<'a, crate::Message> {
-    let content: cosmic::Element<'a, crate::Message> = match detail {
+) -> Element<'a> {
+    let content: Element<'a> = match detail {
         DetailData::None => container(muted("Select a package"))
             .width(Length::Fill)
             .height(Length::Fill)
@@ -94,10 +95,7 @@ pub fn detail_view<'a>(
         .into()
 }
 
-fn render_group<'a>(
-    name: &'a str,
-    members: &'a [GroupMember],
-) -> cosmic::Element<'a, crate::Message> {
+fn render_group<'a>(name: &'a str, members: &'a [GroupMember]) -> Element<'a> {
     let mut col = Column::new()
         .spacing(12)
         .push(text(name.to_string()).font(cosmic::font::bold()).size(22.0))
@@ -144,7 +142,7 @@ fn render_package<'a>(
     installed: bool,
     checking: Option<&'a str>,
     pending: bool,
-) -> cosmic::Element<'a, crate::Message> {
+) -> Element<'a> {
     let header = render_header(pkg, installed, checking, pending);
     let details = render_details(pkg);
     let dependencies = render_dependencies(pkg);
@@ -168,7 +166,7 @@ fn render_header<'a>(
     installed: bool,
     checking: Option<&'a str>,
     pending: bool,
-) -> cosmic::Element<'a, crate::Message> {
+) -> Element<'a> {
     let formatted_name = if let Some(repo) = pkg.repo.as_ref() {
         format!("{repo}/{}", pkg.name)
     } else {
@@ -226,7 +224,7 @@ fn render_header<'a>(
     col.into()
 }
 
-fn render_info_bar<'a>(pkg: &'a Package) -> cosmic::Element<'a, crate::Message> {
+fn render_info_bar<'a>(pkg: &'a Package) -> Element<'a> {
     let mut info_row = Row::new().spacing(16).align_y(Alignment::Center);
 
     if !pkg.licenses.is_empty() {
@@ -266,7 +264,7 @@ fn render_info_bar<'a>(pkg: &'a Package) -> cosmic::Element<'a, crate::Message> 
         .into()
 }
 
-fn render_details<'a>(pkg: &'a Package) -> cosmic::Element<'a, crate::Message> {
+fn render_details<'a>(pkg: &'a Package) -> Element<'a> {
     responsive(move |size| {
         let provides_col = render_badge_section(
             format!("Provides ({})", pkg.provides.len()),
@@ -302,7 +300,7 @@ fn render_badge_section<'a>(
     title: String,
     items: &'a [String],
     color_fn: fn(&cosmic::Theme) -> Color,
-) -> cosmic::Element<'a, crate::Message> {
+) -> Element<'a> {
     let mut col = Column::new().spacing(8).push(section_header(title));
 
     if items.is_empty() {
@@ -318,7 +316,7 @@ fn render_badge_section<'a>(
     col.into()
 }
 
-fn render_dependencies<'a>(pkg: &'a Package) -> cosmic::Element<'a, crate::Message> {
+fn render_dependencies<'a>(pkg: &'a Package) -> Element<'a> {
     let mut col = Column::new().spacing(8).push(section_header(format!(
         "Dependencies ({})",
         pkg.dependencies.len()
@@ -337,7 +335,7 @@ fn render_dependencies<'a>(pkg: &'a Package) -> cosmic::Element<'a, crate::Messa
     col.into()
 }
 
-fn render_opt_dependencies<'a>(pkg: &'a Package) -> cosmic::Element<'a, crate::Message> {
+fn render_opt_dependencies<'a>(pkg: &'a Package) -> Element<'a> {
     let col = Column::new().spacing(8).push(section_header(format!(
         "Optional Dependencies ({})",
         pkg.opt_dependencies.len()
@@ -376,10 +374,7 @@ fn render_opt_dependencies<'a>(pkg: &'a Package) -> cosmic::Element<'a, crate::M
     col.push(list).into()
 }
 
-fn info_item<'a>(
-    icon: cosmic::Element<'a, crate::Message>,
-    label: String,
-) -> cosmic::Element<'a, crate::Message> {
+fn info_item<'a>(icon: Element<'a>, label: String) -> Element<'a> {
     Row::new()
         .spacing(6)
         .align_y(Alignment::Center)
@@ -388,10 +383,7 @@ fn info_item<'a>(
         .into()
 }
 
-fn badge_tag<'a>(
-    label: String,
-    color_fn: fn(&cosmic::Theme) -> Color,
-) -> cosmic::Element<'a, crate::Message> {
+fn badge_tag<'a>(label: String, color_fn: fn(&cosmic::Theme) -> Color) -> Element<'a> {
     container(text(label).size(13.0).wrapping(Wrapping::None))
         .padding([4.0, 8.0])
         .style(move |theme: &cosmic::Theme| {
@@ -409,7 +401,7 @@ fn badge_tag<'a>(
         .into()
 }
 
-fn secondary_tag<'a>(label: String) -> cosmic::Element<'a, crate::Message> {
+fn secondary_tag<'a>(label: String) -> Element<'a> {
     container(text(label).size(13.0))
         .padding([4.0, 8.0])
         .style(|theme: &cosmic::Theme| {
@@ -429,7 +421,7 @@ fn secondary_tag<'a>(label: String) -> cosmic::Element<'a, crate::Message> {
         .into()
 }
 
-fn section_header<'a>(title: String) -> cosmic::Element<'a, crate::Message> {
+fn section_header<'a>(title: String) -> Element<'a> {
     Column::new()
         .spacing(4)
         .push(text(title).font(cosmic::font::semibold()).size(14.0))
@@ -437,7 +429,7 @@ fn section_header<'a>(title: String) -> cosmic::Element<'a, crate::Message> {
         .into()
 }
 
-fn divider<'a>() -> cosmic::Element<'a, crate::Message> {
+fn divider<'a>() -> Element<'a> {
     container(Space::new().width(Length::Fill).height(Length::Fixed(1.0)))
         .style(|theme: &cosmic::Theme| container::Style {
             background: Some(Background::Color(Color::from(
@@ -465,9 +457,7 @@ fn card_style(theme: &cosmic::Theme) -> container::Style {
     }
 }
 
-fn muted<'a>(
-    content: impl Into<std::borrow::Cow<'a, str>> + 'a,
-) -> cosmic::Element<'a, crate::Message> {
+fn muted<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
     text(content)
         .class(cosmic::theme::Text::Custom(|theme| {
             let mut on = Color::from(theme.cosmic().background(false).on);
