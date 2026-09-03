@@ -224,7 +224,12 @@ impl Application for PakajoApp {
             Message::DbLockReleased => {
                 eprintln!("[pakajo] db.lck released, refreshing installed state");
                 self.refresh_installed_state();
-                Task::none()
+                if self.transaction.is_none() {
+                    eprintln!("[pakajo] db.lck released, forcing updates recheck");
+                    self.start_updates_check(RefreshKind::ExternalChange)
+                } else {
+                    Task::none()
+                }
             }
         };
         Task::batch([focus, task])
