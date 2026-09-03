@@ -1,7 +1,7 @@
 use cosmic::app::Task;
 use cosmic::iced::core::text::Wrapping;
 use cosmic::iced::{Alignment, Background, Color, Length};
-use cosmic::widget::{Column, Row, Space, button, container, responsive, scrollable, text};
+use cosmic::widget::{Column, Row, Space, button, container, icon, responsive, scrollable, text};
 use futures::SinkExt as _;
 use pakajo::package::{Package, PackageSource};
 use pakajo::pacman::{find_groups, find_pkg};
@@ -200,15 +200,9 @@ fn render_header<'a>(
 
     if let Some(url) = &pkg.upstream_url {
         actions = actions.push(
-            button::custom(
-                Row::new()
-                    .spacing(6)
-                    .align_y(Alignment::Center)
-                    .push(text("Upstream"))
-                    .push(icons::external_link().width(16).height(16)),
-            )
-            .class(cosmic::theme::Button::Standard)
-            .on_press(crate::Message::OpenUrl(url.clone())),
+            button::standard("Upstream")
+                .trailing_icon(icons::external_link())
+                .on_press(crate::Message::OpenUrl(url.clone())),
         );
     }
 
@@ -237,28 +231,22 @@ fn render_info_bar<'a>(pkg: &'a Package) -> cosmic::Element<'a, crate::Message> 
 
     if !pkg.licenses.is_empty() {
         info_row = info_row.push(info_item(
-            icons::scale().width(16).height(16).into(),
+            icon(icons::scale()).size(16).into(),
             pkg.licenses.join(", "),
         ));
     }
 
     if let Some(maintainer) = pkg.maintainer_name() {
-        info_row = info_row.push(info_item(
-            icons::user().width(16).height(16).into(),
-            maintainer,
-        ));
+        info_row = info_row.push(info_item(icon(icons::user()).size(16).into(), maintainer));
     }
 
     if let Some(arch) = &pkg.architecture {
-        info_row = info_row.push(info_item(
-            icons::cpu().width(16).height(16).into(),
-            arch.clone(),
-        ));
+        info_row = info_row.push(info_item(icon(icons::cpu()).size(16).into(), arch.clone()));
     }
 
     if let Some((votes, popularity)) = pkg.num_votes.zip(pkg.popularity) {
         info_row = info_row.push(info_item(
-            icons::star().width(16).height(16).into(),
+            icon(icons::star()).size(16).into(),
             format!("+{votes} ({popularity:.2})"),
         ));
     }
@@ -266,7 +254,7 @@ fn render_info_bar<'a>(pkg: &'a Package) -> cosmic::Element<'a, crate::Message> 
     if let Some((download, installed)) = pkg.download_size.zip(pkg.installed_size) {
         let size_str = format!("{} / {}", format_bytes(download), format_bytes(installed));
         info_row = info_row.push(info_item(
-            icons::hard_drive().width(16).height(16).into(),
+            icon(icons::hard_drive()).size(16).into(),
             size_str,
         ));
     }

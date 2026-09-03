@@ -1,18 +1,16 @@
 #![allow(dead_code)]
 
-use cosmic::Theme;
-use cosmic::widget::{Svg, svg};
+use cosmic::widget::{icon, svg};
 
 macro_rules! icon {
     ($name:ident, $file:literal) => {
-        pub fn $name<'a>() -> Svg<'a, Theme> {
+        pub fn $name() -> icon::Handle {
             const BYTES: &[u8] =
                 include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons/", $file));
-            svg(svg::Handle::from_memory(BYTES)).class(cosmic::theme::Svg::Custom(
-                std::rc::Rc::new(|theme: &cosmic::Theme| svg::Style {
-                    color: Some(theme.cosmic().background(false).on.into()),
-                }),
-            ))
+            icon::Handle {
+                symbolic: true,
+                data: icon::Data::Svg(svg::Handle::from_memory(BYTES)),
+            }
         }
     };
 }

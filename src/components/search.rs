@@ -358,13 +358,13 @@ pub fn search_result_row(
         )
         .push(space::Space::new().width(cosmic::iced::Length::Fixed(8.0)))
         .push_maybe(result.installed.then(|| {
-            super::icons::circle_check()
+            cosmic::widget::icon(super::icons::circle_check())
                 .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
                     |theme: &cosmic::Theme| cosmic::widget::svg::Style {
                         color: Some(theme.cosmic().success.base.into()),
                     },
                 )))
-                .width(16)
+                .size(16)
         }))
         .push(
             container(text(repo.to_string()).size(12))
