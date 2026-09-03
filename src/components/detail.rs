@@ -310,7 +310,7 @@ fn render_badge_section<'a>(
         for item in items {
             row = row.push(badge_tag(item.clone(), color_fn));
         }
-        col = col.push(row);
+        col = col.push(row.wrap());
     }
 
     col.into()
