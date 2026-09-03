@@ -169,69 +169,54 @@ pub fn render_summary(summary: &TransactionSummary, colored: bool) -> String {
     }
     out.push('\n');
 
-    append_footer(&mut out, summary, colored);
+    out.push_str(&render_footer(&footer_rows(summary), colored));
 
     out
 }
 
-fn append_footer(out: &mut String, summary: &TransactionSummary, colored: bool) {
+fn footer_rows(summary: &TransactionSummary) -> Vec<(String, String)> {
     let dlsize = summary.total_download_size;
     let isize = summary.total_installed_size;
     let rsize = summary.total_removed_size;
-
     let mut rows: Vec<(String, String)> = Vec::new();
     if dlsize > 0 {
-        rows.push((
-            color::paint(colored, color::BOLD, "Total Download Size:"),
-            format_mib(dlsize),
-        ));
+        rows.push(("Total Download Size:".to_string(), format_mib(dlsize)));
     }
     if isize > 0 {
-        rows.push((
-            color::paint(colored, color::BOLD, "Total Installed Size:"),
-            format_mib(isize),
-        ));
+        rows.push(("Total Installed Size:".to_string(), format_mib(isize)));
     }
     if rsize > 0 && isize == 0 {
-        rows.push((
-            color::paint(colored, color::BOLD, "Total Removed Size:"),
-            format_mib(rsize),
-        ));
+        rows.push(("Total Removed Size:".to_string(), format_mib(rsize)));
     }
     if isize > 0 && rsize > 0 {
-        rows.push((
-            color::paint(colored, color::BOLD, "Net Upgrade Size:"),
-            format_mib(isize - rsize),
-        ));
+        rows.push(("Net Upgrade Size:".to_string(), format_mib(isize - rsize)));
     }
-    if rows.is_empty() {
-        return;
-    }
+    rows
+}
 
+fn render_footer(rows: &[(String, String)], colored: bool) -> String {
+    if rows.is_empty() {
+        return String::new();
+    }
     let lw = rows
         .iter()
-        .map(|(label, _)| color::visible_width(label))
+        .map(|(label, _)| label.chars().count())
         .max()
         .unwrap_or(0);
     let vw = rows
         .iter()
-        .map(|(_, value)| color::visible_width(value))
+        .map(|(_, value)| value.chars().count())
         .max()
         .unwrap_or(0);
-    for (label, value) in &rows {
-        let lwt = lw
-            + label
-                .chars()
-                .count()
-                .saturating_sub(color::visible_width(label));
-        out.push_str(&format!(
-            "{:<lwt$}  {:>vw$}\n",
-            label,
-            value,
-            lwt = lwt,
-            vw = vw
-        ));
+    let mut out = String::new();
+    for (label, value) in rows {
+        let padded_label = format!("{:<lw$}", label, lw = lw);
+        out.push_str(&color::paint(colored, color::BOLD, &padded_label));
+        out.push_str("  ");
+        out.push_str(&format!("{:>vw$}", value, vw = vw));
+        out.push('\n');
     }
+    out
 }
 
 #[cfg(test)]
@@ -449,8 +434,85 @@ mod tests {
             total_installed_size: 1048576,
             total_removed_size: 786432,
         };
-        let expected = "\n\x1b[0;1mPackage (1)            \x1b[0m  \x1b[0;1mOld Version\x1b[0m  \x1b[0;1mNew Version\x1b[0m  \x1b[0;1mNet Change\x1b[0m\n\nextra/something-longpkg  1.0-1        2.0-1          0.25 MiB\n\n\x1b[0;1mTotal Installed Size:\x1b[0m  1.00 MiB\n\x1b[0;1mNet Upgrade Size:\x1b[0m      0.25 MiB\n";
+        let expected = "\n\x1b[0;1mPackage (1)            \x1b[0m  \x1b[0;1mOld Version\x1b[0m  \x1b[0;1mNew Version\x1b[0m  \x1b[0;1mNet Change\x1b[0m\n\nextra/something-longpkg  1.0-1        2.0-1          0.25 MiB\n\n\x1b[0;1mTotal Installed Size:\x1b[0m  1.00 MiB\n\x1b[0;1mNet Upgrade Size:    \x1b[0m  0.25 MiB\n";
         let actual = render_summary(&summary, true);
         assert_eq!(actual, expected, "rendered summary table mismatch");
+    }
+
+    #[test]
+    fn render_summary_colored_footer_pad_then_paint() {
+        let summary = TransactionSummary {
+            packages: vec![SummaryPackage {
+                name: "foo".to_string(),
+                repository: Some("extra".to_string()),
+                new_version: "2.0-1".to_string(),
+                old_version: None,
+                download_size: 524288,
+                installed_size: 1048576,
+                old_installed_size: 0,
+                is_removal: false,
+            }],
+            total_download_size: 524288,
+            total_installed_size: 1048576,
+            total_removed_size: 0,
+        };
+        let expected = "\n\x1b[0;1mPackage (1)\x1b[0m  \x1b[0;1mNew Version\x1b[0m  \x1b[0;1mNet Change\x1b[0m  \x1b[0;1mDownload Size\x1b[0m\n\nextra/foo    2.0-1          1.00 MiB       0.50 MiB\n\n\x1b[0;1mTotal Download Size: \x1b[0m  0.50 MiB\n\x1b[0;1mTotal Installed Size:\x1b[0m  1.00 MiB\n";
+        let actual = render_summary(&summary, true);
+        assert_eq!(actual, expected, "rendered summary table mismatch");
+    }
+
+    #[test]
+    fn render_summary_removed_only_footer() {
+        let summary = TransactionSummary {
+            packages: vec![SummaryPackage {
+                name: "old".to_string(),
+                repository: None,
+                new_version: String::new(),
+                old_version: Some("1.0-1".to_string()),
+                download_size: 0,
+                installed_size: 241591,
+                old_installed_size: 0,
+                is_removal: true,
+            }],
+            total_download_size: 0,
+            total_installed_size: 0,
+            total_removed_size: 241591,
+        };
+        let expected = [
+            "",
+            "Package (1)  Old Version  Net Change",
+            "",
+            "old          1.0-1         -0.23 MiB",
+            "",
+            "Total Removed Size:  0.23 MiB",
+        ]
+        .join("\n")
+            + "\n";
+        let actual = render_summary(&summary, false);
+        assert_eq!(actual, expected, "rendered summary table mismatch");
+    }
+
+    #[test]
+    fn render_summary_empty_footer() {
+        let summary = TransactionSummary {
+            packages: vec![SummaryPackage {
+                name: "old".to_string(),
+                repository: None,
+                new_version: String::new(),
+                old_version: Some("1.0-1".to_string()),
+                download_size: 0,
+                installed_size: 0,
+                old_installed_size: 0,
+                is_removal: true,
+            }],
+            total_download_size: 0,
+            total_installed_size: 0,
+            total_removed_size: 0,
+        };
+        let actual = render_summary(&summary, false);
+        assert!(
+            !actual.lines().any(|line| line.starts_with("Total")),
+            "expected no footer lines, got:\n{actual}"
+        );
     }
 }
