@@ -269,7 +269,17 @@ impl crate::PakajoApp {
                 body.into()
             }
         };
-        let column = Column::new().push(padded_header).push(body);
+        let last_checked: Option<String> = self.last_cache.as_ref().map(|c| {
+            let now = pakajo::updates::now_unix_seconds();
+            pakajo::utils::humanize_age(now.saturating_sub(c.checked_at))
+        });
+        let last_checked_line: Option<cosmic::Element<'_, crate::Message>> =
+            last_checked.map(|age| muted(format!("Last checked {age}")));
+        let mut column = Column::new().push(padded_header);
+        if let Some(line) = last_checked_line {
+            column = column.push(line);
+        }
+        column = column.push(body);
         container(column)
             .width(cosmic::iced::Length::Fill)
             .height(cosmic::iced::Length::Fill)

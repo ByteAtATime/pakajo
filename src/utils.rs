@@ -76,6 +76,16 @@ pub fn format_eta(seconds: u64) -> String {
     }
 }
 
+pub fn humanize_age(secs: u64) -> String {
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{} min ago", secs / 60)
+    } else {
+        format!("{} h ago", secs / 3600)
+    }
+}
+
 pub fn version_diff(old: &str, new: &str) -> (String, String, String) {
     let mut split = old.len().min(new.len());
     for ((oi, oc), (_, nc)) in old.char_indices().zip(new.char_indices()) {
@@ -142,6 +152,16 @@ mod tests {
         assert_eq!(format_rate(10.0), "10.0");
         assert_eq!(format_rate(99.9), "99.9");
         assert_eq!(format_rate(100.0), " 100");
+    }
+
+    #[test]
+    fn humanize_age_boundaries() {
+        assert_eq!(humanize_age(0), "just now");
+        assert_eq!(humanize_age(59), "just now");
+        assert_eq!(humanize_age(60), "1 min ago");
+        assert_eq!(humanize_age(3540), "59 min ago");
+        assert_eq!(humanize_age(3600), "1 h ago");
+        assert_eq!(humanize_age(86400), "24 h ago");
     }
 
     #[test]
