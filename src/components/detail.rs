@@ -189,15 +189,11 @@ fn render_header<'a>(
 
     let busy = pending || checking == Some(pkg.name.as_str());
     let action = if busy {
-        button::custom(text("Loading..."))
+        button::standard("Loading...")
     } else if installed {
-        button::custom(text(label))
-            .class(cosmic::theme::Button::Destructive)
-            .on_press(intent)
+        button::destructive(label).on_press(intent)
     } else {
-        button::custom(text(label))
-            .class(cosmic::theme::Button::Suggested)
-            .on_press(intent)
+        button::suggested(label).on_press(intent)
     };
 
     let mut actions = Row::new().spacing(8).align_y(Alignment::Center);

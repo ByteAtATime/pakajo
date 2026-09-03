@@ -188,19 +188,18 @@ impl crate::PakajoApp {
             }
         };
 
-        button::custom(text(label))
+        button::standard(label)
             .on_press(crate::Message::Navigate(crate::Page::Updates))
             .class(class)
             .into()
     }
 
     pub(crate) fn updates_page(&self) -> cosmic::Element<'_, crate::Message> {
-        let back =
-            button::custom(text("Back")).on_press(crate::Message::Navigate(crate::Page::Search));
+        let back = button::standard("Back").on_press(crate::Message::Navigate(crate::Page::Search));
         let refresh: cosmic::Element<'_, crate::Message> = if self.updates_refreshing {
             text("Refreshing...").into()
         } else {
-            button::custom(text("Refresh"))
+            button::standard("Refresh")
                 .on_press(crate::Message::Updates(UpdatesMessage::RefreshUpdates))
                 .into()
         };
@@ -208,7 +207,7 @@ impl crate::PakajoApp {
         {
             text("Checking...").into()
         } else {
-            let btn = button::custom(text("Upgrade all"));
+            let btn = button::standard("Upgrade all");
             let btn = if self.pending_count > 0 {
                 btn.on_press(crate::Message::Sysupgrade(SysupgradeMessage::StartPreview))
             } else {

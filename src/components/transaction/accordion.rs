@@ -14,8 +14,8 @@ pub(super) fn action_footer() -> cosmic::Element<'static, crate::Message> {
             background: Some(Background::Color(divider_color(t))),
             ..Default::default()
         });
-    let close = button::custom(text("Close"))
-        .on_press(crate::Message::Transaction(TransactionMessage::Close));
+    let close =
+        button::standard("Close").on_press(crate::Message::Transaction(TransactionMessage::Close));
     Column::new()
         .spacing(12)
         .push(divider)

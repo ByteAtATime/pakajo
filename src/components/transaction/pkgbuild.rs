@@ -38,7 +38,7 @@ impl PkgbuildModel {
             } else {
                 diff.name.clone()
             };
-            let item = button::custom(text(label)).on_press(crate::Message::Transaction(
+            let item = button::standard(label).on_press(crate::Message::Transaction(
                 TransactionMessage::Pkgbuild(PkgbuildMessage::SelectTab(i)),
             ));
             tabs = tabs.push(item);
@@ -116,15 +116,15 @@ fn muted_color(theme: &cosmic::Theme) -> Color {
 }
 
 fn pkgbuild_footer(current: usize, len: usize) -> cosmic::Element<'static, crate::Message> {
-    let cancel = button::custom(text("Cancel")).on_press(crate::Message::Transaction(
+    let cancel = button::standard("Cancel").on_press(crate::Message::Transaction(
         TransactionMessage::CancelPkgbuild,
     ));
     let right = if current + 1 < len {
-        button::custom(text("Next")).on_press(crate::Message::Transaction(
+        button::standard("Next").on_press(crate::Message::Transaction(
             TransactionMessage::Pkgbuild(PkgbuildMessage::SelectTab(current + 1)),
         ))
     } else {
-        button::custom(text("Accept")).on_press(crate::Message::Transaction(
+        button::standard("Accept").on_press(crate::Message::Transaction(
             TransactionMessage::ApprovePkgbuild,
         ))
     };

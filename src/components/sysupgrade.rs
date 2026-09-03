@@ -245,9 +245,9 @@ impl crate::PakajoApp {
     }
 
     pub(crate) fn resolve_page(&self) -> cosmic::Element<'_, crate::Message> {
-        let back = button::custom(text("Back"))
-            .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Back));
-        let continue_btn = button::custom(text("Continue"))
+        let back =
+            button::standard("Back").on_press(crate::Message::Sysupgrade(SysupgradeMessage::Back));
+        let continue_btn = button::standard("Continue")
             .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Continue));
         let header = Row::new()
             .spacing(12)
@@ -307,9 +307,9 @@ impl crate::PakajoApp {
     }
 
     pub(crate) fn pkgbuild_review_page(&self) -> cosmic::Element<'_, crate::Message> {
-        let back = button::custom(text("Back"))
-            .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Back));
-        let continue_btn = button::custom(text("Continue"))
+        let back =
+            button::standard("Back").on_press(crate::Message::Sysupgrade(SysupgradeMessage::Back));
+        let continue_btn = button::standard("Continue")
             .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Continue));
         let header = Row::new()
             .spacing(12)
@@ -346,8 +346,8 @@ impl crate::PakajoApp {
     }
 
     pub(crate) fn confirm_page(&self) -> cosmic::Element<'_, crate::Message> {
-        let back = button::custom(text("Back"))
-            .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Back));
+        let back =
+            button::standard("Back").on_press(crate::Message::Sysupgrade(SysupgradeMessage::Back));
 
         let apply_disabled = match self.sysupgrade_preview.as_ref() {
             Some(preview) => {
@@ -363,10 +363,9 @@ impl crate::PakajoApp {
             None => true,
         };
         let apply = if apply_disabled {
-            button::custom(text("Apply")).class(cosmic::theme::Button::Suggested)
+            button::suggested("Apply")
         } else {
-            button::custom(text("Apply"))
-                .class(cosmic::theme::Button::Suggested)
+            button::suggested("Apply")
                 .on_press(crate::Message::Sysupgrade(SysupgradeMessage::Apply))
         };
 

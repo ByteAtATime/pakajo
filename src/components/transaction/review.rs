@@ -141,13 +141,13 @@ pub(crate) fn unsupported_banner(summary: &str) -> cosmic::Element<'static, crat
 }
 
 fn review_footer(approving: bool) -> cosmic::Element<'static, crate::Message> {
-    let cancel = button::custom(text("Cancel")).on_press(crate::Message::Transaction(
+    let cancel = button::standard("Cancel").on_press(crate::Message::Transaction(
         TransactionMessage::CancelReview,
     ));
     let confirm = if approving {
-        button::custom(text("Loading..."))
+        button::standard("Loading...")
     } else {
-        button::custom(text("Confirm")).on_press(crate::Message::Transaction(
+        button::standard("Confirm").on_press(crate::Message::Transaction(
             TransactionMessage::ApproveReview,
         ))
     };
