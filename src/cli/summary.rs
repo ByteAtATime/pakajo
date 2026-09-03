@@ -12,13 +12,102 @@ pub fn print_summary(summary: &TransactionSummary) {
     print!("{}", render_summary(summary, color::stdout_color()));
 }
 
+struct SummaryRow {
+    name: String,
+    old_version: String,
+    new_version: String,
+    net_bytes: i64,
+    download_bytes: i64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Align {
+    Left,
+    Right,
+}
+
 struct SummaryColumn {
     header: String,
-    right_align_data: bool,
+    align: Align,
     cells: Vec<String>,
 }
 
-fn append_table_line(out: &mut String, cells: &[String], right_align: &[bool], widths: &[usize]) {
+fn summary_rows(summary: &TransactionSummary) -> Vec<SummaryRow> {
+    let mut ordered: Vec<&SummaryPackage> = summary.packages.iter().collect();
+    ordered.sort_by_key(|p| (!p.is_removal, p.name.clone()));
+    ordered
+        .iter()
+        .map(|p| {
+            let name = match &p.repository {
+                Some(repo) => format!("{repo}/{}", p.name),
+                None => p.name.clone(),
+            };
+            let net_bytes = if p.is_removal {
+                -p.installed_size
+            } else {
+                p.installed_size - p.old_installed_size
+            };
+            SummaryRow {
+                name,
+                old_version: p.old_version.clone().unwrap_or_default(),
+                new_version: p.new_version.clone(),
+                net_bytes,
+                download_bytes: p.download_size,
+            }
+        })
+        .collect()
+}
+
+fn build_columns(rows: &[SummaryRow], count: usize) -> Vec<SummaryColumn> {
+    let has_old = rows.iter().any(|r| !r.old_version.is_empty());
+    let has_new = rows.iter().any(|r| !r.new_version.is_empty());
+    let has_dl = rows.iter().any(|r| r.download_bytes > 0);
+
+    let mut columns: Vec<SummaryColumn> = Vec::new();
+    columns.push(SummaryColumn {
+        header: format!("Package ({count})"),
+        align: Align::Left,
+        cells: rows.iter().map(|r| r.name.clone()).collect(),
+    });
+    if has_old {
+        columns.push(SummaryColumn {
+            header: "Old Version".to_string(),
+            align: Align::Left,
+            cells: rows.iter().map(|r| r.old_version.clone()).collect(),
+        });
+    }
+    if has_new {
+        columns.push(SummaryColumn {
+            header: "New Version".to_string(),
+            align: Align::Left,
+            cells: rows.iter().map(|r| r.new_version.clone()).collect(),
+        });
+    }
+    columns.push(SummaryColumn {
+        header: "Net Change".to_string(),
+        align: Align::Right,
+        cells: rows.iter().map(|r| format_mib(r.net_bytes)).collect(),
+    });
+    if has_dl {
+        columns.push(SummaryColumn {
+            header: "Download Size".to_string(),
+            align: Align::Right,
+            cells: rows
+                .iter()
+                .map(|r| {
+                    if r.download_bytes > 0 {
+                        format_mib(r.download_bytes)
+                    } else {
+                        String::new()
+                    }
+                })
+                .collect(),
+        });
+    }
+    columns
+}
+
+fn append_table_line(out: &mut String, cells: &[String], aligns: &[Align], widths: &[usize]) {
     for (i, (cell, width)) in cells.iter().zip(widths.iter()).enumerate() {
         if i > 0 {
             out.push_str("  ");
@@ -28,7 +117,7 @@ fn append_table_line(out: &mut String, cells: &[String], right_align: &[bool], w
                 .chars()
                 .count()
                 .saturating_sub(color::visible_width(cell));
-        if right_align[i] {
+        if aligns[i] == Align::Right {
             out.push_str(&format!("{:>t$}", cell, t = target));
         } else {
             out.push_str(&format!("{:<t$}", cell, t = target));
@@ -40,68 +129,8 @@ fn append_table_line(out: &mut String, cells: &[String], right_align: &[bool], w
 pub fn render_summary(summary: &TransactionSummary, colored: bool) -> String {
     let count = summary.packages.len();
 
-    let mut ordered: Vec<&SummaryPackage> = summary.packages.iter().collect();
-    ordered.sort_by_key(|p| (!p.is_removal, p.name.clone()));
-
-    let rows: Vec<(String, String, String, String, String)> = ordered
-        .iter()
-        .map(|p| {
-            let net = if p.is_removal {
-                -p.installed_size
-            } else {
-                p.installed_size - p.old_installed_size
-            };
-            let dl = if p.download_size > 0 {
-                format_mib(p.download_size)
-            } else {
-                String::new()
-            };
-            (
-                formatted_name(p),
-                p.old_version.clone().unwrap_or_default(),
-                p.new_version.clone(),
-                format_mib(net),
-                dl,
-            )
-        })
-        .collect();
-
-    let has_old = rows.iter().any(|(_, old, _, _, _)| !old.is_empty());
-    let has_new = rows.iter().any(|(_, _, new, _, _)| !new.is_empty());
-    let has_dl = rows.iter().any(|(_, _, _, _, dl)| !dl.is_empty());
-
-    let mut columns: Vec<SummaryColumn> = Vec::new();
-    columns.push(SummaryColumn {
-        header: format!("Package ({count})"),
-        right_align_data: false,
-        cells: rows.iter().map(|(name, _, _, _, _)| name.clone()).collect(),
-    });
-    if has_old {
-        columns.push(SummaryColumn {
-            header: "Old Version".to_string(),
-            right_align_data: false,
-            cells: rows.iter().map(|(_, old, _, _, _)| old.clone()).collect(),
-        });
-    }
-    if has_new {
-        columns.push(SummaryColumn {
-            header: "New Version".to_string(),
-            right_align_data: false,
-            cells: rows.iter().map(|(_, _, new, _, _)| new.clone()).collect(),
-        });
-    }
-    columns.push(SummaryColumn {
-        header: "Net Change".to_string(),
-        right_align_data: true,
-        cells: rows.iter().map(|(_, _, _, net, _)| net.clone()).collect(),
-    });
-    if has_dl {
-        columns.push(SummaryColumn {
-            header: "Download Size".to_string(),
-            right_align_data: true,
-            cells: rows.iter().map(|(_, _, _, _, dl)| dl.clone()).collect(),
-        });
-    }
+    let rows = summary_rows(summary);
+    let columns = build_columns(&rows, count);
 
     let widths: Vec<usize> = columns
         .iter()
@@ -122,10 +151,10 @@ pub fn render_summary(summary: &TransactionSummary, colored: bool) -> String {
         .iter()
         .map(|c| color::paint(colored, color::BOLD, &c.header))
         .collect();
-    let header_align: Vec<bool> = columns.iter().map(|_| false).collect();
+    let header_align: Vec<Align> = columns.iter().map(|_| Align::Left).collect();
     append_table_line(&mut out, &header_cells, &header_align, &widths);
     out.push('\n');
-    let data_align: Vec<bool> = columns.iter().map(|c| c.right_align_data).collect();
+    let data_align: Vec<Align> = columns.iter().map(|c| c.align).collect();
     for row_idx in 0..num_rows {
         let row_cells: Vec<String> = columns.iter().map(|c| c.cells[row_idx].clone()).collect();
         append_table_line(&mut out, &row_cells, &data_align, &widths);
@@ -197,17 +226,84 @@ fn append_footer(out: &mut String, summary: &TransactionSummary, colored: bool) 
     }
 }
 
-fn formatted_name(pkg: &SummaryPackage) -> String {
-    match &pkg.repository {
-        Some(repo) => format!("{repo}/{}", pkg.name),
-        None => pkg.name.clone(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::render_summary;
+    use super::{render_summary, summary_rows};
     use crate::events::{SummaryPackage, TransactionSummary};
+
+    fn install_package(name: &str, installed_size: i64, old_installed_size: i64) -> SummaryPackage {
+        SummaryPackage {
+            name: name.to_string(),
+            repository: Some("extra".to_string()),
+            new_version: "2.0-1".to_string(),
+            old_version: Some("1.0-1".to_string()),
+            download_size: 0,
+            installed_size,
+            old_installed_size,
+            is_removal: false,
+        }
+    }
+
+    #[test]
+    fn summary_rows_net_bytes_for_removal() {
+        let summary = TransactionSummary {
+            packages: vec![SummaryPackage {
+                name: "old".to_string(),
+                repository: None,
+                new_version: String::new(),
+                old_version: Some("1.0-1".to_string()),
+                download_size: 0,
+                installed_size: 241591,
+                old_installed_size: 0,
+                is_removal: true,
+            }],
+            total_download_size: 0,
+            total_installed_size: 0,
+            total_removed_size: 241591,
+        };
+        let rows = summary_rows(&summary);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].net_bytes, -241591);
+    }
+
+    #[test]
+    fn summary_rows_net_bytes_for_upgrade() {
+        let summary = TransactionSummary {
+            packages: vec![install_package("foo", 1048576, 786432)],
+            total_download_size: 0,
+            total_installed_size: 1048576,
+            total_removed_size: 786432,
+        };
+        let rows = summary_rows(&summary);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].net_bytes, 1048576 - 786432);
+    }
+
+    #[test]
+    fn summary_rows_ordering_removals_first_then_alphabetical() {
+        let summary = TransactionSummary {
+            packages: vec![
+                install_package("zeta", 100, 0),
+                SummaryPackage {
+                    name: "gone".to_string(),
+                    repository: None,
+                    new_version: String::new(),
+                    old_version: Some("1.0-1".to_string()),
+                    download_size: 0,
+                    installed_size: 50,
+                    old_installed_size: 0,
+                    is_removal: true,
+                },
+                install_package("alpha", 100, 0),
+            ],
+            total_download_size: 0,
+            total_installed_size: 200,
+            total_removed_size: 50,
+        };
+        let rows = summary_rows(&summary);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["gone", "extra/alpha", "extra/zeta"]);
+    }
 
     #[test]
     fn render_summary_matches_pacman_cava_case() {
@@ -286,6 +382,40 @@ mod tests {
             "",
             "Total Installed Size:  1.00 MiB",
             "Net Upgrade Size:      0.25 MiB",
+        ]
+        .join("\n")
+            + "\n";
+
+        let actual = render_summary(&summary, false);
+        assert_eq!(actual, expected, "rendered summary table mismatch");
+    }
+
+    #[test]
+    fn render_summary_with_download_size_column() {
+        let summary = TransactionSummary {
+            packages: vec![SummaryPackage {
+                name: "foo".to_string(),
+                repository: Some("extra".to_string()),
+                new_version: "2.0-1".to_string(),
+                old_version: None,
+                download_size: 524288,
+                installed_size: 1048576,
+                old_installed_size: 0,
+                is_removal: false,
+            }],
+            total_download_size: 524288,
+            total_installed_size: 1048576,
+            total_removed_size: 0,
+        };
+
+        let expected = [
+            "",
+            "Package (1)  New Version  Net Change  Download Size",
+            "",
+            "extra/foo    2.0-1          1.00 MiB       0.50 MiB",
+            "",
+            "Total Download Size:   0.50 MiB",
+            "Total Installed Size:  1.00 MiB",
         ]
         .join("\n")
             + "\n";
