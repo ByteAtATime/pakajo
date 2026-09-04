@@ -94,6 +94,15 @@ pub fn render(pkg: &Package, stdout_color: bool) -> String {
     if let Some(rendered) = section(section_title(installed), &package_rows(pkg), stdout_color) {
         out.push_str(&rendered);
     }
+    if let PackageKind::Repo(data) = &pkg.kind
+        && let Some(rendered) = section(
+            &format!("Dependencies ({})", pkg.dependencies.len()),
+            &dependency_rows(pkg, data),
+            stdout_color,
+        )
+    {
+        out.push_str(&rendered);
+    }
     out
 }
 
@@ -136,6 +145,10 @@ fn header(pkg: &Package, origin: &str, installed: bool, stdout_color: bool) -> S
     )
 }
 
+fn push_row(rows: &mut Vec<(String, String)>, label: &str, value: String) {
+    rows.push((label.to_string(), value));
+}
+
 fn package_rows(pkg: &Package) -> Vec<(String, String)> {
     let mut rows: Vec<(String, String)> = Vec::new();
     if let Some(row) = installed_row(pkg) {
@@ -146,38 +159,63 @@ fn package_rows(pkg: &Package) -> Vec<(String, String)> {
             Some(overlay) => overlay.script,
             None => data.script,
         };
-        rows.push((
-            "Install Script".to_string(),
-            if script {
-                "Yes".to_string()
-            } else {
-                "No".to_string()
-            },
-        ));
-        rows.push((
-            "Size".to_string(),
+        push_row(&mut rows, "Install Script", yes_no(script));
+        push_row(
+            &mut rows,
+            "Size",
             format!(
                 "{} (download), {} (installed)",
                 humanized(data.download_size),
                 humanized(data.installed_size),
             ),
-        ));
+        );
         if let Some(epoch) = data.build_date {
-            rows.push(("Build Date".to_string(), format_date(epoch)));
+            push_row(&mut rows, "Build Date", format_date(epoch));
         }
         if !data.validated_by.is_empty() {
-            rows.push(("Validated By".to_string(), data.validated_by.clone()));
+            push_row(&mut rows, "Validated By", data.validated_by.clone());
         }
     }
-    rows.push((
-        "Packager".to_string(),
+    push_row(
+        &mut rows,
+        "Packager",
         pkg.maintainer.clone().unwrap_or_default(),
-    ));
-    rows.push(("License".to_string(), pkg.licenses.join(", ")));
-    rows.push(("Groups".to_string(), pkg.groups.join(", ")));
-    rows.push(("Provides".to_string(), pkg.provides.join(", ")));
-    rows.push(("Conflicts".to_string(), pkg.conflicts.join(", ")));
-    rows.push(("Replaces".to_string(), pkg.replaces.join(", ")));
+    );
+    push_row(&mut rows, "License", pkg.licenses.join(", "));
+    push_row(&mut rows, "Groups", pkg.groups.join(", "));
+    push_row(&mut rows, "Provides", pkg.provides.join(", "));
+    push_row(&mut rows, "Conflicts", pkg.conflicts.join(", "));
+    push_row(&mut rows, "Replaces", pkg.replaces.join(", "));
+    rows
+}
+
+fn yes_no(value: bool) -> String {
+    if value {
+        "Yes".to_string()
+    } else {
+        "No".to_string()
+    }
+}
+
+fn required_value(dependencies: &[String]) -> String {
+    if dependencies.is_empty() {
+        return String::new();
+    }
+    if dependencies.len() <= 6 {
+        return dependencies.join("  ");
+    }
+    format!(
+        "{}  ... (+{} more)",
+        dependencies[..6].join("  "),
+        dependencies.len() - 6
+    )
+}
+
+fn dependency_rows(pkg: &Package, data: &crate::package::RepoData) -> Vec<(String, String)> {
+    let mut rows: Vec<(String, String)> = Vec::new();
+    push_row(&mut rows, "Required", required_value(&pkg.dependencies));
+    push_row(&mut rows, "Required By", data.required_by.join(", "));
+    push_row(&mut rows, "Optional For", data.optional_for.join(", "));
     rows
 }
 
@@ -230,7 +268,11 @@ mod tests {
                 "hyprland-legacy-bin".to_string(),
             ],
             replaces: vec!["hyprland-nvidia".to_string()],
-            dependencies: vec![],
+            dependencies: vec![
+                "cairo".to_string(),
+                "glibc".to_string(),
+                "libdrm".to_string(),
+            ],
             opt_dependencies: vec![],
             upstream_url: Some("https://github.com/hyprwm/Hyprland".to_string()),
             installed: None,
@@ -242,6 +284,8 @@ mod tests {
                 build_date: None,
                 validated_by: String::new(),
                 script: false,
+                required_by: vec!["grimblast-git".to_string(), "hyprpaper".to_string()],
+                optional_for: vec!["xdg-desktop-portal-hyprland".to_string()],
             }),
         }
     }
@@ -269,6 +313,8 @@ mod tests {
                 build_date: None,
                 validated_by: String::new(),
                 script: false,
+                required_by: Vec::new(),
+                optional_for: Vec::new(),
             }),
         }
     }
@@ -286,7 +332,11 @@ mod tests {
             \x20   Groups          hyprland-git-meta, wayland-compositors\n\
             \x20   Provides        wayland-compositor\n\
             \x20   Conflicts       hyprland-git, hyprland-legacy-bin\n\
-            \x20   Replaces        hyprland-nvidia";
+            \x20   Replaces        hyprland-nvidia\n\
+            \n  Dependencies (3)\n\
+            \x20   Required        cairo  glibc  libdrm\n\
+            \x20   Required By     grimblast-git, hyprpaper\n\
+            \x20   Optional For    xdg-desktop-portal-hyprland";
         assert_eq!(render(&full_package(), false), expected);
     }
 
@@ -355,7 +405,11 @@ mod tests {
             \x20   Groups          hyprland-git-meta, wayland-compositors\n\
             \x20   Provides        wayland-compositor\n\
             \x20   Conflicts       hyprland-git, hyprland-legacy-bin\n\
-            \x20   Replaces        hyprland-nvidia",
+            \x20   Replaces        hyprland-nvidia\n\
+            \n  Dependencies (3)\n\
+            \x20   Required        cairo  glibc  libdrm\n\
+            \x20   Required By     grimblast-git, hyprpaper\n\
+            \x20   Optional For    xdg-desktop-portal-hyprland",
             format_date(1786406400),
         );
         assert_eq!(render(&pkg, false), expected);
@@ -420,5 +474,41 @@ mod tests {
             .expect("Installed row must render");
         assert!(line.starts_with("    Installed      "));
         assert!(line.contains("(installed as a dependency)"));
+    }
+
+    #[test]
+    fn render_dependencies_truncated_past_six() {
+        let mut pkg = full_package();
+        pkg.dependencies = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+            "f".to_string(),
+            "g".to_string(),
+            "h".to_string(),
+        ];
+        let rendered = render(&pkg, false);
+        assert!(rendered.contains("\n  Dependencies (8)"));
+        assert!(rendered.contains("Required        a  b  c  d  e  f  ... (+2 more)"));
+    }
+
+    #[test]
+    fn render_dependencies_omitted_when_empty() {
+        let rendered = render(&minimal_package(), false);
+        assert!(!rendered.contains("Dependencies"));
+    }
+
+    #[test]
+    fn render_dependencies_zero_count_with_reverse_deps() {
+        let mut pkg = minimal_package();
+        if let PackageKind::Repo(data) = &mut pkg.kind {
+            data.required_by = vec!["some-meta".to_string()];
+        }
+        let rendered = render(&pkg, false);
+        assert!(rendered.contains("\n  Dependencies (0)"));
+        assert!(rendered.contains("Required By     some-meta"));
+        assert!(!rendered.contains("Required        "));
     }
 }

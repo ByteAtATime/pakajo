@@ -54,6 +54,8 @@ pub struct RepoData {
     pub build_date: Option<i64>,
     pub validated_by: String,
     pub script: bool,
+    pub required_by: Vec<String>,
+    pub optional_for: Vec<String>,
 }
 
 impl RepoData {
@@ -155,7 +157,7 @@ impl From<&alpm::Package> for Package {
                 .iter()
                 .map(|x| x.name().to_string())
                 .collect(),
-            dependencies: pkg.depends().iter().map(|x| x.to_string()).collect(),
+            dependencies: pkg.depends().iter().map(|x| x.name().to_string()).collect(),
             opt_dependencies: pkg
                 .optdepends()
                 .iter()
@@ -171,6 +173,8 @@ impl From<&alpm::Package> for Package {
                 build_date: (build_date > 0).then_some(build_date),
                 validated_by: validated_by_label(pkg.validation()),
                 script: pkg.has_scriptlet(),
+                required_by: pkg.required_by().iter().map(|x| x.to_string()).collect(),
+                optional_for: pkg.optional_for().iter().map(|x| x.to_string()).collect(),
             }),
         }
     }
