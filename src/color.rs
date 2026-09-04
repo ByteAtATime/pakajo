@@ -23,11 +23,11 @@ pub const GRAY: &str = "\x1b[90m";
 pub const RESET: &str = "\x1b[0m";
 
 pub fn stdout_color() -> bool {
-    std::io::stdout().is_terminal()
+    std::io::stdout().is_terminal() && !std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
 }
 
 pub fn stderr_color() -> bool {
-    std::io::stderr().is_terminal()
+    std::io::stderr().is_terminal() && !std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
 }
 
 pub fn paint(enabled: bool, code: &str, s: &str) -> String {
