@@ -77,7 +77,7 @@ pub fn run(targets: Vec<String>) -> ! {
             missed.push(target.clone());
             continue;
         };
-        enrich(pkg, &localdb, &installed);
+        enrich(pkg, localdb, &installed);
         rendered.push(render(pkg, stdout_color))
     }
     if !rendered.is_empty() {
