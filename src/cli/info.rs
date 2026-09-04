@@ -1,5 +1,5 @@
 use crate::color;
-use crate::package::{Package, PackageKind};
+use crate::package::{InstalledData, Package, PackageKind};
 
 const NAME: &str = "\x1b[1;37m";
 const VERSION: &str = "\x1b[1;36m";
@@ -15,7 +15,18 @@ pub fn run(targets: Vec<String>) -> ! {
     let mut missed: Vec<String> = Vec::new();
     for target in &targets {
         match crate::package::find(&handle, target) {
-            Some(pkg) => rendered.push(render(&pkg, stdout_color)),
+            Some(mut pkg) => {
+                if let Ok(local) = handle.localdb().pkg(pkg.name.as_str()) {
+                    let install_date = local.install_date().and_then(|d| (d > 0).then_some(d));
+                    pkg.installed = Some(InstalledData {
+                        version: local.version().to_string(),
+                        explicit: matches!(local.reason(), alpm::PackageReason::Explicit),
+                        install_date,
+                        script: local.has_scriptlet(),
+                    });
+                }
+                rendered.push(render(&pkg, stdout_color))
+            }
             None => missed.push(target.clone()),
         }
     }
@@ -35,8 +46,39 @@ pub fn run(targets: Vec<String>) -> ! {
     std::process::exit(0);
 }
 
+pub fn format_date(epoch: i64) -> String {
+    chrono::DateTime::from_timestamp(epoch, 0)
+        .unwrap_or_default()
+        .with_timezone(&chrono::Local)
+        .format("%a %d %b %Y")
+        .to_string()
+}
+
+fn humanized(bytes: i64) -> String {
+    let (value, unit) = crate::utils::humanize_size(bytes);
+    format!("{value:.2} {unit}")
+}
+
+fn installed_row(pkg: &Package) -> Option<(String, String)> {
+    let overlay = pkg.installed.as_ref()?;
+    let mut note = if overlay.explicit {
+        "explicitly installed".to_string()
+    } else {
+        "installed as a dependency".to_string()
+    };
+    if overlay.version != pkg.version {
+        note = format!("{} installed, {note}", overlay.version);
+    }
+    let value = match overlay.install_date {
+        Some(epoch) => format!("{} ({note})", format_date(epoch)),
+        None => format!("({note})"),
+    };
+    Some(("Installed".to_string(), value))
+}
+
 pub fn render(pkg: &Package, stdout_color: bool) -> String {
-    let mut out = header(pkg, &origin(pkg), stdout_color);
+    let installed = pkg.installed.is_some();
+    let mut out = header(pkg, &origin(pkg), installed, stdout_color);
     if let Some(description) = pkg.description.as_deref()
         && !description.is_empty()
     {
@@ -49,7 +91,7 @@ pub fn render(pkg: &Package, stdout_color: bool) -> String {
         out.push('\n');
         out.push_str(&color::paint(stdout_color, LINK, url));
     }
-    if let Some(rendered) = section(section_title(false), &package_rows(pkg), stdout_color) {
+    if let Some(rendered) = section(section_title(installed), &package_rows(pkg), stdout_color) {
         out.push_str(&rendered);
     }
     out
@@ -83,29 +125,60 @@ fn section_title(has_installed: bool) -> &'static str {
     }
 }
 
-fn header(pkg: &Package, origin: &str, stdout_color: bool) -> String {
+fn header(pkg: &Package, origin: &str, installed: bool, stdout_color: bool) -> String {
     format!(
         "{} {} {} {} {}",
         color::paint(stdout_color, color::COLON, origin),
         color::paint(stdout_color, color::GRAY, "::"),
         color::paint(stdout_color, NAME, &pkg.name),
         color::paint(stdout_color, VERSION, &pkg.version),
-        badge(false, stdout_color),
+        badge(installed, stdout_color),
     )
 }
 
 fn package_rows(pkg: &Package) -> Vec<(String, String)> {
-    vec![
-        (
-            "Packager".to_string(),
-            pkg.maintainer.clone().unwrap_or_default(),
-        ),
-        ("License".to_string(), pkg.licenses.join(", ")),
-        ("Groups".to_string(), pkg.groups.join(", ")),
-        ("Provides".to_string(), pkg.provides.join(", ")),
-        ("Conflicts".to_string(), pkg.conflicts.join(", ")),
-        ("Replaces".to_string(), pkg.replaces.join(", ")),
-    ]
+    let mut rows: Vec<(String, String)> = Vec::new();
+    if let Some(row) = installed_row(pkg) {
+        rows.push(row);
+    }
+    if let PackageKind::Repo(data) = &pkg.kind {
+        let script = match pkg.installed.as_ref() {
+            Some(overlay) => overlay.script,
+            None => data.script,
+        };
+        rows.push((
+            "Install Script".to_string(),
+            if script {
+                "Yes".to_string()
+            } else {
+                "No".to_string()
+            },
+        ));
+        rows.push((
+            "Size".to_string(),
+            format!(
+                "{} (download), {} (installed)",
+                humanized(data.download_size),
+                humanized(data.installed_size),
+            ),
+        ));
+        if let Some(epoch) = data.build_date {
+            rows.push(("Build Date".to_string(), format_date(epoch)));
+        }
+        if !data.validated_by.is_empty() {
+            rows.push(("Validated By".to_string(), data.validated_by.clone()));
+        }
+    }
+    rows.push((
+        "Packager".to_string(),
+        pkg.maintainer.clone().unwrap_or_default(),
+    ));
+    rows.push(("License".to_string(), pkg.licenses.join(", ")));
+    rows.push(("Groups".to_string(), pkg.groups.join(", ")));
+    rows.push(("Provides".to_string(), pkg.provides.join(", ")));
+    rows.push(("Conflicts".to_string(), pkg.conflicts.join(", ")));
+    rows.push(("Replaces".to_string(), pkg.replaces.join(", ")));
+    rows
 }
 
 fn section(title: &str, rows: &[(String, String)], stdout_color: bool) -> Option<String> {
@@ -136,7 +209,7 @@ fn section(title: &str, rows: &[(String, String)], stdout_color: bool) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::package::RepoData;
+    use crate::package::{InstalledData, RepoData};
 
     fn full_package() -> Package {
         Package {
@@ -160,11 +233,15 @@ mod tests {
             dependencies: vec![],
             opt_dependencies: vec![],
             upstream_url: Some("https://github.com/hyprwm/Hyprland".to_string()),
+            installed: None,
             kind: PackageKind::Repo(RepoData {
                 repo: Some("extra".to_string()),
                 architecture: Some("x86_64".to_string()),
                 installed_size: 0,
                 download_size: 0,
+                build_date: None,
+                validated_by: String::new(),
+                script: false,
             }),
         }
     }
@@ -183,11 +260,15 @@ mod tests {
             dependencies: vec![],
             opt_dependencies: vec![],
             upstream_url: None,
+            installed: None,
             kind: PackageKind::Repo(RepoData {
                 repo: Some("core".to_string()),
                 architecture: None,
                 installed_size: 0,
                 download_size: 0,
+                build_date: None,
+                validated_by: String::new(),
+                script: false,
             }),
         }
     }
@@ -198,6 +279,8 @@ mod tests {
             A highly customizable dynamic tiling Wayland compositor\n\
             https://github.com/hyprwm/Hyprland\n\
             \n  Package Info\n\
+            \x20   Install Script  No\n\
+            \x20   Size            0.00 B (download), 0.00 B (installed)\n\
             \x20   Packager        Caleb Maclennan <alerque@archlinux.org>\n\
             \x20   License         BSD-3-Clause\n\
             \x20   Groups          hyprland-git-meta, wayland-compositors\n\
@@ -209,10 +292,11 @@ mod tests {
 
     #[test]
     fn render_minimal_plain() {
-        assert_eq!(
-            render(&minimal_package(), false),
-            "core :: minimal-base 1.0-1 [not installed]"
-        );
+        let expected = "core :: minimal-base 1.0-1 [not installed]\n\
+            \n  Package Info\n\
+            \x20   Install Script  No\n\
+            \x20   Size            0.00 B (download), 0.00 B (installed)";
+        assert_eq!(render(&minimal_package(), false), expected);
     }
 
     #[test]
@@ -231,5 +315,110 @@ mod tests {
         assert!(rendered.contains("\x1b[1;34mPackage Info\x1b[0m"));
         assert!(rendered.contains("\x1b[90mPackager       \x1b[0m"));
         assert!(rendered.contains("\x1b[37mBSD-3-Clause\x1b[0m"));
+    }
+
+    fn installed_package(epoch: Option<i64>, version: &str) -> Package {
+        let mut pkg = full_package();
+        if let PackageKind::Repo(data) = &mut pkg.kind {
+            data.installed_size = 26214400;
+            data.download_size = 8388608;
+            data.build_date = Some(1786406400);
+            data.validated_by = "SHA-256, Signature".to_string();
+            data.script = false;
+        }
+        pkg.installed = Some(InstalledData {
+            version: version.to_string(),
+            explicit: true,
+            install_date: epoch,
+            script: false,
+        });
+        pkg
+    }
+
+    #[test]
+    fn render_installed_plain() {
+        let epoch = 1786406400;
+        let pkg = installed_package(Some(epoch), "0.56.2-1");
+        let date = format_date(epoch);
+        let expected = format!(
+            "extra/x86_64 :: hyprland 0.56.2-1 [installed]\n\
+            A highly customizable dynamic tiling Wayland compositor\n\
+            https://github.com/hyprwm/Hyprland\n\
+            \n  Status\n\
+            \x20   Installed       {date} (explicitly installed)\n\
+            \x20   Install Script  No\n\
+            \x20   Size            8.00 MiB (download), 25.00 MiB (installed)\n\
+            \x20   Build Date      {}\n\
+            \x20   Validated By    SHA-256, Signature\n\
+            \x20   Packager        Caleb Maclennan <alerque@archlinux.org>\n\
+            \x20   License         BSD-3-Clause\n\
+            \x20   Groups          hyprland-git-meta, wayland-compositors\n\
+            \x20   Provides        wayland-compositor\n\
+            \x20   Conflicts       hyprland-git, hyprland-legacy-bin\n\
+            \x20   Replaces        hyprland-nvidia",
+            format_date(1786406400),
+        );
+        assert_eq!(render(&pkg, false), expected);
+    }
+
+    #[test]
+    fn render_installed_version_diff_note() {
+        let pkg = installed_package(None, "0.55.0-1");
+        let rendered = render(&pkg, false);
+        assert!(rendered.contains("[installed]"));
+        assert!(rendered.contains("\n  Status"));
+        assert!(rendered.contains("(0.55.0-1 installed, explicitly installed)"));
+        let line = rendered
+            .lines()
+            .find(|line| line.contains("Installed"))
+            .expect("Installed row must render");
+        assert!(line.starts_with("    Installed      "));
+    }
+
+    #[test]
+    fn render_validated_by_rows() {
+        for (validated_by, expected) in [
+            ("Unknown", "Unknown"),
+            ("None", "None"),
+            ("MD5, SHA-256, Signature", "MD5, SHA-256, Signature"),
+        ] {
+            let mut pkg = full_package();
+            if let PackageKind::Repo(data) = &mut pkg.kind {
+                data.validated_by = validated_by.to_string();
+            }
+            let rendered = render(&pkg, false);
+            assert!(
+                rendered.contains(&format!("Validated By    {expected}")),
+                "validated_by {validated_by} must render; got:\n{rendered}",
+            );
+        }
+        let rendered = render(&full_package(), false);
+        assert!(
+            !rendered.contains("Validated By"),
+            "empty validated_by must skip the row; got:\n{rendered}",
+        );
+    }
+
+    #[test]
+    fn render_installed_row_shape() {
+        let pkg = installed_package(Some(1786406400), "0.56.2-1");
+        let rendered = render(&pkg, false);
+        let line = rendered
+            .lines()
+            .find(|line| line.contains("Installed"))
+            .expect("Installed row must render");
+        assert!(line.starts_with("    Installed      "));
+        assert!(line.contains("(explicitly installed)"));
+        let mut dep = installed_package(None, "0.56.2-1");
+        if let Some(overlay) = dep.installed.as_mut() {
+            overlay.explicit = false;
+        }
+        let rendered = render(&dep, false);
+        let line = rendered
+            .lines()
+            .find(|line| line.contains("Installed"))
+            .expect("Installed row must render");
+        assert!(line.starts_with("    Installed      "));
+        assert!(line.contains("(installed as a dependency)"));
     }
 }

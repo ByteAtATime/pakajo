@@ -13,6 +13,14 @@ pub enum PackageSource {
     Group,
 }
 
+#[derive(Debug, Clone)]
+pub struct InstalledData {
+    pub version: String,
+    pub explicit: bool,
+    pub install_date: Option<i64>,
+    pub script: bool,
+}
+
 #[derive(Clone)]
 pub struct Package {
     pub name: String,
@@ -27,6 +35,7 @@ pub struct Package {
     pub dependencies: Vec<String>,
     pub opt_dependencies: Vec<OptDependency>,
     pub upstream_url: Option<String>,
+    pub installed: Option<InstalledData>,
     pub kind: PackageKind,
 }
 
@@ -42,6 +51,9 @@ pub struct RepoData {
     pub architecture: Option<String>,
     pub installed_size: i64,
     pub download_size: i64,
+    pub build_date: Option<i64>,
+    pub validated_by: String,
+    pub script: bool,
 }
 
 impl RepoData {
@@ -103,8 +115,32 @@ fn parse_opt_dependency(dependency: &str) -> Option<OptDependency> {
     }
 }
 
+fn validated_by_label(validation: alpm::PackageValidation) -> String {
+    if validation.is_empty() || validation.contains(alpm::PackageValidation::UNKNOWN) {
+        return "Unknown".to_string();
+    }
+    if validation.contains(alpm::PackageValidation::NONE) {
+        return "None".to_string();
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    if validation.contains(alpm::PackageValidation::MD5SUM) {
+        parts.push("MD5");
+    }
+    if validation.contains(alpm::PackageValidation::SHA256SUM) {
+        parts.push("SHA-256");
+    }
+    if validation.contains(alpm::PackageValidation::SIGNATURE) {
+        parts.push("Signature");
+    }
+    if parts.is_empty() {
+        return "Unknown".to_string();
+    }
+    parts.join(", ")
+}
+
 impl From<&alpm::Package> for Package {
     fn from(pkg: &alpm::Package) -> Self {
+        let build_date = pkg.build_date();
         Self {
             name: pkg.name().to_string(),
             description: pkg.desc().map(|x| x.to_string()),
@@ -126,11 +162,15 @@ impl From<&alpm::Package> for Package {
                 .filter_map(|x| parse_opt_dependency(&x.to_string()))
                 .collect(),
             upstream_url: pkg.url().map(|x| x.to_string()),
+            installed: None,
             kind: PackageKind::Repo(RepoData {
                 repo: pkg.db().map(|x| x.name().to_string()),
                 architecture: pkg.arch().map(|x| x.to_string()),
                 installed_size: pkg.isize(),
                 download_size: pkg.size(),
+                build_date: (build_date > 0).then_some(build_date),
+                validated_by: validated_by_label(pkg.validation()),
+                script: pkg.has_scriptlet(),
             }),
         }
     }
@@ -155,6 +195,7 @@ impl From<AurInfo> for Package {
                 .filter_map(|x| parse_opt_dependency(&x.to_string()))
                 .collect(),
             upstream_url: info.url,
+            installed: None,
             kind: PackageKind::Aur(AurData {
                 num_votes: info.num_votes,
                 popularity: info.popularity,

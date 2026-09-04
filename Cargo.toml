@@ -28,6 +28,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 inotify = { version = "0.11", default-features = false }
 libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "dc1cf9f00cbe2902a52166492654bb9fee8a73d1", features = ["wgpu"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
 criterion = "0.8.2"
