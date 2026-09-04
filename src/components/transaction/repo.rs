@@ -5,6 +5,7 @@ use super::accordion::{Section, action_footer, stage_row};
 use super::resolve::resolve_section;
 use super::shared::download_view;
 use super::state::{StageState, TransactionModel, TransactionStatus};
+use super::validate::validate_section;
 use crate::Element;
 
 pub(super) fn view(model: &TransactionModel) -> Element<'_> {
@@ -19,6 +20,8 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
         let expanded = model.expanded.contains(&i);
         let section = if *stage == RepoStage::Resolve {
             resolve_section(&model.repo_state, state)
+        } else if *stage == RepoStage::Validate {
+            validate_section(&model.repo_state, state)
         } else {
             Section {
                 label: stage_label(*stage),

@@ -49,6 +49,8 @@ impl TransactionModel {
                 manifest: None,
                 resolve_started: false,
                 resolve_checking: false,
+                validate_checks: 0,
+                validate_label: "Preparing...",
                 stage: RepoStage::Resolve,
                 download_total: 0,
                 download_done: 0,

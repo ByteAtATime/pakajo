@@ -31,6 +31,8 @@ mod resolve;
 
 mod shared;
 
+mod validate;
+
 mod pkgbuild;
 pub(crate) use pkgbuild::diff_lines_column;
 use pkgbuild::{PkgbuildMessage, PkgbuildModel};

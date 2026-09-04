@@ -51,6 +51,8 @@ pub struct RepoState {
     pub manifest: Option<TransactionSummary>,
     pub resolve_started: bool,
     pub resolve_checking: bool,
+    pub validate_checks: u8,
+    pub validate_label: &'static str,
     pub stage: RepoStage,
     pub download_total: usize,
     pub download_done: usize,
@@ -86,6 +88,41 @@ impl RepoState {
             return 1;
         }
         0
+    }
+
+    pub fn validate_count(&self) -> usize {
+        self.validate_checks.count_ones() as usize
+    }
+}
+
+pub const VALIDATE_TOTAL: usize = VALIDATE_LABELS.len();
+
+const VALIDATE_LABELS: [&str; 6] = [
+    "Looking for conflicting packages...",
+    "Checking dependencies...",
+    "Checking keys in keyring...",
+    "Checking package integrity...",
+    "Checking for file conflicts...",
+    "Checking available disk space...",
+];
+
+fn validate_bit(ev: &InstallEvent) -> Option<u8> {
+    use InstallEvent::*;
+    match ev {
+        CheckingConflicts => Some(0),
+        CheckingDependencies => Some(1),
+        KeyringStart => Some(2),
+        CheckingIntegrity => Some(3),
+        CheckingFileConflicts => Some(4),
+        CheckingDiskSpace => Some(5),
+        _ => None,
+    }
+}
+
+fn track_validate_check(state: &mut RepoState, ev: &InstallEvent) {
+    if let Some(bit) = validate_bit(ev) {
+        state.validate_checks |= 1 << bit;
+        state.validate_label = VALIDATE_LABELS[bit as usize];
     }
 }
 
@@ -212,6 +249,12 @@ pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
         | InstallEvent::ResolutionComplete { .. } => {
             state.resolve_started = true;
             state.resolve_checking = true;
+            track_validate_check(state, ev);
+        }
+        InstallEvent::CheckingIntegrity
+        | InstallEvent::CheckingDiskSpace
+        | InstallEvent::KeyringStart => {
+            track_validate_check(state, ev);
         }
         InstallEvent::TransactionSummary(summary) => {
             state.resolve_started = true;
@@ -587,6 +630,8 @@ mod tests {
             manifest: None,
             resolve_started: false,
             resolve_checking: false,
+            validate_checks: 0,
+            validate_label: "Preparing...",
             stage: RepoStage::Resolve,
             download_total: 0,
             download_done: 0,
