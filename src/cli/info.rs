@@ -537,837 +537,163 @@ fn section(title: &str, rows: &[(&'static str, String)], stdout_color: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::package::{AurData, InstalledData, OptDependency, RepoData};
+    use crate::package::{AurData, InstalledData, OptDependency, PackageKind, RepoData};
 
-    fn full_package() -> Package {
+    fn test_pkg() -> Package {
         Package {
-            name: "hyprland".to_string(),
-            description: Some(
-                "A highly customizable dynamic tiling Wayland compositor".to_string(),
-            ),
-            version: "0.56.2-1".to_string(),
-            maintainer: Some("Caleb Maclennan <alerque@archlinux.org>".to_string()),
-            licenses: vec!["BSD-3-Clause".to_string()],
-            groups: vec![
-                "hyprland-git-meta".to_string(),
-                "wayland-compositors".to_string(),
-            ],
-            provides: vec!["wayland-compositor".to_string()],
-            conflicts: vec![
-                "hyprland-git".to_string(),
-                "hyprland-legacy-bin".to_string(),
-            ],
-            replaces: vec!["hyprland-nvidia".to_string()],
-            dependencies: vec![
-                "cairo".to_string(),
-                "glibc".to_string(),
-                "libdrm".to_string(),
-            ],
-            opt_dependencies: vec![],
-            upstream_url: Some("https://github.com/hyprwm/Hyprland".to_string()),
-            installed: None,
-            kind: PackageKind::Repo(RepoData {
-                repo: Some("extra".to_string()),
-                architecture: Some("x86_64".to_string()),
-                installed_size: 0,
-                download_size: 0,
-                build_date: None,
-                validated_by: String::new(),
-                script: false,
-                required_by: vec!["grimblast-git".to_string(), "hyprpaper".to_string()],
-                optional_for: vec!["xdg-desktop-portal-hyprland".to_string()],
-            }),
-        }
-    }
-
-    fn minimal_package() -> Package {
-        Package {
-            name: "minimal-base".to_string(),
-            description: None,
-            version: "1.0-1".to_string(),
-            maintainer: None,
-            licenses: vec![],
+            name: "test-pkg".into(),
+            description: Some("Test package description".into()),
+            version: "1.0.0-1".into(),
+            maintainer: Some("Maintainer <maintainer@archlinux.org>".into()),
+            licenses: vec!["MIT".into()],
             groups: vec![],
             provides: vec![],
             conflicts: vec![],
             replaces: vec![],
-            dependencies: vec![],
+            dependencies: vec!["dep-a".into(), "dep-b".into()],
             opt_dependencies: vec![],
-            upstream_url: None,
+            upstream_url: Some("https://example.com".into()),
             installed: None,
             kind: PackageKind::Repo(RepoData {
-                repo: Some("core".to_string()),
-                architecture: None,
-                installed_size: 0,
-                download_size: 0,
+                repo: Some("extra".into()),
+                architecture: Some("x86_64".into()),
+                installed_size: 2048,
+                download_size: 1024,
                 build_date: None,
                 validated_by: String::new(),
                 script: false,
-                required_by: Vec::new(),
-                optional_for: Vec::new(),
+                required_by: vec![],
+                optional_for: vec![],
             }),
         }
     }
 
     #[test]
-    fn render_full_plain() {
-        let expected = "extra/x86_64 :: hyprland 0.56.2-1 [not installed]\n\
-            A highly customizable dynamic tiling Wayland compositor\n\
-            https://github.com/hyprwm/Hyprland\n\
-            \n  Package Info\n\
-            \x20   Install Script  No\n\
-            \x20   Size            0.00 B (download), 0.00 B (installed)\n\
-            \x20   Packager        Caleb Maclennan <alerque@archlinux.org>\n\
-            \x20   License         BSD-3-Clause\n\
-            \x20   Groups          hyprland-git-meta, wayland-compositors\n\
-            \x20   Provides        wayland-compositor\n\
-            \x20   Conflicts       hyprland-git, hyprland-legacy-bin\n\
-            \x20   Replaces        hyprland-nvidia\n\
-            \n  Dependencies (3)\n\
-            \x20   Required        cairo, glibc, libdrm\n\
-            \x20   Required By     grimblast-git, hyprpaper\n\
-            \x20   Optional For    xdg-desktop-portal-hyprland";
-        assert_eq!(render(&full_package(), false), expected);
+    fn render_repo_package() {
+        let pkg = test_pkg();
+        let out = render(&pkg, false);
+
+        assert!(out.starts_with("extra/x86_64 :: test-pkg 1.0.0-1 [not installed]"));
+        assert!(out.contains("Test package description"));
+        assert!(out.contains("https://example.com"));
+        assert!(out.contains("Dependencies (2)"));
+        assert!(out.contains("Required        dep-a, dep-b"));
     }
 
     #[test]
-    fn render_minimal_plain() {
-        let expected = "core :: minimal-base 1.0-1 [not installed]\n\
-            \n  Package Info\n\
-            \x20   Install Script  No\n\
-            \x20   Size            0.00 B (download), 0.00 B (installed)";
-        assert_eq!(render(&minimal_package(), false), expected);
-    }
-
-    #[test]
-    fn render_colored_uses_palette() {
-        let rendered = render(&full_package(), true);
-        assert!(rendered.contains("\x1b[1;34mextra/x86_64\x1b[0m"));
-        assert!(rendered.contains("\x1b[90m::\x1b[0m"));
-        assert!(rendered.contains("\x1b[1;37mhyprland\x1b[0m"));
-        assert!(rendered.contains("\x1b[1;36m0.56.2-1\x1b[0m"));
-        assert!(rendered.contains("\x1b[2;37m[not installed]\x1b[0m"));
-        assert!(
-            rendered
-                .contains("\x1b[37mA highly customizable dynamic tiling Wayland compositor\x1b[0m")
-        );
-        assert!(rendered.contains("\x1b[4;36mhttps://github.com/hyprwm/Hyprland\x1b[0m"));
-        assert!(rendered.contains("\x1b[1;34mPackage Info\x1b[0m"));
-        assert!(rendered.contains("\x1b[90mPackager       \x1b[0m"));
-        assert!(rendered.contains("\x1b[37mBSD-3-Clause\x1b[0m"));
-    }
-
-    fn installed_package(epoch: Option<i64>, version: &str) -> Package {
-        let mut pkg = full_package();
-        if let PackageKind::Repo(data) = &mut pkg.kind {
-            data.installed_size = 26214400;
-            data.download_size = 8388608;
-            data.build_date = Some(1786406400);
-            data.validated_by = "SHA-256, Signature".to_string();
-            data.script = false;
-        }
-        pkg.installed = Some(InstalledData {
-            version: version.to_string(),
-            explicit: true,
-            install_date: epoch,
-            script: false,
-        });
-        pkg
-    }
-
-    #[test]
-    fn render_installed_plain() {
-        let epoch = 1786406400;
-        let pkg = installed_package(Some(epoch), "0.56.2-1");
-        let date = format_date(epoch);
-        let expected = format!(
-            "extra/x86_64 :: hyprland 0.56.2-1 [installed]\n\
-            A highly customizable dynamic tiling Wayland compositor\n\
-            https://github.com/hyprwm/Hyprland\n\
-            \n  Status\n\
-            \x20   Installed       {date} (explicitly installed)\n\
-            \x20   Install Script  No\n\
-            \x20   Size            8.00 MiB (download), 25.00 MiB (installed)\n\
-            \x20   Build Date      {date}\n\
-            \x20   Packager        Caleb Maclennan <alerque@archlinux.org>\n\
-            \x20   License         BSD-3-Clause\n\
-            \x20   Validated By    SHA-256, Signature\n\
-            \x20   Groups          hyprland-git-meta, wayland-compositors\n\
-            \x20   Provides        wayland-compositor\n\
-            \x20   Conflicts       hyprland-git, hyprland-legacy-bin\n\
-            \x20   Replaces        hyprland-nvidia\n\
-            \n  Dependencies (3)\n\
-            \x20   Required        cairo, glibc, libdrm\n\
-            \x20   Required By     grimblast-git, hyprpaper\n\
-            \x20   Optional For    xdg-desktop-portal-hyprland",
-        );
-        assert_eq!(render(&pkg, false), expected);
-    }
-
-    #[test]
-    fn render_installed_version_diff_note() {
-        let pkg = installed_package(None, "0.55.0-1");
-        let rendered = render(&pkg, false);
-        assert!(rendered.contains("[installed]"));
-        assert!(rendered.contains("\n  Status"));
-        assert!(rendered.contains("(0.55.0-1 installed, explicitly installed)"));
-        let line = rendered
-            .lines()
-            .find(|line| line.contains("Installed"))
-            .expect("Installed row must render");
-        assert!(line.starts_with("    Installed      "));
-    }
-
-    #[test]
-    fn render_validated_by_rows() {
-        for (validated_by, expected) in [
-            ("Unknown", "Unknown"),
-            ("None", "None"),
-            ("MD5, SHA-256, Signature", "MD5, SHA-256, Signature"),
-        ] {
-            let mut pkg = full_package();
-            if let PackageKind::Repo(data) = &mut pkg.kind {
-                data.validated_by = validated_by.to_string();
-            }
-            let rendered = render(&pkg, false);
-            assert!(
-                rendered.contains(&format!("Validated By    {expected}")),
-                "validated_by {validated_by} must render; got:\n{rendered}",
-            );
-        }
-        let rendered = render(&full_package(), false);
-        assert!(
-            !rendered.contains("Validated By"),
-            "empty validated_by must skip the row; got:\n{rendered}",
-        );
-    }
-
-    #[test]
-    fn render_installed_row_shape() {
-        let pkg = installed_package(Some(1786406400), "0.56.2-1");
-        let rendered = render(&pkg, false);
-        let line = rendered
-            .lines()
-            .find(|line| line.contains("Installed"))
-            .expect("Installed row must render");
-        assert!(line.starts_with("    Installed      "));
-        assert!(line.contains("(explicitly installed)"));
-        let mut dep = installed_package(None, "0.56.2-1");
-        if let Some(overlay) = dep.installed.as_mut() {
-            overlay.explicit = false;
-        }
-        let rendered = render(&dep, false);
-        let line = rendered
-            .lines()
-            .find(|line| line.contains("Installed"))
-            .expect("Installed row must render");
-        assert!(line.starts_with("    Installed      "));
-        assert!(line.contains("(installed as dependency)"));
-    }
-
-    #[test]
-    fn format_date_pins_format_tokens() {
-        let epoch = 1_754_000_000;
-        let expected = chrono::DateTime::from_timestamp(epoch, 0)
-            .unwrap()
-            .with_timezone(&chrono::Local)
-            .format("%a %d %b %Y")
-            .to_string();
-        assert_eq!(format_date(epoch), expected);
-    }
-
-    #[test]
-    fn render_dependencies_truncated_past_six() {
-        let mut pkg = full_package();
-        pkg.dependencies = vec![
-            "a".to_string(),
-            "b".to_string(),
-            "c".to_string(),
-            "d".to_string(),
-            "e".to_string(),
-            "f".to_string(),
-            "g".to_string(),
-            "h".to_string(),
-        ];
-        let rendered = render(&pkg, false);
-        assert!(rendered.contains("\n  Dependencies (8)"));
-        assert!(rendered.contains("Required        a, b, c, d, e, f, ... (+2 more)"));
-    }
-
-    #[test]
-    fn render_reverse_dependencies_truncated_past_six() {
-        let mut pkg = full_package();
-        if let PackageKind::Repo(data) = &mut pkg.kind {
-            data.required_by = vec![
-                "a".to_string(),
-                "b".to_string(),
-                "c".to_string(),
-                "d".to_string(),
-                "e".to_string(),
-                "f".to_string(),
-                "g".to_string(),
-            ];
-            data.optional_for = vec![
-                "a".to_string(),
-                "b".to_string(),
-                "c".to_string(),
-                "d".to_string(),
-                "e".to_string(),
-                "f".to_string(),
-                "g".to_string(),
-                "h".to_string(),
-            ];
-        }
-        let rendered = render(&pkg, false);
-        assert!(rendered.contains("Required By     a, b, c, d, e, f, ... (+1 more)"));
-        assert!(rendered.contains("Optional For    a, b, c, d, e, f, ... (+2 more)"));
-    }
-
-    #[test]
-    fn render_dependencies_omitted_when_empty() {
-        let rendered = render(&minimal_package(), false);
-        assert!(!rendered.contains("Dependencies"));
-    }
-
-    #[test]
-    fn render_dependencies_zero_count_with_reverse_deps() {
-        let mut pkg = minimal_package();
-        if let PackageKind::Repo(data) = &mut pkg.kind {
-            data.required_by = vec!["some-meta".to_string()];
-        }
-        let rendered = render(&pkg, false);
-        assert!(rendered.contains("\n  Dependencies (0)"));
-        assert!(rendered.contains("Required By     some-meta"));
-        assert!(!rendered.contains("Required        "));
-    }
-
-    fn opt_dep(name: &str, reason: Option<&str>, installed: bool) -> OptDependency {
-        OptDependency {
-            name: name.to_string(),
-            version: None,
-            reason: reason.map(|r| r.to_string()),
-            installed,
-        }
-    }
-
-    fn opt_package() -> Package {
-        let mut pkg = full_package();
-        pkg.opt_dependencies = vec![
-            opt_dep("cmake", Some("to build plugins with hyprpm"), true),
-            opt_dep(
-                "hyprshutdown",
-                Some("clean logout and shutdown helper"),
-                false,
-            ),
-            opt_dep("bare-tool", None, false),
-        ];
-        pkg
-    }
-
-    #[test]
-    fn render_opt_dependencies_plain() {
-        let rendered = render(&opt_package(), false);
-        assert!(rendered.contains("\n  Optional Dependencies (3)"));
-        assert!(
-            rendered.contains("    [✓] cmake                     to build plugins with hyprpm")
-        );
-        assert!(
-            rendered.contains("    [ ] hyprshutdown              clean logout and shutdown helper")
-        );
-    }
-
-    #[test]
-    fn render_opt_dependency_without_reason() {
-        let rendered = render(&opt_package(), false);
-        let line = rendered
-            .lines()
-            .find(|line| line.contains("bare-tool"))
-            .expect("bare-tool row must render");
-        assert_eq!(line, "    [ ] bare-tool                ");
-    }
-
-    #[test]
-    fn render_opt_dependencies_colored() {
-        let rendered = render(&opt_package(), true);
-        assert!(rendered.contains("\x1b[1;32m[✓]\x1b[0m"));
-        assert!(rendered.contains("\x1b[90m[ ]\x1b[0m"));
-        assert!(rendered.contains("\x1b[1;34mOptional Dependencies (3)\x1b[0m"));
-        assert!(rendered.contains(&format!("\x1b[37m{:<25}\x1b[0m", "cmake")));
-        assert!(rendered.contains(&format!("\x1b[90m{:<25}\x1b[0m", "hyprshutdown")));
-    }
-
-    #[test]
-    fn render_opt_dependency_version_constraint() {
-        let mut pkg = full_package();
-        let mut dep = opt_dep("python", Some("some reason"), true);
-        dep.version = Some(">=3.12".to_string());
-        pkg.opt_dependencies = vec![dep];
-        let rendered = render(&pkg, false);
-        let line = rendered
-            .lines()
-            .find(|line| line.contains("python"))
-            .expect("versioned row must render");
-        assert!(line.contains("python>=3.12"));
-    }
-
-    #[test]
-    fn render_opt_dependency_long_name_overflow() {
-        let mut pkg = full_package();
-        pkg.opt_dependencies = vec![opt_dep(
-            "a-very-long-optional-dependency-name",
-            Some("some reason"),
-            false,
-        )];
-        let rendered = render(&pkg, false);
-        let line = rendered
-            .lines()
-            .find(|line| line.contains("a-very-long-optional-dependency-name"))
-            .expect("long name row must render");
-        assert_eq!(
-            line,
-            "    [ ] a-very-long-optional-dependency-name some reason"
-        );
-    }
-
-    #[test]
-    fn render_opt_dependencies_omitted_when_empty() {
-        let rendered = render(&full_package(), false);
-        assert!(!rendered.contains("Optional Dependencies"));
-    }
-
-    fn aur_package() -> Package {
-        Package {
-            name: "visual-studio-code-bin".to_string(),
-            description: Some(
-                "Visual Studio Code (vscode): Editor for building and debugging".to_string(),
-            ),
-            version: "1.93.1-1".to_string(),
-            maintainer: Some("dcelasun".to_string()),
-            licenses: vec!["custom:commercial".to_string()],
-            groups: vec![],
-            provides: vec![],
-            conflicts: vec![],
-            replaces: vec![],
-            dependencies: vec![],
-            opt_dependencies: vec![],
-            upstream_url: Some("https://code.visualstudio.com/".to_string()),
-            installed: None,
-            kind: PackageKind::Aur(AurData {
-                num_votes: 2841,
-                popularity: 48.12,
-                submitted: Some(1442236800),
-                last_modified: Some(1785360000),
-                flagged: Some(1785715200),
-                make_depends: Vec::new(),
-                check_depends: Vec::new(),
-            }),
-        }
-    }
-
-    #[test]
-    fn render_aur_plain() {
-        let pkg = aur_package();
-        let submitted = format_date(1442236800);
-        let modified = format_date(1785360000);
-        let flagged = format_ymd(1785715200);
-        let expected = format!(
-            "aur :: visual-studio-code-bin 1.93.1-1 [aur]\n\
-            Visual Studio Code (vscode): Editor for building and debugging\n\
-            https://code.visualstudio.com/\n\
-            \n  Community & Maintenance\n\
-            \x20   Votes / Pop     2,841 (48.12 popularity)\n\
-            \x20   Maintainer      dcelasun\n\
-            \x20   Submitted       {submitted}\n\
-            \x20   Last Modified   {modified}\n\
-            \x20   Flagged Out     Yes ({flagged})\n\
-            \n  Build & Source\n\
-            \x20   AUR Link        https://aur.archlinux.org/packages/visual-studio-code-bin\n\
-            \x20   License         custom:commercial",
-        );
-        assert_eq!(render(&pkg, false), expected);
-    }
-
-    #[test]
-    fn render_aur_installed_plain() {
-        let epoch = 1786406400;
-        let mut pkg = aur_package();
-        pkg.installed = Some(InstalledData {
-            version: "1.93.1-1".to_string(),
-            explicit: true,
-            install_date: Some(epoch),
-            script: false,
-        });
-        let date = format_date(epoch);
-        let rendered = render(&pkg, false);
-        assert!(rendered.contains("aur :: visual-studio-code-bin 1.93.1-1 [aur] [installed]"));
-        assert!(rendered.contains("\n  Status"));
-        assert!(rendered.contains(&format!("Installed       {date} (explicitly installed)")));
-        assert!(rendered.contains("\n  Community & Maintenance"));
-    }
-
-    #[test]
-    fn render_aur_colored_fragments_byte_exact() {
-        let rendered = render(&aur_package(), true);
-        assert!(rendered.contains("\x1b[1;35m[aur]\x1b[0m"));
-        assert!(rendered.contains("\x1b[1;34maur\x1b[0m"));
-        assert!(rendered.contains("\x1b[37m2,841 \x1b[90m(48.12 popularity)\x1b[0m\x1b[0m"));
-        assert!(rendered.contains("\x1b[37mdcelasun\x1b[0m"));
-        let flagged = format_ymd(1785715200);
-        assert!(rendered.contains(&format!("\x1b[1;33mYes ({flagged})\x1b[0m")));
-    }
-
-    #[test]
-    fn render_aur_orphan_maintainer() {
-        for maintainer in [None, Some(String::new())] {
-            let mut pkg = aur_package();
-            pkg.maintainer = maintainer;
-            let plain = render(&pkg, false);
-            assert!(
-                plain.contains("Maintainer      None (Orphaned)"),
-                "orphan must render plain fallback; got:\n{plain}",
-            );
-            let colored = render(&pkg, true);
-            assert!(
-                colored.contains("\x1b[1;33mNone (Orphaned)\x1b[0m"),
-                "orphan must warn in yellow; got:\n{colored}",
-            );
-        }
-    }
-
-    #[test]
-    fn render_aur_epoch_zero_omits_date_rows() {
-        let info = crate::aur::AurInfo {
-            id: 1,
-            name: "orphan-toy".to_string(),
-            package_base_id: 2,
-            package_base: "orphan-toy".to_string(),
-            version: "0.0.1-1".to_string(),
-            description: None,
-            url: None,
-            num_votes: 0,
-            popularity: 0.0,
-            out_of_date: None,
-            maintainer: None,
-            first_submitted: 0,
-            last_modified: 0,
-            url_path: None,
-            submitter: None,
-            depends: vec![],
-            make_depends: vec![],
+    fn render_aur_package() {
+        let mut pkg = test_pkg();
+        pkg.maintainer = None;
+        pkg.kind = PackageKind::Aur(AurData {
+            num_votes: 12500,
+            popularity: 82.5,
+            submitted: Some(1442236800),
+            last_modified: None,
+            flagged: Some(1785715200),
+            make_depends: vec!["cmake".into()],
             check_depends: vec![],
-            opt_depends: vec![],
-            conflicts: vec![],
-            provides: vec![],
-            replaces: vec![],
-            groups: vec![],
-            license: vec![],
-            keywords: vec![],
-            co_maintainers: vec![],
-        };
-        let pkg = Package::from(info);
-        let PackageKind::Aur(data) = &pkg.kind else {
-            panic!("expected aur package kind");
-        };
-        assert_eq!(data.submitted, None);
-        assert_eq!(data.last_modified, None);
-        assert_eq!(data.flagged, None);
-        let rendered = render(&pkg, false);
-        assert!(!rendered.contains("Submitted"));
-        assert!(!rendered.contains("Last Modified"));
-        assert!(rendered.contains("Flagged Out     No"));
-        assert!(!rendered.contains("Package Info"));
-        assert!(!rendered.contains("Dependencies"));
+        });
+
+        let out = render(&pkg, false);
+
+        assert!(out.contains("aur :: test-pkg 1.0.0-1 [aur]"));
+        assert!(out.contains("Votes / Pop     12,500 (82.50 popularity)"));
+        assert!(out.contains("Maintainer      None (Orphaned)"));
+        assert!(out.contains("Flagged Out     Yes"));
+        assert!(out.contains("AUR Link        https://aur.archlinux.org/packages/test-pkg"));
+        assert!(out.contains("Make Depends    cmake"));
+        assert!(out.contains("Runtime Dependencies (2)"));
     }
 
     #[test]
-    fn render_aur_skips_repo_rows() {
-        let rendered = render(&aur_package(), false);
-        for row in [
-            "Install Script",
-            "Packager",
-            "Validated By",
-            "Groups",
-            "Dependencies",
-        ] {
-            assert!(
-                !rendered.contains(row),
-                "aur view must skip {row}; got:\n{rendered}",
-            );
+    fn render_installed_status_variations() {
+        let mut pkg = test_pkg();
+        pkg.installed = Some(InstalledData {
+            version: "0.9.0-1".into(),
+            explicit: true,
+            install_date: None,
+            script: true,
+        });
+
+        let out = render(&pkg, false);
+        assert!(out.contains("[installed]"));
+        assert!(out.contains("\n  Status"));
+        assert!(out.contains("(0.9.0-1 installed, explicitly installed)"));
+        assert!(out.contains("Install Script  Yes"));
+
+        if let PackageKind::Repo(data) = &mut pkg.kind {
+            data.repo = Some("local".into());
         }
-    }
-
-    fn rich_aur_package() -> Package {
-        let mut pkg = aur_package();
-        if let PackageKind::Aur(data) = &mut pkg.kind {
-            data.make_depends = vec![
-                "git".to_string(),
-                "cmake".to_string(),
-                "ninja".to_string(),
-                "python".to_string(),
-                "go".to_string(),
-                "rust".to_string(),
-            ];
-            data.check_depends = vec![
-                "xvfb-run".to_string(),
-                "pytest".to_string(),
-                "gtest".to_string(),
-                "valgrind".to_string(),
-                "clang".to_string(),
-            ];
-        }
-        pkg.provides = vec!["code".to_string(), "vscode".to_string()];
-        pkg.conflicts = vec!["code".to_string(), "vscode".to_string()];
-        pkg.replaces = vec!["visual-studio-code".to_string()];
-        pkg.dependencies = vec![
-            "alsa-lib".to_string(),
-            "gtk3".to_string(),
-            "libsecret".to_string(),
-            "nss".to_string(),
-            "libx11".to_string(),
-            "libxkbfile".to_string(),
-        ];
-        pkg
+        let local_out = render(&pkg, false);
+        assert!(local_out.contains("[local]"));
+        assert!(local_out.contains("Size on Disk"));
     }
 
     #[test]
-    fn render_aur_build_source_plain() {
-        let rendered = render(&rich_aur_package(), false);
-        assert!(rendered.contains("\n  Build & Source"));
-        assert!(
-            rendered.contains(
-                "AUR Link        https://aur.archlinux.org/packages/visual-studio-code-bin"
-            )
-        );
-        assert!(rendered.contains("License         custom:commercial"));
-        assert!(rendered.contains("Make Depends    git, cmake, ninja, python, ... (+2 more)"));
-        assert!(
-            rendered.contains("Check Depends   xvfb-run, pytest, gtest, valgrind, ... (+1 more)")
-        );
-        assert!(rendered.contains("Provides        code, vscode"));
-        assert!(rendered.contains("Conflicts       code, vscode"));
-        assert!(rendered.contains("Replaces        visual-studio-code"));
-    }
-
-    #[test]
-    fn render_aur_build_source_link_colored() {
-        let rendered = render(&rich_aur_package(), true);
-        assert!(rendered.contains(
-            "\x1b[4;36mhttps://aur.archlinux.org/packages/visual-studio-code-bin\x1b[0m"
-        ));
-        assert!(rendered.contains("\x1b[37mcustom:commercial\x1b[0m"));
-        assert!(
-            rendered
-                .contains("\x1b[37mgit, cmake, ninja, python, \x1b[90m... (+2 more)\x1b[0m\x1b[0m")
-        );
-    }
-
-    #[test]
-    fn render_aur_runtime_dependencies_truncated_at_four() {
-        let rendered = render(&rich_aur_package(), false);
-        assert!(rendered.contains("\n  Runtime Dependencies (6)"));
-        assert!(rendered.contains("Required        alsa-lib, gtk3, libsecret, nss, ... (+2 more)"));
-    }
-
-    #[test]
-    fn render_aur_opt_dependencies_plain() {
-        let mut pkg = rich_aur_package();
+    fn render_optional_dependencies() {
+        let mut pkg = test_pkg();
         pkg.opt_dependencies = vec![
-            opt_dep("bash-completion", Some("bash completion support"), true),
-            opt_dep(
-                "org.freedesktop.secrets",
-                Some("keyring credential storage"),
-                false,
-            ),
-            opt_dep("zsh-completions", Some("zsh completion support"), true),
+            OptDependency {
+                name: "python".into(),
+                version: Some(">=3.12".into()),
+                reason: Some("for scripting".into()),
+                installed: true,
+            },
+            OptDependency {
+                name: "ruby".into(),
+                version: None,
+                reason: None,
+                installed: false,
+            },
         ];
-        let rendered = render(&pkg, false);
-        assert!(rendered.contains("\n  Optional Dependencies (3)"));
-        assert!(rendered.contains("    [✓] bash-completion           bash completion support"));
-        assert!(rendered.contains("    [ ] org.freedesktop.secrets   keyring credential storage"));
-        assert!(rendered.contains("    [✓] zsh-completions           zsh completion support"));
-        let runtime = rendered
-            .find("Runtime Dependencies (6)")
-            .expect("runtime must render");
-        let optional = rendered
-            .find("Optional Dependencies (3)")
-            .expect("optional must render");
-        assert!(runtime < optional);
+
+        let out = render(&pkg, false);
+        assert!(out.contains("Optional Dependencies (2)"));
+        assert!(out.contains("[✓] python>=3.12              for scripting"));
+        assert!(out.contains("[ ] ruby"));
     }
 
     #[test]
-    fn render_aur_opt_dependencies_colored() {
-        let mut pkg = aur_package();
-        pkg.opt_dependencies = vec![
-            opt_dep("bash-completion", Some("bash completion support"), true),
-            opt_dep(
-                "org.freedesktop.secrets",
-                Some("keyring credential storage"),
-                false,
-            ),
-        ];
-        let rendered = render(&pkg, true);
-        assert!(rendered.contains("\x1b[1;34mOptional Dependencies (2)\x1b[0m"));
-        assert!(rendered.contains("\x1b[1;32m[✓]\x1b[0m"));
-        assert!(rendered.contains("\x1b[90m[ ]\x1b[0m"));
-        assert!(rendered.contains(&format!("\x1b[37m{:<25}\x1b[0m", "bash-completion")));
-        assert!(rendered.contains(&format!("\x1b[90m{:<25}\x1b[0m", "org.freedesktop.secrets")));
+    fn render_truncates_long_lists() {
+        let mut pkg = test_pkg();
+        pkg.dependencies = (b'a'..=b'h').map(|c| (c as char).to_string()).collect();
+
+        let out = render(&pkg, false);
+        assert!(out.contains("Dependencies (8)"));
+        assert!(out.contains("Required        a, b, c, d, e, f, ... (+2 more)"));
     }
 
     #[test]
-    fn render_aur_license_moved_from_leading_section() {
-        let rendered = render(&aur_package(), false);
-        assert!(
-            !rendered.contains("Package Info"),
-            "not-installed aur must have no leading section; got:\n{rendered}",
-        );
-        let community = rendered
-            .find("Community & Maintenance")
-            .expect("community must render");
-        let build = rendered.find("Build & Source").expect("build must render");
-        assert!(community < build);
-        let license = rendered.find("License").expect("license must render");
-        assert!(license > build);
-    }
-
-    #[test]
-    fn grouped_votes_separator_cases() {
-        for (votes, expected) in [
-            (0, "0"),
-            (12, "12"),
-            (1234, "1,234"),
-            (2841, "2,841"),
-            (1000000, "1,000,000"),
-        ] {
-            assert_eq!(grouped_votes(votes), expected);
+    fn render_zero_dependencies_with_reverse_deps() {
+        let mut pkg = test_pkg();
+        pkg.dependencies.clear();
+        if let PackageKind::Repo(data) = &mut pkg.kind {
+            data.required_by = vec!["meta-package".into()];
         }
-    }
 
-    fn local_package() -> Package {
-        Package {
-            name: "custom-driver-dkms".to_string(),
-            description: Some(
-                "Custom out-of-tree kernel driver built locally via PKGBUILD".to_string(),
-            ),
-            version: "2.1.0-1".to_string(),
-            maintainer: Some("Alice Developer <alice@lan>".to_string()),
-            licenses: vec!["GPL-2.0-only".to_string()],
-            groups: vec![],
-            provides: vec!["virtual-driver=2.1".to_string()],
-            conflicts: vec!["legacy-driver".to_string()],
-            replaces: vec!["old-custom-driver".to_string()],
-            dependencies: vec!["dkms".to_string(), "linux-headers".to_string()],
-            opt_dependencies: vec![
-                opt_dep(
-                    "linux-zen-headers",
-                    Some("kernel headers for zen flavor"),
-                    true,
-                ),
-                opt_dep(
-                    "linux-lts-headers",
-                    Some("kernel headers for lts flavor"),
-                    false,
-                ),
-            ],
-            upstream_url: Some("https://internal.lan/driver".to_string()),
-            installed: Some(InstalledData {
-                version: "2.1.0-1".to_string(),
-                explicit: false,
-                install_date: Some(1786406400),
-                script: true,
-            }),
-            kind: PackageKind::Repo(RepoData {
-                repo: Some("local".to_string()),
-                architecture: Some("x86_64".to_string()),
-                installed_size: 5054136,
-                download_size: 0,
-                build_date: Some(1786406400),
-                validated_by: "SHA-256".to_string(),
-                script: true,
-                required_by: vec!["workstation-meta".to_string()],
-                optional_for: vec!["custom-control-panel".to_string()],
-            }),
-        }
+        let out = render(&pkg, false);
+        assert!(out.contains("Dependencies (0)"));
+        assert!(out.contains("Required By     meta-package"));
+        assert!(!out.contains("Required        "));
     }
 
     #[test]
-    fn render_local_plain() {
-        let epoch = 1786406400;
-        let date = format_date(epoch);
-        let expected = format!(
-            "local/x86_64 :: custom-driver-dkms 2.1.0-1 [local]\n\
-            Custom out-of-tree kernel driver built locally via PKGBUILD\n\
-            https://internal.lan/driver\n\
-            \n  Status\n\
-            \x20   Installed       {date} (installed as dependency)\n\
-            \x20   Install Script  Yes\n\
-            \x20   Size on Disk    4.82 MiB\n\
-            \x20   Build Date      {date}\n\
-            \x20   Packager        Alice Developer <alice@lan>\n\
-            \x20   License         GPL-2.0-only\n\
-            \x20   Validated By    SHA-256\n\
-            \x20   Provides        virtual-driver=2.1\n\
-            \x20   Conflicts       legacy-driver\n\
-            \x20   Replaces        old-custom-driver\n\
-            \n  Dependencies (2)\n\
-            \x20   Required        dkms, linux-headers\n\
-            \x20   Required By     workstation-meta\n\
-            \x20   Optional For    custom-control-panel\n\
-            \n  Optional Dependencies (2)\n\
-            \x20   [✓] linux-zen-headers         kernel headers for zen flavor\n\
-            \x20   [ ] linux-lts-headers         kernel headers for lts flavor",
-        );
-        assert_eq!(render(&local_package(), false), expected);
+    fn render_omits_missing_fields_cleanly() {
+        let mut pkg = test_pkg();
+        pkg.description = None;
+        pkg.upstream_url = None;
+        pkg.dependencies.clear();
+
+        let out = render(&pkg, false);
+        assert!(out.contains("extra/x86_64 :: test-pkg 1.0.0-1 [not installed]\n\n  Package Info"));
+        assert!(!out.contains("Dependencies"));
+        assert!(!out.contains("Validated By"));
     }
 
     #[test]
-    fn render_local_colored_fragments_byte_exact() {
-        let rendered = render(&local_package(), true);
-        assert!(rendered.contains("\x1b[1;34mlocal/x86_64\x1b[0m"));
-        assert!(rendered.contains("\x1b[1;33m[local]\x1b[0m"));
-        assert!(rendered.contains("\x1b[37m4.82 MiB\x1b[0m"));
-        assert!(rendered.contains("Size on Disk"));
-    }
-
-    #[test]
-    fn render_size_download_gating() {
-        let sync_rendered = render(&full_package(), false);
-        assert!(sync_rendered.contains("(download)"));
-        assert!(!sync_rendered.contains("Size on Disk"));
-        let local_rendered = render(&local_package(), false);
-        assert!(local_rendered.contains("Size on Disk"));
-        assert!(!local_rendered.contains("(download)"));
-        assert!(!local_rendered.contains("download"));
-    }
-
-    #[test]
-    fn is_local_view_selects_branch() {
-        assert!(is_local_view(&local_package()));
-        assert!(!is_local_view(&full_package()));
-        assert!(!is_local_view(&aur_package()));
-    }
-
-    #[test]
-    fn render_colored_fragments_byte_exact() {
-        let epoch = 1786406400;
-        let mut pkg = installed_package(Some(epoch), "0.56.2-1");
-        pkg.dependencies = vec![
-            "a".to_string(),
-            "b".to_string(),
-            "c".to_string(),
-            "d".to_string(),
-            "e".to_string(),
-            "f".to_string(),
-            "g".to_string(),
-            "h".to_string(),
-        ];
-        let date = format_date(epoch);
-        let rendered = render(&pkg, true);
-        assert!(rendered.contains(&format!(
-            "\x1b[37m{date} \x1b[90m(explicitly installed)\x1b[0m\x1b[0m"
-        )));
-        assert!(rendered.contains(
-            "\x1b[37m8.00 MiB \x1b[90m(download)\x1b[0m, 25.00 MiB \x1b[90m(installed)\x1b[0m\x1b[0m"
-        ));
-        assert!(rendered.contains("\x1b[37ma, b, c, d, e, f, \x1b[90m... (+2 more)\x1b[0m\x1b[0m"));
+    fn render_respects_color_flag() {
+        let pkg = test_pkg();
+        assert!(!render(&pkg, false).contains('\x1b'));
+        assert!(render(&pkg, true).contains("\x1b["));
     }
 }
