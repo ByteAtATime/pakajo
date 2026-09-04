@@ -1,17 +1,11 @@
 use crate::color;
 use crate::package::{Package, PackageKind};
 
-const REPO: &str = "\x1b[1;34m";
-const SEPARATOR: &str = "\x1b[90m";
 const NAME: &str = "\x1b[1;37m";
 const VERSION: &str = "\x1b[1;36m";
-const SECTION: &str = "\x1b[1;34m";
-const LABEL: &str = "\x1b[90m";
 const VALUE: &str = "\x1b[37m";
 const LINK: &str = "\x1b[4;36m";
-const INSTALLED: &str = "\x1b[1;32m";
 const NOT_INSTALLED: &str = "\x1b[2;37m";
-const RESET: &str = "\x1b[0m";
 
 pub fn run(targets: Vec<String>) -> ! {
     let handle = super::alpm_handle_or_exit();
@@ -47,13 +41,13 @@ pub fn render(pkg: &Package, stdout_color: bool) -> String {
         && !description.is_empty()
     {
         out.push('\n');
-        out.push_str(&paint(stdout_color, VALUE, description));
+        out.push_str(&color::paint(stdout_color, VALUE, description));
     }
     if let Some(url) = pkg.upstream_url.as_deref()
         && !url.is_empty()
     {
         out.push('\n');
-        out.push_str(&paint(stdout_color, LINK, url));
+        out.push_str(&color::paint(stdout_color, LINK, url));
     }
     if let Some(rendered) = section(section_title(false), &package_rows(pkg), stdout_color) {
         out.push_str(&rendered);
@@ -75,9 +69,9 @@ fn origin(pkg: &Package) -> String {
 
 fn badge(installed: bool, stdout_color: bool) -> String {
     if installed {
-        paint(stdout_color, INSTALLED, "[installed]")
+        color::paint(stdout_color, color::GREEN, "[installed]")
     } else {
-        paint(stdout_color, NOT_INSTALLED, "[not installed]")
+        color::paint(stdout_color, NOT_INSTALLED, "[not installed]")
     }
 }
 
@@ -92,10 +86,10 @@ fn section_title(has_installed: bool) -> &'static str {
 fn header(pkg: &Package, origin: &str, stdout_color: bool) -> String {
     format!(
         "{} {} {} {} {}",
-        paint(stdout_color, REPO, origin),
-        paint(stdout_color, SEPARATOR, "::"),
-        paint(stdout_color, NAME, &pkg.name),
-        paint(stdout_color, VERSION, &pkg.version),
+        color::paint(stdout_color, color::COLON, origin),
+        color::paint(stdout_color, color::GRAY, "::"),
+        color::paint(stdout_color, NAME, &pkg.name),
+        color::paint(stdout_color, VERSION, &pkg.version),
         badge(false, stdout_color),
     )
 }
@@ -125,23 +119,18 @@ fn section(title: &str, rows: &[(String, String)], stdout_color: bool) -> Option
     }
     let mut out = String::new();
     out.push('\n');
-    out.push_str(&format!("\n  {}", paint(stdout_color, SECTION, title)));
+    out.push_str(&format!(
+        "\n  {}",
+        color::paint(stdout_color, color::COLON, title)
+    ));
     for (label, value) in kept {
         out.push_str(&format!(
             "\n    {} {}",
-            paint(stdout_color, LABEL, &format!("{label:<15}")),
-            paint(stdout_color, VALUE, value),
+            color::paint(stdout_color, color::GRAY, &format!("{label:<15}")),
+            color::paint(stdout_color, VALUE, value),
         ));
     }
     Some(out)
-}
-
-fn paint(enabled: bool, code: &str, s: &str) -> String {
-    if enabled {
-        format!("{code}{s}{RESET}")
-    } else {
-        s.to_string()
-    }
 }
 
 #[cfg(test)]

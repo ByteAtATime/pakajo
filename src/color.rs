@@ -22,12 +22,16 @@ pub const DIM: &str = "\x1b[2m\x1b[90m";
 pub const GRAY: &str = "\x1b[90m";
 pub const RESET: &str = "\x1b[0m";
 
+fn no_color_requested() -> bool {
+    std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
+}
+
 pub fn stdout_color() -> bool {
-    std::io::stdout().is_terminal() && !std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
+    std::io::stdout().is_terminal() && !no_color_requested()
 }
 
 pub fn stderr_color() -> bool {
-    std::io::stderr().is_terminal() && !std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
+    std::io::stderr().is_terminal() && !no_color_requested()
 }
 
 pub fn paint(enabled: bool, code: &str, s: &str) -> String {
