@@ -6,6 +6,7 @@ const VERSION: &str = "\x1b[1;36m";
 const VALUE: &str = "\x1b[37m";
 const LINK: &str = "\x1b[4;36m";
 const NOT_INSTALLED: &str = "\x1b[2;37m";
+const DEP_PREVIEW: usize = 6;
 
 pub fn run(targets: Vec<String>) -> ! {
     let handle = super::alpm_handle_or_exit();
@@ -25,14 +26,12 @@ pub fn run(targets: Vec<String>) -> ! {
                         script: local.has_scriptlet(),
                     });
                 }
-                if !pkg.opt_dependencies.is_empty() {
-                    for dep in &mut pkg.opt_dependencies {
-                        dep.installed = handle
-                            .localdb()
-                            .pkgs()
-                            .find_satisfier(dep.name.as_str())
-                            .is_some();
-                    }
+                let pkgs = handle.localdb().pkgs();
+                for dep in &mut pkg.opt_dependencies {
+                    let constraint = dep.version.as_deref().unwrap_or_default();
+                    dep.installed = pkgs
+                        .find_satisfier(format!("{}{constraint}", dep.name))
+                        .is_some();
                 }
                 rendered.push(render(&pkg, stdout_color))
             }
@@ -68,21 +67,24 @@ fn humanized(bytes: i64) -> String {
     format!("{value:.2} {unit}")
 }
 
-fn installed_row(pkg: &Package) -> Option<(String, String)> {
+fn installed_row(pkg: &Package, stdout_color: bool) -> Option<(&'static str, String)> {
     let overlay = pkg.installed.as_ref()?;
-    let mut note = if overlay.explicit {
-        "explicitly installed".to_string()
+    let base: &str = if overlay.explicit {
+        "explicitly installed"
     } else {
-        "installed as a dependency".to_string()
+        "installed as dependency"
     };
-    if overlay.version != pkg.version {
-        note = format!("{} installed, {note}", overlay.version);
-    }
+    let note = if overlay.version != pkg.version {
+        format!("{} installed, {base}", overlay.version)
+    } else {
+        base.to_string()
+    };
+    let fragment = color::paint(stdout_color, color::GRAY, &format!("({note})"));
     let value = match overlay.install_date {
-        Some(epoch) => format!("{} ({note})", format_date(epoch)),
-        None => format!("({note})"),
+        Some(epoch) => format!("{} {fragment}", format_date(epoch)),
+        None => fragment,
     };
-    Some(("Installed".to_string(), value))
+    Some(("Installed", value))
 }
 
 pub fn render(pkg: &Package, stdout_color: bool) -> String {
@@ -100,13 +102,17 @@ pub fn render(pkg: &Package, stdout_color: bool) -> String {
         out.push('\n');
         out.push_str(&color::paint(stdout_color, LINK, url));
     }
-    if let Some(rendered) = section(section_title(installed), &package_rows(pkg), stdout_color) {
+    if let Some(rendered) = section(
+        section_title(installed),
+        &package_rows(pkg, stdout_color),
+        stdout_color,
+    ) {
         out.push_str(&rendered);
     }
     if let PackageKind::Repo(data) = &pkg.kind
         && let Some(rendered) = section(
             &format!("Dependencies ({})", pkg.dependencies.len()),
-            &dependency_rows(pkg, data),
+            &dependency_rows(pkg, data, stdout_color),
             stdout_color,
         )
     {
@@ -157,13 +163,9 @@ fn header(pkg: &Package, origin: &str, installed: bool, stdout_color: bool) -> S
     )
 }
 
-fn push_row(rows: &mut Vec<(String, String)>, label: &str, value: String) {
-    rows.push((label.to_string(), value));
-}
-
-fn package_rows(pkg: &Package) -> Vec<(String, String)> {
-    let mut rows: Vec<(String, String)> = Vec::new();
-    if let Some(row) = installed_row(pkg) {
+fn package_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)> {
+    let mut rows: Vec<(&'static str, String)> = Vec::new();
+    if let Some(row) = installed_row(pkg, stdout_color) {
         rows.push(row);
     }
     if let PackageKind::Repo(data) = &pkg.kind {
@@ -171,35 +173,32 @@ fn package_rows(pkg: &Package) -> Vec<(String, String)> {
             Some(overlay) => overlay.script,
             None => data.script,
         };
-        push_row(&mut rows, "Install Script", yes_no(script));
-        push_row(
-            &mut rows,
+        rows.push(("Install Script", yes_no(script)));
+        rows.push((
             "Size",
             format!(
-                "{} (download), {} (installed)",
+                "{} {}, {} {}",
                 humanized(data.download_size),
+                color::paint(stdout_color, color::GRAY, "(download)"),
                 humanized(data.installed_size),
+                color::paint(stdout_color, color::GRAY, "(installed)"),
             ),
-        );
+        ));
         if let Some(epoch) = data.build_date {
-            push_row(&mut rows, "Build Date", format_date(epoch));
+            rows.push(("Build Date", format_date(epoch)));
         }
     }
-    push_row(
-        &mut rows,
-        "Packager",
-        pkg.maintainer.clone().unwrap_or_default(),
-    );
-    push_row(&mut rows, "License", pkg.licenses.join(", "));
+    rows.push(("Packager", pkg.maintainer.clone().unwrap_or_default()));
+    rows.push(("License", pkg.licenses.join(", ")));
     if let PackageKind::Repo(data) = &pkg.kind
         && !data.validated_by.is_empty()
     {
-        push_row(&mut rows, "Validated By", data.validated_by.clone());
+        rows.push(("Validated By", data.validated_by.clone()));
     }
-    push_row(&mut rows, "Groups", pkg.groups.join(", "));
-    push_row(&mut rows, "Provides", pkg.provides.join(", "));
-    push_row(&mut rows, "Conflicts", pkg.conflicts.join(", "));
-    push_row(&mut rows, "Replaces", pkg.replaces.join(", "));
+    rows.push(("Groups", pkg.groups.join(", ")));
+    rows.push(("Provides", pkg.provides.join(", ")));
+    rows.push(("Conflicts", pkg.conflicts.join(", ")));
+    rows.push(("Replaces", pkg.replaces.join(", ")));
     rows
 }
 
@@ -211,41 +210,53 @@ fn yes_no(value: bool) -> String {
     }
 }
 
-fn required_value(dependencies: &[String]) -> String {
-    if dependencies.is_empty() {
-        return String::new();
-    }
-    if dependencies.len() <= 6 {
-        return dependencies.join("  ");
+fn truncated_join(names: &[String], limit: usize, stdout_color: bool) -> String {
+    if names.len() <= limit {
+        return names.join(", ");
     }
     format!(
-        "{}  ... (+{} more)",
-        dependencies[..6].join("  "),
-        dependencies.len() - 6
+        "{}, {}",
+        names[..limit].join(", "),
+        color::paint(
+            stdout_color,
+            color::GRAY,
+            &format!("... (+{} more)", names.len() - limit)
+        )
     )
 }
 
-fn dependency_rows(pkg: &Package, data: &crate::package::RepoData) -> Vec<(String, String)> {
-    let mut rows: Vec<(String, String)> = Vec::new();
-    push_row(&mut rows, "Required", required_value(&pkg.dependencies));
-    push_row(&mut rows, "Required By", data.required_by.join(", "));
-    push_row(&mut rows, "Optional For", data.optional_for.join(", "));
-    rows
+fn dependency_rows(
+    pkg: &Package,
+    data: &crate::package::RepoData,
+    stdout_color: bool,
+) -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "Required",
+            truncated_join(&pkg.dependencies, DEP_PREVIEW, stdout_color),
+        ),
+        (
+            "Required By",
+            truncated_join(&data.required_by, DEP_PREVIEW, stdout_color),
+        ),
+        (
+            "Optional For",
+            truncated_join(&data.optional_for, DEP_PREVIEW, stdout_color),
+        ),
+    ]
 }
 
 fn opt_dependency_line(dep: &OptDependency, stdout_color: bool) -> String {
-    let (check, tint) = match dep.installed {
-        true => ("[✓]", color::GREEN),
-        false => ("[ ]", color::GRAY),
+    let (check, tint, name_tint) = match dep.installed {
+        true => ("[✓]", color::GREEN, VALUE),
+        false => ("[ ]", color::GRAY, color::GRAY),
     };
-    let name_tint = match dep.installed {
-        true => VALUE,
-        false => color::GRAY,
-    };
+    let constraint = dep.version.as_deref().unwrap_or_default();
+    let qualified = format!("{}{constraint}", dep.name);
     let mut line = format!(
         "{} {}",
         color::paint(stdout_color, tint, check),
-        color::paint(stdout_color, name_tint, &format!("{:<25}", dep.name)),
+        color::paint(stdout_color, name_tint, &format!("{qualified:<25}")),
     );
     if let Some(reason) = dep.reason.as_deref() {
         line.push(' ');
@@ -254,41 +265,36 @@ fn opt_dependency_line(dep: &OptDependency, stdout_color: bool) -> String {
     line
 }
 
-fn opt_dependency_section(pkg: &Package, stdout_color: bool) -> Option<String> {
-    if pkg.opt_dependencies.is_empty() {
-        return None;
-    }
-    let mut out = String::new();
-    out.push('\n');
-    out.push_str(&format!(
-        "\n  {}",
-        color::paint(
-            stdout_color,
-            color::COLON,
-            &format!("Optional Dependencies ({})", pkg.opt_dependencies.len()),
-        )
-    ));
-    for dep in &pkg.opt_dependencies {
-        out.push_str(&format!("\n    {}", opt_dependency_line(dep, stdout_color)));
-    }
-    Some(out)
-}
-
-fn section(title: &str, rows: &[(String, String)], stdout_color: bool) -> Option<String> {
-    let kept: Vec<(&str, &str)> = rows
-        .iter()
-        .filter(|(_, value)| !value.is_empty())
-        .map(|(label, value)| (label.as_str(), value.as_str()))
-        .collect();
-    if kept.is_empty() {
-        return None;
-    }
+fn section_title_line(title: &str, stdout_color: bool) -> String {
     let mut out = String::new();
     out.push('\n');
     out.push_str(&format!(
         "\n  {}",
         color::paint(stdout_color, color::COLON, title)
     ));
+    out
+}
+
+fn opt_dependency_section(pkg: &Package, stdout_color: bool) -> Option<String> {
+    if pkg.opt_dependencies.is_empty() {
+        return None;
+    }
+    let mut out = section_title_line(
+        &format!("Optional Dependencies ({})", pkg.opt_dependencies.len()),
+        stdout_color,
+    );
+    for dep in &pkg.opt_dependencies {
+        out.push_str(&format!("\n    {}", opt_dependency_line(dep, stdout_color)));
+    }
+    Some(out)
+}
+
+fn section(title: &str, rows: &[(&'static str, String)], stdout_color: bool) -> Option<String> {
+    let kept: Vec<_> = rows.iter().filter(|(_, value)| !value.is_empty()).collect();
+    if kept.is_empty() {
+        return None;
+    }
+    let mut out = section_title_line(title, stdout_color);
     for (label, value) in kept {
         out.push_str(&format!(
             "\n    {} {}",
@@ -389,7 +395,7 @@ mod tests {
             \x20   Conflicts       hyprland-git, hyprland-legacy-bin\n\
             \x20   Replaces        hyprland-nvidia\n\
             \n  Dependencies (3)\n\
-            \x20   Required        cairo  glibc  libdrm\n\
+            \x20   Required        cairo, glibc, libdrm\n\
             \x20   Required By     grimblast-git, hyprpaper\n\
             \x20   Optional For    xdg-desktop-portal-hyprland";
         assert_eq!(render(&full_package(), false), expected);
@@ -453,7 +459,7 @@ mod tests {
             \x20   Installed       {date} (explicitly installed)\n\
             \x20   Install Script  No\n\
             \x20   Size            8.00 MiB (download), 25.00 MiB (installed)\n\
-            \x20   Build Date      {}\n\
+            \x20   Build Date      {date}\n\
             \x20   Packager        Caleb Maclennan <alerque@archlinux.org>\n\
             \x20   License         BSD-3-Clause\n\
             \x20   Validated By    SHA-256, Signature\n\
@@ -462,10 +468,9 @@ mod tests {
             \x20   Conflicts       hyprland-git, hyprland-legacy-bin\n\
             \x20   Replaces        hyprland-nvidia\n\
             \n  Dependencies (3)\n\
-            \x20   Required        cairo  glibc  libdrm\n\
+            \x20   Required        cairo, glibc, libdrm\n\
             \x20   Required By     grimblast-git, hyprpaper\n\
             \x20   Optional For    xdg-desktop-portal-hyprland",
-            format_date(1786406400),
         );
         assert_eq!(render(&pkg, false), expected);
     }
@@ -528,7 +533,7 @@ mod tests {
             .find(|line| line.contains("Installed"))
             .expect("Installed row must render");
         assert!(line.starts_with("    Installed      "));
-        assert!(line.contains("(installed as a dependency)"));
+        assert!(line.contains("(installed as dependency)"));
     }
 
     #[test]
@@ -557,7 +562,36 @@ mod tests {
         ];
         let rendered = render(&pkg, false);
         assert!(rendered.contains("\n  Dependencies (8)"));
-        assert!(rendered.contains("Required        a  b  c  d  e  f  ... (+2 more)"));
+        assert!(rendered.contains("Required        a, b, c, d, e, f, ... (+2 more)"));
+    }
+
+    #[test]
+    fn render_reverse_dependencies_truncated_past_six() {
+        let mut pkg = full_package();
+        if let PackageKind::Repo(data) = &mut pkg.kind {
+            data.required_by = vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string(),
+                "e".to_string(),
+                "f".to_string(),
+                "g".to_string(),
+            ];
+            data.optional_for = vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string(),
+                "e".to_string(),
+                "f".to_string(),
+                "g".to_string(),
+                "h".to_string(),
+            ];
+        }
+        let rendered = render(&pkg, false);
+        assert!(rendered.contains("Required By     a, b, c, d, e, f, ... (+1 more)"));
+        assert!(rendered.contains("Optional For    a, b, c, d, e, f, ... (+2 more)"));
     }
 
     #[test]
@@ -578,24 +612,25 @@ mod tests {
         assert!(!rendered.contains("Required        "));
     }
 
+    fn opt_dep(name: &str, reason: Option<&str>, installed: bool) -> OptDependency {
+        OptDependency {
+            name: name.to_string(),
+            version: None,
+            reason: reason.map(|r| r.to_string()),
+            installed,
+        }
+    }
+
     fn opt_package() -> Package {
         let mut pkg = full_package();
         pkg.opt_dependencies = vec![
-            OptDependency {
-                name: "cmake".to_string(),
-                reason: Some("to build plugins with hyprpm".to_string()),
-                installed: true,
-            },
-            OptDependency {
-                name: "hyprshutdown".to_string(),
-                reason: Some("clean logout and shutdown helper".to_string()),
-                installed: false,
-            },
-            OptDependency {
-                name: "bare-tool".to_string(),
-                reason: None,
-                installed: false,
-            },
+            opt_dep("cmake", Some("to build plugins with hyprpm"), true),
+            opt_dep(
+                "hyprshutdown",
+                Some("clean logout and shutdown helper"),
+                false,
+            ),
+            opt_dep("bare-tool", None, false),
         ];
         pkg
     }
@@ -628,11 +663,71 @@ mod tests {
         assert!(rendered.contains("\x1b[1;32m[✓]\x1b[0m"));
         assert!(rendered.contains("\x1b[90m[ ]\x1b[0m"));
         assert!(rendered.contains("\x1b[1;34mOptional Dependencies (3)\x1b[0m"));
+        assert!(rendered.contains(&format!("\x1b[37m{:<25}\x1b[0m", "cmake")));
+        assert!(rendered.contains(&format!("\x1b[90m{:<25}\x1b[0m", "hyprshutdown")));
+    }
+
+    #[test]
+    fn render_opt_dependency_version_constraint() {
+        let mut pkg = full_package();
+        let mut dep = opt_dep("python", Some("some reason"), true);
+        dep.version = Some(">=3.12".to_string());
+        pkg.opt_dependencies = vec![dep];
+        let rendered = render(&pkg, false);
+        let line = rendered
+            .lines()
+            .find(|line| line.contains("python"))
+            .expect("versioned row must render");
+        assert!(line.contains("python>=3.12"));
+    }
+
+    #[test]
+    fn render_opt_dependency_long_name_overflow() {
+        let mut pkg = full_package();
+        pkg.opt_dependencies = vec![opt_dep(
+            "a-very-long-optional-dependency-name",
+            Some("some reason"),
+            false,
+        )];
+        let rendered = render(&pkg, false);
+        let line = rendered
+            .lines()
+            .find(|line| line.contains("a-very-long-optional-dependency-name"))
+            .expect("long name row must render");
+        assert_eq!(
+            line,
+            "    [ ] a-very-long-optional-dependency-name some reason"
+        );
     }
 
     #[test]
     fn render_opt_dependencies_omitted_when_empty() {
         let rendered = render(&full_package(), false);
         assert!(!rendered.contains("Optional Dependencies"));
+    }
+
+    #[test]
+    fn render_colored_fragments_byte_exact() {
+        let epoch = 1786406400;
+        let mut pkg = installed_package(Some(epoch), "0.56.2-1");
+        pkg.dependencies = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+            "f".to_string(),
+            "g".to_string(),
+            "h".to_string(),
+        ];
+        let date = format_date(epoch);
+        let rendered = render(&pkg, true);
+        assert!(rendered.contains(&format!(
+            "\x1b[37m{date} \x1b[90m(explicitly installed)\x1b[0m\x1b[0m"
+        )));
+        assert!(rendered.contains(
+            "\x1b[37m8.00 MiB \x1b[90m(download)\x1b[0m, 25.00 MiB \x1b[90m(installed)\x1b[0m\x1b[0m"
+        ));
+        assert!(rendered.contains("\x1b[37ma, b, c, d, e, f, \x1b[90m... (+2 more)\x1b[0m\x1b[0m"));
     }
 }

@@ -3,6 +3,7 @@ use crate::aur::AurInfo;
 #[derive(Debug, Clone)]
 pub struct OptDependency {
     pub name: String,
+    pub version: Option<String>,
     pub reason: Option<String>,
     pub installed: bool,
 }
@@ -104,6 +105,7 @@ fn parse_opt_dependency(dependency: &str) -> Option<OptDependency> {
 
         Some(OptDependency {
             name: name.to_string(),
+            version: None,
             reason: (!reason.is_empty()).then(|| reason.to_string()),
             installed: false,
         })
@@ -114,6 +116,7 @@ fn parse_opt_dependency(dependency: &str) -> Option<OptDependency> {
 
         Some(OptDependency {
             name: dependency.to_string(),
+            version: None,
             reason: None,
             installed: false,
         })
@@ -164,10 +167,21 @@ impl From<&alpm::Package> for Package {
             opt_dependencies: pkg
                 .optdepends()
                 .iter()
-                .map(|x| OptDependency {
-                    name: x.name().to_string(),
-                    reason: x.desc().map(|x| x.to_string()),
-                    installed: false,
+                .map(|x| {
+                    let version = match x.depmodver() {
+                        alpm::DepModVer::Any => None,
+                        alpm::DepModVer::Eq(v) => Some(format!("={v}")),
+                        alpm::DepModVer::Ge(v) => Some(format!(">={v}")),
+                        alpm::DepModVer::Le(v) => Some(format!("<={v}")),
+                        alpm::DepModVer::Gt(v) => Some(format!(">{v}")),
+                        alpm::DepModVer::Lt(v) => Some(format!("<{v}")),
+                    };
+                    OptDependency {
+                        name: x.name().to_string(),
+                        version,
+                        reason: x.desc().map(|x| x.to_string()).filter(|d| !d.is_empty()),
+                        installed: false,
+                    }
                 })
                 .collect(),
             upstream_url: pkg.url().map(|x| x.to_string()),
