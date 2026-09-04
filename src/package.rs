@@ -235,7 +235,7 @@ impl From<AurInfo> for Package {
                 popularity: info.popularity,
                 submitted: normalized_epoch(info.first_submitted),
                 last_modified: normalized_epoch(info.last_modified),
-                flagged: info.out_of_date.filter(|epoch| *epoch > 0),
+                flagged: info.out_of_date.and_then(normalized_epoch),
                 make_depends: info.make_depends,
                 check_depends: info.check_depends,
             }),

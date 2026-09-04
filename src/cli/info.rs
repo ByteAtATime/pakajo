@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::color;
 use crate::package::{InstalledData, OptDependency, Package, PackageKind};
 
@@ -8,6 +10,29 @@ const LINK: &str = "\x1b[4;36m";
 const NOT_INSTALLED: &str = "\x1b[2;37m";
 const DEP_PREVIEW: usize = 6;
 const AUR_DEP_PREVIEW: usize = 4;
+
+fn installed_data(local: &alpm::Package) -> InstalledData {
+    InstalledData {
+        version: local.version().to_string(),
+        explicit: matches!(local.reason(), alpm::PackageReason::Explicit),
+        install_date: local.install_date().and_then(|d| (d > 0).then_some(d)),
+        script: local.has_scriptlet(),
+    }
+}
+
+fn enrich(pkg: &mut Package, localdb: &alpm::Db, installed: &alpm::AlpmList<&alpm::Package>) {
+    if !is_local_view(pkg)
+        && let Ok(local) = localdb.pkg(pkg.name.as_str())
+    {
+        pkg.installed = Some(installed_data(local));
+    }
+    for dep in &mut pkg.opt_dependencies {
+        let constraint = dep.version.as_deref().unwrap_or_default();
+        dep.installed = installed
+            .find_satisfier(format!("{}{constraint}", dep.name))
+            .is_some();
+    }
+}
 
 pub fn run(targets: Vec<String>) -> ! {
     let handle = super::alpm_handle_or_exit();
@@ -25,56 +50,34 @@ pub fn run(targets: Vec<String>) -> ! {
         }
     }
     if !pending.is_empty() {
-        let aur = resolve_aur(&pending);
+        let mut aur = resolve_aur(&pending);
         for (slot, target) in resolved.iter_mut().zip(targets.iter()) {
             if slot.is_none()
-                && let Some(info) = aur.get(target)
+                && let Some(info) = aur.remove(target)
             {
-                *slot = Some(Package::from(info.clone()));
+                *slot = Some(Package::from(info));
             }
         }
         for (slot, target) in resolved.iter_mut().zip(targets.iter()) {
-            if slot.is_some() {
-                continue;
-            }
-            if let Ok(local) = handle.localdb().pkg(target.as_str()) {
+            if slot.is_none()
+                && let Ok(local) = handle.localdb().pkg(target.as_str())
+            {
                 let mut pkg = Package::from(local);
-                let install_date = local.install_date().and_then(|d| (d > 0).then_some(d));
-                pkg.installed = Some(InstalledData {
-                    version: local.version().to_string(),
-                    explicit: matches!(local.reason(), alpm::PackageReason::Explicit),
-                    install_date,
-                    script: local.has_scriptlet(),
-                });
+                pkg.installed = Some(installed_data(local));
                 *slot = Some(pkg);
             }
         }
     }
     let mut rendered: Vec<String> = Vec::new();
     let mut missed: Vec<String> = Vec::new();
+    let localdb = handle.localdb();
+    let installed = localdb.pkgs();
     for (target, slot) in targets.iter().zip(resolved.iter_mut()) {
         let Some(pkg) = slot else {
             missed.push(target.clone());
             continue;
         };
-        if !is_local_view(pkg)
-            && let Ok(local) = handle.localdb().pkg(pkg.name.as_str())
-        {
-            let install_date = local.install_date().and_then(|d| (d > 0).then_some(d));
-            pkg.installed = Some(InstalledData {
-                version: local.version().to_string(),
-                explicit: matches!(local.reason(), alpm::PackageReason::Explicit),
-                install_date,
-                script: local.has_scriptlet(),
-            });
-        }
-        let pkgs = handle.localdb().pkgs();
-        for dep in &mut pkg.opt_dependencies {
-            let constraint = dep.version.as_deref().unwrap_or_default();
-            dep.installed = pkgs
-                .find_satisfier(format!("{}{constraint}", dep.name))
-                .is_some();
-        }
+        enrich(pkg, &localdb, &installed);
         rendered.push(render(pkg, stdout_color))
     }
     if !rendered.is_empty() {
@@ -93,7 +96,7 @@ pub fn run(targets: Vec<String>) -> ! {
     std::process::exit(0);
 }
 
-fn resolve_aur(names: &[String]) -> std::collections::HashMap<String, crate::aur::AurInfo> {
+fn resolve_aur(names: &[String]) -> HashMap<String, crate::aur::AurInfo> {
     let client = crate::aur::AurClient::new();
     match client.info_many(names) {
         Ok(infos) => infos
@@ -104,16 +107,14 @@ fn resolve_aur(names: &[String]) -> std::collections::HashMap<String, crate::aur
     }
 }
 
-fn cached_aur(names: &[String]) -> std::collections::HashMap<String, crate::aur::AurInfo> {
-    let path = match crate::db::PackageDb::db_path() {
-        Ok(path) => path,
-        Err(_) => return std::collections::HashMap::new(),
+fn cached_aur(names: &[String]) -> HashMap<String, crate::aur::AurInfo> {
+    let Some(db) = crate::db::PackageDb::db_path()
+        .ok()
+        .and_then(|path| crate::db::PackageDb::open(&path).ok())
+    else {
+        return HashMap::new();
     };
-    let db = match crate::db::PackageDb::open(&path) {
-        Ok(db) => db,
-        Err(_) => return std::collections::HashMap::new(),
-    };
-    let mut found = std::collections::HashMap::new();
+    let mut found = HashMap::new();
     for name in names {
         if let Ok(Some(info)) = db.detail(name) {
             found.insert(name.clone(), info);
@@ -145,14 +146,12 @@ fn format_ymd(epoch: i64) -> String {
 
 fn grouped_votes(votes: u64) -> String {
     let digits: Vec<char> = votes.to_string().chars().collect();
-    let mut out = String::new();
-    for (index, digit) in digits.iter().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(*digit);
-    }
-    out
+    digits
+        .rchunks(3)
+        .rev()
+        .map(|chunk| chunk.iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn installed_row(pkg: &Package, stdout_color: bool) -> Option<(&'static str, String)> {
@@ -295,47 +294,40 @@ fn package_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)
     if let Some(row) = installed_row(pkg, stdout_color) {
         rows.push(row);
     }
-    if let PackageKind::Repo(data) = &pkg.kind {
-        let script = match pkg.installed.as_ref() {
-            Some(overlay) => overlay.script,
-            None => data.script,
-        };
-        rows.push(("Install Script", yes_no(script)));
-        if data.is_local() {
-            rows.push(("Size on Disk", humanized(data.installed_size)));
-        } else {
-            rows.push((
-                "Size",
-                format!(
-                    "{} {}, {} {}",
-                    humanized(data.download_size),
-                    color::paint(stdout_color, color::GRAY, "(download)"),
-                    humanized(data.installed_size),
-                    color::paint(stdout_color, color::GRAY, "(installed)"),
-                ),
-            ));
-        }
-        if let Some(epoch) = data.build_date {
-            rows.push(("Build Date", format_date(epoch)));
-        }
+    let PackageKind::Repo(data) = &pkg.kind else {
+        return rows;
+    };
+    let script = match pkg.installed.as_ref() {
+        Some(overlay) => overlay.script,
+        None => data.script,
+    };
+    rows.push(("Install Script", yes_no(script)));
+    if data.is_local() {
+        rows.push(("Size on Disk", humanized(data.installed_size)));
+    } else {
+        rows.push((
+            "Size",
+            format!(
+                "{} {}, {} {}",
+                humanized(data.download_size),
+                color::paint(stdout_color, color::GRAY, "(download)"),
+                humanized(data.installed_size),
+                color::paint(stdout_color, color::GRAY, "(installed)"),
+            ),
+        ));
     }
-    if matches!(pkg.kind, PackageKind::Repo(_)) {
-        rows.push(("Packager", pkg.maintainer.clone().unwrap_or_default()));
+    if let Some(epoch) = data.build_date {
+        rows.push(("Build Date", format_date(epoch)));
     }
-    if matches!(pkg.kind, PackageKind::Repo(_)) {
-        rows.push(("License", pkg.licenses.join(", ")));
-    }
-    if let PackageKind::Repo(data) = &pkg.kind
-        && !data.validated_by.is_empty()
-    {
+    rows.push(("Packager", pkg.maintainer.clone().unwrap_or_default()));
+    rows.push(("License", pkg.licenses.join(", ")));
+    if !data.validated_by.is_empty() {
         rows.push(("Validated By", data.validated_by.clone()));
     }
-    if matches!(pkg.kind, PackageKind::Repo(_)) {
-        rows.push(("Groups", pkg.groups.join(", ")));
-        rows.push(("Provides", pkg.provides.join(", ")));
-        rows.push(("Conflicts", pkg.conflicts.join(", ")));
-        rows.push(("Replaces", pkg.replaces.join(", ")));
-    }
+    rows.push(("Groups", pkg.groups.join(", ")));
+    rows.push(("Provides", pkg.provides.join(", ")));
+    rows.push(("Conflicts", pkg.conflicts.join(", ")));
+    rows.push(("Replaces", pkg.replaces.join(", ")));
     rows
 }
 
@@ -415,11 +407,7 @@ fn build_source_section(
     let mut out = section_title_line("Build & Source", stdout_color);
     for (label, value) in kept {
         let tint = if *label == "AUR Link" { LINK } else { VALUE };
-        out.push_str(&format!(
-            "\n    {} {}",
-            color::paint(stdout_color, color::GRAY, &format!("{label:<15}")),
-            color::paint(stdout_color, tint, value),
-        ));
+        out.push_str(&section_row(label, value, tint, stdout_color));
     }
     Some(out)
 }
@@ -518,6 +506,14 @@ fn opt_dependency_section(pkg: &Package, stdout_color: bool) -> Option<String> {
     Some(out)
 }
 
+fn section_row(label: &str, value: &str, tint: &str, stdout_color: bool) -> String {
+    format!(
+        "\n    {} {}",
+        color::paint(stdout_color, color::GRAY, &format!("{label:<15}")),
+        color::paint(stdout_color, tint, value),
+    )
+}
+
 fn section(title: &str, rows: &[(&'static str, String)], stdout_color: bool) -> Option<String> {
     let kept: Vec<_> = rows.iter().filter(|(_, value)| !value.is_empty()).collect();
     if kept.is_empty() {
@@ -525,11 +521,7 @@ fn section(title: &str, rows: &[(&'static str, String)], stdout_color: bool) -> 
     }
     let mut out = section_title_line(title, stdout_color);
     for (label, value) in kept {
-        out.push_str(&format!(
-            "\n    {} {}",
-            color::paint(stdout_color, color::GRAY, &format!("{label:<15}")),
-            color::paint(stdout_color, VALUE, value),
-        ));
+        out.push_str(&section_row(label, value, VALUE, stdout_color));
     }
     Some(out)
 }
