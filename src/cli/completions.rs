@@ -34,7 +34,7 @@ _pakajo_dyn() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     mode=""
     case $sub in
-        install|add|-S|search) mode=available ;;
+        install|add|-S|search|info) mode=available ;;
         remove|uninstall|rm|-R) mode=installed ;;
     esac
     if [[ $cur == -* || $prev == --approvals || -z $mode ]]; then
@@ -58,7 +58,7 @@ _pakajo() {
     prev="${words[CURRENT-1]}"
     mode=""
     case $sub in
-        install|add|-S|search) mode=available ;;
+        install|add|-S|search|info) mode=available ;;
         remove|uninstall|rm|-R) mode=installed ;;
     esac
     if (( CURRENT > 2 )) && [[ -n $mode && ${words[CURRENT]} != -* && $prev != --approvals ]]; then
@@ -90,7 +90,7 @@ function __pakajo_pkg_mode
         return 1
     end
     switch $sub
-        case install add -S search
+        case install add -S search info
             echo available
         case remove uninstall rm -R
             echo installed
