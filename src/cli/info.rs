@@ -33,6 +33,22 @@ pub fn run(targets: Vec<String>) -> ! {
                 *slot = Some(Package::from(info.clone()));
             }
         }
+        for (slot, target) in resolved.iter_mut().zip(targets.iter()) {
+            if slot.is_some() {
+                continue;
+            }
+            if let Ok(local) = handle.localdb().pkg(target.as_str()) {
+                let mut pkg = Package::from(local);
+                let install_date = local.install_date().and_then(|d| (d > 0).then_some(d));
+                pkg.installed = Some(InstalledData {
+                    version: local.version().to_string(),
+                    explicit: matches!(local.reason(), alpm::PackageReason::Explicit),
+                    install_date,
+                    script: local.has_scriptlet(),
+                });
+                *slot = Some(pkg);
+            }
+        }
     }
     let mut rendered: Vec<String> = Vec::new();
     let mut missed: Vec<String> = Vec::new();
@@ -41,7 +57,9 @@ pub fn run(targets: Vec<String>) -> ! {
             missed.push(target.clone());
             continue;
         };
-        if let Ok(local) = handle.localdb().pkg(pkg.name.as_str()) {
+        if !is_local_view(pkg)
+            && let Ok(local) = handle.localdb().pkg(pkg.name.as_str())
+        {
             let install_date = local.install_date().and_then(|d| (d > 0).then_some(d));
             pkg.installed = Some(InstalledData {
                 version: local.version().to_string(),
@@ -237,6 +255,14 @@ fn aur_badge(stdout_color: bool) -> String {
     color::paint(stdout_color, color::MAGENTA, "[aur]")
 }
 
+fn local_badge(stdout_color: bool) -> String {
+    color::paint(stdout_color, color::YELLOW, "[local]")
+}
+
+fn is_local_view(pkg: &Package) -> bool {
+    matches!(&pkg.kind, PackageKind::Repo(data) if data.is_local())
+}
+
 fn section_title(has_installed: bool) -> &'static str {
     if has_installed {
         "Status"
@@ -251,6 +277,7 @@ fn header(pkg: &Package, origin: &str, installed: bool, stdout_color: bool) -> S
             format!("{} {}", aur_badge(stdout_color), badge(true, stdout_color))
         }
         PackageKind::Aur(_) => aur_badge(stdout_color),
+        PackageKind::Repo(data) if data.is_local() => local_badge(stdout_color),
         PackageKind::Repo(_) => badge(installed, stdout_color),
     };
     format!(
@@ -274,16 +301,20 @@ fn package_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)
             None => data.script,
         };
         rows.push(("Install Script", yes_no(script)));
-        rows.push((
-            "Size",
-            format!(
-                "{} {}, {} {}",
-                humanized(data.download_size),
-                color::paint(stdout_color, color::GRAY, "(download)"),
-                humanized(data.installed_size),
-                color::paint(stdout_color, color::GRAY, "(installed)"),
-            ),
-        ));
+        if data.is_local() {
+            rows.push(("Size on Disk", humanized(data.installed_size)));
+        } else {
+            rows.push((
+                "Size",
+                format!(
+                    "{} {}, {} {}",
+                    humanized(data.download_size),
+                    color::paint(stdout_color, color::GRAY, "(download)"),
+                    humanized(data.installed_size),
+                    color::paint(stdout_color, color::GRAY, "(installed)"),
+                ),
+            ));
+        }
         if let Some(epoch) = data.build_date {
             rows.push(("Build Date", format_date(epoch)));
         }
@@ -1209,6 +1240,110 @@ mod tests {
         ] {
             assert_eq!(grouped_votes(votes), expected);
         }
+    }
+
+    fn local_package() -> Package {
+        Package {
+            name: "custom-driver-dkms".to_string(),
+            description: Some(
+                "Custom out-of-tree kernel driver built locally via PKGBUILD".to_string(),
+            ),
+            version: "2.1.0-1".to_string(),
+            maintainer: Some("Alice Developer <alice@lan>".to_string()),
+            licenses: vec!["GPL-2.0-only".to_string()],
+            groups: vec![],
+            provides: vec!["virtual-driver=2.1".to_string()],
+            conflicts: vec!["legacy-driver".to_string()],
+            replaces: vec!["old-custom-driver".to_string()],
+            dependencies: vec!["dkms".to_string(), "linux-headers".to_string()],
+            opt_dependencies: vec![
+                opt_dep(
+                    "linux-zen-headers",
+                    Some("kernel headers for zen flavor"),
+                    true,
+                ),
+                opt_dep(
+                    "linux-lts-headers",
+                    Some("kernel headers for lts flavor"),
+                    false,
+                ),
+            ],
+            upstream_url: Some("https://internal.lan/driver".to_string()),
+            installed: Some(InstalledData {
+                version: "2.1.0-1".to_string(),
+                explicit: false,
+                install_date: Some(1786406400),
+                script: true,
+            }),
+            kind: PackageKind::Repo(RepoData {
+                repo: Some("local".to_string()),
+                architecture: Some("x86_64".to_string()),
+                installed_size: 5054136,
+                download_size: 0,
+                build_date: Some(1786406400),
+                validated_by: "SHA-256".to_string(),
+                script: true,
+                required_by: vec!["workstation-meta".to_string()],
+                optional_for: vec!["custom-control-panel".to_string()],
+            }),
+        }
+    }
+
+    #[test]
+    fn render_local_plain() {
+        let epoch = 1786406400;
+        let date = format_date(epoch);
+        let expected = format!(
+            "local/x86_64 :: custom-driver-dkms 2.1.0-1 [local]\n\
+            Custom out-of-tree kernel driver built locally via PKGBUILD\n\
+            https://internal.lan/driver\n\
+            \n  Status\n\
+            \x20   Installed       {date} (installed as dependency)\n\
+            \x20   Install Script  Yes\n\
+            \x20   Size on Disk    4.82 MiB\n\
+            \x20   Build Date      {date}\n\
+            \x20   Packager        Alice Developer <alice@lan>\n\
+            \x20   License         GPL-2.0-only\n\
+            \x20   Validated By    SHA-256\n\
+            \x20   Provides        virtual-driver=2.1\n\
+            \x20   Conflicts       legacy-driver\n\
+            \x20   Replaces        old-custom-driver\n\
+            \n  Dependencies (2)\n\
+            \x20   Required        dkms, linux-headers\n\
+            \x20   Required By     workstation-meta\n\
+            \x20   Optional For    custom-control-panel\n\
+            \n  Optional Dependencies (2)\n\
+            \x20   [✓] linux-zen-headers         kernel headers for zen flavor\n\
+            \x20   [ ] linux-lts-headers         kernel headers for lts flavor",
+        );
+        assert_eq!(render(&local_package(), false), expected);
+    }
+
+    #[test]
+    fn render_local_colored_fragments_byte_exact() {
+        let rendered = render(&local_package(), true);
+        assert!(rendered.contains("\x1b[1;34mlocal/x86_64\x1b[0m"));
+        assert!(rendered.contains("\x1b[1;33m[local]\x1b[0m"));
+        assert!(rendered.contains("\x1b[37m4.82 MiB\x1b[0m"));
+        assert!(rendered.contains("Size on Disk"));
+    }
+
+    #[test]
+    fn render_size_download_gating() {
+        let sync_rendered = render(&full_package(), false);
+        assert!(sync_rendered.contains("(download)"));
+        assert!(!sync_rendered.contains("Size on Disk"));
+        let local_rendered = render(&local_package(), false);
+        assert!(local_rendered.contains("Size on Disk"));
+        assert!(!local_rendered.contains("(download)"));
+        assert!(!local_rendered.contains("download"));
+    }
+
+    #[test]
+    fn is_local_view_selects_branch() {
+        assert!(is_local_view(&local_package()));
+        assert!(!is_local_view(&full_package()));
+        assert!(!is_local_view(&aur_package()));
     }
 
     #[test]
