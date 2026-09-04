@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn collect_group_index_includes_base_devel() {
+    fn group_index_includes_base_devel() {
         let handle = crate::install::setup_fake_root("group_index");
         let index = group_index(&handle);
         assert!(
