@@ -1,5 +1,4 @@
 use crate::aur::AurInfo;
-use regex::Regex;
 
 #[derive(Debug, Clone)]
 pub struct OptDependency {
@@ -41,24 +40,36 @@ pub struct Package {
 
 impl Package {
     pub fn maintainer_name(&self) -> Option<String> {
-        let re = Regex::new(r"(.+) <.+>").expect("Failed to parse maintainer name regex");
+        let maintainer = self.maintainer.clone()?;
 
-        if let Some(groups) = re.captures(&self.maintainer.clone()?) {
-            Some(groups[1].to_string())
+        if let Some((name, _rest)) = maintainer.split_once(" <") {
+            Some(name.to_string())
         } else {
-            self.maintainer.clone()
+            Some(maintainer)
         }
     }
 }
 
 fn parse_opt_dependency(dependency: &str) -> Option<OptDependency> {
-    // TODO: write a proper regex for package names + comparisons
-    let re = Regex::new(r"([^:]+)(: (.+))?").expect("Failed to parse opt dependency regex");
+    if let Some((name, reason)) = dependency.split_once(": ") {
+        if name.is_empty() {
+            return None;
+        }
 
-    re.captures(dependency).map(|groups| OptDependency {
-        name: groups[1].to_string(),
-        reason: groups.get(3).map(|x| x.as_str().to_string()),
-    })
+        Some(OptDependency {
+            name: name.to_string(),
+            reason: (!reason.is_empty()).then(|| reason.to_string()),
+        })
+    } else {
+        if dependency.is_empty() {
+            return None;
+        }
+
+        Some(OptDependency {
+            name: dependency.to_string(),
+            reason: None,
+        })
+    }
 }
 
 impl From<&alpm::Package> for Package {
