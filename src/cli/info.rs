@@ -1,5 +1,5 @@
 use crate::color;
-use crate::package::{InstalledData, Package, PackageKind};
+use crate::package::{InstalledData, OptDependency, Package, PackageKind};
 
 const NAME: &str = "\x1b[1;37m";
 const VERSION: &str = "\x1b[1;36m";
@@ -24,6 +24,15 @@ pub fn run(targets: Vec<String>) -> ! {
                         install_date,
                         script: local.has_scriptlet(),
                     });
+                }
+                if !pkg.opt_dependencies.is_empty() {
+                    for dep in &mut pkg.opt_dependencies {
+                        dep.installed = handle
+                            .localdb()
+                            .pkgs()
+                            .find_satisfier(dep.name.as_str())
+                            .is_some();
+                    }
                 }
                 rendered.push(render(&pkg, stdout_color))
             }
@@ -101,6 +110,9 @@ pub fn render(pkg: &Package, stdout_color: bool) -> String {
             stdout_color,
         )
     {
+        out.push_str(&rendered);
+    }
+    if let Some(rendered) = opt_dependency_section(pkg, stdout_color) {
         out.push_str(&rendered);
     }
     out
@@ -219,6 +231,47 @@ fn dependency_rows(pkg: &Package, data: &crate::package::RepoData) -> Vec<(Strin
     rows
 }
 
+fn opt_dependency_line(dep: &OptDependency, stdout_color: bool) -> String {
+    let (check, tint) = match dep.installed {
+        true => ("[✓]", color::GREEN),
+        false => ("[ ]", color::GRAY),
+    };
+    let name_tint = match dep.installed {
+        true => VALUE,
+        false => color::GRAY,
+    };
+    let mut line = format!(
+        "{} {}",
+        color::paint(stdout_color, tint, check),
+        color::paint(stdout_color, name_tint, &format!("{:<25}", dep.name)),
+    );
+    if let Some(reason) = dep.reason.as_deref() {
+        line.push(' ');
+        line.push_str(&color::paint(stdout_color, color::GRAY, reason));
+    }
+    line
+}
+
+fn opt_dependency_section(pkg: &Package, stdout_color: bool) -> Option<String> {
+    if pkg.opt_dependencies.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    out.push('\n');
+    out.push_str(&format!(
+        "\n  {}",
+        color::paint(
+            stdout_color,
+            color::COLON,
+            &format!("Optional Dependencies ({})", pkg.opt_dependencies.len()),
+        )
+    ));
+    for dep in &pkg.opt_dependencies {
+        out.push_str(&format!("\n    {}", opt_dependency_line(dep, stdout_color)));
+    }
+    Some(out)
+}
+
 fn section(title: &str, rows: &[(String, String)], stdout_color: bool) -> Option<String> {
     let kept: Vec<(&str, &str)> = rows
         .iter()
@@ -247,7 +300,7 @@ fn section(title: &str, rows: &[(String, String)], stdout_color: bool) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::package::{InstalledData, RepoData};
+    use crate::package::{InstalledData, OptDependency, RepoData};
 
     fn full_package() -> Package {
         Package {
@@ -510,5 +563,63 @@ mod tests {
         assert!(rendered.contains("\n  Dependencies (0)"));
         assert!(rendered.contains("Required By     some-meta"));
         assert!(!rendered.contains("Required        "));
+    }
+
+    fn opt_package() -> Package {
+        let mut pkg = full_package();
+        pkg.opt_dependencies = vec![
+            OptDependency {
+                name: "cmake".to_string(),
+                reason: Some("to build plugins with hyprpm".to_string()),
+                installed: true,
+            },
+            OptDependency {
+                name: "hyprshutdown".to_string(),
+                reason: Some("clean logout and shutdown helper".to_string()),
+                installed: false,
+            },
+            OptDependency {
+                name: "bare-tool".to_string(),
+                reason: None,
+                installed: false,
+            },
+        ];
+        pkg
+    }
+
+    #[test]
+    fn render_opt_dependencies_plain() {
+        let rendered = render(&opt_package(), false);
+        assert!(rendered.contains("\n  Optional Dependencies (3)"));
+        assert!(
+            rendered.contains("    [✓] cmake                     to build plugins with hyprpm")
+        );
+        assert!(
+            rendered.contains("    [ ] hyprshutdown              clean logout and shutdown helper")
+        );
+    }
+
+    #[test]
+    fn render_opt_dependency_without_reason() {
+        let rendered = render(&opt_package(), false);
+        let line = rendered
+            .lines()
+            .find(|line| line.contains("bare-tool"))
+            .expect("bare-tool row must render");
+        assert_eq!(line, "    [ ] bare-tool                ");
+    }
+
+    #[test]
+    fn render_opt_dependencies_colored() {
+        let rendered = render(&opt_package(), true);
+        assert!(rendered.contains("\x1b[1;32m[✓]\x1b[0m"));
+        assert!(rendered.contains("\x1b[90m[ ]\x1b[0m"));
+        assert!(rendered.contains("\x1b[1;34mOptional Dependencies (3)\x1b[0m"));
+    }
+
+    #[test]
+    fn render_opt_dependencies_omitted_when_empty() {
+        let rendered = render(&full_package(), false);
+        assert!(!rendered.contains("Optional Dependencies"));
     }
 }

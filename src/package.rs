@@ -4,6 +4,7 @@ use crate::aur::AurInfo;
 pub struct OptDependency {
     pub name: String,
     pub reason: Option<String>,
+    pub installed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +105,7 @@ fn parse_opt_dependency(dependency: &str) -> Option<OptDependency> {
         Some(OptDependency {
             name: name.to_string(),
             reason: (!reason.is_empty()).then(|| reason.to_string()),
+            installed: false,
         })
     } else {
         if dependency.is_empty() {
@@ -113,6 +115,7 @@ fn parse_opt_dependency(dependency: &str) -> Option<OptDependency> {
         Some(OptDependency {
             name: dependency.to_string(),
             reason: None,
+            installed: false,
         })
     }
 }
@@ -161,7 +164,11 @@ impl From<&alpm::Package> for Package {
             opt_dependencies: pkg
                 .optdepends()
                 .iter()
-                .filter_map(|x| parse_opt_dependency(&x.to_string()))
+                .map(|x| OptDependency {
+                    name: x.name().to_string(),
+                    reason: x.desc().map(|x| x.to_string()),
+                    installed: false,
+                })
                 .collect(),
             upstream_url: pkg.url().map(|x| x.to_string()),
             installed: None,
