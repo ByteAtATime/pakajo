@@ -27,6 +27,8 @@ mod aur;
 
 mod repo;
 
+mod resolve;
+
 mod shared;
 
 mod pkgbuild;

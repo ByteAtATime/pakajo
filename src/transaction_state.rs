@@ -49,6 +49,8 @@ pub struct DownloadFile {
 #[derive(Debug, Clone)]
 pub struct RepoState {
     pub manifest: Option<TransactionSummary>,
+    pub resolve_started: bool,
+    pub resolve_checking: bool,
     pub stage: RepoStage,
     pub download_total: usize,
     pub download_done: usize,
@@ -71,6 +73,19 @@ impl RepoState {
         self.download_total
             .saturating_sub(self.download_done)
             .saturating_sub(active)
+    }
+
+    pub fn resolve_step(&self) -> usize {
+        if self.manifest.is_some() {
+            return 3;
+        }
+        if self.resolve_checking {
+            return 2;
+        }
+        if self.resolve_started {
+            return 1;
+        }
+        0
     }
 }
 
@@ -96,6 +111,7 @@ pub fn event_stage(ev: &InstallEvent) -> Option<RepoStage> {
     match ev {
         ResolvingDependencies => Some(Resolve),
         CheckingConflicts
+        | CheckingDependencies
         | CheckingFileConflicts
         | CheckingIntegrity
         | CheckingDiskSpace
@@ -186,6 +202,22 @@ pub fn cell_state(status: &InstallProgress, current_idx: usize, idx: usize) -> C
 
 pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
     match ev {
+        InstallEvent::ResolvingDependencies | InstallEvent::ResolvingAurDependencies { .. } => {
+            state.resolve_started = true;
+        }
+        InstallEvent::CheckingConflicts
+        | InstallEvent::CheckingDependencies
+        | InstallEvent::CheckingFileConflicts
+        | InstallEvent::AurDepResolved { .. }
+        | InstallEvent::ResolutionComplete { .. } => {
+            state.resolve_started = true;
+            state.resolve_checking = true;
+        }
+        InstallEvent::TransactionSummary(summary) => {
+            state.resolve_started = true;
+            state.resolve_checking = true;
+            state.manifest = Some(summary.clone());
+        }
         InstallEvent::RetrievingPackages { num, total_bytes } => {
             state.download_total = *num;
             state.download_done = 0;
@@ -553,6 +585,8 @@ mod tests {
     fn fresh_repo_state() -> RepoState {
         RepoState {
             manifest: None,
+            resolve_started: false,
+            resolve_checking: false,
             stage: RepoStage::Resolve,
             download_total: 0,
             download_done: 0,

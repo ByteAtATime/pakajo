@@ -22,16 +22,23 @@ pub(super) struct Section<'a> {
     pub(super) label: &'static str,
     pub(super) state: StageState,
     pub(super) content: Option<Element<'a>>,
+    pub(super) header_suffix: Option<Element<'a>>,
 }
 
 pub(super) fn stage_row(section: Section<'_>, expanded: bool, index: usize) -> Element<'_> {
-    let state = section.state;
+    let Section {
+        label,
+        state,
+        content,
+        header_suffix,
+    } = section;
     let gutter = stage_glyph(state);
-    let header = header_row(state, section.label);
+    let has_suffix = header_suffix.is_some();
+    let header = header_row(state, label, header_suffix);
 
     let content: Element<'_> = match state {
         StageState::Pending => header,
-        StageState::Active => match section.content {
+        StageState::Active => match content {
             Some(content) => Column::new()
                 .spacing(6)
                 .push(header)
@@ -44,24 +51,11 @@ pub(super) fn stage_row(section: Section<'_>, expanded: bool, index: usize) -> E
             .push(header)
             .push(muted(text("failed")))
             .into(),
-        StageState::Done => {
-            let toggle = button::custom(header)
-                .padding([2.0, 0.0])
-                .width(Length::Fill)
-                .class(cosmic::theme::Button::Transparent)
-                .on_press(crate::Message::Transaction(
-                    TransactionMessage::ToggleStage(index),
-                ));
-            if expanded {
-                Column::new()
-                    .spacing(6)
-                    .push(toggle)
-                    .push(muted(text("Completed")))
-                    .into()
-            } else {
-                toggle.into()
-            }
-        }
+        StageState::Done => match content {
+            Some(detail) if expanded || !has_suffix => toggle_detail(header, index, detail),
+            Some(_) => done_toggle(header, index),
+            None => header,
+        },
     };
 
     let body = Row::new()
@@ -77,6 +71,25 @@ pub(super) fn stage_row(section: Section<'_>, expanded: bool, index: usize) -> E
 }
 
 const GLYPH_GUTTER_WIDTH: f32 = 18.0;
+
+fn done_toggle(header: Element<'_>, index: usize) -> Element<'_> {
+    button::custom(header)
+        .padding([2.0, 0.0])
+        .width(Length::Fill)
+        .class(cosmic::theme::Button::Transparent)
+        .on_press(crate::Message::Transaction(
+            TransactionMessage::ToggleStage(index),
+        ))
+        .into()
+}
+
+fn toggle_detail<'a>(header: Element<'a>, index: usize, detail: Element<'a>) -> Element<'a> {
+    Column::new()
+        .spacing(6)
+        .push(done_toggle(header, index))
+        .push(detail)
+        .into()
+}
 
 fn stage_glyph(state: StageState) -> Element<'static> {
     let glyph_text: &'static str = match state {
@@ -96,7 +109,11 @@ fn stage_glyph(state: StageState) -> Element<'static> {
         .into()
 }
 
-fn header_row(state: StageState, label: &'static str) -> Element<'static> {
+fn header_row<'a>(
+    state: StageState,
+    label: &'static str,
+    suffix: Option<Element<'a>>,
+) -> Element<'a> {
     let label_widget = match state {
         StageState::Active => text(label).font(cosmic::font::bold()).size(18.0),
         StageState::Done => text(label).font(cosmic::font::semibold()),
@@ -109,12 +126,15 @@ fn header_row(state: StageState, label: &'static str) -> Element<'static> {
         StageState::Failed => on_color,
     };
 
-    Row::new()
+    let mut row = Row::new()
         .width(Length::Fill)
         .spacing(8)
         .push(tinted(label_widget, label_color_fn))
-        .push(space::horizontal())
-        .into()
+        .push(space::horizontal());
+    if let Some(suffix) = suffix {
+        row = row.push(suffix);
+    }
+    row.into()
 }
 
 fn stage_panel_style(theme: &cosmic::Theme, state: StageState) -> container::Style {

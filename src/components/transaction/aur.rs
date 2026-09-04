@@ -2,6 +2,7 @@ use cosmic::widget::{Column, scrollable, text};
 use pakajo::transaction_state::{InstallKind, RepoStage, RepoState};
 
 use super::accordion::{Section, action_footer, stage_row};
+use super::resolve::resolve_section;
 use super::shared::download_view;
 use super::state::{StageState, TransactionModel, TransactionStatus};
 use crate::Element;
@@ -15,13 +16,19 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
     let mut panels = Column::new().spacing(6);
     for (i, stage) in model.stages.iter().enumerate() {
         let state = model.stage_state(i);
-        let content = (state == StageState::Active).then(|| active_view(&model.repo_state, *stage));
-        let section = Section {
-            label: stage_label(*stage),
-            state,
-            content,
+        let expanded = model.expanded.contains(&i);
+        let section = if *stage == RepoStage::Resolve {
+            resolve_section(&model.repo_state, state)
+        } else {
+            Section {
+                label: stage_label(*stage),
+                state,
+                content: (state == StageState::Active)
+                    .then(|| active_view(&model.repo_state, *stage)),
+                header_suffix: None,
+            }
         };
-        panels = panels.push(stage_row(section, model.expanded.contains(&i), i));
+        panels = panels.push(stage_row(section, expanded, i));
     }
     let mut col = Column::new().spacing(16).push(text(title)).push(panels);
     if matches!(model.status, TransactionStatus::Done(_)) {

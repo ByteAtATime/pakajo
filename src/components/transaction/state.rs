@@ -47,6 +47,8 @@ impl TransactionModel {
             current_idx: 0,
             repo_state: RepoState {
                 manifest: None,
+                resolve_started: false,
+                resolve_checking: false,
                 stage: RepoStage::Resolve,
                 download_total: 0,
                 download_done: 0,
@@ -70,12 +72,29 @@ impl TransactionModel {
 
     pub(crate) fn apply_event(&mut self, ev: &InstallEvent) {
         apply_repo_counters(&mut self.repo_state, ev);
+        if matches!(ev, InstallEvent::TransactionSummary(_)) {
+            self.leave_resolve();
+            return;
+        }
         if let Some(stage) = event_stage(ev)
             && let Some(idx) = self.stages.iter().position(|s| *s == stage)
             && idx > self.current_idx
+            && !self.awaiting_manifest()
         {
             self.current_idx = idx;
         }
+    }
+
+    fn leave_resolve(&mut self) {
+        if self.current_idx == 0 && self.stages.first() == Some(&RepoStage::Resolve) {
+            self.current_idx = 1;
+        }
+    }
+
+    fn awaiting_manifest(&self) -> bool {
+        self.current_idx == 0
+            && self.stages.first() == Some(&RepoStage::Resolve)
+            && self.repo_state.manifest.is_none()
     }
 
     pub(crate) fn finish(&mut self, outcome: ChildOutcome) {
