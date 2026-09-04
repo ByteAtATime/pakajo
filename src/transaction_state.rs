@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::time::Instant;
 
-use crate::events::{InstallEvent, ProgressPhase, TransactionSummary};
+use crate::events::{InstallEvent, PackageOp, ProgressPhase, TransactionSummary};
 use crate::install::InstallProgress;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +47,15 @@ pub struct DownloadFile {
 }
 
 #[derive(Debug, Clone)]
+pub struct InstallPackage {
+    pub operation: PackageOp,
+    pub new_version: Option<String>,
+    pub old_version: Option<String>,
+    pub percent: f32,
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct RepoState {
     pub manifest: Option<TransactionSummary>,
     pub resolve_started: bool,
@@ -63,6 +72,8 @@ pub struct RepoState {
     pub download_rate: f64,
     pub download_sync_time: Option<Instant>,
     pub download_sync_done: i64,
+    pub install_order: Vec<String>,
+    pub install_packages: HashMap<String, InstallPackage>,
 }
 
 impl RepoState {
@@ -124,6 +135,11 @@ fn track_validate_check(state: &mut RepoState, ev: &InstallEvent) {
         state.validate_checks |= 1 << bit;
         state.validate_label = VALIDATE_LABELS[bit as usize];
     }
+}
+
+fn is_install_phase(phase: &ProgressPhase) -> bool {
+    use ProgressPhase::*;
+    matches!(phase, Add | Upgrade | Downgrade | Reinstall | Remove)
 }
 
 #[derive(Debug, Clone)]
@@ -260,6 +276,37 @@ pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
             state.resolve_started = true;
             state.resolve_checking = true;
             state.manifest = Some(summary.clone());
+        }
+        InstallEvent::PackageOperation {
+            operation,
+            package,
+            new_version,
+            old_version,
+        } => {
+            if !state.install_packages.contains_key(package) {
+                state.install_order.push(package.clone());
+            }
+            state.install_packages.insert(
+                package.clone(),
+                InstallPackage {
+                    operation: *operation,
+                    new_version: new_version.clone(),
+                    old_version: old_version.clone(),
+                    percent: 0.0,
+                    completed: false,
+                },
+            );
+        }
+        InstallEvent::Progress {
+            phase,
+            package,
+            percent,
+            ..
+        } if is_install_phase(phase) => {
+            if let Some(entry) = state.install_packages.get_mut(package) {
+                entry.percent = (*percent as f32).clamp(0.0, 100.0);
+                entry.completed = *percent >= 100;
+            }
         }
         InstallEvent::RetrievingPackages { num, total_bytes } => {
             state.download_total = *num;
@@ -642,6 +689,8 @@ mod tests {
             download_rate: 0.0,
             download_sync_time: None,
             download_sync_done: 0,
+            install_order: Vec::new(),
+            install_packages: HashMap::new(),
         }
     }
 
