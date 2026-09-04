@@ -21,7 +21,7 @@ fn installed_data(local: &alpm::Package) -> InstalledData {
 }
 
 fn enrich(pkg: &mut Package, localdb: &alpm::Db, installed: &alpm::AlpmList<&alpm::Package>) {
-    if !is_local_view(pkg)
+    if !matches!(&pkg.kind, PackageKind::Repo(data) if data.is_local())
         && let Ok(local) = localdb.pkg(pkg.name.as_str())
     {
         pkg.installed = Some(installed_data(local));
@@ -52,16 +52,12 @@ pub fn run(targets: Vec<String>) -> ! {
     if !pending.is_empty() {
         let mut aur = resolve_aur(&pending);
         for (slot, target) in resolved.iter_mut().zip(targets.iter()) {
-            if slot.is_none()
-                && let Some(info) = aur.remove(target)
-            {
-                *slot = Some(Package::from(info));
+            if slot.is_some() {
+                continue;
             }
-        }
-        for (slot, target) in resolved.iter_mut().zip(targets.iter()) {
-            if slot.is_none()
-                && let Ok(local) = handle.localdb().pkg(target.as_str())
-            {
+            if let Some(info) = aur.remove(target) {
+                *slot = Some(Package::from(info));
+            } else if let Ok(local) = handle.localdb().pkg(target.as_str()) {
                 let mut pkg = Package::from(local);
                 pkg.installed = Some(installed_data(local));
                 *slot = Some(pkg);
@@ -123,12 +119,16 @@ fn cached_aur(names: &[String]) -> HashMap<String, crate::aur::AurInfo> {
     found
 }
 
-fn format_date(epoch: i64) -> String {
+fn format_epoch(epoch: i64, fmt: &str) -> String {
     chrono::DateTime::from_timestamp(epoch, 0)
         .unwrap_or_default()
         .with_timezone(&chrono::Local)
-        .format("%a %d %b %Y")
+        .format(fmt)
         .to_string()
+}
+
+fn format_date(epoch: i64) -> String {
+    format_epoch(epoch, "%a %d %b %Y")
 }
 
 fn humanized(bytes: i64) -> String {
@@ -137,11 +137,7 @@ fn humanized(bytes: i64) -> String {
 }
 
 fn format_ymd(epoch: i64) -> String {
-    chrono::DateTime::from_timestamp(epoch, 0)
-        .unwrap_or_default()
-        .with_timezone(&chrono::Local)
-        .format("%Y-%m-%d")
-        .to_string()
+    format_epoch(epoch, "%Y-%m-%d")
 }
 
 fn grouped_votes(votes: u64) -> String {
@@ -176,7 +172,7 @@ fn installed_row(pkg: &Package, stdout_color: bool) -> Option<(&'static str, Str
 
 pub fn render(pkg: &Package, stdout_color: bool) -> String {
     let installed = pkg.installed.is_some();
-    let mut out = header(pkg, &origin(pkg), installed, stdout_color);
+    let mut out = header(pkg, installed, stdout_color);
     if let Some(description) = pkg.description.as_deref()
         && !description.is_empty()
     {
@@ -189,57 +185,50 @@ pub fn render(pkg: &Package, stdout_color: bool) -> String {
         out.push('\n');
         out.push_str(&color::paint(stdout_color, LINK, url));
     }
-    if let Some(rendered) = section(
-        section_title(installed),
+    let title = if installed { "Status" } else { "Package Info" };
+    out.push_str(&section(
+        title,
         &package_rows(pkg, stdout_color),
         stdout_color,
-    ) {
-        out.push_str(&rendered);
-    }
+    ));
     if let PackageKind::Aur(data) = &pkg.kind {
-        if let Some(rendered) = section(
+        out.push_str(&section(
             "Community & Maintenance",
             &community_rows(pkg, data, stdout_color),
             stdout_color,
-        ) {
-            out.push_str(&rendered);
-        }
-        if let Some(rendered) = build_source_section(pkg, data, stdout_color) {
-            out.push_str(&rendered);
-        }
-        if let Some(rendered) = section(
+        ));
+        out.push_str(&build_source_section(pkg, data, stdout_color));
+        out.push_str(&section(
             &format!("Runtime Dependencies ({})", pkg.dependencies.len()),
-            &aur_runtime_rows(pkg, stdout_color),
+            &[(
+                "Required",
+                truncated_join(&pkg.dependencies, AUR_DEP_PREVIEW, stdout_color),
+            )],
             stdout_color,
-        ) {
-            out.push_str(&rendered);
-        }
+        ));
     }
-    if let PackageKind::Repo(data) = &pkg.kind
-        && let Some(rendered) = section(
+    if let PackageKind::Repo(data) = &pkg.kind {
+        out.push_str(&section(
             &format!("Dependencies ({})", pkg.dependencies.len()),
-            &dependency_rows(pkg, data, stdout_color),
+            &[
+                (
+                    "Required",
+                    truncated_join(&pkg.dependencies, DEP_PREVIEW, stdout_color),
+                ),
+                (
+                    "Required By",
+                    truncated_join(&data.required_by, DEP_PREVIEW, stdout_color),
+                ),
+                (
+                    "Optional For",
+                    truncated_join(&data.optional_for, DEP_PREVIEW, stdout_color),
+                ),
+            ],
             stdout_color,
-        )
-    {
-        out.push_str(&rendered);
+        ));
     }
-    if let Some(rendered) = opt_dependency_section(pkg, stdout_color) {
-        out.push_str(&rendered);
-    }
+    out.push_str(&opt_dependency_section(pkg, stdout_color));
     out
-}
-
-fn origin(pkg: &Package) -> String {
-    match &pkg.kind {
-        PackageKind::Repo(data) => match (&data.repo, &data.architecture) {
-            (Some(repo), Some(architecture)) => format!("{repo}/{architecture}"),
-            (Some(repo), None) => repo.clone(),
-            (None, Some(architecture)) => architecture.clone(),
-            (None, None) => String::new(),
-        },
-        PackageKind::Aur(_) => "aur".to_string(),
-    }
 }
 
 fn badge(installed: bool, stdout_color: bool) -> String {
@@ -250,38 +239,31 @@ fn badge(installed: bool, stdout_color: bool) -> String {
     }
 }
 
-fn aur_badge(stdout_color: bool) -> String {
-    color::paint(stdout_color, color::MAGENTA, "[aur]")
-}
-
-fn local_badge(stdout_color: bool) -> String {
-    color::paint(stdout_color, color::YELLOW, "[local]")
-}
-
-fn is_local_view(pkg: &Package) -> bool {
-    matches!(&pkg.kind, PackageKind::Repo(data) if data.is_local())
-}
-
-fn section_title(has_installed: bool) -> &'static str {
-    if has_installed {
-        "Status"
-    } else {
-        "Package Info"
-    }
-}
-
-fn header(pkg: &Package, origin: &str, installed: bool, stdout_color: bool) -> String {
+fn header(pkg: &Package, installed: bool, stdout_color: bool) -> String {
+    let origin = match &pkg.kind {
+        PackageKind::Repo(data) => match (&data.repo, &data.architecture) {
+            (Some(repo), Some(architecture)) => format!("{repo}/{architecture}"),
+            (Some(repo), None) => repo.clone(),
+            (None, Some(architecture)) => architecture.clone(),
+            (None, None) => String::new(),
+        },
+        PackageKind::Aur(_) => "aur".to_string(),
+    };
     let badges = match &pkg.kind {
-        PackageKind::Aur(_) if installed => {
-            format!("{} {}", aur_badge(stdout_color), badge(true, stdout_color))
+        PackageKind::Aur(_) if installed => format!(
+            "{} {}",
+            color::paint(stdout_color, color::MAGENTA, "[aur]"),
+            badge(true, stdout_color)
+        ),
+        PackageKind::Aur(_) => color::paint(stdout_color, color::MAGENTA, "[aur]"),
+        PackageKind::Repo(data) if data.is_local() => {
+            color::paint(stdout_color, color::YELLOW, "[local]")
         }
-        PackageKind::Aur(_) => aur_badge(stdout_color),
-        PackageKind::Repo(data) if data.is_local() => local_badge(stdout_color),
         PackageKind::Repo(_) => badge(installed, stdout_color),
     };
     format!(
         "{} {} {} {} {}",
-        color::paint(stdout_color, color::COLON, origin),
+        color::paint(stdout_color, color::COLON, &origin),
         color::paint(stdout_color, color::GRAY, "::"),
         color::paint(stdout_color, NAME, &pkg.name),
         color::paint(stdout_color, VERSION, &pkg.version),
@@ -297,10 +279,10 @@ fn package_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)
     let PackageKind::Repo(data) = &pkg.kind else {
         return rows;
     };
-    let script = match pkg.installed.as_ref() {
-        Some(overlay) => overlay.script,
-        None => data.script,
-    };
+    let script = pkg
+        .installed
+        .as_ref()
+        .map_or(data.script, |over| over.script);
     rows.push((
         "Install Script",
         if script { "Yes" } else { "No" }.to_string(),
@@ -379,17 +361,16 @@ fn community_rows(
     rows
 }
 
-fn aur_link(name: &str) -> String {
-    format!("https://aur.archlinux.org/packages/{name}")
-}
-
 fn build_source_section(
     pkg: &Package,
     data: &crate::package::AurData,
     stdout_color: bool,
-) -> Option<String> {
+) -> String {
     let rows: Vec<(&'static str, String)> = vec![
-        ("AUR Link", aur_link(&pkg.name)),
+        (
+            "AUR Link",
+            format!("https://aur.archlinux.org/packages/{}", pkg.name),
+        ),
         ("License", pkg.licenses.join(", ")),
         (
             "Make Depends",
@@ -405,21 +386,14 @@ fn build_source_section(
     ];
     let kept: Vec<_> = rows.iter().filter(|(_, value)| !value.is_empty()).collect();
     if kept.is_empty() {
-        return None;
+        return String::new();
     }
     let mut out = section_title_line("Build & Source", stdout_color);
     for (label, value) in kept {
         let tint = if *label == "AUR Link" { LINK } else { VALUE };
         out.push_str(&section_row(label, value, tint, stdout_color));
     }
-    Some(out)
-}
-
-fn aur_runtime_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)> {
-    vec![(
-        "Required",
-        truncated_join(&pkg.dependencies, AUR_DEP_PREVIEW, stdout_color),
-    )]
+    out
 }
 
 fn truncated_join(names: &[String], limit: usize, stdout_color: bool) -> String {
@@ -435,27 +409,6 @@ fn truncated_join(names: &[String], limit: usize, stdout_color: bool) -> String 
             &format!("... (+{} more)", names.len() - limit)
         )
     )
-}
-
-fn dependency_rows(
-    pkg: &Package,
-    data: &crate::package::RepoData,
-    stdout_color: bool,
-) -> Vec<(&'static str, String)> {
-    vec![
-        (
-            "Required",
-            truncated_join(&pkg.dependencies, DEP_PREVIEW, stdout_color),
-        ),
-        (
-            "Required By",
-            truncated_join(&data.required_by, DEP_PREVIEW, stdout_color),
-        ),
-        (
-            "Optional For",
-            truncated_join(&data.optional_for, DEP_PREVIEW, stdout_color),
-        ),
-    ]
 }
 
 fn opt_dependency_line(dep: &OptDependency, stdout_color: bool) -> String {
@@ -487,9 +440,9 @@ fn section_title_line(title: &str, stdout_color: bool) -> String {
     out
 }
 
-fn opt_dependency_section(pkg: &Package, stdout_color: bool) -> Option<String> {
+fn opt_dependency_section(pkg: &Package, stdout_color: bool) -> String {
     if pkg.opt_dependencies.is_empty() {
-        return None;
+        return String::new();
     }
     let mut out = section_title_line(
         &format!("Optional Dependencies ({})", pkg.opt_dependencies.len()),
@@ -498,7 +451,7 @@ fn opt_dependency_section(pkg: &Package, stdout_color: bool) -> Option<String> {
     for dep in &pkg.opt_dependencies {
         out.push_str(&format!("\n    {}", opt_dependency_line(dep, stdout_color)));
     }
-    Some(out)
+    out
 }
 
 fn section_row(label: &str, value: &str, tint: &str, stdout_color: bool) -> String {
@@ -509,16 +462,16 @@ fn section_row(label: &str, value: &str, tint: &str, stdout_color: bool) -> Stri
     )
 }
 
-fn section(title: &str, rows: &[(&'static str, String)], stdout_color: bool) -> Option<String> {
+fn section(title: &str, rows: &[(&'static str, String)], stdout_color: bool) -> String {
     let kept: Vec<_> = rows.iter().filter(|(_, value)| !value.is_empty()).collect();
     if kept.is_empty() {
-        return None;
+        return String::new();
     }
     let mut out = section_title_line(title, stdout_color);
     for (label, value) in kept {
         out.push_str(&section_row(label, value, VALUE, stdout_color));
     }
-    Some(out)
+    out
 }
 
 #[cfg(test)]
