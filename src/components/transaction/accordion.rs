@@ -8,20 +8,15 @@ use pakajo::utils::{format_bytes, format_eta, humanize_size};
 use super::TransactionMessage;
 use super::state::{StageState, TransactionModel};
 use crate::Element;
+use crate::components::divider::divider;
 
 pub(super) fn action_footer() -> Element<'static> {
-    let divider = container(space::horizontal())
-        .width(Length::Fill)
-        .height(1.0)
-        .style(|t: &cosmic::Theme| container::Style {
-            background: Some(Background::Color(divider_color(t))),
-            ..Default::default()
-        });
+    let header_divider = divider();
     let close =
         button::standard("Close").on_press(crate::Message::Transaction(TransactionMessage::Close));
     Column::new()
         .spacing(12)
-        .push(divider)
+        .push(header_divider)
         .push(Row::new().push(space::horizontal()).push(close))
         .into()
 }
@@ -220,10 +215,6 @@ fn accent_color(theme: &cosmic::Theme) -> Color {
 
 fn destructive_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().destructive.base)
-}
-
-fn divider_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().background(false).divider)
 }
 
 fn active_view(state: &RepoState, stage: RepoStage) -> Element<'_> {

@@ -9,6 +9,7 @@ use pakajo::utils::format_bytes;
 use std::time::Duration;
 
 use crate::Element;
+use crate::components::divider::divider;
 use crate::components::icons;
 use crate::components::transaction::TransactionMessage;
 
@@ -431,17 +432,6 @@ fn section_header<'a>(title: String) -> Element<'a> {
         .spacing(4)
         .push(text(title).font(cosmic::font::semibold()).size(14.0))
         .push(divider())
-        .into()
-}
-
-fn divider<'a>() -> Element<'a> {
-    container(Space::new().width(Length::Fill).height(Length::Fixed(1.0)))
-        .style(|theme: &cosmic::Theme| container::Style {
-            background: Some(Background::Color(Color::from(
-                theme.cosmic().background(false).divider,
-            ))),
-            ..Default::default()
-        })
         .into()
 }
 

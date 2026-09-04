@@ -9,6 +9,7 @@ use pakajo::question::{collect_approvals, default_approve, encode_approvals};
 use pakajo::transaction_state::{Direction, SysupgradePage, next_sysupgrade_step};
 
 use crate::Element;
+use crate::components::divider::divider;
 use crate::components::transaction::Transaction;
 use crate::components::transaction::review::{ReviewModel, candidate_label, unsupported_banner};
 use crate::components::updates::{aur_upgrade_row, muted};
@@ -417,19 +418,6 @@ impl crate::PakajoApp {
 
 fn accent_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().accent.base)
-}
-
-fn divider() -> Element<'static> {
-    container(text(""))
-        .width(Length::Fill)
-        .height(1.0)
-        .style(|theme: &cosmic::Theme| container::Style {
-            background: Some(Background::Color(Color::from(
-                theme.cosmic().background(false).divider,
-            ))),
-            ..Default::default()
-        })
-        .into()
 }
 
 fn success_color(theme: &cosmic::Theme) -> Color {
