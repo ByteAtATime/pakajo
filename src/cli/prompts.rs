@@ -32,12 +32,13 @@ fn read_confirmation(message: &str, stream: PromptStream) -> bool {
     matches!(input.trim().to_lowercase().as_str(), "" | "y" | "yes")
 }
 
-pub fn select_group_members(group_name: &str, groups: &[(&alpm::Db, &alpm::Group)]) -> Vec<String> {
+pub fn select_group_members(
+    group_name: &str,
+    groups: &[crate::package::PackageGroup],
+) -> Vec<String> {
     let c = color::stdout_color();
-    let flat: Vec<&alpm::Package> = groups
-        .iter()
-        .flat_map(|(_, g)| g.packages().iter())
-        .collect();
+    let flat: Vec<&crate::package::GroupMember> =
+        groups.iter().flat_map(|g| g.members.iter()).collect();
     let total = flat.len();
     println!(
         "{}",
@@ -49,15 +50,15 @@ pub fn select_group_members(group_name: &str, groups: &[(&alpm::Db, &alpm::Group
 
     let mut n = 1usize;
     let mut current_repo = "";
-    for (db, group) in groups {
-        let db_name = db.name();
+    for group in groups {
+        let db_name = group.repo.as_str();
         if db_name != current_repo {
             current_repo = db_name;
             println!("{}", color::colon(c, &format!("Repository {db_name}")));
         }
         let mut line = String::from("    ");
-        for pkg in group.packages().iter() {
-            line.push_str(&format!("{n}) {}  ", pkg.name()));
+        for member in group.members.iter() {
+            line.push_str(&format!("{n}) {}  ", member.name));
             n += 1;
         }
         println!("{}", line.trim_end());
@@ -72,11 +73,11 @@ pub fn select_group_members(group_name: &str, groups: &[(&alpm::Db, &alpm::Group
         let _ = std::io::stdout().flush();
         let mut input = String::new();
         if std::io::stdin().read_line(&mut input).is_err() {
-            return flat.iter().map(|p| p.name().to_string()).collect();
+            return flat.iter().map(|m| m.name.clone()).collect();
         }
         let trimmed = input.trim();
         if trimmed.is_empty() {
-            return flat.iter().map(|p| p.name().to_string()).collect();
+            return flat.iter().map(|m| m.name.clone()).collect();
         }
         let mut picks: Vec<usize> = Vec::new();
         let mut had_error = false;
@@ -92,10 +93,7 @@ pub fn select_group_members(group_name: &str, groups: &[(&alpm::Db, &alpm::Group
         if had_error {
             continue;
         }
-        return picks
-            .into_iter()
-            .map(|i| flat[i].name().to_string())
-            .collect();
+        return picks.into_iter().map(|i| flat[i].name.clone()).collect();
     }
 }
 

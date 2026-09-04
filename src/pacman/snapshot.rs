@@ -139,7 +139,7 @@ pub fn get(config: &pacmanconf::Config) -> anyhow::Result<AlpmSnapshot> {
     let installed = crate::package::installed_names(&handle)
         .into_iter()
         .collect::<Vec<String>>();
-    let groups = crate::pacman::collect_group_index(&handle);
+    let groups = crate::package::group_index(&handle);
     let file = SnapshotFile {
         key,
         installed: installed.clone(),

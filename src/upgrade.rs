@@ -139,7 +139,7 @@ pub fn compute_aur_upgrades(
         .iter()
         .map(|p| (p.name().to_string(), p.version().to_string()))
         .collect();
-    let foreign_names: Vec<String> = crate::pacman::foreign_package_names(handle);
+    let foreign_names: Vec<String> = crate::package::foreign_names(handle);
     if foreign_names.is_empty() {
         return Ok((vec![], vec![]));
     }

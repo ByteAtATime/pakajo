@@ -352,13 +352,13 @@ fn expand_groups(handle: &alpm::Alpm, positionals: &[String], interactive: bool)
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for s in positionals {
-        if crate::pacman::find_pkg(handle, s).is_some() {
+        if crate::package::repo_exists(handle, s) {
             if seen.insert(s.clone()) {
                 out.push(s.clone());
             }
             continue;
         }
-        let groups = crate::pacman::find_groups(handle, s);
+        let groups = crate::package::find_groups(handle, s);
         if groups.is_empty() {
             if seen.insert(s.clone()) {
                 out.push(s.clone());
@@ -370,8 +370,8 @@ fn expand_groups(handle: &alpm::Alpm, positionals: &[String], interactive: bool)
         } else {
             groups
                 .iter()
-                .flat_map(|(_, g)| g.packages().iter())
-                .map(|p| p.name().to_string())
+                .flat_map(|g| g.members.iter())
+                .map(|m| m.name.clone())
                 .collect()
         };
         for name in members {
@@ -391,21 +391,17 @@ fn expand_remove_groups(
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for s in positionals {
-        if handle.localdb().pkg(s.as_str()).is_ok() {
+        if crate::package::is_installed(handle, s) {
             if seen.insert(s.clone()) {
                 out.push(s.clone());
             }
             continue;
         }
-        if let Some((db, group)) = crate::pacman::local_group(handle, s) {
+        if let Some(group) = crate::package::local_group(handle, s) {
             let members: Vec<String> = if interactive {
-                self::prompts::select_group_members(s, &[(db, group)])
+                self::prompts::select_group_members(s, std::slice::from_ref(&group))
             } else {
-                group
-                    .packages()
-                    .iter()
-                    .map(|p| p.name().to_string())
-                    .collect()
+                group.members.iter().map(|m| m.name.clone()).collect()
             };
             for name in members {
                 if seen.insert(name.clone()) {
@@ -440,7 +436,7 @@ fn split_install_targets(
         match classify_target(s) {
             InstallTarget::File(_) => repo_or_file.push(s.clone()),
             InstallTarget::Repo(ref name) => {
-                if crate::pacman::find_pkg(handle, name).is_some() {
+                if crate::package::repo_exists(handle, name) {
                     repo_or_file.push(s.clone());
                 } else {
                     aur.push(s.clone());
@@ -454,8 +450,8 @@ fn split_install_targets(
 fn print_sync_preamble(handle: &alpm::Alpm, targets: &[String]) {
     let labeled: Vec<String> = targets
         .iter()
-        .map(|name| match crate::pacman::find_pkg(handle, name) {
-            Some(pkg) => format!("{name}-{}", pkg.version()),
+        .map(|name| match crate::package::find(handle, name) {
+            Some(pkg) => format!("{name}-{}", pkg.version),
             None => name.clone(),
         })
         .collect();

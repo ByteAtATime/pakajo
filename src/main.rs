@@ -120,7 +120,7 @@ impl Application for PakajoApp {
         {
             Ok(handle) => {
                 let installed = Arc::new(pakajo::package::installed_names(&handle));
-                let groups = Arc::new(pakajo::pacman::collect_group_index(&handle));
+                let groups = Arc::new(pakajo::package::group_index(&handle));
                 (Some(handle), installed, groups)
             }
             Err(e) => {

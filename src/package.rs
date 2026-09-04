@@ -160,6 +160,90 @@ pub fn installed_names(handle: &alpm::Alpm) -> std::collections::HashSet<String>
         .collect()
 }
 
+pub fn find(handle: &alpm::Alpm, name: &str) -> Option<Package> {
+    crate::pacman::find_pkg(handle, name).map(Package::from)
+}
+
+pub fn repo_exists(handle: &alpm::Alpm, name: &str) -> bool {
+    crate::pacman::find_pkg(handle, name).is_some()
+}
+
+#[derive(Debug, Clone)]
+pub struct GroupMember {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PackageGroup {
+    pub repo: String,
+    pub members: Vec<GroupMember>,
+}
+
+pub fn find_groups(handle: &alpm::Alpm, name: &str) -> Vec<PackageGroup> {
+    handle
+        .syncdbs()
+        .iter()
+        .filter_map(|db| {
+            db.group(name).ok().map(|group| PackageGroup {
+                repo: db.name().to_string(),
+                members: group
+                    .packages()
+                    .iter()
+                    .map(|p| GroupMember {
+                        name: p.name().to_string(),
+                        description: p.desc().map(|d| d.to_string()),
+                    })
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+pub fn local_group(handle: &alpm::Alpm, name: &str) -> Option<PackageGroup> {
+    let db = handle.localdb();
+    db.group(name).ok().map(|group| PackageGroup {
+        repo: db.name().to_string(),
+        members: group
+            .packages()
+            .iter()
+            .map(|p| GroupMember {
+                name: p.name().to_string(),
+                description: p.desc().map(|d| d.to_string()),
+            })
+            .collect(),
+    })
+}
+
+pub fn group_index(handle: &alpm::Alpm) -> Vec<(String, String)> {
+    handle
+        .syncdbs()
+        .iter()
+        .flat_map(|db| {
+            db.groups()
+                .into_iter()
+                .flatten()
+                .map(|g| (g.name().to_string(), db.name().to_string()))
+        })
+        .collect()
+}
+
+pub fn foreign_names(handle: &alpm::Alpm) -> Vec<String> {
+    let sync_names: std::collections::HashSet<String> = handle
+        .syncdbs()
+        .iter()
+        .flat_map(|db| db.pkgs().iter())
+        .map(|p| p.name().to_string())
+        .collect();
+    handle
+        .localdb()
+        .pkgs()
+        .iter()
+        .map(|p| p.name().to_string())
+        .filter(|name| !sync_names.contains(name))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +299,60 @@ mod tests {
         assert_eq!(
             pkg.opt_dependencies[0].reason.as_deref(),
             Some("extra tools")
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn find_groups_resolves_base_devel() {
+        let handle = crate::install::setup_fake_root("find_groups");
+        let groups = find_groups(&handle, "base-devel");
+        assert!(!groups.is_empty(), "base-devel group must resolve");
+        let members: Vec<String> = groups
+            .iter()
+            .flat_map(|g| g.members.iter())
+            .map(|m| m.name.clone())
+            .collect();
+        assert!(
+            members.iter().any(|m| m == "make"),
+            "base-devel should contain make; got {members:?}"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn collect_group_index_includes_base_devel() {
+        let handle = crate::install::setup_fake_root("group_index");
+        let index = group_index(&handle);
+        assert!(
+            index.iter().any(|(name, _)| name == "base-devel"),
+            "group index must contain base-devel; got {index:?}"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn local_group_lists_installed_members() {
+        let mut handle = crate::install::setup_fake_root("local_group");
+        assert!(
+            local_group(&handle, "base-devel").is_none(),
+            "local base-devel must be absent before any member is installed"
+        );
+        crate::install::install_into(
+            &mut handle,
+            &[crate::install::InstallTarget::Repo("make".to_string())],
+            false,
+            crate::cli::ConsoleSink::new(),
+            || true,
+            Box::new(crate::answerer::DenyAllAnswerer),
+        )
+        .expect("make should install first");
+        let group = local_group(&handle, "base-devel")
+            .expect("base-devel should resolve in localdb after installing make");
+        let members: Vec<String> = group.members.iter().map(|m| m.name.clone()).collect();
+        assert!(
+            members.iter().any(|m| m == "make"),
+            "local base-devel should contain make; got {members:?}"
         );
     }
 }

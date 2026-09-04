@@ -4,8 +4,7 @@ use cosmic::iced::stream::channel;
 use cosmic::iced::{Alignment, Background, Border, Color, Length};
 use cosmic::widget::{Column, Row, Space, button, container, icon, responsive, scrollable, text};
 use futures::SinkExt as _;
-use pakajo::package::{Package, PackageSource};
-use pakajo::pacman::{find_groups, find_pkg};
+use pakajo::package::{self, Package, PackageSource};
 use pakajo::utils::format_bytes;
 use std::time::Duration;
 
@@ -501,7 +500,7 @@ impl crate::PakajoApp {
                 let resolved = self
                     .alpm
                     .as_ref()
-                    .and_then(|alpm| find_pkg(alpm, &name).map(Package::from));
+                    .and_then(|alpm| package::find(alpm, &name));
                 match resolved {
                     Some(pkg) => self.set_detail_pkg(pkg),
                     None => self.detail = DetailData::Error(format!("package not found: {name}")),
@@ -511,17 +510,17 @@ impl crate::PakajoApp {
             PackageSource::Group => {
                 let installed_names = self.installed_names.clone();
                 let resolved = self.alpm.as_ref().and_then(|alpm| {
-                    find_groups(alpm, &name)
+                    package::find_groups(alpm, &name)
                         .into_iter()
                         .next()
-                        .map(|(_, group)| {
+                        .map(|group| {
                             group
-                                .packages()
+                                .members
                                 .iter()
                                 .map(|p| GroupMember {
-                                    name: p.name().to_string(),
-                                    description: p.desc().map(|d| d.to_string()),
-                                    installed: installed_names.contains(p.name()),
+                                    name: p.name.clone(),
+                                    description: p.description.clone(),
+                                    installed: installed_names.contains(&p.name),
                                 })
                                 .collect::<Vec<_>>()
                         })

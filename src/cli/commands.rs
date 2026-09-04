@@ -183,7 +183,7 @@ pub fn root_install(
     if needs_lookup {
         for target in &targets {
             if let InstallTarget::Repo(name) = target
-                && crate::pacman::find_pkg(handle, name).is_none()
+                && !crate::package::repo_exists(handle, name)
             {
                 anyhow::bail!("cannot build packages as root; re-run without privilege escalation");
             }

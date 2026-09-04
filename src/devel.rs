@@ -296,7 +296,7 @@ pub fn generate_db(
         .architectures()
         .first()
         .context("no architecture configured in alpm")?;
-    let foreign: Vec<String> = crate::pacman::foreign_package_names(handle);
+    let foreign: Vec<String> = crate::package::foreign_names(handle);
     let mut devel = load_devel_info();
     if foreign.is_empty() {
         save_devel_info(&devel)?;
