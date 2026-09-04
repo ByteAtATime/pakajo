@@ -15,6 +15,7 @@ pub enum Command {
     Remove(RemoveArgs),
     Upgrade(UpgradeArgs),
     Search(SearchArgs),
+    Info(InfoArgs),
     Clean(CleanArgs),
     AurSync,
     Gendb,
@@ -62,6 +63,12 @@ pub struct UpgradeArgs {
 #[derive(Args)]
 pub struct SearchArgs {
     pub query: Vec<String>,
+}
+
+#[derive(Args)]
+pub struct InfoArgs {
+    #[arg(required = true, num_args = 1..)]
+    pub targets: Vec<String>,
 }
 
 #[derive(Args)]

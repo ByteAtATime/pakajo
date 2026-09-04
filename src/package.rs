@@ -20,8 +20,10 @@ pub struct Package {
     pub version: String,
     pub maintainer: Option<String>,
     pub licenses: Vec<String>,
+    pub groups: Vec<String>,
     pub provides: Vec<String>,
     pub conflicts: Vec<String>,
+    pub replaces: Vec<String>,
     pub dependencies: Vec<String>,
     pub opt_dependencies: Vec<OptDependency>,
     pub upstream_url: Option<String>,
@@ -40,6 +42,12 @@ pub struct RepoData {
     pub architecture: Option<String>,
     pub installed_size: i64,
     pub download_size: i64,
+}
+
+impl RepoData {
+    pub fn is_local(&self) -> bool {
+        self.repo.as_deref() == Some("local")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -103,8 +111,14 @@ impl From<&alpm::Package> for Package {
             version: pkg.version().to_string(),
             maintainer: pkg.packager().map(|x| x.to_string()),
             licenses: pkg.licenses().iter().map(|x| x.to_string()).collect(),
+            groups: pkg.groups().iter().map(|x| x.to_string()).collect(),
             provides: pkg.provides().iter().map(|x| x.to_string()).collect(),
             conflicts: pkg.conflicts().iter().map(|x| x.to_string()).collect(),
+            replaces: pkg
+                .replaces()
+                .iter()
+                .map(|x| x.name().to_string())
+                .collect(),
             dependencies: pkg.depends().iter().map(|x| x.to_string()).collect(),
             opt_dependencies: pkg
                 .optdepends()
@@ -130,8 +144,10 @@ impl From<AurInfo> for Package {
             version: info.version,
             maintainer: info.maintainer,
             licenses: info.license,
+            groups: info.groups,
             provides: info.provides,
             conflicts: info.conflicts,
+            replaces: info.replaces,
             dependencies: info.depends,
             opt_dependencies: info
                 .opt_depends
@@ -294,6 +310,8 @@ mod tests {
         assert_eq!(pkg.upstream_url.as_deref(), Some("https://example.com"));
         assert_eq!(pkg.dependencies, vec!["libc"]);
         assert_eq!(pkg.licenses, vec!["MIT"]);
+        assert_eq!(pkg.groups, Vec::<String>::new());
+        assert_eq!(pkg.replaces, Vec::<String>::new());
         assert_eq!(pkg.opt_dependencies.len(), 1);
         assert_eq!(pkg.opt_dependencies[0].name, "foo-utils");
         assert_eq!(

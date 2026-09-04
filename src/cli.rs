@@ -4,10 +4,14 @@ use crate::install::InstallTarget;
 use clap::Parser;
 
 mod args;
-use self::args::{CleanArgs, CompletionsArgs, InstallArgs, RemoveArgs, SearchArgs, UpgradeArgs};
+use self::args::{
+    CleanArgs, CompletionsArgs, InfoArgs, InstallArgs, RemoveArgs, SearchArgs, UpgradeArgs,
+};
 pub use self::args::{Cli, Command};
 
 mod summary;
+
+mod info;
 
 mod prompts;
 use self::prompts::{
@@ -54,6 +58,7 @@ pub fn dispatch(cli: Cli) {
         Some(Command::Remove(a)) => remove_subcommand(a),
         Some(Command::Upgrade(a)) => upgrade_subcommand(a),
         Some(Command::Search(a)) => search_subcommand(a),
+        Some(Command::Info(a)) => info_subcommand(a),
         Some(Command::Clean(a)) => clean_subcommand(a),
         Some(Command::AurSync) => aur_sync_subcommand(),
         Some(Command::Gendb) => gendb_subcommand(),
@@ -191,6 +196,10 @@ pub fn search_subcommand(args: SearchArgs) -> ! {
     }
     let query = args.query.join(" ");
     exit_with_result(run_search(&query));
+}
+
+pub fn info_subcommand(args: InfoArgs) -> ! {
+    info::run(args.targets)
 }
 
 pub fn aur_sync_subcommand() -> ! {
