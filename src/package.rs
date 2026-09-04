@@ -70,6 +70,13 @@ impl RepoData {
 pub struct AurData {
     pub num_votes: u64,
     pub popularity: f64,
+    pub submitted: Option<i64>,
+    pub last_modified: Option<i64>,
+    pub flagged: Option<i64>,
+}
+
+fn normalized_epoch(value: i64) -> Option<i64> {
+    (value > 0).then_some(value)
 }
 
 impl Package {
@@ -224,6 +231,9 @@ impl From<AurInfo> for Package {
             kind: PackageKind::Aur(AurData {
                 num_votes: info.num_votes,
                 popularity: info.popularity,
+                submitted: normalized_epoch(info.first_submitted),
+                last_modified: normalized_epoch(info.last_modified),
+                flagged: info.out_of_date.filter(|epoch| *epoch > 0),
             }),
         }
     }

@@ -12,31 +12,51 @@ pub fn run(targets: Vec<String>) -> ! {
     let handle = super::alpm_handle_or_exit();
     let targets = super::dedup_positionals(targets);
     let stdout_color = color::stdout_color();
-    let mut rendered: Vec<String> = Vec::new();
-    let mut missed: Vec<String> = Vec::new();
+    let mut resolved: Vec<Option<Package>> = Vec::with_capacity(targets.len());
+    let mut pending: Vec<String> = Vec::new();
     for target in &targets {
         match crate::package::find(&handle, target) {
-            Some(mut pkg) => {
-                if let Ok(local) = handle.localdb().pkg(pkg.name.as_str()) {
-                    let install_date = local.install_date().and_then(|d| (d > 0).then_some(d));
-                    pkg.installed = Some(InstalledData {
-                        version: local.version().to_string(),
-                        explicit: matches!(local.reason(), alpm::PackageReason::Explicit),
-                        install_date,
-                        script: local.has_scriptlet(),
-                    });
-                }
-                let pkgs = handle.localdb().pkgs();
-                for dep in &mut pkg.opt_dependencies {
-                    let constraint = dep.version.as_deref().unwrap_or_default();
-                    dep.installed = pkgs
-                        .find_satisfier(format!("{}{constraint}", dep.name))
-                        .is_some();
-                }
-                rendered.push(render(&pkg, stdout_color))
+            Some(pkg) => resolved.push(Some(pkg)),
+            None => {
+                resolved.push(None);
+                pending.push(target.clone());
             }
-            None => missed.push(target.clone()),
         }
+    }
+    if !pending.is_empty() {
+        let aur = resolve_aur(&pending);
+        for (slot, target) in resolved.iter_mut().zip(targets.iter()) {
+            if slot.is_none()
+                && let Some(info) = aur.get(target)
+            {
+                *slot = Some(Package::from(info.clone()));
+            }
+        }
+    }
+    let mut rendered: Vec<String> = Vec::new();
+    let mut missed: Vec<String> = Vec::new();
+    for (target, slot) in targets.iter().zip(resolved.iter_mut()) {
+        let Some(pkg) = slot else {
+            missed.push(target.clone());
+            continue;
+        };
+        if let Ok(local) = handle.localdb().pkg(pkg.name.as_str()) {
+            let install_date = local.install_date().and_then(|d| (d > 0).then_some(d));
+            pkg.installed = Some(InstalledData {
+                version: local.version().to_string(),
+                explicit: matches!(local.reason(), alpm::PackageReason::Explicit),
+                install_date,
+                script: local.has_scriptlet(),
+            });
+        }
+        let pkgs = handle.localdb().pkgs();
+        for dep in &mut pkg.opt_dependencies {
+            let constraint = dep.version.as_deref().unwrap_or_default();
+            dep.installed = pkgs
+                .find_satisfier(format!("{}{constraint}", dep.name))
+                .is_some();
+        }
+        rendered.push(render(pkg, stdout_color))
     }
     if !rendered.is_empty() {
         println!("{}", rendered.join("\n\n"));
@@ -54,6 +74,35 @@ pub fn run(targets: Vec<String>) -> ! {
     std::process::exit(0);
 }
 
+fn resolve_aur(names: &[String]) -> std::collections::HashMap<String, crate::aur::AurInfo> {
+    let client = crate::aur::AurClient::new();
+    match client.info_many(names) {
+        Ok(infos) => infos
+            .into_iter()
+            .map(|info| (info.name.clone(), info))
+            .collect(),
+        Err(_) => cached_aur(names),
+    }
+}
+
+fn cached_aur(names: &[String]) -> std::collections::HashMap<String, crate::aur::AurInfo> {
+    let path = match crate::db::PackageDb::db_path() {
+        Ok(path) => path,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let db = match crate::db::PackageDb::open(&path) {
+        Ok(db) => db,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let mut found = std::collections::HashMap::new();
+    for name in names {
+        if let Ok(Some(info)) = db.detail(name) {
+            found.insert(name.clone(), info);
+        }
+    }
+    found
+}
+
 fn format_date(epoch: i64) -> String {
     chrono::DateTime::from_timestamp(epoch, 0)
         .unwrap_or_default()
@@ -65,6 +114,26 @@ fn format_date(epoch: i64) -> String {
 fn humanized(bytes: i64) -> String {
     let (value, unit) = crate::utils::humanize_size(bytes);
     format!("{value:.2} {unit}")
+}
+
+fn format_ymd(epoch: i64) -> String {
+    chrono::DateTime::from_timestamp(epoch, 0)
+        .unwrap_or_default()
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+fn grouped_votes(votes: u64) -> String {
+    let digits: Vec<char> = votes.to_string().chars().collect();
+    let mut out = String::new();
+    for (index, digit) in digits.iter().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(*digit);
+    }
+    out
 }
 
 fn installed_row(pkg: &Package, stdout_color: bool) -> Option<(&'static str, String)> {
@@ -109,6 +178,15 @@ pub fn render(pkg: &Package, stdout_color: bool) -> String {
     ) {
         out.push_str(&rendered);
     }
+    if let PackageKind::Aur(data) = &pkg.kind
+        && let Some(rendered) = section(
+            "Community & Maintenance",
+            &community_rows(pkg, data, stdout_color),
+            stdout_color,
+        )
+    {
+        out.push_str(&rendered);
+    }
     if let PackageKind::Repo(data) = &pkg.kind
         && let Some(rendered) = section(
             &format!("Dependencies ({})", pkg.dependencies.len()),
@@ -118,7 +196,9 @@ pub fn render(pkg: &Package, stdout_color: bool) -> String {
     {
         out.push_str(&rendered);
     }
-    if let Some(rendered) = opt_dependency_section(pkg, stdout_color) {
+    if matches!(pkg.kind, PackageKind::Repo(_))
+        && let Some(rendered) = opt_dependency_section(pkg, stdout_color)
+    {
         out.push_str(&rendered);
     }
     out
@@ -144,6 +224,10 @@ fn badge(installed: bool, stdout_color: bool) -> String {
     }
 }
 
+fn aur_badge(stdout_color: bool) -> String {
+    color::paint(stdout_color, color::MAGENTA, "[aur]")
+}
+
 fn section_title(has_installed: bool) -> &'static str {
     if has_installed {
         "Status"
@@ -153,13 +237,20 @@ fn section_title(has_installed: bool) -> &'static str {
 }
 
 fn header(pkg: &Package, origin: &str, installed: bool, stdout_color: bool) -> String {
+    let badges = match &pkg.kind {
+        PackageKind::Aur(_) if installed => {
+            format!("{} {}", aur_badge(stdout_color), badge(true, stdout_color))
+        }
+        PackageKind::Aur(_) => aur_badge(stdout_color),
+        PackageKind::Repo(_) => badge(installed, stdout_color),
+    };
     format!(
         "{} {} {} {} {}",
         color::paint(stdout_color, color::COLON, origin),
         color::paint(stdout_color, color::GRAY, "::"),
         color::paint(stdout_color, NAME, &pkg.name),
         color::paint(stdout_color, VERSION, &pkg.version),
-        badge(installed, stdout_color),
+        badges,
     )
 }
 
@@ -188,17 +279,66 @@ fn package_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)
             rows.push(("Build Date", format_date(epoch)));
         }
     }
-    rows.push(("Packager", pkg.maintainer.clone().unwrap_or_default()));
+    if matches!(pkg.kind, PackageKind::Repo(_)) {
+        rows.push(("Packager", pkg.maintainer.clone().unwrap_or_default()));
+    }
     rows.push(("License", pkg.licenses.join(", ")));
     if let PackageKind::Repo(data) = &pkg.kind
         && !data.validated_by.is_empty()
     {
         rows.push(("Validated By", data.validated_by.clone()));
     }
-    rows.push(("Groups", pkg.groups.join(", ")));
-    rows.push(("Provides", pkg.provides.join(", ")));
-    rows.push(("Conflicts", pkg.conflicts.join(", ")));
-    rows.push(("Replaces", pkg.replaces.join(", ")));
+    if matches!(pkg.kind, PackageKind::Repo(_)) {
+        rows.push(("Groups", pkg.groups.join(", ")));
+        rows.push(("Provides", pkg.provides.join(", ")));
+        rows.push(("Conflicts", pkg.conflicts.join(", ")));
+        rows.push(("Replaces", pkg.replaces.join(", ")));
+    }
+    rows
+}
+
+fn community_rows(
+    pkg: &Package,
+    data: &crate::package::AurData,
+    stdout_color: bool,
+) -> Vec<(&'static str, String)> {
+    let mut rows: Vec<(&'static str, String)> = Vec::new();
+    rows.push((
+        "Votes / Pop",
+        format!(
+            "{} {}",
+            grouped_votes(data.num_votes),
+            color::paint(
+                stdout_color,
+                color::GRAY,
+                &format!("({:.2} popularity)", data.popularity)
+            ),
+        ),
+    ));
+    match pkg.maintainer.as_deref().filter(|name| !name.is_empty()) {
+        Some(name) => rows.push(("Maintainer", name.to_string())),
+        None => rows.push((
+            "Maintainer",
+            color::paint(stdout_color, color::YELLOW, "None (Orphaned)"),
+        )),
+    }
+    if let Some(epoch) = data.submitted {
+        rows.push(("Submitted", format_date(epoch)));
+    }
+    if let Some(epoch) = data.last_modified {
+        rows.push(("Last Modified", format_date(epoch)));
+    }
+    match data.flagged {
+        Some(epoch) => rows.push((
+            "Flagged Out",
+            color::paint(
+                stdout_color,
+                color::YELLOW,
+                &format!("Yes ({})", format_ymd(epoch)),
+            ),
+        )),
+        None => rows.push(("Flagged Out", "No".to_string())),
+    }
     rows
 }
 
@@ -308,7 +448,7 @@ fn section(title: &str, rows: &[(&'static str, String)], stdout_color: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::package::{InstalledData, OptDependency, RepoData};
+    use crate::package::{AurData, InstalledData, OptDependency, RepoData};
 
     fn full_package() -> Package {
         Package {
@@ -704,6 +844,180 @@ mod tests {
     fn render_opt_dependencies_omitted_when_empty() {
         let rendered = render(&full_package(), false);
         assert!(!rendered.contains("Optional Dependencies"));
+    }
+
+    fn aur_package() -> Package {
+        Package {
+            name: "visual-studio-code-bin".to_string(),
+            description: Some(
+                "Visual Studio Code (vscode): Editor for building and debugging".to_string(),
+            ),
+            version: "1.93.1-1".to_string(),
+            maintainer: Some("dcelasun".to_string()),
+            licenses: vec!["custom:commercial".to_string()],
+            groups: vec![],
+            provides: vec![],
+            conflicts: vec![],
+            replaces: vec![],
+            dependencies: vec![],
+            opt_dependencies: vec![],
+            upstream_url: Some("https://code.visualstudio.com/".to_string()),
+            installed: None,
+            kind: PackageKind::Aur(AurData {
+                num_votes: 2841,
+                popularity: 48.12,
+                submitted: Some(1442236800),
+                last_modified: Some(1785360000),
+                flagged: Some(1785715200),
+            }),
+        }
+    }
+
+    #[test]
+    fn render_aur_plain() {
+        let pkg = aur_package();
+        let submitted = format_date(1442236800);
+        let modified = format_date(1785360000);
+        let flagged = format_ymd(1785715200);
+        let expected = format!(
+            "aur :: visual-studio-code-bin 1.93.1-1 [aur]\n\
+            Visual Studio Code (vscode): Editor for building and debugging\n\
+            https://code.visualstudio.com/\n\
+            \n  Package Info\n\
+            \x20   License         custom:commercial\n\
+            \n  Community & Maintenance\n\
+            \x20   Votes / Pop     2,841 (48.12 popularity)\n\
+            \x20   Maintainer      dcelasun\n\
+            \x20   Submitted       {submitted}\n\
+            \x20   Last Modified   {modified}\n\
+            \x20   Flagged Out     Yes ({flagged})",
+        );
+        assert_eq!(render(&pkg, false), expected);
+    }
+
+    #[test]
+    fn render_aur_installed_plain() {
+        let epoch = 1786406400;
+        let mut pkg = aur_package();
+        pkg.installed = Some(InstalledData {
+            version: "1.93.1-1".to_string(),
+            explicit: true,
+            install_date: Some(epoch),
+            script: false,
+        });
+        let date = format_date(epoch);
+        let rendered = render(&pkg, false);
+        assert!(rendered.contains("aur :: visual-studio-code-bin 1.93.1-1 [aur] [installed]"));
+        assert!(rendered.contains("\n  Status"));
+        assert!(rendered.contains(&format!("Installed       {date} (explicitly installed)")));
+        assert!(rendered.contains("\n  Community & Maintenance"));
+    }
+
+    #[test]
+    fn render_aur_colored_fragments_byte_exact() {
+        let rendered = render(&aur_package(), true);
+        assert!(rendered.contains("\x1b[1;35m[aur]\x1b[0m"));
+        assert!(rendered.contains("\x1b[1;34maur\x1b[0m"));
+        assert!(rendered.contains("\x1b[37m2,841 \x1b[90m(48.12 popularity)\x1b[0m\x1b[0m"));
+        assert!(rendered.contains("\x1b[37mdcelasun\x1b[0m"));
+        let flagged = format_ymd(1785715200);
+        assert!(rendered.contains(&format!("\x1b[1;33mYes ({flagged})\x1b[0m")));
+    }
+
+    #[test]
+    fn render_aur_orphan_maintainer() {
+        for maintainer in [None, Some(String::new())] {
+            let mut pkg = aur_package();
+            pkg.maintainer = maintainer;
+            let plain = render(&pkg, false);
+            assert!(
+                plain.contains("Maintainer      None (Orphaned)"),
+                "orphan must render plain fallback; got:\n{plain}",
+            );
+            let colored = render(&pkg, true);
+            assert!(
+                colored.contains("\x1b[1;33mNone (Orphaned)\x1b[0m"),
+                "orphan must warn in yellow; got:\n{colored}",
+            );
+        }
+    }
+
+    #[test]
+    fn render_aur_epoch_zero_omits_date_rows() {
+        let info = crate::aur::AurInfo {
+            id: 1,
+            name: "orphan-toy".to_string(),
+            package_base_id: 2,
+            package_base: "orphan-toy".to_string(),
+            version: "0.0.1-1".to_string(),
+            description: None,
+            url: None,
+            num_votes: 0,
+            popularity: 0.0,
+            out_of_date: None,
+            maintainer: None,
+            first_submitted: 0,
+            last_modified: 0,
+            url_path: None,
+            submitter: None,
+            depends: vec![],
+            make_depends: vec![],
+            check_depends: vec![],
+            opt_depends: vec![],
+            conflicts: vec![],
+            provides: vec![],
+            replaces: vec![],
+            groups: vec![],
+            license: vec![],
+            keywords: vec![],
+            co_maintainers: vec![],
+        };
+        let pkg = Package::from(info);
+        let PackageKind::Aur(data) = &pkg.kind else {
+            panic!("expected aur package kind");
+        };
+        assert_eq!(data.submitted, None);
+        assert_eq!(data.last_modified, None);
+        assert_eq!(data.flagged, None);
+        let rendered = render(&pkg, false);
+        assert!(!rendered.contains("Submitted"));
+        assert!(!rendered.contains("Last Modified"));
+        assert!(rendered.contains("Flagged Out     No"));
+        assert!(!rendered.contains("Package Info"));
+        assert!(!rendered.contains("Dependencies"));
+    }
+
+    #[test]
+    fn render_aur_skips_repo_rows() {
+        let rendered = render(&aur_package(), false);
+        for row in [
+            "Install Script",
+            "Packager",
+            "Validated By",
+            "Groups",
+            "Provides",
+            "Conflicts",
+            "Replaces",
+            "Dependencies",
+        ] {
+            assert!(
+                !rendered.contains(row),
+                "aur view must skip {row}; got:\n{rendered}",
+            );
+        }
+    }
+
+    #[test]
+    fn grouped_votes_separator_cases() {
+        for (votes, expected) in [
+            (0, "0"),
+            (12, "12"),
+            (1234, "1,234"),
+            (2841, "2,841"),
+            (1000000, "1,000,000"),
+        ] {
+            assert_eq!(grouped_votes(votes), expected);
+        }
     }
 
     #[test]
