@@ -301,7 +301,10 @@ fn package_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)
         Some(overlay) => overlay.script,
         None => data.script,
     };
-    rows.push(("Install Script", yes_no(script)));
+    rows.push((
+        "Install Script",
+        if script { "Yes" } else { "No" }.to_string(),
+    ));
     if data.is_local() {
         rows.push(("Size on Disk", humanized(data.installed_size)));
     } else {
@@ -417,14 +420,6 @@ fn aur_runtime_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, Str
         "Required",
         truncated_join(&pkg.dependencies, AUR_DEP_PREVIEW, stdout_color),
     )]
-}
-
-fn yes_no(value: bool) -> String {
-    if value {
-        "Yes".to_string()
-    } else {
-        "No".to_string()
-    }
 }
 
 fn truncated_join(names: &[String], limit: usize, stdout_color: bool) -> String {
