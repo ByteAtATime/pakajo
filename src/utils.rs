@@ -1,3 +1,22 @@
+use std::path::PathBuf;
+
+use anyhow::Context as _;
+
+pub fn cache_base() -> anyhow::Result<PathBuf> {
+    match std::env::var("XDG_CACHE_HOME") {
+        Ok(xdg) => Ok(PathBuf::from(xdg)),
+        Err(_) => {
+            let home =
+                std::env::var("HOME").context("no cache directory: set XDG_CACHE_HOME or HOME")?;
+            Ok(PathBuf::from(home).join(".cache"))
+        }
+    }
+}
+
+pub fn cache_root() -> anyhow::Result<PathBuf> {
+    Ok(cache_base()?.join("pakajo"))
+}
+
 pub fn format_bytes(bytes: i64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     if bytes < 1024 {

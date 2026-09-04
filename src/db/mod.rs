@@ -1,7 +1,5 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::Context as _;
-
 pub const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 
 pub struct PackageDb {
@@ -23,15 +21,7 @@ impl PackageDb {
     }
 
     pub fn db_path() -> anyhow::Result<std::path::PathBuf> {
-        let cache = match std::env::var("XDG_CACHE_HOME") {
-            Ok(xdg) => std::path::PathBuf::from(xdg),
-            Err(_) => {
-                let home = std::env::var("HOME")
-                    .context("no cache directory: set XDG_CACHE_HOME or HOME")?;
-                std::path::PathBuf::from(home).join(".cache")
-            }
-        };
-        let dir = cache.join("pakajo");
+        let dir = crate::utils::cache_root()?;
         std::fs::create_dir_all(&dir)?;
         Ok(dir.join("aur-meta.sqlite"))
     }

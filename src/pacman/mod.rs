@@ -81,7 +81,7 @@ pub fn init_alpm_at(
 }
 
 pub fn init_alpm_rootless(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
-    let checkdb = crate::build::cache_root()?.join("checkdb");
+    let checkdb = crate::utils::cache_root()?.join("checkdb");
     std::fs::create_dir_all(&checkdb).context("creating checkdb dir")?;
     let local_link = checkdb.join("local");
     let expected_local = std::path::Path::new(&config.db_path).join("local");
@@ -123,7 +123,7 @@ pub fn refresh_sync_dbs_rootless(handle: &mut Alpm) -> anyhow::Result<()> {
         Ok(_) => Ok(()),
         Err(alpm::Error::HandleLock) => {
             let lock_path = lock::db_lck_path(handle.dbpath());
-            let checkdb = crate::build::cache_root()?.join("checkdb");
+            let checkdb = crate::utils::cache_root()?.join("checkdb");
             if lock_path.parent() != Some(checkdb.as_path()) {
                 anyhow::bail!(
                     "refusing to remove non-checkdb lock at {}",

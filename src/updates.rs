@@ -35,7 +35,7 @@ pub fn now_unix_seconds() -> u64 {
 }
 
 pub fn store(cache: &UpdatesCache) {
-    let dir = match crate::build::cache_root() {
+    let dir = match crate::utils::cache_root() {
         Ok(dir) => dir,
         Err(e) => {
             eprintln!("[pakajo] failed to write updates cache: {e:#}");
@@ -83,7 +83,7 @@ fn load_from(dir: &std::path::Path) -> Option<UpdatesCache> {
 }
 
 pub fn load_cached() -> Option<UpdatesCache> {
-    let dir = match crate::build::cache_root() {
+    let dir = match crate::utils::cache_root() {
         Ok(dir) => dir,
         Err(e) => {
             eprintln!("[pakajo] failed to read updates cache: {e:#}");

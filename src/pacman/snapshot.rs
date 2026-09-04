@@ -25,7 +25,7 @@ pub struct AlpmSnapshot {
 }
 
 fn snapshot_path() -> anyhow::Result<PathBuf> {
-    Ok(crate::build::cache_root()?.join("alpm-snapshot.bin"))
+    Ok(crate::utils::cache_root()?.join("alpm-snapshot.bin"))
 }
 
 fn stamp(path: &Path) -> FileStamp {

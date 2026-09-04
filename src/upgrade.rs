@@ -613,7 +613,7 @@ mod tests {
             !root_lock.exists(),
             "pre-existing {ROOT_DB_LCK} blocks a clean spike; remove it first"
         );
-        if let Ok(checkdb) = crate::build::cache_root() {
+        if let Ok(checkdb) = crate::utils::cache_root() {
             let _ = std::fs::remove_file(checkdb.join("checkdb").join("db.lck"));
         }
         let mtimes_before = sync_db_mtimes();

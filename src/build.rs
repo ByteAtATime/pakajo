@@ -215,23 +215,11 @@ fn is_valid_pkgbase(s: &str) -> Option<()> {
     Some(())
 }
 
-pub fn cache_root() -> anyhow::Result<PathBuf> {
-    let cache = match std::env::var("XDG_CACHE_HOME") {
-        Ok(xdg) => PathBuf::from(xdg),
-        Err(_) => {
-            let home =
-                std::env::var("HOME").context("no cache directory: set XDG_CACHE_HOME or HOME")?;
-            PathBuf::from(home).join(".cache")
-        }
-    };
-    Ok(cache.join("pakajo"))
-}
-
 pub fn clone_dir(pkgbase: &str) -> anyhow::Result<PathBuf> {
     if is_valid_pkgbase(pkgbase).is_none() {
         anyhow::bail!("invalid pkgbase from AUR: {pkgbase:?}");
     }
-    Ok(cache_root()?.join(pkgbase))
+    Ok(crate::utils::cache_root()?.join(pkgbase))
 }
 
 pub fn git_clone_or_pull(dir: &Path, pkgbase: &str) -> anyhow::Result<()> {

@@ -330,7 +330,7 @@ mod tests {
         let mtimes_before = sync_db_mtimes();
 
         let config = pacmanconf::Config::new().expect("failed to read pacman config");
-        let checkdb_lock = crate::build::cache_root()
+        let checkdb_lock = crate::utils::cache_root()
             .expect("cache root")
             .join("checkdb")
             .join("db.lck");

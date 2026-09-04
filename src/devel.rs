@@ -47,18 +47,9 @@ struct YayOriginInfo {
 }
 
 pub fn state_path() -> std::path::PathBuf {
-    cache_dir().join("pakajo").join("devel.json")
-}
-
-fn cache_dir() -> std::path::PathBuf {
-    match std::env::var("XDG_CACHE_HOME") {
-        Ok(xdg) => std::path::PathBuf::from(xdg),
-        Err(_) => {
-            let home =
-                std::env::var("HOME").expect("no cache directory: set XDG_CACHE_HOME or HOME");
-            std::path::PathBuf::from(home).join(".cache")
-        }
-    }
+    crate::utils::cache_root()
+        .expect("no cache directory: set XDG_CACHE_HOME or HOME")
+        .join("devel.json")
 }
 
 pub fn load_devel_info() -> DevelInfo {
@@ -77,7 +68,10 @@ pub fn load_devel_info() -> DevelInfo {
 }
 
 fn yay_vcs_path() -> std::path::PathBuf {
-    cache_dir().join("yay").join("vcs.json")
+    crate::utils::cache_base()
+        .expect("no cache directory: set XDG_CACHE_HOME or HOME")
+        .join("yay")
+        .join("vcs.json")
 }
 
 fn load_from(path: &std::path::Path) -> DevelInfo {
