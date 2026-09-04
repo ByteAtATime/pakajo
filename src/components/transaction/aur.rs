@@ -2,6 +2,7 @@ use cosmic::widget::{Column, scrollable, text};
 use pakajo::transaction_state::{InstallKind, RepoStage, RepoState};
 
 use super::accordion::{Section, action_footer, stage_row};
+use super::finalize::finalize_section;
 use super::install::install_section;
 use super::resolve::resolve_section;
 use super::shared::download_view;
@@ -25,6 +26,8 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
             validate_section(&model.repo_state, state)
         } else if *stage == RepoStage::Install {
             install_section(&model.repo_state, state)
+        } else if *stage == RepoStage::Finalize {
+            finalize_section(&model.repo_state, state)
         } else {
             Section {
                 label: stage_label(*stage),

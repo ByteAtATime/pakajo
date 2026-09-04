@@ -63,6 +63,7 @@ impl TransactionModel {
                 download_sync_done: 0,
                 install_order: Vec::new(),
                 install_packages: HashMap::new(),
+                finalize_lines: Vec::new(),
             },
             expanded: HashSet::new(),
             status: TransactionStatus::Checking,

@@ -74,6 +74,7 @@ pub struct RepoState {
     pub download_sync_done: i64,
     pub install_order: Vec<String>,
     pub install_packages: HashMap<String, InstallPackage>,
+    pub finalize_lines: Vec<String>,
 }
 
 impl RepoState {
@@ -306,6 +307,23 @@ pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
             if let Some(entry) = state.install_packages.get_mut(package) {
                 entry.percent = (*percent as f32).clamp(0.0, 100.0);
                 entry.completed = *percent >= 100;
+            }
+        }
+        InstallEvent::HookRun {
+            position,
+            total,
+            name,
+            desc,
+        } => {
+            let label = desc.as_deref().unwrap_or(name);
+            state
+                .finalize_lines
+                .push(format!("({position}/{total}) {label}"));
+        }
+        InstallEvent::ScriptletInfo { line } => {
+            let trimmed = line.trim_end();
+            if !trimmed.is_empty() {
+                state.finalize_lines.push(trimmed.to_string());
             }
         }
         InstallEvent::RetrievingPackages { num, total_bytes } => {
@@ -691,6 +709,7 @@ mod tests {
             download_sync_done: 0,
             install_order: Vec::new(),
             install_packages: HashMap::new(),
+            finalize_lines: Vec::new(),
         }
     }
 

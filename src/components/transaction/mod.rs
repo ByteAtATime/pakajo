@@ -25,6 +25,8 @@ mod accordion;
 
 mod aur;
 
+mod finalize;
+
 mod install;
 
 mod repo;
