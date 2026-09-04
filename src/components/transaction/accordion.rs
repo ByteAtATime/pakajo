@@ -1,13 +1,11 @@
+use super::TransactionMessage;
+use super::shared::{accent_color, muted, muted_color, on_color, tinted};
+use super::state::StageState;
+use crate::Element;
+use crate::components::divider::divider;
 use cosmic::iced::alignment::Vertical;
 use cosmic::iced::{Background, Border, Color, Length, Shadow};
 use cosmic::widget::{Column, Row, button, container, space, text};
-use pakajo::transaction_state::{RepoStage, RepoState};
-
-use super::TransactionMessage;
-use super::shared::{accent_color, download_view, muted, muted_color, on_color, tinted};
-use super::state::{StageState, TransactionModel};
-use crate::Element;
-use crate::components::divider::divider;
 
 pub(super) fn action_footer() -> Element<'static> {
     let header_divider = divider();
@@ -20,19 +18,27 @@ pub(super) fn action_footer() -> Element<'static> {
         .into()
 }
 
-pub(super) fn stage_row(model: &TransactionModel, i: usize, stage: RepoStage) -> Element<'_> {
-    let state = model.stage_state(i);
-    let label = stage_label(stage);
+pub(super) struct Section<'a> {
+    pub(super) label: &'static str,
+    pub(super) state: StageState,
+    pub(super) content: Option<Element<'a>>,
+}
+
+pub(super) fn stage_row(section: Section<'_>, expanded: bool, index: usize) -> Element<'_> {
+    let state = section.state;
     let gutter = stage_glyph(state);
-    let header = header_row(state, label);
+    let header = header_row(state, section.label);
 
     let content: Element<'_> = match state {
         StageState::Pending => header,
-        StageState::Active => Column::new()
-            .spacing(6)
-            .push(header)
-            .push(muted(active_view(&model.repo_state, stage)))
-            .into(),
+        StageState::Active => match section.content {
+            Some(content) => Column::new()
+                .spacing(6)
+                .push(header)
+                .push(muted(content))
+                .into(),
+            None => header,
+        },
         StageState::Failed => Column::new()
             .spacing(6)
             .push(header)
@@ -44,9 +50,9 @@ pub(super) fn stage_row(model: &TransactionModel, i: usize, stage: RepoStage) ->
                 .width(Length::Fill)
                 .class(cosmic::theme::Button::Transparent)
                 .on_press(crate::Message::Transaction(
-                    TransactionMessage::ToggleStage(i),
+                    TransactionMessage::ToggleStage(index),
                 ));
-            if model.expanded.contains(&i) {
+            if expanded {
                 Column::new()
                     .spacing(6)
                     .push(toggle)
@@ -179,21 +185,4 @@ fn stage_panel_style(theme: &cosmic::Theme, state: StageState) -> container::Sty
 
 fn destructive_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().destructive.base)
-}
-
-fn active_view(state: &RepoState, stage: RepoStage) -> Element<'_> {
-    match stage {
-        RepoStage::Download => download_view(state),
-        _ => text(format!("running phase {}", stage_label(stage))).into(),
-    }
-}
-
-fn stage_label(stage: RepoStage) -> &'static str {
-    match stage {
-        RepoStage::Resolve => "Resolve",
-        RepoStage::Validate => "Validate",
-        RepoStage::Download => "Download",
-        RepoStage::Install => "Install",
-        RepoStage::Finalize => "Finalize",
-    }
 }

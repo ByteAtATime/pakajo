@@ -2,7 +2,6 @@ use std::env::current_exe;
 
 use cosmic::app::Task;
 use cosmic::iced::stream::channel;
-use cosmic::widget::{Column, scrollable, text};
 use futures::{SinkExt as _, StreamExt as _, channel::oneshot};
 
 use pakajo::build::{BuildDecision, run_build};
@@ -23,7 +22,8 @@ mod state;
 pub(crate) use state::{TransactionModel, TransactionStatus};
 
 mod accordion;
-use accordion::{action_footer, stage_row};
+
+mod repo;
 
 mod shared;
 
@@ -403,20 +403,7 @@ impl Transaction {
     }
 
     pub(crate) fn view(&self) -> Element<'_> {
-        let title = match self.model.kind {
-            InstallKind::Install => format!("Installing {}", self.model.name),
-            InstallKind::Remove => format!("Removing {}", self.model.name),
-            InstallKind::Upgrade => format!("Upgrading {}", self.model.name),
-        };
-        let mut panels = Column::new().spacing(6);
-        for (i, stage) in self.model.stages.iter().enumerate() {
-            panels = panels.push(stage_row(&self.model, i, *stage));
-        }
-        let mut col = Column::new().spacing(16).push(text(title)).push(panels);
-        if matches!(self.model.status, TransactionStatus::Done(_)) {
-            col = col.push(action_footer());
-        }
-        scrollable(col).into()
+        repo::view(&self.model)
     }
 
     pub(crate) fn dialog(&self) -> Option<Element<'_>> {
