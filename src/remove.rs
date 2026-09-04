@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use anyhow::{Context, anyhow};
 
-use crate::events::{InstallSink, SummaryPackage, TransactionSummary};
+use crate::events::InstallSink;
 use crate::install::{QuestionState, StreamItem, register_callbacks, run_json_child};
 
 pub fn run_remove<S: InstallSink + 'static, F: FnOnce() -> bool>(
@@ -62,7 +62,7 @@ fn run_remove_transaction<S: InstallSink, F: FnOnce() -> bool>(
         anyhow::bail!("aborted: {}", qstate.borrow().detail);
     }
 
-    let summary = build_remove_summary(handle);
+    let summary = crate::install::build_summary(handle);
     sink.borrow_mut()
         .event(crate::events::InstallEvent::TransactionSummary(summary));
 
@@ -96,33 +96,6 @@ fn classify_prepare_error(err: alpm::PrepareError) -> anyhow::Error {
         }
         Some(other) => anyhow!("trans_prepare failed: {other:?}"),
         None => anyhow!("trans_prepare failed: {}", err.error()),
-    }
-}
-
-fn build_remove_summary(handle: &alpm::Alpm) -> TransactionSummary {
-    let mut packages = Vec::new();
-    let mut total_removed_size = 0;
-    for pkg in handle.trans_remove().iter() {
-        let name = pkg.name().to_string();
-        let old_version = pkg.version().to_string();
-        let installed_size = pkg.isize();
-        total_removed_size += installed_size;
-        packages.push(SummaryPackage {
-            repository: None,
-            new_version: String::new(),
-            name,
-            old_version: Some(old_version),
-            download_size: 0,
-            installed_size,
-            old_installed_size: 0,
-            is_removal: true,
-        });
-    }
-    TransactionSummary {
-        packages,
-        total_download_size: 0,
-        total_installed_size: 0,
-        total_removed_size,
     }
 }
 
