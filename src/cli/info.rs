@@ -55,7 +55,7 @@ pub fn run(targets: Vec<String>) -> ! {
     std::process::exit(0);
 }
 
-pub fn format_date(epoch: i64) -> String {
+fn format_date(epoch: i64) -> String {
     chrono::DateTime::from_timestamp(epoch, 0)
         .unwrap_or_default()
         .with_timezone(&chrono::Local)
@@ -184,9 +184,6 @@ fn package_rows(pkg: &Package) -> Vec<(String, String)> {
         if let Some(epoch) = data.build_date {
             push_row(&mut rows, "Build Date", format_date(epoch));
         }
-        if !data.validated_by.is_empty() {
-            push_row(&mut rows, "Validated By", data.validated_by.clone());
-        }
     }
     push_row(
         &mut rows,
@@ -194,6 +191,11 @@ fn package_rows(pkg: &Package) -> Vec<(String, String)> {
         pkg.maintainer.clone().unwrap_or_default(),
     );
     push_row(&mut rows, "License", pkg.licenses.join(", "));
+    if let PackageKind::Repo(data) = &pkg.kind
+        && !data.validated_by.is_empty()
+    {
+        push_row(&mut rows, "Validated By", data.validated_by.clone());
+    }
     push_row(&mut rows, "Groups", pkg.groups.join(", "));
     push_row(&mut rows, "Provides", pkg.provides.join(", "));
     push_row(&mut rows, "Conflicts", pkg.conflicts.join(", "));
@@ -452,9 +454,9 @@ mod tests {
             \x20   Install Script  No\n\
             \x20   Size            8.00 MiB (download), 25.00 MiB (installed)\n\
             \x20   Build Date      {}\n\
-            \x20   Validated By    SHA-256, Signature\n\
             \x20   Packager        Caleb Maclennan <alerque@archlinux.org>\n\
             \x20   License         BSD-3-Clause\n\
+            \x20   Validated By    SHA-256, Signature\n\
             \x20   Groups          hyprland-git-meta, wayland-compositors\n\
             \x20   Provides        wayland-compositor\n\
             \x20   Conflicts       hyprland-git, hyprland-legacy-bin\n\
@@ -527,6 +529,17 @@ mod tests {
             .expect("Installed row must render");
         assert!(line.starts_with("    Installed      "));
         assert!(line.contains("(installed as a dependency)"));
+    }
+
+    #[test]
+    fn format_date_pins_format_tokens() {
+        let epoch = 1_754_000_000;
+        let expected = chrono::DateTime::from_timestamp(epoch, 0)
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .format("%a %d %b %Y")
+            .to_string();
+        assert_eq!(format_date(epoch), expected);
     }
 
     #[test]

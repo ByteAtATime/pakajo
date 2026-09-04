@@ -121,7 +121,7 @@ fn parse_opt_dependency(dependency: &str) -> Option<OptDependency> {
 }
 
 fn validated_by_label(validation: alpm::PackageValidation) -> String {
-    if validation.is_empty() || validation.contains(alpm::PackageValidation::UNKNOWN) {
+    if validation.is_empty() {
         return "Unknown".to_string();
     }
     if validation.contains(alpm::PackageValidation::NONE) {
@@ -316,6 +316,19 @@ pub fn foreign_names(handle: &alpm::Alpm) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::aur::AurInfo;
+
+    #[test]
+    fn validated_by_label_cases() {
+        use alpm::PackageValidation as V;
+        assert_eq!(validated_by_label(V::empty()), "Unknown");
+        assert_eq!(validated_by_label(V::NONE), "None");
+        assert_eq!(validated_by_label(V::NONE | V::SIGNATURE), "None");
+        assert_eq!(validated_by_label(V::MD5SUM), "MD5");
+        assert_eq!(
+            validated_by_label(V::SHA256SUM | V::SIGNATURE),
+            "SHA-256, Signature"
+        );
+    }
 
     #[test]
     fn from_aur_info() {
