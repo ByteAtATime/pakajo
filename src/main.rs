@@ -344,7 +344,7 @@ impl PakajoApp {
                     return Task::none();
                 }
                 let (name, source) = match &self.detail {
-                    DetailData::Ready { pkg, .. } => (pkg.name.clone(), pkg.source),
+                    DetailData::Ready { pkg, .. } => (pkg.name.clone(), pkg.source()),
                     _ => return Task::none(),
                 };
                 let (txn, task) = Transaction::start(name, source);
@@ -361,7 +361,7 @@ impl PakajoApp {
                     return Task::none();
                 }
                 let (name, source) = match &self.detail {
-                    DetailData::Ready { pkg, .. } => (pkg.name.clone(), pkg.source),
+                    DetailData::Ready { pkg, .. } => (pkg.name.clone(), pkg.source()),
                     _ => return Task::none(),
                 };
                 let (txn, task) = Transaction::start_remove(name, source);

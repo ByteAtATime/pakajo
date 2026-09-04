@@ -168,7 +168,7 @@ fn render_header<'a>(
     checking: Option<&'a str>,
     pending: bool,
 ) -> Element<'a> {
-    let formatted_name = if let Some(repo) = pkg.repo.as_ref() {
+    let formatted_name = if let Some(repo) = pkg.repo() {
         format!("{repo}/{}", pkg.name)
     } else {
         pkg.name.clone()
@@ -239,23 +239,28 @@ fn render_info_bar<'a>(pkg: &'a Package) -> Element<'a> {
         info_row = info_row.push(info_item(icon(icons::user()).size(16).into(), maintainer));
     }
 
-    if let Some(arch) = &pkg.architecture {
-        info_row = info_row.push(info_item(icon(icons::cpu()).size(16).into(), arch.clone()));
-    }
-
-    if let Some((votes, popularity)) = pkg.num_votes.zip(pkg.popularity) {
-        info_row = info_row.push(info_item(
-            icon(icons::star()).size(16).into(),
-            format!("+{votes} ({popularity:.2})"),
-        ));
-    }
-
-    if let Some((download, installed)) = pkg.download_size.zip(pkg.installed_size) {
-        let size_str = format!("{} / {}", format_bytes(download), format_bytes(installed));
-        info_row = info_row.push(info_item(
-            icon(icons::hard_drive()).size(16).into(),
-            size_str,
-        ));
+    match &pkg.kind {
+        pakajo::package::PackageKind::Repo(data) => {
+            if let Some(arch) = data.architecture.as_ref() {
+                info_row =
+                    info_row.push(info_item(icon(icons::cpu()).size(16).into(), arch.clone()));
+            }
+            let size_str = format!(
+                "{} / {}",
+                format_bytes(data.download_size),
+                format_bytes(data.installed_size)
+            );
+            info_row = info_row.push(info_item(
+                icon(icons::hard_drive()).size(16).into(),
+                size_str,
+            ));
+        }
+        pakajo::package::PackageKind::Aur(data) => {
+            info_row = info_row.push(info_item(
+                icon(icons::star()).size(16).into(),
+                format!("+{} ({:.2})", data.num_votes, data.popularity),
+            ));
+        }
     }
 
     container(info_row)
