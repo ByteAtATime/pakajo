@@ -19,7 +19,7 @@ pub(super) fn resolve_section(repo: &RepoState, state: StageState) -> Section<'_
         header_suffix: None,
     };
     match state {
-        StageState::Active => section.content = Some(resolve_active_view(repo)),
+        StageState::Active => section.header_suffix = Some(resolve_active_view(repo)),
         StageState::Done => match repo.manifest.as_ref() {
             Some(summary) if summary.packages.len() == 1 => {
                 section.header_suffix = Some(single_package_suffix(&summary.packages[0]));
@@ -60,8 +60,7 @@ fn status_row(label: &str, done_dots: Option<usize>) -> Element<'_> {
     let mut row = Row::new()
         .align_y(Vertical::Center)
         .spacing(8)
-        .push(muted(text(label.to_string())))
-        .push(space::horizontal());
+        .push(muted(text(label)));
     if let Some(done) = done_dots {
         row = row.push(step_dots(done));
     }
