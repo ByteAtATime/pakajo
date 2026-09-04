@@ -7,6 +7,7 @@ const VALUE: &str = "\x1b[37m";
 const LINK: &str = "\x1b[4;36m";
 const NOT_INSTALLED: &str = "\x1b[2;37m";
 const DEP_PREVIEW: usize = 6;
+const AUR_DEP_PREVIEW: usize = 4;
 
 pub fn run(targets: Vec<String>) -> ! {
     let handle = super::alpm_handle_or_exit();
@@ -178,14 +179,24 @@ pub fn render(pkg: &Package, stdout_color: bool) -> String {
     ) {
         out.push_str(&rendered);
     }
-    if let PackageKind::Aur(data) = &pkg.kind
-        && let Some(rendered) = section(
+    if let PackageKind::Aur(data) = &pkg.kind {
+        if let Some(rendered) = section(
             "Community & Maintenance",
             &community_rows(pkg, data, stdout_color),
             stdout_color,
-        )
-    {
-        out.push_str(&rendered);
+        ) {
+            out.push_str(&rendered);
+        }
+        if let Some(rendered) = build_source_section(pkg, data, stdout_color) {
+            out.push_str(&rendered);
+        }
+        if let Some(rendered) = section(
+            &format!("Runtime Dependencies ({})", pkg.dependencies.len()),
+            &aur_runtime_rows(pkg, stdout_color),
+            stdout_color,
+        ) {
+            out.push_str(&rendered);
+        }
     }
     if let PackageKind::Repo(data) = &pkg.kind
         && let Some(rendered) = section(
@@ -282,7 +293,9 @@ fn package_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)
     if matches!(pkg.kind, PackageKind::Repo(_)) {
         rows.push(("Packager", pkg.maintainer.clone().unwrap_or_default()));
     }
-    rows.push(("License", pkg.licenses.join(", ")));
+    if matches!(pkg.kind, PackageKind::Repo(_)) {
+        rows.push(("License", pkg.licenses.join(", ")));
+    }
     if let PackageKind::Repo(data) = &pkg.kind
         && !data.validated_by.is_empty()
     {
@@ -340,6 +353,53 @@ fn community_rows(
         None => rows.push(("Flagged Out", "No".to_string())),
     }
     rows
+}
+
+fn aur_link(name: &str) -> String {
+    format!("https://aur.archlinux.org/packages/{name}")
+}
+
+fn build_source_section(
+    pkg: &Package,
+    data: &crate::package::AurData,
+    stdout_color: bool,
+) -> Option<String> {
+    let rows: Vec<(&'static str, String)> = vec![
+        ("AUR Link", aur_link(&pkg.name)),
+        ("License", pkg.licenses.join(", ")),
+        (
+            "Make Depends",
+            truncated_join(&data.make_depends, AUR_DEP_PREVIEW, stdout_color),
+        ),
+        (
+            "Check Depends",
+            truncated_join(&data.check_depends, AUR_DEP_PREVIEW, stdout_color),
+        ),
+        ("Provides", pkg.provides.join(", ")),
+        ("Conflicts", pkg.conflicts.join(", ")),
+        ("Replaces", pkg.replaces.join(", ")),
+    ];
+    let kept: Vec<_> = rows.iter().filter(|(_, value)| !value.is_empty()).collect();
+    if kept.is_empty() {
+        return None;
+    }
+    let mut out = section_title_line("Build & Source", stdout_color);
+    for (label, value) in kept {
+        let tint = if *label == "AUR Link" { LINK } else { VALUE };
+        out.push_str(&format!(
+            "\n    {} {}",
+            color::paint(stdout_color, color::GRAY, &format!("{label:<15}")),
+            color::paint(stdout_color, tint, value),
+        ));
+    }
+    Some(out)
+}
+
+fn aur_runtime_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)> {
+    vec![(
+        "Required",
+        truncated_join(&pkg.dependencies, AUR_DEP_PREVIEW, stdout_color),
+    )]
 }
 
 fn yes_no(value: bool) -> String {
@@ -869,6 +929,8 @@ mod tests {
                 submitted: Some(1442236800),
                 last_modified: Some(1785360000),
                 flagged: Some(1785715200),
+                make_depends: Vec::new(),
+                check_depends: Vec::new(),
             }),
         }
     }
@@ -883,14 +945,15 @@ mod tests {
             "aur :: visual-studio-code-bin 1.93.1-1 [aur]\n\
             Visual Studio Code (vscode): Editor for building and debugging\n\
             https://code.visualstudio.com/\n\
-            \n  Package Info\n\
-            \x20   License         custom:commercial\n\
             \n  Community & Maintenance\n\
             \x20   Votes / Pop     2,841 (48.12 popularity)\n\
             \x20   Maintainer      dcelasun\n\
             \x20   Submitted       {submitted}\n\
             \x20   Last Modified   {modified}\n\
-            \x20   Flagged Out     Yes ({flagged})",
+            \x20   Flagged Out     Yes ({flagged})\n\
+            \n  Build & Source\n\
+            \x20   AUR Link        https://aur.archlinux.org/packages/visual-studio-code-bin\n\
+            \x20   License         custom:commercial",
         );
         assert_eq!(render(&pkg, false), expected);
     }
@@ -995,9 +1058,6 @@ mod tests {
             "Packager",
             "Validated By",
             "Groups",
-            "Provides",
-            "Conflicts",
-            "Replaces",
             "Dependencies",
         ] {
             assert!(
@@ -1005,6 +1065,94 @@ mod tests {
                 "aur view must skip {row}; got:\n{rendered}",
             );
         }
+    }
+
+    fn rich_aur_package() -> Package {
+        let mut pkg = aur_package();
+        if let PackageKind::Aur(data) = &mut pkg.kind {
+            data.make_depends = vec![
+                "git".to_string(),
+                "cmake".to_string(),
+                "ninja".to_string(),
+                "python".to_string(),
+                "go".to_string(),
+                "rust".to_string(),
+            ];
+            data.check_depends = vec![
+                "xvfb-run".to_string(),
+                "pytest".to_string(),
+                "gtest".to_string(),
+                "valgrind".to_string(),
+                "clang".to_string(),
+            ];
+        }
+        pkg.provides = vec!["code".to_string(), "vscode".to_string()];
+        pkg.conflicts = vec!["code".to_string(), "vscode".to_string()];
+        pkg.replaces = vec!["visual-studio-code".to_string()];
+        pkg.dependencies = vec![
+            "alsa-lib".to_string(),
+            "gtk3".to_string(),
+            "libsecret".to_string(),
+            "nss".to_string(),
+            "libx11".to_string(),
+            "libxkbfile".to_string(),
+        ];
+        pkg
+    }
+
+    #[test]
+    fn render_aur_build_source_plain() {
+        let rendered = render(&rich_aur_package(), false);
+        assert!(rendered.contains("\n  Build & Source"));
+        assert!(
+            rendered.contains(
+                "AUR Link        https://aur.archlinux.org/packages/visual-studio-code-bin"
+            )
+        );
+        assert!(rendered.contains("License         custom:commercial"));
+        assert!(rendered.contains("Make Depends    git, cmake, ninja, python, ... (+2 more)"));
+        assert!(
+            rendered.contains("Check Depends   xvfb-run, pytest, gtest, valgrind, ... (+1 more)")
+        );
+        assert!(rendered.contains("Provides        code, vscode"));
+        assert!(rendered.contains("Conflicts       code, vscode"));
+        assert!(rendered.contains("Replaces        visual-studio-code"));
+    }
+
+    #[test]
+    fn render_aur_build_source_link_colored() {
+        let rendered = render(&rich_aur_package(), true);
+        assert!(rendered.contains(
+            "\x1b[4;36mhttps://aur.archlinux.org/packages/visual-studio-code-bin\x1b[0m"
+        ));
+        assert!(rendered.contains("\x1b[37mcustom:commercial\x1b[0m"));
+        assert!(
+            rendered
+                .contains("\x1b[37mgit, cmake, ninja, python, \x1b[90m... (+2 more)\x1b[0m\x1b[0m")
+        );
+    }
+
+    #[test]
+    fn render_aur_runtime_dependencies_truncated_at_four() {
+        let rendered = render(&rich_aur_package(), false);
+        assert!(rendered.contains("\n  Runtime Dependencies (6)"));
+        assert!(rendered.contains("Required        alsa-lib, gtk3, libsecret, nss, ... (+2 more)"));
+    }
+
+    #[test]
+    fn render_aur_license_moved_from_leading_section() {
+        let rendered = render(&aur_package(), false);
+        assert!(
+            !rendered.contains("Package Info"),
+            "not-installed aur must have no leading section; got:\n{rendered}",
+        );
+        let community = rendered
+            .find("Community & Maintenance")
+            .expect("community must render");
+        let build = rendered.find("Build & Source").expect("build must render");
+        assert!(community < build);
+        let license = rendered.find("License").expect("license must render");
+        assert!(license > build);
     }
 
     #[test]

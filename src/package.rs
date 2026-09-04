@@ -73,6 +73,8 @@ pub struct AurData {
     pub submitted: Option<i64>,
     pub last_modified: Option<i64>,
     pub flagged: Option<i64>,
+    pub make_depends: Vec<String>,
+    pub check_depends: Vec<String>,
 }
 
 fn normalized_epoch(value: i64) -> Option<i64> {
@@ -234,6 +236,8 @@ impl From<AurInfo> for Package {
                 submitted: normalized_epoch(info.first_submitted),
                 last_modified: normalized_epoch(info.last_modified),
                 flagged: info.out_of_date.filter(|epoch| *epoch > 0),
+                make_depends: info.make_depends,
+                check_depends: info.check_depends,
             }),
         }
     }
