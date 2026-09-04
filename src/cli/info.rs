@@ -207,9 +207,7 @@ pub fn render(pkg: &Package, stdout_color: bool) -> String {
     {
         out.push_str(&rendered);
     }
-    if matches!(pkg.kind, PackageKind::Repo(_))
-        && let Some(rendered) = opt_dependency_section(pkg, stdout_color)
-    {
+    if let Some(rendered) = opt_dependency_section(pkg, stdout_color) {
         out.push_str(&rendered);
     }
     out
@@ -1137,6 +1135,51 @@ mod tests {
         let rendered = render(&rich_aur_package(), false);
         assert!(rendered.contains("\n  Runtime Dependencies (6)"));
         assert!(rendered.contains("Required        alsa-lib, gtk3, libsecret, nss, ... (+2 more)"));
+    }
+
+    #[test]
+    fn render_aur_opt_dependencies_plain() {
+        let mut pkg = rich_aur_package();
+        pkg.opt_dependencies = vec![
+            opt_dep("bash-completion", Some("bash completion support"), true),
+            opt_dep(
+                "org.freedesktop.secrets",
+                Some("keyring credential storage"),
+                false,
+            ),
+            opt_dep("zsh-completions", Some("zsh completion support"), true),
+        ];
+        let rendered = render(&pkg, false);
+        assert!(rendered.contains("\n  Optional Dependencies (3)"));
+        assert!(rendered.contains("    [✓] bash-completion           bash completion support"));
+        assert!(rendered.contains("    [ ] org.freedesktop.secrets   keyring credential storage"));
+        assert!(rendered.contains("    [✓] zsh-completions           zsh completion support"));
+        let runtime = rendered
+            .find("Runtime Dependencies (6)")
+            .expect("runtime must render");
+        let optional = rendered
+            .find("Optional Dependencies (3)")
+            .expect("optional must render");
+        assert!(runtime < optional);
+    }
+
+    #[test]
+    fn render_aur_opt_dependencies_colored() {
+        let mut pkg = aur_package();
+        pkg.opt_dependencies = vec![
+            opt_dep("bash-completion", Some("bash completion support"), true),
+            opt_dep(
+                "org.freedesktop.secrets",
+                Some("keyring credential storage"),
+                false,
+            ),
+        ];
+        let rendered = render(&pkg, true);
+        assert!(rendered.contains("\x1b[1;34mOptional Dependencies (2)\x1b[0m"));
+        assert!(rendered.contains("\x1b[1;32m[✓]\x1b[0m"));
+        assert!(rendered.contains("\x1b[90m[ ]\x1b[0m"));
+        assert!(rendered.contains(&format!("\x1b[37m{:<25}\x1b[0m", "bash-completion")));
+        assert!(rendered.contains(&format!("\x1b[90m{:<25}\x1b[0m", "org.freedesktop.secrets")));
     }
 
     #[test]
