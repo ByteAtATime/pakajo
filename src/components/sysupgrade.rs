@@ -579,7 +579,7 @@ fn blocked_banner(failure: &PrepareFailure) -> Element<'static> {
                 text_color: Some(warn),
                 background: Some(Background::Color(Color { a: 0.12, ..warn })),
                 border: Border {
-                    radius: 8.0.into(),
+                    radius: theme.cosmic().corner_radii.radius_s.into(),
                     width: 1.0,
                     color: warn,
                 },

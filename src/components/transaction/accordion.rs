@@ -194,7 +194,7 @@ fn stage_panel_style(theme: &cosmic::Theme, state: StageState) -> container::Sty
         text_color: Some(text_color),
         background: Some(Background::Color(background)),
         border: Border {
-            radius: 8.0.into(),
+            radius: cosmic.corner_radii.radius_s.into(),
             width: if matches!(state, StageState::Active | StageState::Failed) {
                 2.0
             } else {

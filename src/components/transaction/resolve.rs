@@ -89,7 +89,7 @@ fn step_dot(index: usize, done: usize) -> Element<'static> {
         .style(move |theme: &cosmic::Theme| container::Style {
             background: Some(Background::Color(color_fn(theme))),
             border: Border {
-                radius: 4.0.into(),
+                radius: theme.cosmic().corner_radii.radius_xs.into(),
                 ..Default::default()
             },
             ..Default::default()

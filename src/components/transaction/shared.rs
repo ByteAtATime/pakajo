@@ -85,7 +85,7 @@ pub(super) fn pill(
                 text_color: Some(colored),
                 background: Some(Background::Color(Color { a: 0.10, ..colored })),
                 border: Border {
-                    radius: 6.0.into(),
+                    radius: theme.cosmic().corner_radii.radius_s.into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -180,7 +180,7 @@ fn stream_row(filename: &str, file: &DownloadFile) -> Element<'static> {
                     bar: Background::Color(Color { a: 0.18, ..accent }),
                     background: Background::Color(Color { a: 0.06, ..on }),
                     border: Border {
-                        radius: 6.0.into(),
+                        radius: theme.cosmic().corner_radii.radius_s.into(),
                         width: 0.0,
                         color: Color::TRANSPARENT,
                     },

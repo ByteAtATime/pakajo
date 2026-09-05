@@ -45,7 +45,7 @@ fn finalize_log(finalize: &FinalizeState) -> Element<'_> {
                     cosmic.background(false).component.base,
                 ))),
                 border: Border {
-                    radius: 6.0.into(),
+                    radius: cosmic.corner_radii.radius_s.into(),
                     width: 1.0,
                     color: Color::from(cosmic.background(false).divider),
                 },

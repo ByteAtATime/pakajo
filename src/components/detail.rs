@@ -125,7 +125,7 @@ fn render_group<'a>(name: &'a str, members: &'a [GroupMember]) -> Element<'a> {
                         cosmic.background(false).small_widget,
                     ))),
                     border: Border {
-                        radius: 6.0.into(),
+                        radius: cosmic.corner_radii.radius_s.into(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -377,7 +377,7 @@ fn render_opt_dependencies<'a>(pkg: &'a Package) -> Element<'a> {
                         cosmic.background(false).small_widget,
                     ))),
                     border: Border {
-                        radius: 6.0.into(),
+                        radius: cosmic.corner_radii.radius_s.into(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -408,7 +408,7 @@ fn badge_tag<'a>(label: String, color_fn: fn(&cosmic::Theme) -> Color) -> Elemen
                 background: Some(Background::Color(Color { a: 0.12, ..c })),
                 text_color: Some(c),
                 border: Border {
-                    radius: 4.0.into(),
+                    radius: theme.cosmic().corner_radii.radius_xs.into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -428,7 +428,7 @@ fn secondary_tag<'a>(label: String) -> Element<'a> {
                 background: Some(Background::Color(bg)),
                 text_color: Some(on),
                 border: Border {
-                    radius: 4.0.into(),
+                    radius: cosmic.corner_radii.radius_xs.into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -454,7 +454,7 @@ fn card_style(theme: &cosmic::Theme) -> container::Style {
         text_color: Some(on),
         background: Some(Background::Color(bg)),
         border: Border {
-            radius: 8.0.into(),
+            radius: cosmic.corner_radii.radius_s.into(),
             width: 1.0,
             color: border,
         },

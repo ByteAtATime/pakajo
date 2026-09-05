@@ -132,7 +132,7 @@ pub(crate) fn unsupported_banner(summary: &str) -> Element<'static> {
             text_color: Some(Color::from(theme.cosmic().warning.on)),
             background: Some(Background::Color(Color::from(theme.cosmic().warning.base))),
             border: Border {
-                radius: 8.0.into(),
+                radius: theme.cosmic().corner_radii.radius_s.into(),
                 width: 1.0,
                 color: Color::from(theme.cosmic().warning.base),
             },
