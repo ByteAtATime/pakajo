@@ -184,6 +184,13 @@ impl TransactionModel {
             Install => {
                 if done_failed && self.aur.last_aur_stage == Some(Install) {
                     StageState::Failed
+                } else if done_success {
+                    StageState::Done
+                } else if !self.aur.install.order.is_empty()
+                    || self.aur.download.total > 0
+                    || !self.aur.finalize.lines.is_empty()
+                {
+                    StageState::Active
                 } else {
                     StageState::Pending
                 }
@@ -191,6 +198,8 @@ impl TransactionModel {
             Finalize => {
                 if done_failed && self.aur.last_aur_stage == Some(Finalize) {
                     StageState::Failed
+                } else if done_success {
+                    StageState::Done
                 } else {
                     StageState::Pending
                 }
@@ -300,5 +309,162 @@ mod tests {
             model.aur_stage_state(AurStage::Install),
             StageState::Pending
         );
+    }
+
+    #[test]
+    fn aur_nested_installs_single_layer() {
+        use pakajo::events::{DownloadResult, PackageOp, ProgressPhase};
+        let mut model = aur_model();
+        model.apply_event(&InstallEvent::ResolvingAurDependencies {
+            target: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::AurDepResolved {
+            package: "dep1".to_string(),
+            repo: Some("extra".to_string()),
+            version: Some("1.0-1".to_string()),
+        });
+        model.apply_event(&InstallEvent::AurDepResolved {
+            package: "pkg-a".to_string(),
+            repo: None,
+            version: Some("1.0-1".to_string()),
+        });
+        model.apply_event(&InstallEvent::ResolutionComplete {
+            layers: 1,
+            aur_packages: 1,
+            repo_deps: 1,
+        });
+        model.apply_event(&InstallEvent::RetrievingPackages {
+            num: 1,
+            total_bytes: 100,
+        });
+        model.apply_event(&InstallEvent::DownloadInit {
+            filename: "dep1".to_string(),
+            optional: false,
+        });
+        model.apply_event(&InstallEvent::DownloadCompleted {
+            filename: "dep1".to_string(),
+            total: 100,
+            result: DownloadResult::Success,
+        });
+        model.apply_event(&InstallEvent::PackageOperation {
+            operation: PackageOp::Install,
+            package: "dep1".to_string(),
+            new_version: Some("1.0-1".to_string()),
+            old_version: None,
+        });
+        model.apply_event(&InstallEvent::Progress {
+            phase: ProgressPhase::Add,
+            package: "dep1".to_string(),
+            percent: 100,
+            current: 1,
+            total: 1,
+        });
+        model.apply_event(&InstallEvent::CloningRepo {
+            package: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildStarted {
+            package: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildOutput {
+            package: "pkg-a".to_string(),
+            line: "==> Making package".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildCompleted {
+            package: "pkg-a".to_string(),
+            artifacts: Vec::new(),
+            version: None,
+        });
+        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Done);
+        assert_eq!(model.aur_stage_state(AurStage::Install), StageState::Active);
+        model.apply_event(&InstallEvent::PackageOperation {
+            operation: PackageOp::Install,
+            package: "pkg-a".to_string(),
+            new_version: Some("1.0-1".to_string()),
+            old_version: None,
+        });
+        assert_eq!(model.aur.install.order.len(), 2);
+        model.apply_event(&InstallEvent::HookRun {
+            position: 1,
+            total: 1,
+            name: "hook".to_string(),
+            desc: Some("Arming ConditionNeedsUpdate...".to_string()),
+        });
+        model.apply_event(&InstallEvent::TransactionDone);
+        model.finish(ChildOutcome::Success);
+        assert_eq!(model.aur_stage_state(AurStage::Resolve), StageState::Done);
+        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Done);
+        assert_eq!(model.aur_stage_state(AurStage::Install), StageState::Done);
+        assert_eq!(model.aur_stage_state(AurStage::Finalize), StageState::Done);
+    }
+
+    #[test]
+    fn aur_install_failure_preserves_checklist() {
+        use pakajo::events::{DownloadResult, PackageOp, ProgressPhase};
+        let mut model = aur_model();
+        model.apply_event(&InstallEvent::ResolvingAurDependencies {
+            target: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::AurDepResolved {
+            package: "dep1".to_string(),
+            repo: Some("extra".to_string()),
+            version: Some("1.0-1".to_string()),
+        });
+        model.apply_event(&InstallEvent::AurDepResolved {
+            package: "pkg-a".to_string(),
+            repo: None,
+            version: Some("1.0-1".to_string()),
+        });
+        model.apply_event(&InstallEvent::ResolutionComplete {
+            layers: 1,
+            aur_packages: 1,
+            repo_deps: 1,
+        });
+        model.apply_event(&InstallEvent::RetrievingPackages {
+            num: 1,
+            total_bytes: 100,
+        });
+        model.apply_event(&InstallEvent::DownloadInit {
+            filename: "dep1".to_string(),
+            optional: false,
+        });
+        model.apply_event(&InstallEvent::DownloadCompleted {
+            filename: "dep1".to_string(),
+            total: 100,
+            result: DownloadResult::Success,
+        });
+        model.apply_event(&InstallEvent::PackageOperation {
+            operation: PackageOp::Install,
+            package: "dep1".to_string(),
+            new_version: Some("1.0-1".to_string()),
+            old_version: None,
+        });
+        model.apply_event(&InstallEvent::Progress {
+            phase: ProgressPhase::Add,
+            package: "dep1".to_string(),
+            percent: 100,
+            current: 1,
+            total: 1,
+        });
+        model.apply_event(&InstallEvent::CloningRepo {
+            package: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildStarted {
+            package: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildCompleted {
+            package: "pkg-a".to_string(),
+            artifacts: Vec::new(),
+            version: None,
+        });
+        model.apply_event(&InstallEvent::PackageOperation {
+            operation: PackageOp::Install,
+            package: "pkg-a".to_string(),
+            new_version: Some("1.0-1".to_string()),
+            old_version: None,
+        });
+        model.finish(ChildOutcome::Failed("install failed".to_string()));
+        assert_eq!(model.aur_stage_state(AurStage::Install), StageState::Failed);
+        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Done);
+        assert_eq!(model.aur.install.order.len(), 2);
     }
 }

@@ -3,7 +3,7 @@ use cosmic::iced::widget::progress_bar;
 use cosmic::iced::{Color, Length};
 use cosmic::widget::{Column, Row, container, space, text};
 use pakajo::events::PackageOp;
-use pakajo::transaction_state::{InstallPackage, InstallState, RepoState};
+use pakajo::transaction_state::{InstallPackage, InstallState};
 
 use crate::Element;
 use crate::components::icons::circle_check;
@@ -17,7 +17,7 @@ use super::state::StageState;
 
 const GROUP_GAP: f32 = 8.0;
 
-pub(super) fn install_section(repo: &RepoState, state: StageState) -> Section<'_> {
+pub(super) fn install_section(install: &InstallState, state: StageState) -> Section<'_> {
     let mut section = Section {
         label: "Install",
         state,
@@ -25,25 +25,25 @@ pub(super) fn install_section(repo: &RepoState, state: StageState) -> Section<'_
         header_suffix: None,
     };
     match state {
-        StageState::Done if repo.install.order.len() == 1 => {
-            section.header_suffix = Some(install_single_suffix(&repo.install));
+        StageState::Done if install.order.len() == 1 => {
+            section.header_suffix = Some(install_single_suffix(install));
         }
-        StageState::Active if !repo.install.order.is_empty() => {
-            section.content = Some(install_view(&repo.install, false));
-            if repo.install.order.len() > 1 {
-                section.header_suffix = Some(install_counter_suffix(&repo.install, false));
+        StageState::Active if !install.order.is_empty() => {
+            section.content = Some(install_view(install, false));
+            if install.order.len() > 1 {
+                section.header_suffix = Some(install_counter_suffix(install, false));
             }
         }
-        StageState::Done if !repo.install.order.is_empty() => {
-            section.content = Some(install_view(&repo.install, true));
-            section.header_suffix = Some(install_counter_suffix(&repo.install, true));
+        StageState::Done if !install.order.is_empty() => {
+            section.content = Some(install_view(install, true));
+            section.header_suffix = Some(install_counter_suffix(install, true));
         }
         _ => {}
     }
     section
 }
 
-fn install_view(state: &InstallState, done: bool) -> Element<'_> {
+pub(super) fn install_view(state: &InstallState, done: bool) -> Element<'_> {
     let (finished, active): (Vec<_>, Vec<_>) = state
         .order
         .iter()

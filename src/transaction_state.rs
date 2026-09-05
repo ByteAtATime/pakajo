@@ -482,6 +482,9 @@ pub struct AurState {
     pub resolve_complete: bool,
     pub builds: HashMap<String, BuildPackage>,
     pub build_order: Vec<String>,
+    pub install: InstallState,
+    pub download: DownloadState,
+    pub finalize: FinalizeState,
     pub last_aur_stage: Option<AurStage>,
 }
 
@@ -578,6 +581,14 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent) {
                 entry.status = BuildStatus::Done;
             }
         }
+        PackageOperation { .. } => apply_install(&mut state.install, ev),
+        Progress { phase, .. } if is_install_phase(phase) => apply_install(&mut state.install, ev),
+        RetrievingPackages { .. }
+        | DownloadInit { .. }
+        | DownloadProgress { .. }
+        | DownloadRetry { .. }
+        | DownloadCompleted { .. } => apply_download(&mut state.download, ev),
+        HookRun { .. } | ScriptletInfo { .. } => apply_finalize(&mut state.finalize, ev),
         _ => {}
     }
 }

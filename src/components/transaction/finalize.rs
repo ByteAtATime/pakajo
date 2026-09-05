@@ -1,6 +1,6 @@
 use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, container, scrollable, text};
-use pakajo::transaction_state::RepoState;
+use pakajo::transaction_state::FinalizeState;
 
 use crate::Element;
 
@@ -9,13 +9,13 @@ use super::state::StageState;
 
 const LOG_HEIGHT: f32 = 200.0;
 
-pub(super) fn finalize_section(repo: &RepoState, state: StageState) -> Section<'_> {
+pub(super) fn finalize_section(finalize: &FinalizeState, state: StageState) -> Section<'_> {
     Section {
         label: "Finalize",
         state,
         content: match state {
-            StageState::Active | StageState::Done if !repo.finalize.lines.is_empty() => {
-                Some(finalize_log(&repo.finalize.lines))
+            StageState::Active | StageState::Done if !finalize.lines.is_empty() => {
+                Some(finalize_log(&finalize.lines))
             }
             _ => None,
         },
@@ -23,7 +23,7 @@ pub(super) fn finalize_section(repo: &RepoState, state: StageState) -> Section<'
     }
 }
 
-fn finalize_log(lines: &[String]) -> Element<'_> {
+pub(super) fn finalize_log(lines: &[String]) -> Element<'_> {
     let mut col = Column::new().spacing(2);
     for line in lines {
         col = col.push(text(line.clone()).font(cosmic::font::mono()));

@@ -11,6 +11,8 @@ use pakajo::transaction_state::{
 use super::SYSTEM_AUR_NAME;
 use super::TransactionMessage;
 use super::accordion::{Section, action_footer, stage_row};
+use super::finalize::{finalize_log, finalize_section};
+use super::install::{install_section, install_view};
 use super::shared::{
     ResolvedEntry, accent_color, counter_suffix, destructive_color, muted, on_color, pill,
     resolve_empty_view, resolve_package_row, resolve_single_suffix, success_color, tinted,
@@ -34,8 +36,8 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
         let mut section = match *stage {
             AurStage::Resolve => resolve_section(model, state),
             AurStage::Build => build_section(model, state),
-            AurStage::Install => pending_section("Install", state),
-            AurStage::Finalize => pending_section("Finalize", state),
+            AurStage::Install => aur_install_section(model, state),
+            AurStage::Finalize => aur_finalize_section(model, state),
         };
         if state == StageState::Failed
             && let Some(message) = model.failure_message.as_deref()
@@ -249,13 +251,31 @@ fn build_list_view(
     col.into()
 }
 
-fn pending_section(label: &'static str, state: StageState) -> Section<'static> {
-    Section {
-        label,
-        state,
-        content: None,
-        header_suffix: None,
+fn aur_install_section(model: &TransactionModel, state: StageState) -> Section<'_> {
+    let mut section = install_section(&model.aur.install, state);
+    let download = &model.aur.download;
+    if state == StageState::Active && download.total > 0 && download.done < download.total {
+        let line = muted(text(format!(
+            "Downloading {} / {} packages",
+            download.done, download.total
+        )));
+        section.content = Some(match section.content {
+            Some(existing) => Column::new().spacing(8).push(line).push(existing).into(),
+            None => Column::new().spacing(8).push(line).into(),
+        });
     }
+    if state == StageState::Failed && !model.aur.install.order.is_empty() {
+        section.content = Some(install_view(&model.aur.install, false));
+    }
+    section
+}
+
+fn aur_finalize_section(model: &TransactionModel, state: StageState) -> Section<'_> {
+    let mut section = finalize_section(&model.aur.finalize, state);
+    if state == StageState::Failed && !model.aur.finalize.lines.is_empty() {
+        section.content = Some(finalize_log(&model.aur.finalize.lines));
+    }
+    section
 }
 
 fn failure_note(message: &str) -> Element<'static> {

@@ -24,8 +24,8 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
             RepoStage::Resolve => resolve_section(&model.repo_state, state),
             RepoStage::Validate => validate_section(&model.repo_state, state),
             RepoStage::Download => download_section(&model.repo_state, state),
-            RepoStage::Install => install_section(&model.repo_state, state),
-            RepoStage::Finalize => finalize_section(&model.repo_state, state),
+            RepoStage::Install => install_section(&model.repo_state.install, state),
+            RepoStage::Finalize => finalize_section(&model.repo_state.finalize, state),
         };
         panels = panels.push(stage_row(section, expanded, i));
     }
