@@ -168,6 +168,7 @@ fn header_row<'a>(
 
     let mut row = Row::new()
         .width(Length::Fill)
+        .align_y(Vertical::Center)
         .spacing(8)
         .push(tinted(label_widget, label_color_fn))
         .push(space::horizontal());
