@@ -210,6 +210,8 @@ impl TransactionModel {
                     StageState::Failed
                 } else if done_success {
                     StageState::Done
+                } else if !self.aur.finalize.lines.is_empty() {
+                    StageState::Active
                 } else {
                     StageState::Pending
                 }
@@ -476,5 +478,35 @@ mod tests {
         assert_eq!(model.aur_stage_state(AurStage::Install), StageState::Failed);
         assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Done);
         assert_eq!(model.aur.install.order.len(), 2);
+    }
+
+    #[test]
+    fn aur_finalize_active_while_hooks_run() {
+        let mut model = aur_model();
+        model.apply_event(&InstallEvent::CloningRepo {
+            package: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildCompleted {
+            package: "pkg-a".to_string(),
+            artifacts: Vec::new(),
+            version: None,
+        });
+        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Done);
+        assert_eq!(
+            model.aur_stage_state(AurStage::Finalize),
+            StageState::Pending
+        );
+        model.apply_event(&InstallEvent::HookRun {
+            position: 1,
+            total: 2,
+            name: "update-desktop-database".to_string(),
+            desc: None,
+        });
+        assert_eq!(
+            model.aur_stage_state(AurStage::Finalize),
+            StageState::Active
+        );
+        model.finish(ChildOutcome::Success);
+        assert_eq!(model.aur_stage_state(AurStage::Finalize), StageState::Done);
     }
 }

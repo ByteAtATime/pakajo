@@ -317,6 +317,9 @@ fn aur_finalize_section(model: &TransactionModel, state: StageState) -> Section<
     if state == StageState::Failed && !model.aur.finalize.lines.is_empty() {
         section.content = Some(finalize_log(&model.aur.finalize.lines));
     }
+    if state == StageState::Done && model.aur.finalize.lines.is_empty() {
+        section.content = Some(resolve_empty_view());
+    }
     section
 }
 
