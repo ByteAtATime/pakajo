@@ -7,7 +7,7 @@ use cosmic::iced::widget::text::{Rich, Span};
 use cosmic::iced::{Color, Length};
 use cosmic::widget::{Column, Row, space, text};
 use pakajo::ansi::{self, AnsiColor, StyledSpan};
-use pakajo::transaction_state::{
+use pakajo::progress::{
     AurStage, BuildPackage, BuildStatus, InstallKind, ResolvedDep, ordered_aur_stages,
 };
 use pakajo::utils::format_elapsed;

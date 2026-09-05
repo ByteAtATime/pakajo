@@ -4,7 +4,7 @@ use cosmic::iced::alignment::Vertical;
 use cosmic::iced::widget::{Stack, progress_bar};
 use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, Row, container, space, text};
-use pakajo::transaction_state::{DownloadFile, DownloadState};
+use pakajo::progress::{DownloadFile, DownloadState};
 use pakajo::utils::{format_bytes, format_eta, humanize_size};
 
 use crate::Element;

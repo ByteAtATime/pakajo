@@ -2,7 +2,7 @@ use cosmic::iced::Length;
 use cosmic::iced::alignment::Vertical;
 use cosmic::iced::widget::progress_bar;
 use cosmic::widget::{Row, text};
-use pakajo::transaction_state::{RepoState, VALIDATE_TOTAL};
+use pakajo::progress::{RepoState, VALIDATE_TOTAL};
 
 use crate::Element;
 

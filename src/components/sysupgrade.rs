@@ -6,7 +6,59 @@ use anyhow::Context as _;
 use pakajo::dry_run::{PrepareFailure, SysupgradePreview};
 use pakajo::events::{SummaryPackage, TransactionSummary};
 use pakajo::question::{collect_approvals, default_approve, encode_approvals};
-use pakajo::transaction_state::{Direction, SysupgradePage, next_sysupgrade_step};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Forward,
+    Backward,
+}
+
+pub fn next_sysupgrade_step(
+    from: crate::Page,
+    dir: Direction,
+    has_resolve: bool,
+    has_diffs: bool,
+) -> crate::Page {
+    use crate::Page::*;
+    use Direction::*;
+    match (from, dir) {
+        (Updates, Forward) => {
+            if has_resolve {
+                Resolve
+            } else if has_diffs {
+                PkgbuildReview
+            } else {
+                Confirm
+            }
+        }
+        (Resolve, Forward) => {
+            if has_diffs {
+                PkgbuildReview
+            } else {
+                Confirm
+            }
+        }
+        (Resolve, Backward) => Updates,
+        (PkgbuildReview, Forward) => Confirm,
+        (PkgbuildReview, Backward) => {
+            if has_resolve {
+                Resolve
+            } else {
+                Updates
+            }
+        }
+        (Confirm, Backward) => {
+            if has_diffs {
+                PkgbuildReview
+            } else if has_resolve {
+                Resolve
+            } else {
+                Updates
+            }
+        }
+        _ => from,
+    }
+}
 
 use crate::Element;
 use crate::components::transaction::Transaction;
@@ -24,24 +76,6 @@ pub enum SysupgradeMessage {
     Continue,
     Back,
     Apply,
-}
-
-fn sysupgrade_page_to_view(p: SysupgradePage) -> crate::Page {
-    match p {
-        SysupgradePage::Updates => crate::Page::Updates,
-        SysupgradePage::Resolve => crate::Page::Resolve,
-        SysupgradePage::PkgbuildReview => crate::Page::PkgbuildReview,
-        SysupgradePage::Confirm => crate::Page::Confirm,
-    }
-}
-
-fn view_to_sysupgrade_page(page: &crate::Page) -> Option<SysupgradePage> {
-    match page {
-        crate::Page::Resolve => Some(SysupgradePage::Resolve),
-        crate::Page::PkgbuildReview => Some(SysupgradePage::PkgbuildReview),
-        crate::Page::Confirm => Some(SysupgradePage::Confirm),
-        _ => None,
-    }
 }
 
 fn no_preview() -> Element<'static> {
@@ -133,7 +167,7 @@ impl crate::PakajoApp {
         let (transaction, task) =
             Transaction::start_sysupgrade_repo(fingerprint_file, approvals_b64);
         self.transaction = Some(transaction);
-        self.active_sysupgrade_phase = Some(pakajo::transaction_state::SysupgradePhase::Repo);
+        self.active_sysupgrade_phase = Some(pakajo::progress::SysupgradePhase::Repo);
         eprintln!("[pakajo] sysupgrade repo apply started");
         task
     }
@@ -159,12 +193,12 @@ impl crate::PakajoApp {
                             None
                         };
                         let next = next_sysupgrade_step(
-                            SysupgradePage::Updates,
+                            crate::Page::Updates,
                             Direction::Forward,
                             has_resolve,
                             has_diffs,
                         );
-                        if matches!(next, SysupgradePage::PkgbuildReview) {
+                        if matches!(next, crate::Page::PkgbuildReview) {
                             self.pkgbuild_review_index = 0;
                         }
                         eprintln!(
@@ -175,7 +209,7 @@ impl crate::PakajoApp {
                             has_diffs,
                             next
                         );
-                        self.goto_page(sysupgrade_page_to_view(next))
+                        self.goto_page(next)
                     }
                     Err(msg) => {
                         self.sysupgrade_preview = None;
@@ -226,9 +260,10 @@ impl crate::PakajoApp {
     }
 
     fn route_sysupgrade(&mut self, dir: Direction) -> Task<crate::Message> {
-        let Some(from) = view_to_sysupgrade_page(&self.page) else {
+        if matches!(self.page, crate::Page::Search | crate::Page::Updates) {
             return Task::none();
-        };
+        }
+        let from = self.page;
         let has_resolve = self.sysupgrade_review.is_some();
         let has_diffs = self
             .sysupgrade_preview
@@ -236,14 +271,14 @@ impl crate::PakajoApp {
             .map(|p| !p.pkgbuild_diffs.is_empty())
             .unwrap_or(false);
         let next = next_sysupgrade_step(from, dir, has_resolve, has_diffs);
-        if matches!(next, SysupgradePage::PkgbuildReview) {
+        if matches!(next, crate::Page::PkgbuildReview) {
             self.pkgbuild_review_index = 0;
-        }
+        };
         eprintln!(
             "[pakajo] sysupgrade route {:?} {:?} -> {:?}",
             from, dir, next
         );
-        self.goto_page(sysupgrade_page_to_view(next))
+        self.goto_page(next)
     }
 
     pub(crate) fn resolve_page(&self) -> Element<'_> {
@@ -587,4 +622,38 @@ fn blocked_banner(failure: &PrepareFailure) -> Element<'static> {
             }
         })
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Page::*;
+
+    #[test]
+    fn next_sysupgrade_step_routes_navigation() {
+        use Direction::*;
+        let cases = [
+            (Updates, Forward, false, false, Confirm),
+            (Updates, Forward, false, true, PkgbuildReview),
+            (Updates, Forward, true, true, Resolve),
+            (Resolve, Forward, true, true, PkgbuildReview),
+            (Resolve, Forward, true, false, Confirm),
+            (Resolve, Backward, true, true, Updates),
+            (PkgbuildReview, Forward, true, true, Confirm),
+            (PkgbuildReview, Backward, true, true, Resolve),
+            (PkgbuildReview, Backward, false, true, Updates),
+            (Confirm, Backward, true, true, PkgbuildReview),
+            (Confirm, Backward, true, false, Resolve),
+            (Confirm, Backward, false, false, Updates),
+            (Confirm, Forward, true, true, Confirm),
+            (Updates, Backward, true, true, Updates),
+        ];
+        for (from, dir, has_resolve, has_diffs, expected) in cases {
+            assert_eq!(
+                next_sysupgrade_step(from, dir, has_resolve, has_diffs),
+                expected,
+                "from {from:?} dir {dir:?} has_resolve {has_resolve} has_diffs {has_diffs}"
+            );
+        }
+    }
 }

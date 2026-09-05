@@ -1,7 +1,7 @@
 use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, container, scrollable, text};
 use pakajo::events::LogLevel;
-use pakajo::transaction_state::FinalizeState;
+use pakajo::progress::FinalizeState;
 
 use crate::Element;
 

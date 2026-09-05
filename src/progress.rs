@@ -401,12 +401,12 @@ fn ensure_download_file<'a>(state: &'a mut DownloadState, filename: &str) -> &'a
     }
 }
 
-pub const ORDERED_STAGES_INSTALL: &[RepoStage] = {
+const ORDERED_STAGES_INSTALL: &[RepoStage] = {
     use RepoStage::*;
     &[Resolve, Validate, Download, Install, Finalize]
 };
 
-pub const ORDERED_STAGES_REMOVE: &[RepoStage] = {
+const ORDERED_STAGES_REMOVE: &[RepoStage] = {
     use RepoStage::*;
     &[Resolve, Validate, Install, Finalize]
 };
@@ -426,7 +426,7 @@ pub enum AurStage {
     Finalize,
 }
 
-pub const ORDERED_AUR_STAGES: &[AurStage] = {
+const ORDERED_AUR_STAGES: &[AurStage] = {
     use AurStage::*;
     &[Resolve, Build, Install, Finalize]
 };
@@ -515,7 +515,8 @@ pub fn event_stage_aur(ev: &InstallEvent) -> Option<AurStage> {
 
 pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant) {
     use InstallEvent::*;
-    if let Some(stage) = event_stage_aur(ev) {
+    let stage = event_stage_aur(ev);
+    if let Some(stage) = stage {
         state.last_aur_stage = Some(stage);
     }
     match ev {
@@ -581,7 +582,7 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant)
         Log { .. } => apply_finalize(&mut state.finalize, ev),
         _ => {}
     }
-    match event_stage_aur(ev) {
+    match stage {
         Some(AurStage::Install) => match ev {
             PackageOperation { .. } => apply_install(&mut state.install, ev),
             Progress { phase, .. } if is_install_phase(phase) => {
@@ -629,101 +630,6 @@ pub fn finish_aur(state: &mut AurState, outcome: &crate::install::ChildOutcome, 
         entry.elapsed = Some(now.saturating_duration_since(entry.started));
     }
 }
-#[derive(Debug, Clone, PartialEq)]
-pub enum NextInstallState {
-    ContinueAur { targets: Vec<String> },
-    Completed,
-    Cancelled,
-    Failed { message: String },
-}
-
-pub fn classify_outcome(
-    outcome: &crate::install::ChildOutcome,
-    active_phase: Option<SysupgradePhase>,
-    aur_targets: &[String],
-) -> NextInstallState {
-    use crate::install::ChildOutcome;
-    if matches!(outcome, ChildOutcome::Success)
-        && active_phase == Some(SysupgradePhase::Repo)
-        && !aur_targets.is_empty()
-    {
-        return NextInstallState::ContinueAur {
-            targets: aur_targets.to_vec(),
-        };
-    }
-    match outcome {
-        ChildOutcome::Success => NextInstallState::Completed,
-        ChildOutcome::Dismissed => NextInstallState::Cancelled,
-        ChildOutcome::NotFound => NextInstallState::Failed {
-            message: "install child not found".to_string(),
-        },
-        ChildOutcome::Failed(message) => NextInstallState::Failed {
-            message: message.clone(),
-        },
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SysupgradePage {
-    Updates,
-    Resolve,
-    PkgbuildReview,
-    Confirm,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    Forward,
-    Backward,
-}
-
-pub fn next_sysupgrade_step(
-    from: SysupgradePage,
-    dir: Direction,
-    has_resolve: bool,
-    has_diffs: bool,
-) -> SysupgradePage {
-    use Direction::*;
-    use SysupgradePage::*;
-    match (from, dir) {
-        (Updates, Forward) => {
-            if has_resolve {
-                Resolve
-            } else if has_diffs {
-                PkgbuildReview
-            } else {
-                Confirm
-            }
-        }
-        (Resolve, Forward) => {
-            if has_diffs {
-                PkgbuildReview
-            } else {
-                Confirm
-            }
-        }
-        (Resolve, Backward) => Updates,
-        (PkgbuildReview, Forward) => Confirm,
-        (PkgbuildReview, Backward) => {
-            if has_resolve {
-                Resolve
-            } else {
-                Updates
-            }
-        }
-        (Confirm, Backward) => {
-            if has_diffs {
-                PkgbuildReview
-            } else if has_resolve {
-                Resolve
-            } else {
-                Updates
-            }
-        }
-        _ => from,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -953,91 +859,6 @@ mod tests {
             ]
         );
         assert!(state.finalize.lines.is_empty());
-    }
-
-    #[test]
-    fn classify_outcome_routes_child_results() {
-        let aur_targets = vec!["aur-pkg".to_string()];
-        let cases = [
-            (
-                ChildOutcome::Success,
-                Some(SysupgradePhase::Repo),
-                aur_targets.clone(),
-                NextInstallState::ContinueAur {
-                    targets: aur_targets.clone(),
-                },
-            ),
-            (
-                ChildOutcome::Success,
-                Some(SysupgradePhase::Repo),
-                Vec::new(),
-                NextInstallState::Completed,
-            ),
-            (
-                ChildOutcome::Success,
-                None,
-                Vec::new(),
-                NextInstallState::Completed,
-            ),
-            (
-                ChildOutcome::Dismissed,
-                None,
-                Vec::new(),
-                NextInstallState::Cancelled,
-            ),
-            (
-                ChildOutcome::NotFound,
-                None,
-                Vec::new(),
-                NextInstallState::Failed {
-                    message: "install child not found".to_string(),
-                },
-            ),
-            (
-                ChildOutcome::Failed("err".to_string()),
-                None,
-                Vec::new(),
-                NextInstallState::Failed {
-                    message: "err".to_string(),
-                },
-            ),
-        ];
-        for (outcome, phase, targets, expected) in cases {
-            assert_eq!(
-                classify_outcome(&outcome, phase, &targets),
-                expected,
-                "outcome {outcome:?} phase {phase:?} targets {targets:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn next_sysupgrade_step_routes_navigation() {
-        use Direction::*;
-        use SysupgradePage::*;
-        let cases = [
-            (Updates, Forward, false, false, Confirm),
-            (Updates, Forward, false, true, PkgbuildReview),
-            (Updates, Forward, true, true, Resolve),
-            (Resolve, Forward, true, true, PkgbuildReview),
-            (Resolve, Forward, true, false, Confirm),
-            (Resolve, Backward, true, true, Updates),
-            (PkgbuildReview, Forward, true, true, Confirm),
-            (PkgbuildReview, Backward, true, true, Resolve),
-            (PkgbuildReview, Backward, false, true, Updates),
-            (Confirm, Backward, true, true, PkgbuildReview),
-            (Confirm, Backward, true, false, Resolve),
-            (Confirm, Backward, false, false, Updates),
-            (Confirm, Forward, true, true, Confirm),
-            (Updates, Backward, true, true, Updates),
-        ];
-        for (from, dir, has_resolve, has_diffs, expected) in cases {
-            assert_eq!(
-                next_sysupgrade_step(from, dir, has_resolve, has_diffs),
-                expected,
-                "from {from:?} dir {dir:?} has_resolve {has_resolve} has_diffs {has_diffs}"
-            );
-        }
     }
 
     #[test]

@@ -79,7 +79,7 @@ pub struct PakajoApp {
     pub(crate) sysupgrade_aur_targets: Vec<String>,
     pub(crate) sysupgrade_review: Option<ReviewModel>,
     pub(crate) pkgbuild_review_index: usize,
-    pub(crate) active_sysupgrade_phase: Option<pakajo::transaction_state::SysupgradePhase>,
+    pub(crate) active_sysupgrade_phase: Option<pakajo::progress::SysupgradePhase>,
 }
 
 impl Application for PakajoApp {
@@ -398,8 +398,7 @@ impl PakajoApp {
                     Action::None => Task::none(),
                     Action::Run(task) => task,
                     Action::ContinueAur(targets) => {
-                        self.active_sysupgrade_phase =
-                            Some(pakajo::transaction_state::SysupgradePhase::Aur);
+                        self.active_sysupgrade_phase = Some(pakajo::progress::SysupgradePhase::Aur);
                         eprintln!(
                             "[pakajo] sysupgrade continuing to aur phase: {} targets",
                             targets.len()
@@ -493,7 +492,7 @@ pub enum Message {
     DbLockReleased,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Search,
     Updates,

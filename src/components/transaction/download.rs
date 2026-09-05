@@ -1,4 +1,4 @@
-use pakajo::transaction_state::RepoState;
+use pakajo::progress::RepoState;
 
 use super::accordion::Section;
 use super::shared::{counter_suffix, download_view};

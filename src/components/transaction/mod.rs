@@ -11,9 +11,9 @@ use pakajo::events::InstallEvent;
 use pakajo::install::{ChildOutcome, StreamItem, run_install_process};
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
+use pakajo::progress::{InstallKind, SysupgradePhase};
 use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
 use pakajo::remove::run_remove_process;
-use pakajo::transaction_state::{InstallKind, SysupgradePhase};
 use pakajo::upgrade::run_sysupgrade_process;
 
 use crate::Element;
@@ -75,6 +75,39 @@ pub(crate) enum Action {
     Finished,
     InstallSucceeded,
     ContinueAur(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum NextInstallState {
+    ContinueAur { targets: Vec<String> },
+    Completed,
+    Cancelled,
+    Failed { message: String },
+}
+
+fn classify_outcome(
+    outcome: &ChildOutcome,
+    active_phase: Option<SysupgradePhase>,
+    aur_targets: &[String],
+) -> NextInstallState {
+    if matches!(outcome, ChildOutcome::Success)
+        && active_phase == Some(SysupgradePhase::Repo)
+        && !aur_targets.is_empty()
+    {
+        return NextInstallState::ContinueAur {
+            targets: aur_targets.to_vec(),
+        };
+    }
+    match outcome {
+        ChildOutcome::Success => NextInstallState::Completed,
+        ChildOutcome::Dismissed => NextInstallState::Cancelled,
+        ChildOutcome::NotFound => NextInstallState::Failed {
+            message: "install child not found".to_string(),
+        },
+        ChildOutcome::Failed(message) => NextInstallState::Failed {
+            message: message.clone(),
+        },
+    }
 }
 
 struct CosmicBuildSink {
@@ -185,16 +218,10 @@ impl Transaction {
             }
             TransactionMessage::InstallDone(outcome) => {
                 eprintln!("[pakajo] install outcome: {outcome:?}");
-                let next = pakajo::transaction_state::classify_outcome(
-                    &outcome,
-                    active_phase,
-                    aur_targets,
-                );
+                let next = classify_outcome(&outcome, active_phase, aur_targets);
                 match next {
-                    pakajo::transaction_state::NextInstallState::ContinueAur { targets } => {
-                        Action::ContinueAur(targets)
-                    }
-                    pakajo::transaction_state::NextInstallState::Completed => {
+                    NextInstallState::ContinueAur { targets } => Action::ContinueAur(targets),
+                    NextInstallState::Completed => {
                         self.model.finish(outcome);
                         Action::InstallSucceeded
                     }
@@ -474,4 +501,65 @@ fn dialog_backdrop(content: Element<'_>) -> Element<'_> {
             ..Default::default()
         })
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_outcome_routes_child_results() {
+        let aur_targets = vec!["aur-pkg".to_string()];
+        let cases = [
+            (
+                ChildOutcome::Success,
+                Some(SysupgradePhase::Repo),
+                aur_targets.clone(),
+                NextInstallState::ContinueAur {
+                    targets: aur_targets.clone(),
+                },
+            ),
+            (
+                ChildOutcome::Success,
+                Some(SysupgradePhase::Repo),
+                Vec::new(),
+                NextInstallState::Completed,
+            ),
+            (
+                ChildOutcome::Success,
+                None,
+                Vec::new(),
+                NextInstallState::Completed,
+            ),
+            (
+                ChildOutcome::Dismissed,
+                None,
+                Vec::new(),
+                NextInstallState::Cancelled,
+            ),
+            (
+                ChildOutcome::NotFound,
+                None,
+                Vec::new(),
+                NextInstallState::Failed {
+                    message: "install child not found".to_string(),
+                },
+            ),
+            (
+                ChildOutcome::Failed("err".to_string()),
+                None,
+                Vec::new(),
+                NextInstallState::Failed {
+                    message: "err".to_string(),
+                },
+            ),
+        ];
+        for (outcome, phase, targets, expected) in cases {
+            assert_eq!(
+                classify_outcome(&outcome, phase, &targets),
+                expected,
+                "outcome {outcome:?} phase {phase:?} targets {targets:?}"
+            );
+        }
+    }
 }

@@ -2,7 +2,7 @@ use cosmic::iced::alignment::Vertical;
 use cosmic::iced::{Color, Length};
 use cosmic::widget::{Column, Row, space, text};
 use pakajo::events::PackageOp;
-use pakajo::transaction_state::{InstallPackage, InstallState};
+use pakajo::progress::{InstallPackage, InstallState};
 
 use crate::Element;
 use crate::components::icons::circle_check;

@@ -1,4 +1,4 @@
-use pakajo::transaction_state::{InstallKind, RepoStage};
+use pakajo::progress::{InstallKind, RepoStage};
 
 use super::accordion::sections_view;
 use super::download::download_section;

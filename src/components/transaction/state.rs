@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use pakajo::events::InstallEvent;
 use pakajo::install::ChildOutcome;
 use pakajo::package::PackageSource;
-use pakajo::transaction_state::{
+use pakajo::progress::{
     AurStage, AurState, BuildStatus, InstallKind, RepoStage, RepoState, apply_aur_counters,
     apply_repo_counters, event_stage, finish_aur, ordered_aur_stages, ordered_stages,
 };

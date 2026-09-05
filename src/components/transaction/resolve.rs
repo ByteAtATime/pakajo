@@ -4,7 +4,7 @@ use cosmic::iced::alignment::Vertical;
 use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, Row, container, text};
 use pakajo::events::{SummaryPackage, TransactionSummary, target_version};
-use pakajo::transaction_state::RepoState;
+use pakajo::progress::RepoState;
 use pakajo::utils::format_bytes;
 
 use crate::Element;
