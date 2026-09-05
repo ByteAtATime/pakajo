@@ -82,6 +82,24 @@ pub(super) fn version_change(old: Option<&str>, new: Option<&str>) -> String {
     }
 }
 
+pub(super) fn percent(done: i64, total: i64) -> f64 {
+    if total <= 0 {
+        return 0.0;
+    }
+    (done as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
+}
+
+pub(super) fn eta(done: i64, total: i64, rate: f64) -> String {
+    if total > done && rate > 0.0 {
+        let remaining = (total - done) as f64 / rate;
+        return format_eta(remaining.ceil() as u64);
+    }
+    if total > 0 && done >= total {
+        return format_eta(0);
+    }
+    "--:--".to_string()
+}
+
 fn files_in_order(state: &DownloadState) -> impl Iterator<Item = (&str, &DownloadFile)> {
     state
         .order
@@ -90,11 +108,7 @@ fn files_in_order(state: &DownloadState) -> impl Iterator<Item = (&str, &Downloa
 }
 
 fn active_card(filename: &str, file: &DownloadFile) -> Element<'static> {
-    let pct = if file.total > 0 {
-        (file.downloaded as f64 / file.total as f64 * 100.0).clamp(0.0, 100.0)
-    } else {
-        0.0
-    };
+    let pct = percent(file.downloaded, file.total);
     let name = text(filename.to_string()).font(cosmic::font::mono());
     let name = container(name)
         .width(Length::Fill)
@@ -111,14 +125,7 @@ fn active_card(filename: &str, file: &DownloadFile) -> Element<'static> {
     let bar = progress_bar(0.0..=100.0, pct as f32)
         .length(Length::Fill)
         .girth(6.0);
-    let eta_str = if file.total > file.downloaded && file.rate > 0.0 {
-        let remaining = (file.total - file.downloaded) as f64 / file.rate;
-        format_eta(remaining.ceil() as u64)
-    } else if file.total > 0 && file.downloaded >= file.total {
-        format_eta(0)
-    } else {
-        "--:--".to_string()
-    };
+    let eta_str = eta(file.downloaded, file.total, file.rate);
     let bottom = Row::new()
         .align_y(Vertical::Center)
         .push(muted(text(format!(
@@ -155,11 +162,7 @@ fn completed_row(filename: &str, file: &DownloadFile) -> Element<'static> {
 }
 
 fn stream_row(filename: &str, file: &DownloadFile) -> Element<'static> {
-    let pct = if file.total > 0 {
-        (file.downloaded as f64 / file.total as f64 * 100.0).clamp(0.0, 100.0)
-    } else {
-        0.0
-    };
+    let pct = percent(file.downloaded, file.total);
     let background = progress_bar(0.0..=100.0, pct as f32)
         .length(Length::Fill)
         .girth(STREAM_ROW_HEIGHT)
@@ -234,11 +237,7 @@ fn rich_view(state: &DownloadState) -> Element<'_> {
 fn compact_view(state: &DownloadState) -> Element<'_> {
     let total = state.bytes_total.max(0);
     let done = state.bytes_done.max(0);
-    let pct = if total > 0 {
-        (done as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
-    } else {
-        0.0
-    };
+    let pct = percent(done, total);
 
     let top_row = Row::new()
         .align_y(Vertical::Center)
@@ -250,14 +249,7 @@ fn compact_view(state: &DownloadState) -> Element<'_> {
         .length(Length::Fill)
         .girth(6.0);
 
-    let eta_str = if total > done && state.rate > 0.0 {
-        let remaining = (total - done) as f64 / state.rate;
-        format_eta(remaining.ceil() as u64)
-    } else if total > 0 && done >= total {
-        format_eta(0)
-    } else {
-        "--:--".to_string()
-    };
+    let eta_str = eta(done, total, state.rate);
 
     let bottom_row = Row::new()
         .align_y(Vertical::Center)
@@ -297,4 +289,49 @@ pub(super) fn download_view(state: &DownloadState) -> Element<'_> {
         return rich_view(state);
     }
     compact_view(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{eta, percent};
+
+    #[test]
+    fn percent_zero_done() {
+        assert_eq!(percent(0, 100), 0.0);
+    }
+
+    #[test]
+    fn percent_half_done() {
+        assert_eq!(percent(50, 100), 50.0);
+    }
+
+    #[test]
+    fn percent_full() {
+        assert_eq!(percent(100, 100), 100.0);
+    }
+
+    #[test]
+    fn percent_clamps_above_total() {
+        assert_eq!(percent(150, 100), 100.0);
+    }
+
+    #[test]
+    fn percent_zero_total() {
+        assert_eq!(percent(0, 0), 0.0);
+    }
+
+    #[test]
+    fn eta_zero_rate() {
+        assert_eq!(eta(10, 100, 0.0), "--:--");
+    }
+
+    #[test]
+    fn eta_completed() {
+        assert_eq!(eta(100, 100, 10.0), "00:00");
+    }
+
+    #[test]
+    fn eta_mid_download() {
+        assert_eq!(eta(0, 100, 10.0), "00:10");
+    }
 }
