@@ -61,9 +61,13 @@ pub fn next_sysupgrade_step(
 }
 
 use crate::Element;
+use crate::components::theme::{
+    accent_color, destructive_color, muted_text as muted, pill, success_color,
+};
 use crate::components::transaction::Transaction;
+use crate::components::transaction::format_signed_bytes;
 use crate::components::transaction::review::{ReviewModel, candidate_label, unsupported_banner};
-use crate::components::updates::{aur_upgrade_row, muted};
+use crate::components::updates::aur_upgrade_row;
 use cosmic::widget::divider;
 
 #[derive(Clone, Debug)]
@@ -451,32 +455,6 @@ impl crate::PakajoApp {
     }
 }
 
-fn accent_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().accent.base)
-}
-
-fn success_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().success.base)
-}
-
-fn destructive_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().destructive.base)
-}
-
-fn op_pill(label: &str, color_fn: fn(&cosmic::Theme) -> Color) -> Element<'static> {
-    container(text(label.to_string()))
-        .padding([2.0, 8.0])
-        .style(move |theme: &cosmic::Theme| container::Style {
-            text_color: Some(color_fn(theme)),
-            background: Some(Background::Color({
-                let colored = color_fn(theme);
-                Color { a: 0.10, ..colored }
-            })),
-            ..Default::default()
-        })
-        .into()
-}
-
 fn summary_row(pkg: &SummaryPackage) -> Element<'_> {
     let (op_label, color_fn, version_text) = if pkg.is_removal {
         (
@@ -507,7 +485,7 @@ fn summary_row(pkg: &SummaryPackage) -> Element<'_> {
         .align_y(Alignment::Center)
         .spacing(8)
         .push(muted(version_text))
-        .push(op_pill(op_label, color_fn));
+        .push(pill(op_label, color_fn));
     Row::new()
         .align_y(Alignment::Center)
         .width(Length::Fill)
@@ -555,11 +533,7 @@ fn manifest_section(summary: &TransactionSummary) -> Element<'_> {
 
     let net = summary.total_installed_size - summary.total_removed_size;
     let net_text = if net != 0 {
-        let sign = if net > 0 { "+" } else { "-" };
-        Some(format!(
-            "Net {sign}{}",
-            pakajo::utils::format_bytes(net.abs())
-        ))
+        Some(format!("Net {}", format_signed_bytes(net)))
     } else {
         None
     };

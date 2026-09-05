@@ -39,6 +39,7 @@ mod repo;
 mod resolve;
 
 mod shared;
+pub(crate) use shared::format_signed_bytes;
 
 mod validate;
 

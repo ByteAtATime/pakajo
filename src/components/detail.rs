@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use crate::Element;
 use crate::components::icons;
+use crate::components::theme::{accent_color, destructive_color, muted_mono, muted_text as muted};
 use crate::components::transaction::TransactionMessage;
 use cosmic::widget::divider;
 
@@ -460,35 +461,6 @@ fn card_style(theme: &cosmic::Theme) -> container::Style {
         },
         ..Default::default()
     }
-}
-
-fn muted_style(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
-    let mut on = Color::from(theme.cosmic().background(false).on);
-    on.a = 0.6;
-    cosmic::iced::widget::text::Style {
-        color: Some(on),
-        ..Default::default()
-    }
-}
-
-fn muted<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
-    text(content)
-        .class(cosmic::theme::Text::Custom(muted_style))
-        .into()
-}
-
-fn muted_mono<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
-    text::monotext(content)
-        .class(cosmic::theme::Text::Custom(muted_style))
-        .into()
-}
-
-fn accent_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().accent.base)
-}
-
-fn destructive_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().destructive.base)
 }
 
 impl crate::PakajoApp {

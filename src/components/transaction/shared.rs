@@ -9,89 +9,15 @@ use pakajo::utils::{format_bytes, format_eta, humanize_size};
 
 use crate::Element;
 use crate::components::icons::circle_check;
+pub(crate) use crate::components::theme::{
+    accent_color, destructive_color, mono_text, muted, muted_color, on_color, pill, success_color,
+    thin_bar, tinted, warning_color,
+};
 
 const STREAM_ROW_HEIGHT: f32 = 36.0;
 
-pub(super) fn mono_text(name: &str) -> Element<'static> {
-    tinted(text::monotext(name.to_string()), on_color)
-}
-
 fn file_name(filename: &str) -> Element<'static> {
     container(mono_text(filename)).width(Length::Fill).into()
-}
-
-pub(super) fn thin_bar(value: f32) -> Element<'static> {
-    progress_bar(0.0..=100.0, value)
-        .length(Length::Fill)
-        .girth(6.0)
-        .into()
-}
-
-pub(super) fn muted<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
-    container(content)
-        .style(|t: &cosmic::Theme| container::Style {
-            text_color: Some(muted_color(t)),
-            ..Default::default()
-        })
-        .into()
-}
-
-pub(super) fn tinted<'a>(
-    content: impl Into<Element<'a>>,
-    color_fn: fn(&cosmic::Theme) -> Color,
-) -> Element<'a> {
-    container(content.into())
-        .style(move |theme: &cosmic::Theme| container::Style {
-            text_color: Some(color_fn(theme)),
-            ..Default::default()
-        })
-        .into()
-}
-
-pub(super) fn muted_color(theme: &cosmic::Theme) -> Color {
-    let on = Color::from(theme.cosmic().background(false).on);
-    Color { a: 0.5, ..on }
-}
-
-pub(super) fn on_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().background(false).on)
-}
-
-pub(super) fn accent_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().accent.base)
-}
-
-pub(super) fn success_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().success.base)
-}
-
-pub(super) fn destructive_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().destructive.base)
-}
-
-pub(super) fn warning_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().warning.base)
-}
-
-pub(super) fn pill(
-    label: impl Into<String>,
-    color_fn: fn(&cosmic::Theme) -> Color,
-) -> Element<'static> {
-    container(text(label.into()))
-        .padding([2.0, 8.0])
-        .style(move |theme: &cosmic::Theme| {
-            let colored = color_fn(theme);
-            container::Style {
-                text_color: Some(colored),
-                background: Some(Background::Color(Color { a: 0.10, ..colored })),
-                border: Border {
-                    radius: theme.cosmic().corner_radii.radius_s.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }
-        })
-        .into()
 }
 
 pub(super) fn version_change(old: Option<&str>, new: Option<&str>) -> String {

@@ -7,6 +7,7 @@ use pakajo::upgrade::AurUpgradeCandidate;
 
 use crate::Element;
 use crate::components::sysupgrade::SysupgradeMessage;
+use crate::components::theme::{muted_mono, muted_text as muted, themed_mono_text, themed_text};
 
 #[derive(Clone, Debug)]
 pub enum UpdatesMessage {
@@ -50,15 +51,6 @@ pub fn build_updates_items(updates: &pakajo::updates::PendingUpdates) -> Vec<Upd
     items
 }
 
-pub fn muted_text_style(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
-    let mut on = theme.cosmic().background(false).on;
-    on.alpha = 0.7;
-    cosmic::iced::widget::text::Style {
-        color: Some(on.into()),
-        ..Default::default()
-    }
-}
-
 pub fn destructive_text_style(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
     cosmic::iced::widget::text::Style {
         color: Some(theme.cosmic().destructive_text_color().into()),
@@ -73,34 +65,8 @@ pub fn success_text_style(theme: &cosmic::Theme) -> cosmic::iced::widget::text::
     }
 }
 
-pub fn themed_text<'a>(
-    content: impl Into<std::borrow::Cow<'a, str>> + 'a,
-    style_fn: fn(&cosmic::Theme) -> cosmic::iced::widget::text::Style,
-) -> Element<'a> {
-    text(content)
-        .class(cosmic::theme::Text::Custom(style_fn))
-        .into()
-}
-
-pub fn muted<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
-    themed_text(content, muted_text_style)
-}
-
 pub fn destructive<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
     themed_text(content, destructive_text_style)
-}
-
-pub fn themed_mono_text<'a>(
-    content: impl Into<std::borrow::Cow<'a, str>> + 'a,
-    style_fn: fn(&cosmic::Theme) -> cosmic::iced::widget::text::Style,
-) -> Element<'a> {
-    text::monotext(content)
-        .class(cosmic::theme::Text::Custom(style_fn))
-        .into()
-}
-
-pub fn muted_mono<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
-    themed_mono_text(content, muted_text_style)
 }
 
 pub fn destructive_mono<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
