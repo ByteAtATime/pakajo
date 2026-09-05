@@ -137,7 +137,7 @@ fn active_card(filename: &str, file: &DownloadFile) -> Element<'static> {
         .push(space::horizontal())
         .push(pct_text);
     let bar = thin_bar(pct as f32);
-    let eta_str = eta(file.downloaded, file.total, file.rate);
+    let eta_str = eta(file.downloaded, file.total, file.sampler.rate);
     let bottom = Row::new()
         .align_y(Vertical::Center)
         .push(muted(text(format!(
@@ -187,7 +187,7 @@ fn stream_row(filename: &str, file: &DownloadFile) -> Element<'static> {
                 }
             },
         ));
-    let (rate_val, rate_unit) = humanize_size(file.rate.max(0.0) as i64);
+    let (rate_val, rate_unit) = humanize_size(file.sampler.rate.max(0.0) as i64);
     let speed_str = format!("{:.2} {}/s", rate_val, rate_unit);
     let right = format!(
         "{} / {}  {}",
@@ -248,7 +248,7 @@ fn compact_view(state: &DownloadState) -> Element<'_> {
 
     let bar = thin_bar(pct as f32);
 
-    let eta_str = eta(done, total, state.rate);
+    let eta_str = eta(done, total, state.sampler.rate);
 
     let bottom_row = Row::new()
         .align_y(Vertical::Center)

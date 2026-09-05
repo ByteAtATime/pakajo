@@ -20,7 +20,7 @@ pub(crate) enum TransactionStatus {
 
 pub(crate) struct TransactionModel {
     pub(crate) name: String,
-    pub(crate) stages: Vec<RepoStage>,
+    pub(crate) stages: &'static [RepoStage],
     pub(crate) current_idx: usize,
     pub(crate) repo_state: RepoState,
     pub(crate) aur: AurState,
@@ -70,7 +70,7 @@ impl TransactionModel {
             apply_aur_counters(&mut self.aur, ev, std::time::Instant::now());
             return;
         }
-        apply_repo_counters(&mut self.repo_state, ev);
+        apply_repo_counters(&mut self.repo_state, ev, std::time::Instant::now());
         if matches!(ev, InstallEvent::TransactionSummary(_)) {
             self.leave_resolve();
             return;

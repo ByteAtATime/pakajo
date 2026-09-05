@@ -26,14 +26,41 @@ pub enum RepoStage {
     Finalize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RateSampler {
+    pub sync_time: Option<Instant>,
+    pub sync_done: i64,
+    pub rate: f64,
+}
+
+impl RateSampler {
+    pub fn sample(&mut self, now: Instant, current: i64) {
+        let previous = match self.sync_time {
+            Some(t) => t,
+            None => {
+                self.sync_time = Some(now);
+                self.sync_done = current;
+                return;
+            }
+        };
+        let timediff = now.duration_since(previous).as_millis();
+        if timediff < DOWNLOAD_RATE_SAMPLE_MS {
+            return;
+        }
+        let chunk = (current - self.sync_done).max(0);
+        self.sync_done = current;
+        self.sync_time = Some(now);
+        let chunk_rate = chunk as f64 * 1000.0 / timediff as f64;
+        self.rate = (chunk_rate + 2.0 * self.rate) / 3.0;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DownloadFile {
     pub downloaded: i64,
     pub total: i64,
     pub completed: bool,
-    pub rate: f64,
-    pub sync_time: Option<std::time::Instant>,
-    pub sync_done: i64,
+    pub sampler: RateSampler,
 }
 
 #[derive(Debug, Clone)]
@@ -80,9 +107,7 @@ pub struct DownloadState {
     pub bytes_done: i64,
     pub files: HashMap<String, DownloadFile>,
     pub order: Vec<String>,
-    pub rate: f64,
-    pub sync_time: Option<Instant>,
-    pub sync_done: i64,
+    pub sampler: RateSampler,
 }
 
 impl DownloadState {
@@ -206,15 +231,6 @@ pub fn event_stage(ev: &InstallEvent) -> Option<RepoStage> {
     }
 }
 
-fn apply_resolve(state: &mut ResolveState, ev: &InstallEvent) {
-    match ev {
-        InstallEvent::ResolvingDependencies | InstallEvent::ResolvingAurDependencies { .. } => {
-            state.started = true;
-        }
-        _ => {}
-    }
-}
-
 fn apply_install(state: &mut InstallState, ev: &InstallEvent) {
     match ev {
         InstallEvent::PackageOperation {
@@ -279,7 +295,7 @@ fn apply_finalize(state: &mut FinalizeState, ev: &InstallEvent) {
     }
 }
 
-fn apply_download(state: &mut DownloadState, ev: &InstallEvent) {
+fn apply_download(state: &mut DownloadState, ev: &InstallEvent, now: Instant) {
     match ev {
         InstallEvent::RetrievingPackages { num, total_bytes } => {
             state.total = *num;
@@ -288,9 +304,7 @@ fn apply_download(state: &mut DownloadState, ev: &InstallEvent) {
             state.bytes_done = 0;
             state.files.clear();
             state.order.clear();
-            state.rate = 0.0;
-            state.sync_time = None;
-            state.sync_done = 0;
+            state.sampler = RateSampler::default();
         }
         InstallEvent::DownloadInit { filename, .. } => {
             ensure_download_file(state, filename);
@@ -304,17 +318,17 @@ fn apply_download(state: &mut DownloadState, ev: &InstallEvent) {
             let prev = entry.downloaded;
             entry.downloaded = *downloaded;
             entry.total = *total;
-            update_file_rate(entry);
+            let current = entry.downloaded;
+            entry.sampler.sample(now, current);
             state.bytes_done += *downloaded - prev;
-            update_download_rate(state);
+            let bytes_done = state.bytes_done;
+            state.sampler.sample(now, bytes_done);
         }
         InstallEvent::DownloadRetry { filename, resume } => {
             if !*resume && let Some(f) = state.files.get_mut(filename) {
                 state.bytes_done -= f.downloaded;
                 f.downloaded = 0;
-                f.rate = 0.0;
-                f.sync_time = None;
-                f.sync_done = 0;
+                f.sampler = RateSampler::default();
             }
         }
         InstallEvent::DownloadCompleted {
@@ -337,10 +351,10 @@ fn apply_download(state: &mut DownloadState, ev: &InstallEvent) {
     }
 }
 
-pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
+pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent, now: Instant) {
     match ev {
         InstallEvent::ResolvingDependencies | InstallEvent::ResolvingAurDependencies { .. } => {
-            apply_resolve(&mut state.resolve, ev);
+            state.resolve.started = true;
         }
         InstallEvent::CheckingConflicts
         | InstallEvent::CheckingDependencies
@@ -351,80 +365,26 @@ pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
             state.resolve.checking = true;
             track_validate_check(&mut state.validate, ev);
         }
-        InstallEvent::CheckingIntegrity
-        | InstallEvent::CheckingDiskSpace
-        | InstallEvent::KeyringStart => {
-            track_validate_check(&mut state.validate, ev);
-        }
         InstallEvent::TransactionSummary(summary) => {
             state.resolve.started = true;
             state.resolve.checking = true;
             state.manifest = Some(summary.clone());
         }
-        InstallEvent::PackageOperation { .. } => {
-            apply_install(&mut state.install, ev);
-        }
-        InstallEvent::Progress { phase, .. } if is_install_phase(phase) => {
-            apply_install(&mut state.install, ev);
-        }
-        InstallEvent::HookRun { .. }
-        | InstallEvent::ScriptletInfo { .. }
-        | InstallEvent::Log { .. } => {
+        InstallEvent::Log { .. } => {
             apply_finalize(&mut state.finalize, ev);
         }
-        InstallEvent::RetrievingPackages { .. }
-        | InstallEvent::DownloadInit { .. }
-        | InstallEvent::DownloadProgress { .. }
-        | InstallEvent::DownloadRetry { .. }
-        | InstallEvent::DownloadCompleted { .. } => {
-            apply_download(&mut state.download, ev);
-        }
         _ => {}
+    }
+    match event_stage(ev) {
+        Some(RepoStage::Validate) => track_validate_check(&mut state.validate, ev),
+        Some(RepoStage::Install) => apply_install(&mut state.install, ev),
+        Some(RepoStage::Download) => apply_download(&mut state.download, ev, now),
+        Some(RepoStage::Finalize) => apply_finalize(&mut state.finalize, ev),
+        Some(RepoStage::Resolve) | None => {}
     }
 }
 
 const DOWNLOAD_RATE_SAMPLE_MS: u128 = 200;
-
-fn sample_rate(sync_time: &mut Option<Instant>, sync_done: &mut i64, current: i64, rate: &mut f64) {
-    let now = Instant::now();
-    let previous = match *sync_time {
-        Some(t) => t,
-        None => {
-            *sync_time = Some(now);
-            *sync_done = current;
-            return;
-        }
-    };
-    let timediff = now.duration_since(previous).as_millis();
-    if timediff < DOWNLOAD_RATE_SAMPLE_MS {
-        return;
-    }
-    let chunk = (current - *sync_done).max(0);
-    *sync_done = current;
-    *sync_time = Some(now);
-    let chunk_rate = chunk as f64 * 1000.0 / timediff as f64;
-    *rate = (chunk_rate + 2.0 * *rate) / 3.0;
-}
-
-fn update_download_rate(state: &mut DownloadState) {
-    let current = state.bytes_done;
-    sample_rate(
-        &mut state.sync_time,
-        &mut state.sync_done,
-        current,
-        &mut state.rate,
-    );
-}
-
-fn update_file_rate(file: &mut DownloadFile) {
-    let current = file.downloaded;
-    sample_rate(
-        &mut file.sync_time,
-        &mut file.sync_done,
-        current,
-        &mut file.rate,
-    );
-}
 
 fn ensure_download_file<'a>(state: &'a mut DownloadState, filename: &str) -> &'a mut DownloadFile {
     match state.files.entry(filename.to_string()) {
@@ -435,21 +395,26 @@ fn ensure_download_file<'a>(state: &'a mut DownloadState, filename: &str) -> &'a
                 downloaded: 0,
                 total: 0,
                 completed: false,
-                rate: 0.0,
-                sync_time: None,
-                sync_done: 0,
+                sampler: RateSampler::default(),
             })
         }
     }
 }
 
-pub fn ordered_stages(kind: InstallKind) -> Vec<RepoStage> {
+pub const ORDERED_STAGES_INSTALL: &[RepoStage] = {
     use RepoStage::*;
+    &[Resolve, Validate, Download, Install, Finalize]
+};
+
+pub const ORDERED_STAGES_REMOVE: &[RepoStage] = {
+    use RepoStage::*;
+    &[Resolve, Validate, Install, Finalize]
+};
+
+pub fn ordered_stages(kind: InstallKind) -> &'static [RepoStage] {
     match kind {
-        InstallKind::Install | InstallKind::Upgrade => {
-            vec![Resolve, Validate, Download, Install, Finalize]
-        }
-        InstallKind::Remove => vec![Resolve, Validate, Install, Finalize],
+        InstallKind::Install | InstallKind::Upgrade => ORDERED_STAGES_INSTALL,
+        InstallKind::Remove => ORDERED_STAGES_REMOVE,
     }
 }
 
@@ -461,9 +426,13 @@ pub enum AurStage {
     Finalize,
 }
 
-pub fn ordered_aur_stages() -> Vec<AurStage> {
+pub const ORDERED_AUR_STAGES: &[AurStage] = {
     use AurStage::*;
-    vec![Resolve, Build, Install, Finalize]
+    &[Resolve, Build, Install, Finalize]
+};
+
+pub fn ordered_aur_stages() -> &'static [AurStage] {
+    ORDERED_AUR_STAGES
 }
 
 #[derive(Debug, Clone)]
@@ -609,17 +578,24 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant)
                 entry.elapsed = Some(now.saturating_duration_since(entry.started));
             }
         }
-        PackageOperation { .. } => apply_install(&mut state.install, ev),
-        Progress { phase, .. } if is_install_phase(phase) => apply_install(&mut state.install, ev),
-        RetrievingPackages { .. }
-        | DownloadInit { .. }
-        | DownloadProgress { .. }
-        | DownloadRetry { .. }
-        | DownloadCompleted { .. } => apply_download(&mut state.download, ev),
-        HookRun { .. } | ScriptletInfo { .. } | Log { .. } => {
-            apply_finalize(&mut state.finalize, ev)
-        }
+        Log { .. } => apply_finalize(&mut state.finalize, ev),
         _ => {}
+    }
+    match event_stage_aur(ev) {
+        Some(AurStage::Install) => match ev {
+            PackageOperation { .. } => apply_install(&mut state.install, ev),
+            Progress { phase, .. } if is_install_phase(phase) => {
+                apply_install(&mut state.install, ev)
+            }
+            RetrievingPackages { .. }
+            | DownloadInit { .. }
+            | DownloadProgress { .. }
+            | DownloadRetry { .. }
+            | DownloadCompleted { .. } => apply_download(&mut state.download, ev, now),
+            _ => {}
+        },
+        Some(AurStage::Finalize) => apply_finalize(&mut state.finalize, ev),
+        Some(AurStage::Resolve) | Some(AurStage::Build) | None => {}
     }
     if !state.build_order.is_empty()
         && state.build_ended.is_none()
@@ -760,6 +736,10 @@ mod tests {
         RepoState::default()
     }
 
+    fn apply_repo_event(state: &mut RepoState, ev: &InstallEvent) {
+        apply_repo_counters(state, ev, Instant::now());
+    }
+
     fn log(level: LogLevel, message: &str) -> InstallEvent {
         InstallEvent::Log {
             level,
@@ -768,9 +748,23 @@ mod tests {
     }
 
     #[test]
+    fn aur_dep_resolved_drives_repo_resolve_to_checking() {
+        let mut state = fresh_repo_state();
+        apply_repo_event(
+            &mut state,
+            &InstallEvent::AurDepResolved {
+                package: "yay".to_string(),
+                repo: None,
+                version: Some("1.0-1".to_string()),
+            },
+        );
+        assert_eq!(state.resolve_step(), 2);
+    }
+
+    #[test]
     fn apply_repo_download_lifecycle_tracks_progress_retry_and_reset() {
         let mut state = fresh_repo_state();
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::RetrievingPackages {
                 num: 2,
@@ -781,21 +775,21 @@ mod tests {
         assert_eq!(state.download.bytes_total, 1000);
         assert_eq!(state.download.queued(), 2);
 
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::DownloadInit {
                 filename: "pkg-a".to_string(),
                 optional: false,
             },
         );
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::DownloadInit {
                 filename: "pkg-b".to_string(),
                 optional: false,
             },
         );
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::DownloadInit {
                 filename: "pkg-a".to_string(),
@@ -807,7 +801,7 @@ mod tests {
             vec!["pkg-a".to_string(), "pkg-b".to_string()]
         );
 
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::DownloadProgress {
                 filename: "pkg-a".to_string(),
@@ -816,7 +810,7 @@ mod tests {
             },
         );
         assert_eq!(state.download.bytes_done, 400);
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::DownloadCompleted {
                 filename: "pkg-a".to_string(),
@@ -826,7 +820,7 @@ mod tests {
         );
         assert_eq!(state.download.done, 1);
 
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::DownloadProgress {
                 filename: "pkg-b".to_string(),
@@ -835,7 +829,7 @@ mod tests {
             },
         );
         assert_eq!(state.download.bytes_done, 700);
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::DownloadRetry {
                 filename: "pkg-b".to_string(),
@@ -843,7 +837,7 @@ mod tests {
             },
         );
         assert_eq!(state.download.bytes_done, 700);
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::DownloadRetry {
                 filename: "pkg-b".to_string(),
@@ -854,7 +848,7 @@ mod tests {
         let pkg_b = state.download.files.get("pkg-b").expect("pkg-b present");
         assert_eq!(pkg_b.downloaded, 0);
 
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::DownloadCompleted {
                 filename: "pkg-b".to_string(),
@@ -866,7 +860,7 @@ mod tests {
         assert_eq!(state.download.bytes_done, 1000);
         assert_eq!(state.download.queued(), 0);
 
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::RetrievingPackages {
                 num: 1,
@@ -884,14 +878,14 @@ mod tests {
     fn apply_repo_counters_drives_full_transaction() {
         let mut state = fresh_repo_state();
         assert_eq!(state.resolve_step(), 0);
-        apply_repo_counters(&mut state, &InstallEvent::ResolvingDependencies);
+        apply_repo_event(&mut state, &InstallEvent::ResolvingDependencies);
         assert_eq!(state.resolve_step(), 1);
-        apply_repo_counters(&mut state, &InstallEvent::CheckingConflicts);
+        apply_repo_event(&mut state, &InstallEvent::CheckingConflicts);
         assert_eq!(state.resolve_step(), 2);
-        apply_repo_counters(&mut state, &InstallEvent::CheckingDiskSpace);
+        apply_repo_event(&mut state, &InstallEvent::CheckingDiskSpace);
         assert_eq!(state.validate.count(), 2);
 
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::PackageOperation {
                 operation: PackageOp::Install,
@@ -900,7 +894,7 @@ mod tests {
                 old_version: None,
             },
         );
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::Progress {
                 phase: ProgressPhase::Add,
@@ -917,7 +911,7 @@ mod tests {
             .expect("pacman present");
         assert!(pkg.completed);
 
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::HookRun {
                 position: 1,
@@ -931,7 +925,7 @@ mod tests {
             vec!["(1/1) Updating font cache...".to_string()]
         );
 
-        apply_repo_counters(
+        apply_repo_event(
             &mut state,
             &InstallEvent::TransactionSummary(TransactionSummary {
                 packages: Vec::new(),
@@ -947,10 +941,10 @@ mod tests {
     #[test]
     fn apply_repo_counters_collects_log_alerts() {
         let mut state = fresh_repo_state();
-        apply_repo_counters(&mut state, &log(LogLevel::Warning, "dep cycle\n"));
-        apply_repo_counters(&mut state, &log(LogLevel::Debug, "noise\n"));
-        apply_repo_counters(&mut state, &log(LogLevel::Error, "  \n"));
-        apply_repo_counters(&mut state, &log(LogLevel::Error, "unknown key\n"));
+        apply_repo_event(&mut state, &log(LogLevel::Warning, "dep cycle\n"));
+        apply_repo_event(&mut state, &log(LogLevel::Debug, "noise\n"));
+        apply_repo_event(&mut state, &log(LogLevel::Error, "  \n"));
+        apply_repo_event(&mut state, &log(LogLevel::Error, "unknown key\n"));
         assert_eq!(
             state.finalize.alerts,
             [
@@ -1210,5 +1204,43 @@ mod tests {
         let entry = state.builds.get("pkg-b").expect("pkg-b present");
         assert_eq!(entry.elapsed, Some(std::time::Duration::from_secs(90)));
         assert_eq!(state.build_ended, Some(last));
+    }
+
+    #[test]
+    fn rate_sampler_blends_first_eligible_chunk() {
+        use std::time::Duration;
+
+        let base = Instant::now();
+        let t = |ms| base + Duration::from_millis(ms);
+        let mut sampler = RateSampler::default();
+
+        sampler.sample(base, 1000);
+        assert_eq!(
+            sampler,
+            RateSampler {
+                sync_time: Some(base),
+                sync_done: 1000,
+                rate: 0.0,
+            }
+        );
+
+        sampler.sample(t(100), 1500);
+        assert_eq!(
+            sampler,
+            RateSampler {
+                sync_time: Some(base),
+                sync_done: 1000,
+                rate: 0.0,
+            }
+        );
+        sampler.sample(t(500), 2500);
+        assert_eq!(
+            sampler,
+            RateSampler {
+                sync_time: Some(t(500)),
+                sync_done: 2500,
+                rate: 1000.0,
+            }
+        );
     }
 }
