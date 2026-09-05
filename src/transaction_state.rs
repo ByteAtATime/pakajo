@@ -26,15 +26,6 @@ pub enum RepoStage {
     Finalize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AurStage {
-    Resolve,
-    Build,
-    Validate,
-    Install,
-    Finalize,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct DownloadFile {
     pub downloaded: i64,
@@ -204,42 +195,6 @@ pub fn event_stage(ev: &InstallEvent) -> Option<RepoStage> {
         | DownloadCompleted { .. } => Some(Download),
         PackageOperation { .. } => Some(Install),
         HookRun { .. } | ScriptletInfo { .. } | TransactionDone => Some(Finalize),
-        _ => None,
-    }
-}
-
-pub fn aur_event_stage(ev: &InstallEvent) -> Option<AurStage> {
-    use AurStage::*;
-    use InstallEvent::*;
-    match ev {
-        ResolvingAurDependencies { .. }
-        | AurDepResolved { .. }
-        | ResolutionComplete { .. }
-        | LayerBoundary { .. } => Some(Resolve),
-        CloningRepo { .. } | BuildStarted { .. } | BuildOutput { .. } | BuildCompleted { .. } => {
-            Some(Build)
-        }
-        LoadingPackages
-        | ResolvingDependencies
-        | CheckingConflicts
-        | CheckingFileConflicts
-        | CheckingIntegrity
-        | CheckingDiskSpace
-        | KeyringStart => Some(Validate),
-        ProcessingChanges | PackageOperation { .. } => Some(Install),
-        Progress { phase, .. } => match phase {
-            ProgressPhase::Conflicts
-            | ProgressPhase::Diskspace
-            | ProgressPhase::Integrity
-            | ProgressPhase::Load
-            | ProgressPhase::Keyring => Some(Validate),
-            ProgressPhase::Add
-            | ProgressPhase::Upgrade
-            | ProgressPhase::Downgrade
-            | ProgressPhase::Reinstall
-            | ProgressPhase::Remove => Some(Install),
-        },
-        TransactionDone | HookRun { .. } | ScriptletInfo { .. } => Some(Finalize),
         _ => None,
     }
 }
@@ -484,11 +439,6 @@ pub fn ordered_stages(kind: InstallKind) -> Vec<RepoStage> {
     }
 }
 
-pub fn ordered_aur_stages() -> &'static [AurStage] {
-    use AurStage::*;
-    &[Resolve, Build, Validate, Install, Finalize]
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum NextInstallState {
     ContinueAur { targets: Vec<String> },
@@ -666,57 +616,6 @@ mod tests {
             total: 0,
         };
         assert_eq!(event_stage(&ev), Some(RepoStage::Validate));
-    }
-
-    #[test]
-    fn aur_resolving_dependencies_is_resolve() {
-        let ev = InstallEvent::ResolvingAurDependencies {
-            target: "foo".to_string(),
-        };
-        assert_eq!(aur_event_stage(&ev), Some(AurStage::Resolve));
-    }
-
-    #[test]
-    fn aur_cloning_repo_is_build() {
-        let ev = InstallEvent::CloningRepo {
-            package: "foo".to_string(),
-        };
-        assert_eq!(aur_event_stage(&ev), Some(AurStage::Build));
-    }
-
-    #[test]
-    fn aur_build_started_is_build() {
-        let ev = InstallEvent::BuildStarted {
-            package: "foo".to_string(),
-        };
-        assert_eq!(aur_event_stage(&ev), Some(AurStage::Build));
-    }
-
-    #[test]
-    fn aur_loading_packages_is_validate() {
-        assert_eq!(
-            aur_event_stage(&InstallEvent::LoadingPackages),
-            Some(AurStage::Validate)
-        );
-    }
-
-    #[test]
-    fn aur_package_operation_is_install() {
-        let ev = InstallEvent::PackageOperation {
-            operation: PackageOp::Upgrade,
-            package: "foo".to_string(),
-            new_version: Some("2.0".to_string()),
-            old_version: Some("1.0".to_string()),
-        };
-        assert_eq!(aur_event_stage(&ev), Some(AurStage::Install));
-    }
-
-    #[test]
-    fn aur_transaction_done_is_finalize() {
-        assert_eq!(
-            aur_event_stage(&InstallEvent::TransactionDone),
-            Some(AurStage::Finalize)
-        );
     }
 
     fn fresh_repo_state() -> RepoState {
@@ -991,20 +890,6 @@ mod tests {
                 RepoStage::Validate,
                 RepoStage::Install,
                 RepoStage::Finalize,
-            ]
-        );
-    }
-
-    #[test]
-    fn ordered_aur_stages_lists_build() {
-        assert_eq!(
-            ordered_aur_stages(),
-            &[
-                AurStage::Resolve,
-                AurStage::Build,
-                AurStage::Validate,
-                AurStage::Install,
-                AurStage::Finalize,
             ]
         );
     }
