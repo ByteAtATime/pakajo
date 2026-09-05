@@ -439,6 +439,19 @@ pub fn ordered_stages(kind: InstallKind) -> Vec<RepoStage> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AurStage {
+    Resolve,
+    Build,
+    Install,
+    Finalize,
+}
+
+pub fn ordered_aur_stages() -> Vec<AurStage> {
+    use AurStage::*;
+    vec![Resolve, Build, Install, Finalize]
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum NextInstallState {
     ContinueAur { targets: Vec<String> },

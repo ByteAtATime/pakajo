@@ -4,7 +4,7 @@ use pakajo::events::InstallEvent;
 use pakajo::install::ChildOutcome;
 use pakajo::package::PackageSource;
 use pakajo::transaction_state::{
-    InstallKind, RepoStage, RepoState, apply_repo_counters, event_stage, ordered_stages,
+    AurStage, InstallKind, RepoStage, RepoState, apply_repo_counters, event_stage, ordered_stages,
 };
 
 use super::pkgbuild::PkgbuildModel;
@@ -109,5 +109,16 @@ impl TransactionModel {
         if self.stage_state(i) == StageState::Done && !self.expanded.insert(i) {
             self.expanded.remove(&i);
         }
+    }
+
+    pub(crate) fn is_aur(&self) -> bool {
+        matches!(self.source, PackageSource::Aur) && self.kind != InstallKind::Remove
+    }
+
+    pub(crate) fn aur_stage_state(&self, _stage: AurStage) -> StageState {
+        if matches!(self.status, TransactionStatus::Checking) {
+            return StageState::Pending;
+        }
+        StageState::Pending
     }
 }

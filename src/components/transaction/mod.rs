@@ -17,11 +17,15 @@ use pakajo::upgrade::run_sysupgrade_process;
 
 use crate::Element;
 
+pub(super) const SYSTEM_AUR_NAME: &str = "system-aur";
+
 mod state;
 
 pub(crate) use state::{TransactionModel, TransactionStatus};
 
 mod accordion;
+
+mod aur;
 
 mod download;
 
@@ -387,7 +391,7 @@ impl Transaction {
 
     pub(crate) fn start_sysupgrade_aur(targets: Vec<String>) -> (Self, Task<crate::Message>) {
         let mut model = TransactionModel::new(
-            "system-aur".to_string(),
+            SYSTEM_AUR_NAME.to_string(),
             PackageSource::Aur,
             InstallKind::Upgrade,
         );
@@ -413,6 +417,9 @@ impl Transaction {
     }
 
     pub(crate) fn view(&self) -> Element<'_> {
+        if self.model.is_aur() {
+            return aur::view(&self.model);
+        }
         repo::view(&self.model)
     }
 
