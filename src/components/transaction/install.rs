@@ -1,6 +1,6 @@
 use cosmic::iced::alignment::Vertical;
 use cosmic::iced::widget::progress_bar;
-use cosmic::iced::{Background, Border, Color, Length};
+use cosmic::iced::{Color, Length};
 use cosmic::widget::{Column, Row, container, space, text};
 use pakajo::events::PackageOp;
 use pakajo::transaction_state::{InstallPackage, InstallState, RepoState};
@@ -9,7 +9,9 @@ use crate::Element;
 use crate::components::icons::circle_check;
 
 use super::accordion::Section;
-use super::shared::{accent_color, destructive_color, muted, on_color, success_color, tinted};
+use super::shared::{
+    accent_color, destructive_color, muted, on_color, pill, success_color, tinted, version_change,
+};
 use super::state::StageState;
 
 const GROUP_GAP: f32 = 8.0;
@@ -82,7 +84,13 @@ fn install_single_suffix(state: &InstallState) -> Element<'_> {
         .align_y(Vertical::Center)
         .spacing(8)
         .push(package_name(name))
-        .push(muted(text(version_text(pkg)).font(cosmic::font::mono())))
+        .push(muted(
+            text(version_change(
+                pkg.old_version.as_deref(),
+                pkg.new_version.as_deref(),
+            ))
+            .font(cosmic::font::mono()),
+        ))
         .push(op_pill(pkg.operation))
         .into()
 }
@@ -92,7 +100,13 @@ fn package_row<'a>(name: &'a str, pkg: &'a InstallPackage) -> Element<'a> {
         .align_y(Vertical::Center)
         .spacing(8)
         .push(package_name(name))
-        .push(muted(text(version_text(pkg)).font(cosmic::font::mono())))
+        .push(muted(
+            text(version_change(
+                pkg.old_version.as_deref(),
+                pkg.new_version.as_deref(),
+            ))
+            .font(cosmic::font::mono()),
+        ))
         .push(space::horizontal())
         .push(op_pill(pkg.operation))
         .push(tinted(text(format!("{:.0}%", pkg.percent)), accent_color));
@@ -108,7 +122,13 @@ fn completed_row<'a>(name: &'a str, pkg: &'a InstallPackage) -> Element<'a> {
         .spacing(8)
         .push(cosmic::widget::icon(circle_check()).size(14))
         .push(package_name(name))
-        .push(muted(text(version_text(pkg)).font(cosmic::font::mono())))
+        .push(muted(
+            text(version_change(
+                pkg.old_version.as_deref(),
+                pkg.new_version.as_deref(),
+            ))
+            .font(cosmic::font::mono()),
+        ))
         .push(space::horizontal())
         .push(op_pill(pkg.operation))
         .into()
@@ -123,15 +143,6 @@ fn package_name(name: &str) -> Element<'static> {
         .into()
 }
 
-fn version_text(pkg: &InstallPackage) -> String {
-    match (pkg.old_version.as_deref(), pkg.new_version.as_deref()) {
-        (Some(old), Some(new)) => format!("{old} → {new}"),
-        (None, Some(new)) => new.to_string(),
-        (Some(old), None) => old.to_string(),
-        (None, None) => String::new(),
-    }
-}
-
 fn op_pill(operation: PackageOp) -> Element<'static> {
     let (label, color_fn): (_, fn(&cosmic::Theme) -> Color) = match operation {
         PackageOp::Install => ("Install", success_color),
@@ -140,19 +151,5 @@ fn op_pill(operation: PackageOp) -> Element<'static> {
         PackageOp::Downgrade => ("Downgrade", accent_color),
         PackageOp::Remove => ("Remove", destructive_color),
     };
-    container(text(label))
-        .padding([2.0, 8.0])
-        .style(move |theme: &cosmic::Theme| {
-            let colored = color_fn(theme);
-            container::Style {
-                text_color: Some(colored),
-                background: Some(Background::Color(Color { a: 0.10, ..colored })),
-                border: Border {
-                    radius: 6.0.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }
-        })
-        .into()
+    pill(label, color_fn)
 }

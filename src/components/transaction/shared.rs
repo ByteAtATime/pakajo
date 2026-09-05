@@ -52,6 +52,36 @@ pub(super) fn destructive_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().destructive.base)
 }
 
+pub(super) fn pill(
+    label: impl Into<String>,
+    color_fn: fn(&cosmic::Theme) -> Color,
+) -> Element<'static> {
+    container(text(label.into()))
+        .padding([2.0, 8.0])
+        .style(move |theme: &cosmic::Theme| {
+            let colored = color_fn(theme);
+            container::Style {
+                text_color: Some(colored),
+                background: Some(Background::Color(Color { a: 0.10, ..colored })),
+                border: Border {
+                    radius: 6.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        })
+        .into()
+}
+
+pub(super) fn version_change(old: Option<&str>, new: Option<&str>) -> String {
+    match (old, new) {
+        (Some(old), Some(new)) => format!("{old} → {new}"),
+        (None, Some(new)) => new.to_string(),
+        (Some(old), None) => old.to_string(),
+        (None, None) => String::new(),
+    }
+}
+
 fn files_in_order(state: &DownloadState) -> impl Iterator<Item = (&str, &DownloadFile)> {
     state
         .order

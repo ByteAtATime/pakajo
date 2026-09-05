@@ -8,7 +8,9 @@ use pakajo::utils::format_bytes;
 use crate::Element;
 
 use super::accordion::Section;
-use super::shared::{accent_color, muted, muted_color, on_color, success_color, tinted};
+use super::shared::{
+    accent_color, muted, muted_color, on_color, pill, success_color, tinted, version_change,
+};
 use super::state::StageState;
 
 pub(super) fn resolve_section(repo: &RepoState, state: StageState) -> Section<'_> {
@@ -114,7 +116,7 @@ fn single_package_suffix(pkg: &SummaryPackage) -> Element<'_> {
         .align_y(Vertical::Center)
         .spacing(8)
         .push(muted(text(name_version).font(cosmic::font::mono())))
-        .push(metric_pill(format_signed_bytes(net), size_color))
+        .push(pill(format_signed_bytes(net), size_color))
         .into()
 }
 
@@ -130,9 +132,9 @@ fn multi_package_suffix(summary: &TransactionSummary) -> Element<'_> {
     Row::new()
         .align_y(Vertical::Center)
         .spacing(6)
-        .push(metric_pill(count_label, accent_color))
-        .push(metric_pill(download_label, accent_color))
-        .push(metric_pill(net_label, success_color))
+        .push(pill(count_label, accent_color))
+        .push(pill(download_label, accent_color))
+        .push(pill(net_label, success_color))
         .into()
 }
 
@@ -142,11 +144,9 @@ fn package_row(pkg: &SummaryPackage) -> Element<'_> {
         None => pkg.name.clone(),
     };
     let version_text = if pkg.is_removal {
-        pkg.old_version.clone().unwrap_or_default()
-    } else if let Some(old) = pkg.old_version.as_deref() {
-        format!("{old} → {}", pkg.new_version)
+        version_change(pkg.old_version.as_deref(), None)
     } else {
-        pkg.new_version.clone()
+        version_change(pkg.old_version.as_deref(), Some(pkg.new_version.as_str()))
     };
     let size = format_signed_bytes(net_bytes(pkg));
     let left = tinted(text(qualified).font(cosmic::font::mono()), on_color);
@@ -178,22 +178,4 @@ fn format_signed_bytes(value: i64) -> String {
     } else {
         format!("+{}", format_bytes(value))
     }
-}
-
-fn metric_pill(label: String, color_fn: fn(&cosmic::Theme) -> Color) -> Element<'static> {
-    container(text(label))
-        .padding([2.0, 8.0])
-        .style(move |theme: &cosmic::Theme| {
-            let colored = color_fn(theme);
-            container::Style {
-                text_color: Some(colored),
-                background: Some(Background::Color(Color { a: 0.10, ..colored })),
-                border: Border {
-                    radius: 6.0.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }
-        })
-        .into()
 }
