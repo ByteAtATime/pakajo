@@ -2,6 +2,7 @@ use super::TransactionMessage;
 use super::shared::{accent_color, destructive_color, muted, muted_color, on_color, tinted};
 use super::state::StageState;
 use crate::Element;
+use crate::components::icons;
 use cosmic::iced::alignment::Vertical;
 use cosmic::iced::{Background, Border, Color, Length, Shadow};
 use cosmic::widget::divider;
@@ -91,6 +92,7 @@ pub(super) fn stage_row(section: Section<'_>, expanded: bool, index: usize) -> E
 
     let body = Row::new()
         .align_y(Vertical::Top)
+        .spacing(8)
         .push(gutter)
         .push(container(content).width(Length::Fill));
 
@@ -102,6 +104,7 @@ pub(super) fn stage_row(section: Section<'_>, expanded: bool, index: usize) -> E
 }
 
 const GLYPH_GUTTER_WIDTH: f32 = 18.0;
+const TITLE_LINE_HEIGHT: f32 = 30.0;
 
 fn done_toggle(header: Element<'_>, index: usize) -> Element<'_> {
     toggle_button(header, TransactionMessage::ToggleStage(index))
@@ -128,15 +131,26 @@ fn toggle_detail<'a>(header: Element<'a>, index: usize, detail: Element<'a>) -> 
 }
 
 fn stage_glyph(state: StageState) -> Element<'static> {
-    let (glyph_text, glyph_color_fn): (&'static str, fn(&cosmic::Theme) -> Color) = match state {
-        StageState::Done => ("✓", accent_color),
-        StageState::Active => ("●", accent_color),
-        StageState::Pending => ("○", muted_color),
-        StageState::Failed => ("✗", destructive_color),
-    };
-    container(tinted(text(glyph_text), glyph_color_fn))
-        .width(Length::Fixed(GLYPH_GUTTER_WIDTH))
-        .into()
+    let (glyph, glyph_color_fn): (cosmic::widget::icon::Handle, fn(&cosmic::Theme) -> Color) =
+        match state {
+            StageState::Done => (icons::circle_check(), accent_color),
+            StageState::Active => (icons::circle_dot(), accent_color),
+            StageState::Pending => (icons::circle(), muted_color),
+            StageState::Failed => (icons::circle_x(), destructive_color),
+        };
+    container(
+        cosmic::widget::icon(glyph)
+            .size(18)
+            .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
+                move |theme: &cosmic::Theme| cosmic::widget::svg::Style {
+                    color: Some(glyph_color_fn(theme)),
+                },
+            ))),
+    )
+    .width(Length::Fixed(GLYPH_GUTTER_WIDTH))
+    .height(Length::Fixed(TITLE_LINE_HEIGHT))
+    .align_y(Vertical::Center)
+    .into()
 }
 
 fn header_row<'a>(
