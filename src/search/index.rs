@@ -214,11 +214,21 @@ fn build_rows(raws: &[RawPkg], arena: &mut String) -> Vec<PkgRow> {
     rows
 }
 
+type TextSpan = (u32, u16);
+type TokenPosting = (u32, u32);
+
+struct TokenInversion {
+    token_ids: Vec<u32>,
+    unique_tokens: Vec<TextSpan>,
+    unique_token_masks: Vec<u64>,
+    tokens_sorted: Vec<TokenPosting>,
+}
+
 fn build_token_inversion(
     raws: &[RawPkg],
     arena: &mut String,
     rows: &mut [PkgRow],
-) -> (Vec<u32>, Vec<(u32, u16)>, Vec<u64>, Vec<(u32, u32)>) {
+) -> TokenInversion {
     let n = raws.len();
     let mut occ: Vec<(u32, u32)> = Vec::new();
     for (pi, raw) in raws.iter().enumerate() {
@@ -271,7 +281,12 @@ fn build_token_inversion(
         r.tokens_start = starts[i];
     }
 
-    (token_ids, unique_tokens, unique_token_masks, tokens_sorted)
+    TokenInversion {
+        token_ids,
+        unique_tokens,
+        unique_token_masks,
+        tokens_sorted,
+    }
 }
 
 fn build_keyword_ids(
@@ -306,8 +321,13 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
     let mut arena: String = String::new();
 
     let mut rows = build_rows(&raws, &mut arena);
-    let (token_ids, unique_tokens, unique_token_masks, tokens_sorted) =
-        build_token_inversion(&raws, &mut arena, &mut rows);
+    let inversion = build_token_inversion(&raws, &mut arena, &mut rows);
+    let (token_ids, unique_tokens, unique_token_masks, tokens_sorted) = (
+        inversion.token_ids,
+        inversion.unique_tokens,
+        inversion.unique_token_masks,
+        inversion.tokens_sorted,
+    );
     let (kw_ids, unique_kws) = build_keyword_ids(&raws, &mut arena, &mut rows);
 
     let mut index = PackageIndex {

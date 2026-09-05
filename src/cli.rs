@@ -140,14 +140,14 @@ fn install_aur_only(
     approvals_b64: Option<&str>,
 ) -> ! {
     let mut sink: Box<dyn InstallSink> = sink_for(json);
-    let (confirm, review) = build_callbacks(json, skip_review);
+    let callbacks = build_callbacks(json, skip_review);
     exit_with_result(crate::build::run_build(
         aur,
         false,
         as_deps,
         &mut *sink,
-        confirm,
-        review,
+        callbacks.confirm,
+        callbacks.review,
         approvals_b64,
     ));
 }
@@ -173,14 +173,14 @@ fn install_mixed(
         }
     }
     let mut sink: Box<dyn InstallSink> = sink_for(json);
-    let (confirm, review) = build_callbacks(json, skip_review);
+    let callbacks = build_callbacks(json, skip_review);
     let result = crate::build::run_build(
         aur,
         false,
         as_deps,
         &mut *sink,
-        confirm,
-        review,
+        callbacks.confirm,
+        callbacks.review,
         approvals_b64,
     );
     if let Err(e) = &result {
@@ -307,14 +307,14 @@ pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {
     if exit_code == 0 && !aur_targets.is_empty() {
         let aur_names: Vec<String> = aur_targets.iter().map(|c| c.name.clone()).collect();
         let mut build_sink: Box<dyn InstallSink> = sink_for(args.json);
-        let (confirm, review) = build_callbacks(args.json, args.skip_review);
+        let callbacks = build_callbacks(args.json, args.skip_review);
         let result = crate::build::run_build(
             &aur_names,
             false,
             false,
             &mut *build_sink,
-            confirm,
-            review,
+            callbacks.confirm,
+            callbacks.review,
             None,
         );
         if let Err(e) = &result {
@@ -325,13 +325,17 @@ pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {
     std::process::exit(exit_code);
 }
 
+struct BuildCallbacks<C> {
+    confirm: C,
+    review: ReviewCallback,
+}
+
+type ReviewCallback = fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool;
+
 fn build_callbacks(
     json: bool,
     skip_review: bool,
-) -> (
-    impl FnOnce(&crate::resolve::BuildPlan) -> crate::build::BuildDecision,
-    fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool,
-) {
+) -> BuildCallbacks<impl FnOnce(&crate::resolve::BuildPlan) -> crate::build::BuildDecision> {
     let confirm = move |plan: &crate::resolve::BuildPlan| -> crate::build::BuildDecision {
         if json {
             crate::build::BuildDecision::Review
@@ -341,12 +345,12 @@ fn build_callbacks(
             confirm_proceed_to_review(plan)
         }
     };
-    let review: fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool = if json {
+    let review: ReviewCallback = if json {
         |_| true
     } else {
         self::review::review_pkgbuilds
     };
-    (confirm, review)
+    BuildCallbacks { confirm, review }
 }
 
 fn sink_for(json: bool) -> Box<dyn InstallSink> {
