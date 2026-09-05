@@ -2,7 +2,7 @@ use cosmic::iced::alignment::Vertical;
 use cosmic::iced::widget::{Stack, progress_bar};
 use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, Row, container, space, text};
-use pakajo::transaction_state::{DownloadFile, RepoState};
+use pakajo::transaction_state::{DownloadFile, DownloadState};
 use pakajo::utils::{format_bytes, format_eta, humanize_size};
 
 use crate::Element;
@@ -44,11 +44,11 @@ pub(super) fn accent_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().accent.base)
 }
 
-fn files_in_order(state: &RepoState) -> impl Iterator<Item = (&str, &DownloadFile)> {
+fn files_in_order(state: &DownloadState) -> impl Iterator<Item = (&str, &DownloadFile)> {
     state
-        .download_order
+        .order
         .iter()
-        .filter_map(|name| state.download_files.get(name).map(|f| (name.as_str(), f)))
+        .filter_map(|name| state.files.get(name).map(|f| (name.as_str(), f)))
 }
 
 fn active_card(filename: &str, file: &DownloadFile) -> Element<'static> {
@@ -174,7 +174,7 @@ fn stream_row(filename: &str, file: &DownloadFile) -> Element<'static> {
         .into()
 }
 
-fn rich_view(state: &RepoState) -> Element<'_> {
+fn rich_view(state: &DownloadState) -> Element<'_> {
     let mut col = Column::new().spacing(8);
     let completed: Vec<(&str, &DownloadFile)> =
         files_in_order(state).filter(|(_, f)| f.completed).collect();
@@ -193,9 +193,9 @@ fn rich_view(state: &RepoState) -> Element<'_> {
     col.into()
 }
 
-fn compact_view(state: &RepoState) -> Element<'_> {
-    let total = state.download_bytes_total.max(0);
-    let done = state.download_bytes_done.max(0);
+fn compact_view(state: &DownloadState) -> Element<'_> {
+    let total = state.bytes_total.max(0);
+    let done = state.bytes_done.max(0);
     let pct = if total > 0 {
         (done as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
     } else {
@@ -212,8 +212,8 @@ fn compact_view(state: &RepoState) -> Element<'_> {
         .length(Length::Fill)
         .girth(6.0);
 
-    let eta_str = if total > done && state.download_rate > 0.0 {
-        let remaining = (total - done) as f64 / state.download_rate;
+    let eta_str = if total > done && state.rate > 0.0 {
+        let remaining = (total - done) as f64 / state.rate;
         format_eta(remaining.ceil() as u64)
     } else if total > 0 && done >= total {
         format_eta(0)
@@ -225,7 +225,7 @@ fn compact_view(state: &RepoState) -> Element<'_> {
         .align_y(Vertical::Center)
         .push(muted(text(format!(
             "{} / {} packages",
-            state.download_done, state.download_total
+            state.done, state.total
         ))))
         .push(space::horizontal())
         .push(muted(text(format!(
@@ -254,8 +254,8 @@ fn compact_view(state: &RepoState) -> Element<'_> {
     col.into()
 }
 
-pub(super) fn download_view(state: &RepoState) -> Element<'_> {
-    if state.download_total < 4 {
+pub(super) fn download_view(state: &DownloadState) -> Element<'_> {
+    if state.total < 4 {
         return rich_view(state);
     }
     compact_view(state)

@@ -14,8 +14,8 @@ pub(super) fn finalize_section(repo: &RepoState, state: StageState) -> Section<'
         label: "Finalize",
         state,
         content: match state {
-            StageState::Active | StageState::Done if !repo.finalize_lines.is_empty() => {
-                Some(finalize_log(&repo.finalize_lines))
+            StageState::Active | StageState::Done if !repo.finalize.lines.is_empty() => {
+                Some(finalize_log(&repo.finalize.lines))
             }
             _ => None,
         },

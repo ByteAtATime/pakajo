@@ -3,7 +3,7 @@ use cosmic::iced::widget::progress_bar;
 use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, Row, container, space, text};
 use pakajo::events::PackageOp;
-use pakajo::transaction_state::{InstallPackage, RepoState};
+use pakajo::transaction_state::{InstallPackage, InstallState, RepoState};
 
 use crate::Element;
 use crate::components::icons::circle_check;
@@ -22,29 +22,29 @@ pub(super) fn install_section(repo: &RepoState, state: StageState) -> Section<'_
         header_suffix: None,
     };
     match state {
-        StageState::Done if repo.install_order.len() == 1 => {
-            section.header_suffix = Some(install_single_suffix(repo));
+        StageState::Done if repo.install.order.len() == 1 => {
+            section.header_suffix = Some(install_single_suffix(&repo.install));
         }
-        StageState::Active if !repo.install_order.is_empty() => {
-            section.content = Some(install_view(repo, false));
-            if repo.install_order.len() > 1 {
-                section.header_suffix = Some(install_counter_suffix(repo, false));
+        StageState::Active if !repo.install.order.is_empty() => {
+            section.content = Some(install_view(&repo.install, false));
+            if repo.install.order.len() > 1 {
+                section.header_suffix = Some(install_counter_suffix(&repo.install, false));
             }
         }
-        StageState::Done if !repo.install_order.is_empty() => {
-            section.content = Some(install_view(repo, true));
-            section.header_suffix = Some(install_counter_suffix(repo, true));
+        StageState::Done if !repo.install.order.is_empty() => {
+            section.content = Some(install_view(&repo.install, true));
+            section.header_suffix = Some(install_counter_suffix(&repo.install, true));
         }
         _ => {}
     }
     section
 }
 
-fn install_view(state: &RepoState, done: bool) -> Element<'_> {
+fn install_view(state: &InstallState, done: bool) -> Element<'_> {
     let (finished, active): (Vec<_>, Vec<_>) = state
-        .install_order
+        .order
         .iter()
-        .filter_map(|name| state.install_packages.get(name).map(|pkg| (name, pkg)))
+        .filter_map(|name| state.packages.get(name).map(|pkg| (name, pkg)))
         .partition(|(_, pkg)| done || pkg.completed);
     let show_gap = !finished.is_empty() && !active.is_empty();
     let mut col = Column::new().spacing(8);
@@ -60,25 +60,21 @@ fn install_view(state: &RepoState, done: bool) -> Element<'_> {
     col.into()
 }
 
-fn install_counter_suffix(state: &RepoState, done: bool) -> Element<'_> {
-    let total = state.install_order.len();
+fn install_counter_suffix(state: &InstallState, done: bool) -> Element<'_> {
+    let total = state.order.len();
     let finished = if done {
         total
     } else {
-        state
-            .install_packages
-            .values()
-            .filter(|pkg| pkg.completed)
-            .count()
+        state.packages.values().filter(|pkg| pkg.completed).count()
     };
     muted(text(format!("{finished} / {total} packages")))
 }
 
-fn install_single_suffix(state: &RepoState) -> Element<'_> {
+fn install_single_suffix(state: &InstallState) -> Element<'_> {
     let entry = state
-        .install_order
+        .order
         .first()
-        .and_then(|name| state.install_packages.get(name).map(|pkg| (name, pkg)));
+        .and_then(|name| state.packages.get(name).map(|pkg| (name, pkg)));
     let Some((name, pkg)) = entry else {
         return muted(text("1 package"));
     };

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use pakajo::events::InstallEvent;
 use pakajo::install::ChildOutcome;
@@ -45,26 +45,7 @@ impl TransactionModel {
             name,
             stages: ordered_stages(kind),
             current_idx: 0,
-            repo_state: RepoState {
-                manifest: None,
-                resolve_started: false,
-                resolve_checking: false,
-                validate_checks: 0,
-                validate_label: "Preparing...",
-                stage: RepoStage::Resolve,
-                download_total: 0,
-                download_done: 0,
-                download_bytes_total: 0,
-                download_bytes_done: 0,
-                download_files: HashMap::new(),
-                download_order: Vec::new(),
-                download_rate: 0.0,
-                download_sync_time: None,
-                download_sync_done: 0,
-                install_order: Vec::new(),
-                install_packages: HashMap::new(),
-                finalize_lines: Vec::new(),
-            },
+            repo_state: RepoState::default(),
             expanded: HashSet::new(),
             status: TransactionStatus::Checking,
             source,

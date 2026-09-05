@@ -48,7 +48,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
 
 fn active_view(state: &RepoState, stage: RepoStage) -> Element<'_> {
     match stage {
-        RepoStage::Download => download_view(state),
+        RepoStage::Download => download_view(&state.download),
         _ => text(format!("running phase {}", stage_label(stage))).into(),
     }
 }

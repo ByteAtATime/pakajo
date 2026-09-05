@@ -25,11 +25,11 @@ pub(super) fn validate_section(repo: &RepoState, state: StageState) -> Section<'
 
 fn validate_suffix(repo: &RepoState, done: bool) -> Element<'_> {
     let total = VALIDATE_TOTAL;
-    let count = if done { total } else { repo.validate_count() };
+    let count = if done { total } else { repo.validate.count() };
     let step = if done {
         "Validated"
     } else {
-        repo.validate_label
+        repo.validate.label
     };
     let bar = progress_bar(0.0..=100.0, count as f32 / total as f32 * 100.0)
         .length(Length::Fixed(120.0))
