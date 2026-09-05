@@ -1,5 +1,5 @@
 use super::TransactionMessage;
-use super::shared::{accent_color, muted, muted_color, on_color, tinted};
+use super::shared::{accent_color, destructive_color, muted, muted_color, on_color, tinted};
 use super::state::StageState;
 use crate::Element;
 use crate::components::divider::divider;
@@ -201,8 +201,4 @@ fn stage_panel_style(theme: &cosmic::Theme, state: StageState) -> container::Sty
             ..Default::default()
         },
     }
-}
-
-fn destructive_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().destructive.base)
 }

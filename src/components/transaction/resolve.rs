@@ -8,7 +8,7 @@ use pakajo::utils::format_bytes;
 use crate::Element;
 
 use super::accordion::Section;
-use super::shared::{accent_color, muted, muted_color, on_color, tinted};
+use super::shared::{accent_color, muted, muted_color, on_color, success_color, tinted};
 use super::state::StageState;
 
 pub(super) fn resolve_section(repo: &RepoState, state: StageState) -> Section<'_> {
@@ -196,8 +196,4 @@ fn metric_pill(label: String, color_fn: fn(&cosmic::Theme) -> Color) -> Element<
             }
         })
         .into()
-}
-
-fn success_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().success.base)
 }

@@ -44,6 +44,14 @@ pub(super) fn accent_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().accent.base)
 }
 
+pub(super) fn success_color(theme: &cosmic::Theme) -> Color {
+    Color::from(theme.cosmic().success.base)
+}
+
+pub(super) fn destructive_color(theme: &cosmic::Theme) -> Color {
+    Color::from(theme.cosmic().destructive.base)
+}
+
 fn files_in_order(state: &DownloadState) -> impl Iterator<Item = (&str, &DownloadFile)> {
     state
         .order

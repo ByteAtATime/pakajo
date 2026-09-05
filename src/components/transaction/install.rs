@@ -9,7 +9,7 @@ use crate::Element;
 use crate::components::icons::circle_check;
 
 use super::accordion::Section;
-use super::shared::{accent_color, muted, on_color, tinted};
+use super::shared::{accent_color, destructive_color, muted, on_color, success_color, tinted};
 use super::state::StageState;
 
 const GROUP_GAP: f32 = 8.0;
@@ -155,12 +155,4 @@ fn op_pill(operation: PackageOp) -> Element<'static> {
             }
         })
         .into()
-}
-
-fn success_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().success.base)
-}
-
-fn destructive_color(theme: &cosmic::Theme) -> Color {
-    Color::from(theme.cosmic().destructive.base)
 }
