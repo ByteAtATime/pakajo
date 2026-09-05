@@ -23,8 +23,6 @@ pub(crate) use state::{TransactionModel, TransactionStatus};
 
 mod accordion;
 
-mod aur;
-
 mod finalize;
 
 mod install;
@@ -413,11 +411,7 @@ impl Transaction {
     }
 
     pub(crate) fn view(&self) -> Element<'_> {
-        if matches!(self.model.source, PackageSource::Aur) {
-            aur::view(&self.model)
-        } else {
-            repo::view(&self.model)
-        }
+        repo::view(&self.model)
     }
 
     pub(crate) fn dialog(&self) -> Option<Element<'_>> {
