@@ -472,6 +472,8 @@ pub const BUILD_TAIL_LIMIT: usize = 200;
 pub struct BuildPackage {
     pub status: BuildStatus,
     pub tail: Vec<String>,
+    pub started: Instant,
+    pub elapsed: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -482,10 +484,19 @@ pub struct AurState {
     pub resolve_complete: bool,
     pub builds: HashMap<String, BuildPackage>,
     pub build_order: Vec<String>,
+    pub build_ended: Option<Instant>,
     pub install: InstallState,
     pub download: DownloadState,
     pub finalize: FinalizeState,
     pub last_aur_stage: Option<AurStage>,
+}
+
+impl AurState {
+    pub fn building(&self) -> bool {
+        self.builds
+            .values()
+            .any(|entry| matches!(entry.status, BuildStatus::Fetching | BuildStatus::Building))
+    }
 }
 
 pub fn event_stage_aur(ev: &InstallEvent) -> Option<AurStage> {
@@ -519,7 +530,7 @@ pub fn event_stage_aur(ev: &InstallEvent) -> Option<AurStage> {
     }
 }
 
-pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent) {
+pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant) {
     use InstallEvent::*;
     if let Some(stage) = event_stage_aur(ev) {
         state.last_aur_stage = Some(stage);
@@ -555,6 +566,8 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent) {
                     BuildPackage {
                         status: BuildStatus::Fetching,
                         tail: Vec::new(),
+                        started: now,
+                        elapsed: None,
                     },
                 );
             }
@@ -579,6 +592,7 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent) {
         BuildCompleted { package, .. } => {
             if let Some(entry) = state.builds.get_mut(package) {
                 entry.status = BuildStatus::Done;
+                entry.elapsed = Some(now.saturating_duration_since(entry.started));
             }
         }
         PackageOperation { .. } => apply_install(&mut state.install, ev),
@@ -591,9 +605,18 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent) {
         HookRun { .. } | ScriptletInfo { .. } => apply_finalize(&mut state.finalize, ev),
         _ => {}
     }
+    if !state.build_order.is_empty()
+        && state.build_ended.is_none()
+        && state
+            .builds
+            .values()
+            .all(|entry| matches!(entry.status, BuildStatus::Done | BuildStatus::Failed))
+    {
+        state.build_ended = Some(now);
+    }
 }
 
-pub fn finish_aur(state: &mut AurState, outcome: &crate::install::ChildOutcome) {
+pub fn finish_aur(state: &mut AurState, outcome: &crate::install::ChildOutcome, now: Instant) {
     use crate::install::ChildOutcome;
     if matches!(outcome, ChildOutcome::Success) {
         return;
@@ -611,6 +634,7 @@ pub fn finish_aur(state: &mut AurState, outcome: &crate::install::ChildOutcome) 
         && let Some(entry) = state.builds.get_mut(&name)
     {
         entry.status = BuildStatus::Failed;
+        entry.elapsed = Some(now.saturating_duration_since(entry.started));
     }
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -985,11 +1009,13 @@ mod tests {
     #[test]
     fn build_tail_caps_at_limit() {
         let mut state = AurState::default();
+        let now = Instant::now();
         apply_aur_counters(
             &mut state,
             &InstallEvent::CloningRepo {
                 package: "yay".to_string(),
             },
+            now,
         );
         for i in 1..=205 {
             apply_aur_counters(
@@ -998,6 +1024,7 @@ mod tests {
                     package: "yay".to_string(),
                     line: format!("line {i}"),
                 },
+                now,
             );
         }
         let entry = state.builds.get("yay").expect("yay present");
@@ -1009,6 +1036,7 @@ mod tests {
                 package: "yay".to_string(),
                 line: "1%\r2%\r3%\r 100%".to_string(),
             },
+            now,
         );
         let entry = state.builds.get("yay").expect("yay present");
         assert_eq!(entry.tail.last().expect("tail nonempty"), " 100%");
@@ -1016,6 +1044,7 @@ mod tests {
 
     #[test]
     fn finish_aur_flips_first_in_flight_card() {
+        let now = Instant::now();
         let mut state = AurState::default();
         for name in ["done-pkg", "live-pkg"] {
             state.build_order.push(name.to_string());
@@ -1024,6 +1053,8 @@ mod tests {
                 BuildPackage {
                     status: BuildStatus::Fetching,
                     tail: Vec::new(),
+                    started: now,
+                    elapsed: None,
                 },
             );
         }
@@ -1040,6 +1071,7 @@ mod tests {
         finish_aur(
             &mut state,
             &ChildOutcome::Failed("makepkg failed".to_string()),
+            now,
         );
         assert_eq!(
             state
@@ -1057,5 +1089,62 @@ mod tests {
                 .status,
             BuildStatus::Failed
         );
+        assert!(
+            state
+                .builds
+                .get("live-pkg")
+                .expect("live-pkg present")
+                .elapsed
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn build_clocks_freeze_at_terminal() {
+        let base = Instant::now();
+        let mut state = AurState::default();
+        for package in ["pkg-a", "pkg-b"] {
+            apply_aur_counters(
+                &mut state,
+                &InstallEvent::CloningRepo {
+                    package: package.to_string(),
+                },
+                base,
+            );
+        }
+        let started = base + std::time::Duration::from_secs(10);
+        apply_aur_counters(
+            &mut state,
+            &InstallEvent::BuildStarted {
+                package: "pkg-a".to_string(),
+            },
+            started,
+        );
+        let first = base + std::time::Duration::from_secs(30);
+        apply_aur_counters(
+            &mut state,
+            &InstallEvent::BuildCompleted {
+                package: "pkg-a".to_string(),
+                artifacts: Vec::new(),
+                version: None,
+            },
+            first,
+        );
+        let entry = state.builds.get("pkg-a").expect("pkg-a present");
+        assert_eq!(entry.elapsed, Some(std::time::Duration::from_secs(30)));
+        assert_eq!(state.build_ended, None);
+        let last = base + std::time::Duration::from_secs(90);
+        apply_aur_counters(
+            &mut state,
+            &InstallEvent::BuildCompleted {
+                package: "pkg-b".to_string(),
+                artifacts: Vec::new(),
+                version: None,
+            },
+            last,
+        );
+        let entry = state.builds.get("pkg-b").expect("pkg-b present");
+        assert_eq!(entry.elapsed, Some(std::time::Duration::from_secs(90)));
+        assert_eq!(state.build_ended, Some(last));
     }
 }

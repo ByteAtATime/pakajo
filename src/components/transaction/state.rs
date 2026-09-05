@@ -29,6 +29,7 @@ pub(crate) struct TransactionModel {
     pub(crate) status: TransactionStatus,
     pub(crate) source: PackageSource,
     pub(crate) kind: InstallKind,
+    pub(crate) now: std::time::Instant,
     pub(super) review: Option<ReviewModel>,
     pub(super) pending_approvals: Option<String>,
     pub(super) pkgbuild_review: Option<PkgbuildModel>,
@@ -56,6 +57,7 @@ impl TransactionModel {
             status: TransactionStatus::Checking,
             source,
             kind,
+            now: std::time::Instant::now(),
             review: None,
             pending_approvals: None,
             pkgbuild_review: None,
@@ -65,7 +67,7 @@ impl TransactionModel {
 
     pub(crate) fn apply_event(&mut self, ev: &InstallEvent) {
         if self.is_aur() {
-            apply_aur_counters(&mut self.aur, ev);
+            apply_aur_counters(&mut self.aur, ev, std::time::Instant::now());
             return;
         }
         apply_repo_counters(&mut self.repo_state, ev);
@@ -96,7 +98,7 @@ impl TransactionModel {
 
     pub(crate) fn finish(&mut self, outcome: ChildOutcome) {
         if self.is_aur() {
-            finish_aur(&mut self.aur, &outcome);
+            finish_aur(&mut self.aur, &outcome, std::time::Instant::now());
         }
         if let ChildOutcome::Failed(message) = &outcome {
             self.failure_message = Some(message.clone());
@@ -139,6 +141,14 @@ impl TransactionModel {
         if !self.expanded_cards.insert(name.clone()) {
             self.expanded_cards.remove(&name);
         }
+    }
+
+    pub(crate) fn tick(&mut self, now: std::time::Instant) {
+        self.now = now;
+    }
+
+    pub(crate) fn building(&self) -> bool {
+        self.is_aur() && self.aur.building()
     }
 
     pub(crate) fn is_aur(&self) -> bool {

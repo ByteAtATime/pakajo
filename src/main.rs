@@ -248,6 +248,16 @@ impl Application for PakajoApp {
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
+        let ticking = self
+            .transaction
+            .as_ref()
+            .is_some_and(|t| t.is_active() && t.building());
+        let tick = if ticking {
+            cosmic::iced::time::every(std::time::Duration::from_secs(1))
+                .map(|t| Message::Transaction(TransactionMessage::Tick(t)))
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
             event::listen_with(|event, _status, _id| match event {
                 Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) => match key {
@@ -264,6 +274,7 @@ impl Application for PakajoApp {
             background::db_lock_watcher_subscription(),
             rectangle_tracker::subscription::<ListRect, ListRect>(ListRect::Viewport)
                 .map(|(_, update)| Message::Search(SearchMessage::Rects(update))),
+            tick,
         ])
     }
 

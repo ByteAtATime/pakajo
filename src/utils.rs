@@ -105,6 +105,18 @@ pub fn humanize_age(secs: u64) -> String {
     }
 }
 
+pub fn format_elapsed(duration: std::time::Duration) -> String {
+    let total = duration.as_secs();
+    let hours = total / 3600;
+    let minutes = total % 3600 / 60;
+    let seconds = total % 60;
+    if hours == 0 {
+        format!("{minutes:02}:{seconds:02}")
+    } else {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    }
+}
+
 pub fn version_diff(old: &str, new: &str) -> (String, String, String) {
     let mut split = old.len().min(new.len());
     for ((oi, oc), (_, nc)) in old.char_indices().zip(new.char_indices()) {
@@ -181,6 +193,22 @@ mod tests {
         assert_eq!(humanize_age(3540), "59 min ago");
         assert_eq!(humanize_age(3600), "1 h ago");
         assert_eq!(humanize_age(86400), "24 h ago");
+    }
+
+    #[test]
+    fn format_elapsed_display() {
+        let cases = [
+            (std::time::Duration::ZERO, "00:00"),
+            (std::time::Duration::from_secs(7), "00:07"),
+            (std::time::Duration::from_secs(247), "04:07"),
+            (std::time::Duration::from_secs(3599), "59:59"),
+            (std::time::Duration::from_secs(3600), "1:00:00"),
+            (std::time::Duration::from_secs(3723), "1:02:03"),
+            (std::time::Duration::from_secs(7384), "2:03:04"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(format_elapsed(input), expected);
+        }
     }
 
     #[test]

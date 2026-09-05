@@ -57,6 +57,7 @@ pub enum TransactionMessage {
     DryRunResult(Result<QuestionSet, String>),
     ToggleStage(usize),
     ToggleBuildCard(String),
+    Tick(std::time::Instant),
     ApproveReview,
     CancelReview,
     Review(ReviewMessage),
@@ -230,6 +231,10 @@ impl Transaction {
             }
             TransactionMessage::ToggleBuildCard(name) => {
                 self.model.toggle_build_card(name);
+                Action::None
+            }
+            TransactionMessage::Tick(now) => {
+                self.model.tick(now);
                 Action::None
             }
             TransactionMessage::Review(m) => {
@@ -440,6 +445,10 @@ impl Transaction {
             self.model.status,
             TransactionStatus::Checking | TransactionStatus::Running
         )
+    }
+
+    pub(crate) fn building(&self) -> bool {
+        self.model.building()
     }
 
     pub(crate) fn is_checking(&self) -> bool {

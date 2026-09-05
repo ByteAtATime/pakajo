@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::time::Instant;
 
 use cosmic::iced::Length;
 use cosmic::iced::alignment::Vertical;
@@ -7,6 +8,7 @@ use cosmic::widget::{Column, Row, button, scrollable, space, text};
 use pakajo::transaction_state::{
     AurStage, BuildPackage, BuildStatus, InstallKind, ResolvedDep, ordered_aur_stages,
 };
+use pakajo::utils::format_elapsed;
 
 use super::SYSTEM_AUR_NAME;
 use super::TransactionMessage;
@@ -147,9 +149,18 @@ fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
         .count();
     match state {
         StageState::Active => {
-            section.header_suffix = Some(counter_suffix(done, ordered.len(), "built"));
+            let mut suffix =
+                Row::new()
+                    .spacing(6)
+                    .push(counter_suffix(done, ordered.len(), "built"));
+            if let Some((_, first)) = ordered.first() {
+                suffix = suffix.push(elapsed_label(
+                    model.now.saturating_duration_since(first.started),
+                ));
+            }
+            section.header_suffix = Some(suffix.into());
             if !ordered.is_empty() {
-                section.content = Some(build_list_view(&ordered, &model.expanded_cards));
+                section.content = Some(build_list_view(&ordered, &model.expanded_cards, model.now));
             }
         }
         StageState::Done => {
@@ -158,26 +169,57 @@ fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
                 return section;
             }
             if ordered.len() == 1 {
-                let (name, _) = ordered[0];
-                section.header_suffix = Some(resolve_single_suffix(&ResolvedEntry {
-                    qualified: Cow::Borrowed(name.as_str()),
-                    old_version: None,
-                    new_version: None,
-                    net_size: None,
-                }));
+                let (name, entry) = ordered[0];
+                let mut suffix =
+                    Row::new()
+                        .spacing(6)
+                        .push(resolve_single_suffix(&ResolvedEntry {
+                            qualified: Cow::Borrowed(name.as_str()),
+                            old_version: None,
+                            new_version: None,
+                            net_size: None,
+                        }));
+                if let Some(duration) = model
+                    .aur
+                    .build_ended
+                    .map(|end| end.saturating_duration_since(entry.started))
+                {
+                    suffix = suffix.push(elapsed_label(duration));
+                }
+                section.header_suffix = Some(suffix.into());
                 return section;
             }
-            section.content = Some(build_list_view(&ordered, &model.expanded_cards));
-            section.header_suffix = Some(counter_suffix(done, ordered.len(), "built"));
+            let mut suffix =
+                Row::new()
+                    .spacing(6)
+                    .push(counter_suffix(done, ordered.len(), "built"));
+            if let Some((_, first)) = ordered.first()
+                && let Some(duration) = model
+                    .aur
+                    .build_ended
+                    .map(|end| end.saturating_duration_since(first.started))
+            {
+                suffix = suffix.push(elapsed_label(duration));
+            }
+            section.content = Some(build_list_view(&ordered, &model.expanded_cards, model.now));
+            section.header_suffix = Some(suffix.into());
         }
         StageState::Failed => {
             if !ordered.is_empty() {
-                section.content = Some(build_list_view(&ordered, &model.expanded_cards));
+                section.content = Some(build_list_view(&ordered, &model.expanded_cards, model.now));
             }
         }
         _ => {}
     }
     section
+}
+
+fn elapsed_label(duration: std::time::Duration) -> Element<'static> {
+    muted(
+        text(format_elapsed(duration))
+            .font(cosmic::font::mono())
+            .size(12.0),
+    )
 }
 
 fn tail_view(tail: &[String], lines: usize) -> Element<'static> {
@@ -199,20 +241,24 @@ fn build_status_word(status: BuildStatus) -> &'static str {
     }
 }
 
-fn build_card(
-    name: &str,
-    status: BuildStatus,
-    tail: &[String],
-    expanded: bool,
-) -> Element<'static> {
+fn build_card(name: &str, entry: &BuildPackage, expanded: bool, now: Instant) -> Element<'static> {
     let left = tinted(text(name.to_string()).font(cosmic::font::mono()), on_color);
-    let row: Element<'static> = Row::new()
+    let mut header_row = Row::new()
         .align_y(Vertical::Center)
         .spacing(8)
         .push(left)
         .push(space::horizontal())
-        .push(muted(text(build_status_word(status))))
-        .into();
+        .push(muted(text(build_status_word(entry.status))));
+    if let Some(duration) = match entry.status {
+        BuildStatus::Fetching | BuildStatus::Building => {
+            Some(now.saturating_duration_since(entry.started))
+        }
+        BuildStatus::Done | BuildStatus::Failed => entry.elapsed,
+    } {
+        header_row = header_row.push(elapsed_label(duration));
+    }
+    let row: Element<'static> = header_row.into();
+    let tail = &entry.tail;
     if tail.is_empty() {
         return row;
     }
@@ -224,7 +270,7 @@ fn build_card(
             TransactionMessage::ToggleBuildCard(name.to_string()),
         ))
         .into();
-    if expanded || matches!(status, BuildStatus::Fetching | BuildStatus::Building) {
+    if expanded || matches!(entry.status, BuildStatus::Fetching | BuildStatus::Building) {
         let lines = if expanded { usize::MAX } else { 5 };
         return Column::new()
             .spacing(4)
@@ -238,15 +284,11 @@ fn build_card(
 fn build_list_view(
     ordered: &[(&String, &BuildPackage)],
     expanded: &HashSet<String>,
+    now: Instant,
 ) -> Element<'static> {
     let mut col = Column::new().spacing(10);
     for (name, entry) in ordered {
-        col = col.push(build_card(
-            name,
-            entry.status,
-            &entry.tail,
-            expanded.contains(*name),
-        ));
+        col = col.push(build_card(name, entry, expanded.contains(*name), now));
     }
     col.into()
 }
