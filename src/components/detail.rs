@@ -135,7 +135,12 @@ fn render_group<'a>(name: &'a str, members: &'a [GroupMember]) -> Element<'a> {
         col = col.push(item);
     }
 
-    container(col).padding(16.0).into()
+    container(col)
+        .padding([
+            cosmic::theme::spacing().space_s as f32,
+            cosmic::theme::spacing().space_m as f32,
+        ])
+        .into()
 }
 
 fn render_package<'a>(
@@ -159,7 +164,12 @@ fn render_package<'a>(
         col = col.push(opt_dependencies);
     }
 
-    container(col).padding(16.0).into()
+    container(col)
+        .padding([
+            cosmic::theme::spacing().space_s as f32,
+            cosmic::theme::spacing().space_m as f32,
+        ])
+        .into()
 }
 
 fn render_header<'a>(

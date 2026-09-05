@@ -208,7 +208,7 @@ pub fn search_status_bar<'a>(
             Row::new()
                 .spacing(8)
                 .align_y(Alignment::Center)
-                .padding([0, 12])
+                .padding([0.0, cosmic::theme::spacing().space_s as f32])
                 .push(text(header_text).size(13))
                 .push(space::horizontal())
                 .push(filter_pill(
@@ -373,7 +373,10 @@ pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool)
         );
 
     let content = Column::new()
-        .padding([12, 16])
+        .padding([
+            cosmic::theme::spacing().space_xs as f32,
+            cosmic::theme::spacing().space_s as f32,
+        ])
         .spacing(4)
         .width(Length::Fill)
         .push(top_row)

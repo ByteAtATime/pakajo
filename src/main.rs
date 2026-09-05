@@ -310,12 +310,18 @@ impl Application for PakajoApp {
 impl PakajoApp {
     fn search_page(&self) -> Element<'_> {
         let checking = self.transaction.as_ref().map(|t| t.name());
-        let header = Row::new()
-            .spacing(8)
-            .push(search_bar(&self.query))
-            .push(self.updates_badge());
+        let spacing = cosmic::theme::spacing();
+        let page_padding = spacing.space_s as f32;
+        let header = container(
+            Row::new()
+                .spacing(8)
+                .align_y(iced::Alignment::Center)
+                .push(search_bar(&self.query))
+                .push(self.updates_badge()),
+        )
+        .padding([spacing.space_xs as f32, page_padding, 0.0, page_padding]);
         let content = Column::new()
-            .spacing(12)
+            .spacing(spacing.space_xs as f32)
             .push(header)
             .push(search_status_bar(
                 self.search_state,
