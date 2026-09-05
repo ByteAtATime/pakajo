@@ -289,7 +289,7 @@ impl Transaction {
             }
             TransactionMessage::CancelPkgbuild => Action::Finished,
             TransactionMessage::Close => Action::Finished,
-            _ => Action::None,
+            TransactionMessage::StartRemove => Action::None,
         }
     }
 
