@@ -466,13 +466,21 @@ pub enum BuildStatus {
     Failed,
 }
 
+pub const BUILD_TAIL_LIMIT: usize = 200;
+
+#[derive(Debug, Clone)]
+pub struct BuildPackage {
+    pub status: BuildStatus,
+    pub tail: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AurState {
     pub resolve_started: bool,
     pub deps: HashMap<String, ResolvedDep>,
     pub dep_order: Vec<String>,
     pub resolve_complete: bool,
-    pub builds: HashMap<String, BuildStatus>,
+    pub builds: HashMap<String, BuildPackage>,
     pub build_order: Vec<String>,
 }
 
@@ -504,18 +512,35 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent) {
         CloningRepo { package } => {
             if !state.builds.contains_key(package) {
                 state.build_order.push(package.clone());
-                state.builds.insert(package.clone(), BuildStatus::Fetching);
+                state.builds.insert(
+                    package.clone(),
+                    BuildPackage {
+                        status: BuildStatus::Fetching,
+                        tail: Vec::new(),
+                    },
+                );
             }
         }
         BuildStarted { package } => {
-            if let Some(status) = state.builds.get_mut(package) {
-                *status = BuildStatus::Building;
+            if let Some(entry) = state.builds.get_mut(package) {
+                entry.status = BuildStatus::Building;
             }
         }
-        BuildOutput { .. } => {}
+        BuildOutput { package, line } => {
+            if let Some(entry) = state.builds.get_mut(package) {
+                let segment = line.rsplit('\r').next().unwrap_or("");
+                let stripped = crate::color::ansi_strip(segment);
+                if !stripped.trim().is_empty() {
+                    entry.tail.push(stripped);
+                    if entry.tail.len() > BUILD_TAIL_LIMIT {
+                        entry.tail.remove(0);
+                    }
+                }
+            }
+        }
         BuildCompleted { package, .. } => {
-            if let Some(status) = state.builds.get_mut(package) {
-                *status = BuildStatus::Done;
+            if let Some(entry) = state.builds.get_mut(package) {
+                entry.status = BuildStatus::Done;
             }
         }
         _ => {}
@@ -889,5 +914,37 @@ mod tests {
                 "from {from:?} dir {dir:?} has_resolve {has_resolve} has_diffs {has_diffs}"
             );
         }
+    }
+
+    #[test]
+    fn build_tail_caps_at_limit() {
+        let mut state = AurState::default();
+        apply_aur_counters(
+            &mut state,
+            &InstallEvent::CloningRepo {
+                package: "yay".to_string(),
+            },
+        );
+        for i in 1..=205 {
+            apply_aur_counters(
+                &mut state,
+                &InstallEvent::BuildOutput {
+                    package: "yay".to_string(),
+                    line: format!("line {i}"),
+                },
+            );
+        }
+        let entry = state.builds.get("yay").expect("yay present");
+        assert_eq!(entry.tail.len(), BUILD_TAIL_LIMIT);
+        assert_eq!(entry.tail[0], "line 6");
+        apply_aur_counters(
+            &mut state,
+            &InstallEvent::BuildOutput {
+                package: "yay".to_string(),
+                line: "1%\r2%\r3%\r 100%".to_string(),
+            },
+        );
+        let entry = state.builds.get("yay").expect("yay present");
+        assert_eq!(entry.tail.last().expect("tail nonempty"), " 100%");
     }
 }

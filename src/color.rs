@@ -2,7 +2,8 @@ use std::io::IsTerminal;
 use std::sync::LazyLock;
 
 static ANSI_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"\x1b(?:\[[0-9;?]*[A-Za-z]|\(B)").expect("valid ansi strip regex")
+    regex::Regex::new(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-9;?]*[A-Za-z]|\(B)")
+        .expect("valid ansi strip regex")
 });
 
 pub fn ansi_strip(s: &str) -> String {
@@ -77,7 +78,20 @@ pub fn visible_width(s: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::visible_width;
+    use super::{ansi_strip, visible_width};
+
+    #[test]
+    fn ansi_strip_table() {
+        let cases = [
+            ("plain text", "plain text"),
+            ("\x1b[1;32mok\x1b[0m", "ok"),
+            ("\x1b]0;window title\x07done", "done"),
+            ("\x1b]8;;https://example.com\x1b\\link", "link"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(ansi_strip(input), expected, "input {input:?}");
+        }
+    }
 
     #[test]
     fn visible_width_bold_then_reset() {

@@ -1,12 +1,15 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 
+use cosmic::iced::Length;
 use cosmic::iced::alignment::Vertical;
-use cosmic::widget::{Column, Row, scrollable, space, text};
+use cosmic::widget::{Column, Row, button, scrollable, space, text};
 use pakajo::transaction_state::{
-    AurStage, BuildStatus, InstallKind, ResolvedDep, ordered_aur_stages,
+    AurStage, BuildPackage, BuildStatus, InstallKind, ResolvedDep, ordered_aur_stages,
 };
 
 use super::SYSTEM_AUR_NAME;
+use super::TransactionMessage;
 use super::accordion::{Section, action_footer, stage_row};
 use super::shared::{
     ResolvedEntry, accent_color, counter_suffix, muted, on_color, pill, resolve_empty_view,
@@ -121,21 +124,21 @@ fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
         content: None,
         header_suffix: None,
     };
-    let ordered: Vec<(&String, &BuildStatus)> = model
+    let ordered: Vec<(&String, &BuildPackage)> = model
         .aur
         .build_order
         .iter()
-        .filter_map(|name| model.aur.builds.get(name).map(|status| (name, status)))
+        .filter_map(|name| model.aur.builds.get(name).map(|entry| (name, entry)))
         .collect();
     let done = ordered
         .iter()
-        .filter(|(_, status)| **status == BuildStatus::Done)
+        .filter(|(_, entry)| entry.status == BuildStatus::Done)
         .count();
     match state {
         StageState::Active => {
             section.header_suffix = Some(counter_suffix(done, ordered.len(), "built"));
             if !ordered.is_empty() {
-                section.content = Some(build_list_view(&ordered));
+                section.content = Some(build_list_view(&ordered, &model.expanded_cards));
             }
         }
         StageState::Done => {
@@ -145,10 +148,15 @@ fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
             }
             if ordered.len() == 1 {
                 let (name, _) = ordered[0];
-                section.header_suffix = Some(resolve_single_suffix(&build_entry(name)));
+                section.header_suffix = Some(resolve_single_suffix(&ResolvedEntry {
+                    qualified: Cow::Borrowed(name.as_str()),
+                    old_version: None,
+                    new_version: None,
+                    net_size: None,
+                }));
                 return section;
             }
-            section.content = Some(build_list_view(&ordered));
+            section.content = Some(build_list_view(&ordered, &model.expanded_cards));
             section.header_suffix = Some(counter_suffix(done, ordered.len(), "built"));
         }
         _ => {}
@@ -156,13 +164,14 @@ fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
     section
 }
 
-fn build_entry(name: &str) -> ResolvedEntry<'_> {
-    ResolvedEntry {
-        qualified: Cow::Borrowed(name),
-        old_version: None,
-        new_version: None,
-        net_size: None,
+fn tail_view(tail: &[String], lines: usize) -> Element<'static> {
+    let mut col = Column::new().spacing(2);
+    for line in &tail[tail.len().saturating_sub(lines)..] {
+        col = col.push(muted(
+            text(line.clone()).font(cosmic::font::mono()).size(12.0),
+        ));
     }
+    col.into()
 }
 
 fn build_status_word(status: BuildStatus) -> &'static str {
@@ -174,21 +183,54 @@ fn build_status_word(status: BuildStatus) -> &'static str {
     }
 }
 
-fn build_card(name: &str, status: BuildStatus) -> Element<'static> {
+fn build_card(
+    name: &str,
+    status: BuildStatus,
+    tail: &[String],
+    expanded: bool,
+) -> Element<'static> {
     let left = tinted(text(name.to_string()).font(cosmic::font::mono()), on_color);
-    Row::new()
+    let row: Element<'static> = Row::new()
         .align_y(Vertical::Center)
         .spacing(8)
         .push(left)
         .push(space::horizontal())
         .push(muted(text(build_status_word(status))))
-        .into()
+        .into();
+    if tail.is_empty() {
+        return row;
+    }
+    let header: Element<'static> = button::custom(row)
+        .padding([2.0, 0.0])
+        .width(Length::Fill)
+        .class(cosmic::theme::Button::Transparent)
+        .on_press(crate::Message::Transaction(
+            TransactionMessage::ToggleBuildCard(name.to_string()),
+        ))
+        .into();
+    if expanded || matches!(status, BuildStatus::Fetching | BuildStatus::Building) {
+        let lines = if expanded { usize::MAX } else { 5 };
+        return Column::new()
+            .spacing(4)
+            .push(header)
+            .push(tail_view(tail, lines))
+            .into();
+    }
+    header
 }
 
-fn build_list_view(ordered: &[(&String, &BuildStatus)]) -> Element<'static> {
+fn build_list_view(
+    ordered: &[(&String, &BuildPackage)],
+    expanded: &HashSet<String>,
+) -> Element<'static> {
     let mut col = Column::new().spacing(10);
-    for (name, status) in ordered {
-        col = col.push(build_card(name, **status));
+    for (name, entry) in ordered {
+        col = col.push(build_card(
+            name,
+            entry.status,
+            &entry.tail,
+            expanded.contains(*name),
+        ));
     }
     col.into()
 }

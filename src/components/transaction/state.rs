@@ -4,8 +4,8 @@ use pakajo::events::InstallEvent;
 use pakajo::install::ChildOutcome;
 use pakajo::package::PackageSource;
 use pakajo::transaction_state::{
-    AurStage, AurState, InstallKind, RepoStage, RepoState, apply_aur_counters, apply_repo_counters,
-    event_stage, ordered_aur_stages, ordered_stages,
+    AurStage, AurState, BuildStatus, InstallKind, RepoStage, RepoState, apply_aur_counters,
+    apply_repo_counters, event_stage, ordered_aur_stages, ordered_stages,
 };
 
 use super::pkgbuild::PkgbuildModel;
@@ -25,6 +25,7 @@ pub(crate) struct TransactionModel {
     pub(crate) repo_state: RepoState,
     pub(crate) aur: AurState,
     pub(crate) expanded: HashSet<usize>,
+    pub(crate) expanded_cards: HashSet<String>,
     pub(crate) status: TransactionStatus,
     pub(crate) source: PackageSource,
     pub(crate) kind: InstallKind,
@@ -50,6 +51,7 @@ impl TransactionModel {
             repo_state: RepoState::default(),
             aur: AurState::default(),
             expanded: HashSet::new(),
+            expanded_cards: HashSet::new(),
             status: TransactionStatus::Checking,
             source,
             kind,
@@ -125,6 +127,12 @@ impl TransactionModel {
         }
     }
 
+    pub(crate) fn toggle_build_card(&mut self, name: String) {
+        if !self.expanded_cards.insert(name.clone()) {
+            self.expanded_cards.remove(&name);
+        }
+    }
+
     pub(crate) fn is_aur(&self) -> bool {
         matches!(self.source, PackageSource::Aur) && self.kind != InstallKind::Remove
     }
@@ -156,7 +164,7 @@ impl TransactionModel {
                     .build_order
                     .iter()
                     .filter_map(|name| self.aur.builds.get(name))
-                    .all(|status| *status == pakajo::transaction_state::BuildStatus::Done)
+                    .all(|entry| entry.status == BuildStatus::Done)
                 {
                     StageState::Done
                 } else {

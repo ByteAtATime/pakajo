@@ -56,6 +56,7 @@ pub enum TransactionMessage {
     InstallDone(ChildOutcome),
     DryRunResult(Result<QuestionSet, String>),
     ToggleStage(usize),
+    ToggleBuildCard(String),
     ApproveReview,
     CancelReview,
     Review(ReviewMessage),
@@ -225,6 +226,10 @@ impl Transaction {
             },
             TransactionMessage::ToggleStage(i) => {
                 self.model.toggle(i);
+                Action::None
+            }
+            TransactionMessage::ToggleBuildCard(name) => {
+                self.model.toggle_build_card(name);
                 Action::None
             }
             TransactionMessage::Review(m) => {
