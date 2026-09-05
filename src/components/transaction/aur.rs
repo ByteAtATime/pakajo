@@ -12,8 +12,8 @@ use super::SYSTEM_AUR_NAME;
 use super::TransactionMessage;
 use super::accordion::{Section, action_footer, stage_row};
 use super::shared::{
-    ResolvedEntry, accent_color, counter_suffix, muted, on_color, pill, resolve_empty_view,
-    resolve_package_row, resolve_single_suffix, success_color, tinted,
+    ResolvedEntry, accent_color, counter_suffix, destructive_color, muted, on_color, pill,
+    resolve_empty_view, resolve_package_row, resolve_single_suffix, success_color, tinted,
 };
 use super::state::{StageState, TransactionModel, TransactionStatus};
 use crate::Element;
@@ -31,12 +31,21 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
     let mut panels = Column::new().spacing(6);
     for (i, stage) in ordered_aur_stages().iter().enumerate() {
         let state = model.aur_stage_state(*stage);
-        let section = match *stage {
+        let mut section = match *stage {
             AurStage::Resolve => resolve_section(model, state),
             AurStage::Build => build_section(model, state),
             AurStage::Install => pending_section("Install", state),
             AurStage::Finalize => pending_section("Finalize", state),
         };
+        if state == StageState::Failed
+            && let Some(message) = model.failure_message.as_deref()
+        {
+            let note = failure_note(message);
+            section.content = Some(match section.content {
+                Some(existing) => Column::new().spacing(10).push(note).push(existing).into(),
+                None => note,
+            });
+        }
         panels = panels.push(stage_row(section, model.expanded.contains(&i), i));
     }
     let mut col = Column::new().spacing(16).push(text(title)).push(panels);
@@ -159,6 +168,11 @@ fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
             section.content = Some(build_list_view(&ordered, &model.expanded_cards));
             section.header_suffix = Some(counter_suffix(done, ordered.len(), "built"));
         }
+        StageState::Failed => {
+            if !ordered.is_empty() {
+                section.content = Some(build_list_view(&ordered, &model.expanded_cards));
+            }
+        }
         _ => {}
     }
     section
@@ -242,4 +256,13 @@ fn pending_section(label: &'static str, state: StageState) -> Section<'static> {
         content: None,
         header_suffix: None,
     }
+}
+
+fn failure_note(message: &str) -> Element<'static> {
+    tinted(
+        text(message.to_string())
+            .font(cosmic::font::mono())
+            .size(12.0),
+        destructive_color,
+    )
 }

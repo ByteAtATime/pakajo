@@ -46,11 +46,19 @@ pub(super) fn stage_row(section: Section<'_>, expanded: bool, index: usize) -> E
                 .into(),
             None => header,
         },
-        StageState::Failed => Column::new()
-            .spacing(6)
-            .push(header)
-            .push(muted(text("failed")))
-            .into(),
+        StageState::Failed => match content {
+            Some(detail) => Column::new()
+                .spacing(6)
+                .push(header)
+                .push(muted(text("failed")))
+                .push(detail)
+                .into(),
+            None => Column::new()
+                .spacing(6)
+                .push(header)
+                .push(muted(text("failed")))
+                .into(),
+        },
         StageState::Done => match content {
             Some(detail) if expanded || !has_suffix => toggle_detail(header, index, detail),
             Some(_) => done_toggle(header, index),

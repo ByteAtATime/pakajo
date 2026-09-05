@@ -5,7 +5,7 @@ use pakajo::install::ChildOutcome;
 use pakajo::package::PackageSource;
 use pakajo::transaction_state::{
     AurStage, AurState, BuildStatus, InstallKind, RepoStage, RepoState, apply_aur_counters,
-    apply_repo_counters, event_stage, ordered_aur_stages, ordered_stages,
+    apply_repo_counters, event_stage, finish_aur, ordered_aur_stages, ordered_stages,
 };
 
 use super::pkgbuild::PkgbuildModel;
@@ -32,6 +32,7 @@ pub(crate) struct TransactionModel {
     pub(super) review: Option<ReviewModel>,
     pub(super) pending_approvals: Option<String>,
     pub(super) pkgbuild_review: Option<PkgbuildModel>,
+    pub(super) failure_message: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +59,7 @@ impl TransactionModel {
             review: None,
             pending_approvals: None,
             pkgbuild_review: None,
+            failure_message: None,
         }
     }
 
@@ -93,6 +95,12 @@ impl TransactionModel {
     }
 
     pub(crate) fn finish(&mut self, outcome: ChildOutcome) {
+        if self.is_aur() {
+            finish_aur(&mut self.aur, &outcome);
+        }
+        if let ChildOutcome::Failed(message) = &outcome {
+            self.failure_message = Some(message.clone());
+        }
         if matches!(outcome, ChildOutcome::Success) {
             self.current_idx = self.stages.len();
         }
@@ -167,11 +175,26 @@ impl TransactionModel {
                     .all(|entry| entry.status == BuildStatus::Done)
                 {
                     StageState::Done
+                } else if done_failed && self.aur.last_aur_stage == Some(Build) {
+                    StageState::Failed
                 } else {
                     StageState::Active
                 }
             }
-            Install | Finalize => StageState::Pending,
+            Install => {
+                if done_failed && self.aur.last_aur_stage == Some(Install) {
+                    StageState::Failed
+                } else {
+                    StageState::Pending
+                }
+            }
+            Finalize => {
+                if done_failed && self.aur.last_aur_stage == Some(Finalize) {
+                    StageState::Failed
+                } else {
+                    StageState::Pending
+                }
+            }
         }
     }
 }
@@ -201,5 +224,81 @@ mod tests {
         model.finish(ChildOutcome::Failed("resolve failed".to_string()));
         assert_eq!(model.aur_stage_state(AurStage::Resolve), StageState::Failed);
         assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Pending);
+    }
+
+    #[test]
+    fn aur_build_failure_attributed_to_build() {
+        let mut model = aur_model();
+        model.apply_event(&InstallEvent::ResolvingAurDependencies {
+            target: "yay".to_string(),
+        });
+        model.apply_event(&InstallEvent::AurDepResolved {
+            package: "yay".to_string(),
+            repo: None,
+            version: Some("1.0-1".to_string()),
+        });
+        model.apply_event(&InstallEvent::ResolutionComplete {
+            layers: 1,
+            aur_packages: 1,
+            repo_deps: 0,
+        });
+        model.apply_event(&InstallEvent::CloningRepo {
+            package: "yay".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildStarted {
+            package: "yay".to_string(),
+        });
+        model.finish(ChildOutcome::Failed("makepkg failed".to_string()));
+        assert_eq!(model.failure_message.as_deref(), Some("makepkg failed"));
+        assert_eq!(model.aur_stage_state(AurStage::Resolve), StageState::Done);
+        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Failed);
+        assert_eq!(
+            model.aur_stage_state(AurStage::Install),
+            StageState::Pending
+        );
+        assert_eq!(
+            model.aur_stage_state(AurStage::Finalize),
+            StageState::Pending
+        );
+        assert_eq!(
+            model.aur.builds.get("yay").expect("yay present").status,
+            BuildStatus::Failed
+        );
+    }
+
+    #[test]
+    fn aur_nested_install_failure_keeps_build_done() {
+        let mut model = aur_model();
+        model.apply_event(&InstallEvent::ResolvingAurDependencies {
+            target: "yay".to_string(),
+        });
+        model.apply_event(&InstallEvent::AurDepResolved {
+            package: "yay".to_string(),
+            repo: None,
+            version: Some("1.0-1".to_string()),
+        });
+        model.apply_event(&InstallEvent::ResolutionComplete {
+            layers: 1,
+            aur_packages: 1,
+            repo_deps: 0,
+        });
+        model.apply_event(&InstallEvent::CloningRepo {
+            package: "yay".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildStarted {
+            package: "yay".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildCompleted {
+            package: "yay".to_string(),
+            artifacts: Vec::new(),
+            version: None,
+        });
+        model.finish(ChildOutcome::Failed("pkexec dismissed".to_string()));
+        assert_eq!(model.aur_stage_state(AurStage::Resolve), StageState::Done);
+        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Done);
+        assert_eq!(
+            model.aur_stage_state(AurStage::Install),
+            StageState::Pending
+        );
     }
 }

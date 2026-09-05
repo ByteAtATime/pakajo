@@ -482,10 +482,45 @@ pub struct AurState {
     pub resolve_complete: bool,
     pub builds: HashMap<String, BuildPackage>,
     pub build_order: Vec<String>,
+    pub last_aur_stage: Option<AurStage>,
+}
+
+pub fn event_stage_aur(ev: &InstallEvent) -> Option<AurStage> {
+    use AurStage::*;
+    use InstallEvent::*;
+    match ev {
+        ResolvingAurDependencies { .. } | AurDepResolved { .. } | ResolutionComplete { .. } => {
+            Some(Resolve)
+        }
+        CloningRepo { .. } | BuildStarted { .. } | BuildOutput { .. } | BuildCompleted { .. } => {
+            Some(Build)
+        }
+        ResolvingDependencies
+        | CheckingConflicts
+        | CheckingDependencies
+        | CheckingFileConflicts
+        | CheckingIntegrity
+        | CheckingDiskSpace
+        | KeyringStart
+        | LoadingPackages
+        | TransactionSummary(_)
+        | RetrievingPackages { .. }
+        | DownloadInit { .. }
+        | DownloadProgress { .. }
+        | DownloadRetry { .. }
+        | DownloadCompleted { .. }
+        | PackageOperation { .. }
+        | Progress { .. } => Some(Install),
+        HookRun { .. } | ScriptletInfo { .. } | TransactionDone => Some(Finalize),
+        _ => None,
+    }
 }
 
 pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent) {
     use InstallEvent::*;
+    if let Some(stage) = event_stage_aur(ev) {
+        state.last_aur_stage = Some(stage);
+    }
     match ev {
         ResolvingAurDependencies { .. } => {
             state.resolve_started = true;
@@ -547,6 +582,26 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent) {
     }
 }
 
+pub fn finish_aur(state: &mut AurState, outcome: &crate::install::ChildOutcome) {
+    use crate::install::ChildOutcome;
+    if matches!(outcome, ChildOutcome::Success) {
+        return;
+    }
+    let failed = state
+        .build_order
+        .iter()
+        .find(|name| {
+            state.builds.get(*name).is_some_and(|entry| {
+                matches!(entry.status, BuildStatus::Fetching | BuildStatus::Building)
+            })
+        })
+        .cloned();
+    if let Some(name) = failed
+        && let Some(entry) = state.builds.get_mut(&name)
+    {
+        entry.status = BuildStatus::Failed;
+    }
+}
 #[derive(Debug, Clone, PartialEq)]
 pub enum NextInstallState {
     ContinueAur { targets: Vec<String> },
@@ -946,5 +1001,50 @@ mod tests {
         );
         let entry = state.builds.get("yay").expect("yay present");
         assert_eq!(entry.tail.last().expect("tail nonempty"), " 100%");
+    }
+
+    #[test]
+    fn finish_aur_flips_first_in_flight_card() {
+        let mut state = AurState::default();
+        for name in ["done-pkg", "live-pkg"] {
+            state.build_order.push(name.to_string());
+            state.builds.insert(
+                name.to_string(),
+                BuildPackage {
+                    status: BuildStatus::Fetching,
+                    tail: Vec::new(),
+                },
+            );
+        }
+        state
+            .builds
+            .get_mut("done-pkg")
+            .expect("done-pkg present")
+            .status = BuildStatus::Done;
+        state
+            .builds
+            .get_mut("live-pkg")
+            .expect("live-pkg present")
+            .status = BuildStatus::Building;
+        finish_aur(
+            &mut state,
+            &ChildOutcome::Failed("makepkg failed".to_string()),
+        );
+        assert_eq!(
+            state
+                .builds
+                .get("done-pkg")
+                .expect("done-pkg present")
+                .status,
+            BuildStatus::Done
+        );
+        assert_eq!(
+            state
+                .builds
+                .get("live-pkg")
+                .expect("live-pkg present")
+                .status,
+            BuildStatus::Failed
+        );
     }
 }
