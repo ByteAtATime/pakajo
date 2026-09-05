@@ -1,6 +1,8 @@
+use std::borrow::Cow;
+
 use cosmic::iced::alignment::Vertical;
 use cosmic::iced::{Background, Border, Color, Length};
-use cosmic::widget::{Column, Row, container, space, text};
+use cosmic::widget::{Column, Row, container, text};
 use pakajo::events::{SummaryPackage, TransactionSummary, target_version};
 use pakajo::transaction_state::RepoState;
 use pakajo::utils::format_bytes;
@@ -9,7 +11,8 @@ use crate::Element;
 
 use super::accordion::Section;
 use super::shared::{
-    accent_color, muted, muted_color, on_color, pill, success_color, tinted, version_change,
+    ResolvedEntry, accent_color, format_signed_bytes, muted, muted_color, pill, resolve_empty_view,
+    resolve_package_row, resolve_single_suffix, success_color,
 };
 use super::state::StageState;
 
@@ -47,13 +50,13 @@ fn resolve_active_view(state: &RepoState) -> Element<'_> {
 
 fn resolve_done_view(summary: &TransactionSummary) -> Element<'_> {
     if summary.packages.is_empty() {
-        return muted(text("Nothing to do"));
+        return resolve_empty_view();
     }
     let mut col = Column::new().spacing(10);
     let mut ordered: Vec<&SummaryPackage> = summary.packages.iter().collect();
-    ordered.sort_by_key(|p| (!p.is_removal, p.name.clone()));
+    ordered.sort_by(|a, b| (!a.is_removal, &a.name).cmp(&(!b.is_removal, &b.name)));
     for pkg in ordered {
-        col = col.push(package_row(pkg));
+        col = col.push(resolve_package_row(&summary_entry(pkg)));
     }
     col.into()
 }
@@ -101,23 +104,26 @@ fn step_dot(index: usize, done: usize) -> Element<'static> {
 
 fn single_package_suffix(pkg: &SummaryPackage) -> Element<'_> {
     let version = target_version(pkg);
-    let name_version = if version.is_empty() {
-        pkg.name.clone()
-    } else {
-        format!("{} {version}", pkg.name)
+    let entry = ResolvedEntry {
+        qualified: Cow::Borrowed(pkg.name.as_str()),
+        old_version: None,
+        new_version: Some(version),
+        net_size: Some(net_bytes(pkg)),
     };
-    let net = net_bytes(pkg);
-    let size_color: fn(&cosmic::Theme) -> Color = if net >= 0 {
-        accent_color
-    } else {
-        success_color
+    resolve_single_suffix(&entry)
+}
+
+fn summary_entry(pkg: &SummaryPackage) -> ResolvedEntry<'_> {
+    let qualified: Cow<'_, str> = match pkg.repository.as_deref() {
+        Some(repo) => Cow::Owned(format!("{repo}/{}", pkg.name)),
+        None => Cow::Borrowed(pkg.name.as_str()),
     };
-    Row::new()
-        .align_y(Vertical::Center)
-        .spacing(8)
-        .push(muted(text(name_version).font(cosmic::font::mono())))
-        .push(pill(format_signed_bytes(net), size_color))
-        .into()
+    ResolvedEntry {
+        qualified,
+        old_version: pkg.old_version.as_deref(),
+        new_version: (!pkg.is_removal).then(|| pkg.new_version.as_str()),
+        net_size: Some(net_bytes(pkg)),
+    }
 }
 
 fn multi_package_suffix(summary: &TransactionSummary) -> Element<'_> {
@@ -138,44 +144,10 @@ fn multi_package_suffix(summary: &TransactionSummary) -> Element<'_> {
         .into()
 }
 
-fn package_row(pkg: &SummaryPackage) -> Element<'_> {
-    let qualified = match pkg.repository.as_deref() {
-        Some(repo) => format!("{repo}/{}", pkg.name),
-        None => pkg.name.clone(),
-    };
-    let version_text = if pkg.is_removal {
-        version_change(pkg.old_version.as_deref(), None)
-    } else {
-        version_change(pkg.old_version.as_deref(), Some(pkg.new_version.as_str()))
-    };
-    let size = format_signed_bytes(net_bytes(pkg));
-    let left = tinted(text(qualified).font(cosmic::font::mono()), on_color);
-    let right = Row::new()
-        .align_y(Vertical::Center)
-        .spacing(8)
-        .push(muted(text(version_text).font(cosmic::font::mono())))
-        .push(text(size));
-    Row::new()
-        .align_y(Vertical::Center)
-        .spacing(8)
-        .push(left)
-        .push(space::horizontal())
-        .push(right)
-        .into()
-}
-
 fn net_bytes(pkg: &SummaryPackage) -> i64 {
     if pkg.is_removal {
         -pkg.installed_size
     } else {
         pkg.installed_size - pkg.old_installed_size
-    }
-}
-
-fn format_signed_bytes(value: i64) -> String {
-    if value < 0 {
-        format!("-{}", format_bytes(value.abs()))
-    } else {
-        format!("+{}", format_bytes(value))
     }
 }

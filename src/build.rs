@@ -6,7 +6,7 @@ use std::process::{Child, Stdio};
 use anyhow::Context as _;
 
 use crate::aur::AurInfo;
-use crate::events::{AurDepSource, InstallEvent, InstallSink, PkgbuildReviewEntry};
+use crate::events::{InstallEvent, InstallSink, PkgbuildReviewEntry};
 use crate::pkgbuild::PkgbuildInfo;
 use crate::resolve::BuildPlan;
 
@@ -77,15 +77,24 @@ fn resolve_and_report<S: InstallSink + ?Sized>(
     let repo_deps: usize = plan.layers.iter().map(|l| l.repo_deps.len()).sum();
     for layer in &plan.layers {
         for name in &layer.repo_deps {
+            let (repo, version) = match crate::pacman::find_pkg(&alpm, name) {
+                Some(pkg) => (
+                    pkg.db().map(|db| db.name().to_string()),
+                    Some(pkg.version().to_string()),
+                ),
+                None => (None, None),
+            };
             sink.event(InstallEvent::AurDepResolved {
                 package: name.clone(),
-                source: AurDepSource::Repo,
+                repo,
+                version,
             });
         }
         for info in &layer.aur {
             sink.event(InstallEvent::AurDepResolved {
                 package: info.name.clone(),
-                source: AurDepSource::Aur,
+                repo: None,
+                version: Some(info.version.clone()),
             });
         }
     }

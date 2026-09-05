@@ -1,9 +1,15 @@
-use cosmic::widget::{Column, scrollable, text};
-use pakajo::transaction_state::{AurStage, InstallKind, ordered_aur_stages};
+use std::borrow::Cow;
+
+use cosmic::widget::{Column, Row, scrollable, text};
+use pakajo::transaction_state::{AurStage, InstallKind, ResolvedDep, ordered_aur_stages};
 
 use super::SYSTEM_AUR_NAME;
 use super::accordion::{Section, action_footer, stage_row};
-use super::state::{TransactionModel, TransactionStatus};
+use super::shared::{
+    ResolvedEntry, accent_color, muted, pill, resolve_empty_view, resolve_package_row,
+    resolve_single_suffix, success_color,
+};
+use super::state::{StageState, TransactionModel, TransactionStatus};
 use crate::Element;
 
 pub(super) fn view(model: &TransactionModel) -> Element<'_> {
@@ -18,11 +24,12 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
     };
     let mut panels = Column::new().spacing(6);
     for (i, stage) in ordered_aur_stages().iter().enumerate() {
-        let section = Section {
-            label: stage_label(*stage),
-            state: model.aur_stage_state(*stage),
-            content: None,
-            header_suffix: None,
+        let state = model.aur_stage_state(*stage);
+        let section = match *stage {
+            AurStage::Resolve => resolve_section(model, state),
+            AurStage::Build => pending_section("Build", state),
+            AurStage::Install => pending_section("Install", state),
+            AurStage::Finalize => pending_section("Finalize", state),
         };
         panels = panels.push(stage_row(section, model.expanded.contains(&i), i));
     }
@@ -33,11 +40,82 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
     scrollable(col).into()
 }
 
-fn stage_label(stage: AurStage) -> &'static str {
-    match stage {
-        AurStage::Resolve => "Resolve",
-        AurStage::Build => "Build",
-        AurStage::Install => "Install",
-        AurStage::Finalize => "Finalize",
+fn resolve_section(model: &TransactionModel, state: StageState) -> Section<'_> {
+    let mut section = Section {
+        label: "Resolve",
+        state,
+        content: None,
+        header_suffix: None,
+    };
+    let ordered: Vec<(&String, &ResolvedDep)> = model
+        .aur
+        .dep_order
+        .iter()
+        .filter_map(|name| model.aur.deps.get(name).map(|dep| (name, dep)))
+        .collect();
+    match state {
+        StageState::Active => {
+            section.header_suffix = Some(muted(text(format!("{} resolved", ordered.len()))));
+            if !ordered.is_empty() {
+                section.content = Some(resolve_list_view(&ordered));
+            }
+        }
+        StageState::Done => {
+            if ordered.is_empty() {
+                section.content = Some(resolve_empty_view());
+                return section;
+            }
+            if ordered.len() == 1 {
+                let (name, dep) = ordered[0];
+                section.header_suffix = Some(resolve_single_suffix(&aur_entry(name, dep)));
+                return section;
+            }
+            section.content = Some(resolve_list_view(&ordered));
+            section.header_suffix = Some(resolve_suffix(&ordered));
+        }
+        _ => {}
+    }
+    section
+}
+
+fn resolve_suffix(ordered: &[(&String, &ResolvedDep)]) -> Element<'static> {
+    let aur = ordered
+        .iter()
+        .filter(|(_, dep)| dep.repository.is_none())
+        .count();
+    Row::new()
+        .spacing(6)
+        .push(pill(format!("{} pkgs", ordered.len()), accent_color))
+        .push(pill(format!("{aur} AUR"), success_color))
+        .into()
+}
+
+fn aur_entry<'a>(name: &'a str, dep: &'a ResolvedDep) -> ResolvedEntry<'a> {
+    let qualified = Cow::Owned(match dep.repository.as_deref() {
+        Some(repo) => format!("{repo}/{name}"),
+        None => format!("aur/{name}"),
+    });
+    ResolvedEntry {
+        qualified,
+        old_version: None,
+        new_version: dep.version.as_deref(),
+        net_size: None,
+    }
+}
+
+fn resolve_list_view(ordered: &[(&String, &ResolvedDep)]) -> Element<'static> {
+    let mut col = Column::new().spacing(10);
+    for (name, dep) in ordered {
+        col = col.push(resolve_package_row(&aur_entry(name, dep)));
+    }
+    col.into()
+}
+
+fn pending_section(label: &'static str, state: StageState) -> Section<'static> {
+    Section {
+        label,
+        state,
+        content: None,
+        header_suffix: None,
     }
 }

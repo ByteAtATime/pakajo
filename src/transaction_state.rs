@@ -452,6 +452,49 @@ pub fn ordered_aur_stages() -> Vec<AurStage> {
     vec![Resolve, Build, Install, Finalize]
 }
 
+#[derive(Debug, Clone)]
+pub struct ResolvedDep {
+    pub repository: Option<String>,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AurState {
+    pub resolve_started: bool,
+    pub deps: HashMap<String, ResolvedDep>,
+    pub dep_order: Vec<String>,
+    pub resolve_complete: bool,
+}
+
+pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent) {
+    use InstallEvent::*;
+    match ev {
+        ResolvingAurDependencies { .. } => {
+            state.resolve_started = true;
+        }
+        AurDepResolved {
+            package,
+            repo,
+            version,
+        } => {
+            if !state.deps.contains_key(package) {
+                state.dep_order.push(package.clone());
+            }
+            state.deps.insert(
+                package.clone(),
+                ResolvedDep {
+                    repository: repo.clone(),
+                    version: version.clone(),
+                },
+            );
+        }
+        ResolutionComplete { .. } => {
+            state.resolve_complete = true;
+        }
+        _ => {}
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum NextInstallState {
     ContinueAur { targets: Vec<String> },

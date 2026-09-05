@@ -1,11 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AurDepSource {
-    Repo,
-    Aur,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PkgbuildReviewEntry {
     pub name: String,
@@ -79,7 +73,9 @@ pub enum InstallEvent {
     },
     AurDepResolved {
         package: String,
-        source: AurDepSource,
+        repo: Option<String>,
+        #[serde(default)]
+        version: Option<String>,
     },
     ResolutionComplete {
         layers: usize,

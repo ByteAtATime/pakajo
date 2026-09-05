@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use cosmic::iced::alignment::Vertical;
 use cosmic::iced::widget::{Stack, progress_bar};
 use cosmic::iced::{Background, Border, Color, Length};
@@ -286,6 +288,67 @@ fn compact_view(state: &DownloadState) -> Element<'_> {
 
 pub(super) fn counter_suffix(done: usize, total: usize, unit: &str) -> Element<'static> {
     muted(text(format!("{done} / {total} {unit}")))
+}
+
+pub(crate) struct ResolvedEntry<'a> {
+    pub qualified: Cow<'a, str>,
+    pub old_version: Option<&'a str>,
+    pub new_version: Option<&'a str>,
+    pub net_size: Option<i64>,
+}
+
+pub(crate) fn resolve_package_row(entry: &ResolvedEntry<'_>) -> Element<'static> {
+    let left = tinted(
+        text(entry.qualified.to_string()).font(cosmic::font::mono()),
+        on_color,
+    );
+    let mut right = Row::new().align_y(Vertical::Center).spacing(8).push(muted(
+        text(version_change(entry.old_version, entry.new_version)).font(cosmic::font::mono()),
+    ));
+    if let Some(net) = entry.net_size {
+        right = right.push(text(format_signed_bytes(net)));
+    }
+    Row::new()
+        .align_y(Vertical::Center)
+        .spacing(8)
+        .push(left)
+        .push(space::horizontal())
+        .push(right)
+        .into()
+}
+
+pub(crate) fn resolve_single_suffix(entry: &ResolvedEntry<'_>) -> Element<'static> {
+    let name_version = match entry.new_version {
+        Some(version) if !version.is_empty() => {
+            format!("{} {version}", entry.qualified)
+        }
+        _ => entry.qualified.to_string(),
+    };
+    let mut row = Row::new()
+        .align_y(Vertical::Center)
+        .spacing(8)
+        .push(muted(text(name_version).font(cosmic::font::mono())));
+    if let Some(net) = entry.net_size {
+        let size_color: fn(&cosmic::Theme) -> Color = if net >= 0 {
+            accent_color
+        } else {
+            success_color
+        };
+        row = row.push(pill(format_signed_bytes(net), size_color));
+    }
+    row.into()
+}
+
+pub(crate) fn resolve_empty_view() -> Element<'static> {
+    muted(text("Nothing to do"))
+}
+
+pub(crate) fn format_signed_bytes(value: i64) -> String {
+    if value < 0 {
+        format!("-{}", format_bytes(value.abs()))
+    } else {
+        format!("+{}", format_bytes(value))
+    }
 }
 
 pub(super) fn download_view(state: &DownloadState) -> Element<'_> {
