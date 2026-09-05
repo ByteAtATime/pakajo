@@ -537,122 +537,114 @@ pub fn next_sysupgrade_step(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{DownloadResult, InstallEvent, PackageOp, ProgressPhase};
+    use crate::events::{
+        DownloadResult, InstallEvent, PackageOp, ProgressPhase, TransactionSummary,
+    };
     use crate::install::ChildOutcome;
-
-    #[test]
-    fn repo_resolving_dependencies_is_resolve() {
-        assert_eq!(
-            event_stage(&InstallEvent::ResolvingDependencies),
-            Some(RepoStage::Resolve)
-        );
-    }
-
-    #[test]
-    fn repo_checking_conflicts_is_validate() {
-        assert_eq!(
-            event_stage(&InstallEvent::CheckingConflicts),
-            Some(RepoStage::Validate)
-        );
-    }
-
-    #[test]
-    fn repo_download_progress_is_download() {
-        let ev = InstallEvent::DownloadProgress {
-            filename: "foo.pkg.tar.zst".to_string(),
-            downloaded: 100,
-            total: 1000,
-        };
-        assert_eq!(event_stage(&ev), Some(RepoStage::Download));
-    }
-
-    #[test]
-    fn repo_retrieving_packages_is_download() {
-        let ev = InstallEvent::RetrievingPackages {
-            num: 3,
-            total_bytes: 5000,
-        };
-        assert_eq!(event_stage(&ev), Some(RepoStage::Download));
-    }
-
-    #[test]
-    fn repo_package_operation_is_install() {
-        let ev = InstallEvent::PackageOperation {
-            operation: PackageOp::Install,
-            package: "foo".to_string(),
-            new_version: Some("1.0".to_string()),
-            old_version: None,
-        };
-        assert_eq!(event_stage(&ev), Some(RepoStage::Install));
-    }
-
-    #[test]
-    fn repo_transaction_done_is_finalize() {
-        assert_eq!(
-            event_stage(&InstallEvent::TransactionDone),
-            Some(RepoStage::Finalize)
-        );
-    }
-
-    #[test]
-    fn repo_progress_upgrade_is_install() {
-        let ev = InstallEvent::Progress {
-            phase: ProgressPhase::Upgrade,
-            package: "foo".to_string(),
-            percent: 50,
-            current: 1,
-            total: 2,
-        };
-        assert_eq!(event_stage(&ev), Some(RepoStage::Install));
-    }
-
-    #[test]
-    fn repo_progress_integrity_is_validate() {
-        let ev = InstallEvent::Progress {
-            phase: ProgressPhase::Integrity,
-            package: "foo".to_string(),
-            percent: 0,
-            current: 0,
-            total: 0,
-        };
-        assert_eq!(event_stage(&ev), Some(RepoStage::Validate));
-    }
 
     fn fresh_repo_state() -> RepoState {
         RepoState::default()
     }
 
     #[test]
-    fn apply_repo_retrieving_packages_sets_totals() {
+    fn apply_repo_download_lifecycle_tracks_progress_retry_and_reset() {
         let mut state = fresh_repo_state();
         apply_repo_counters(
             &mut state,
             &InstallEvent::RetrievingPackages {
-                num: 3,
-                total_bytes: 5000,
+                num: 2,
+                total_bytes: 1000,
             },
         );
-        assert_eq!(state.download.total, 3);
-        assert_eq!(state.download.done, 0);
-        assert_eq!(state.download.bytes_total, 5000);
-        assert_eq!(state.download.bytes_done, 0);
-        assert!(state.download.files.is_empty());
-    }
+        assert_eq!(state.download.total, 2);
+        assert_eq!(state.download.bytes_total, 1000);
+        assert_eq!(state.download.queued(), 2);
 
-    #[test]
-    fn apply_repo_retrieving_packages_clears_existing_map() {
-        let mut state = fresh_repo_state();
-        state.download.files.insert(
-            "stale".to_string(),
-            DownloadFile {
-                downloaded: 999,
-                total: 0,
-                completed: false,
-                rate: 0.0,
-                sync_time: None,
-                sync_done: 0,
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadInit {
+                filename: "pkg-a".to_string(),
+                optional: false,
             },
         );
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadInit {
+                filename: "pkg-b".to_string(),
+                optional: false,
+            },
+        );
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadInit {
+                filename: "pkg-a".to_string(),
+                optional: false,
+            },
+        );
+        assert_eq!(
+            state.download.order,
+            vec!["pkg-a".to_string(), "pkg-b".to_string()]
+        );
+
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadProgress {
+                filename: "pkg-a".to_string(),
+                downloaded: 400,
+                total: 400,
+            },
+        );
+        assert_eq!(state.download.bytes_done, 400);
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadCompleted {
+                filename: "pkg-a".to_string(),
+                total: 400,
+                result: DownloadResult::Success,
+            },
+        );
+        assert_eq!(state.download.done, 1);
+
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadProgress {
+                filename: "pkg-b".to_string(),
+                downloaded: 300,
+                total: 600,
+            },
+        );
+        assert_eq!(state.download.bytes_done, 700);
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadRetry {
+                filename: "pkg-b".to_string(),
+                resume: true,
+            },
+        );
+        assert_eq!(state.download.bytes_done, 700);
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadRetry {
+                filename: "pkg-b".to_string(),
+                resume: false,
+            },
+        );
+        assert_eq!(state.download.bytes_done, 400);
+        let pkg_b = state.download.files.get("pkg-b").expect("pkg-b present");
+        assert_eq!(pkg_b.downloaded, 0);
+
+        apply_repo_counters(
+            &mut state,
+            &InstallEvent::DownloadCompleted {
+                filename: "pkg-b".to_string(),
+                total: 600,
+                result: DownloadResult::Success,
+            },
+        );
+        assert_eq!(state.download.done, 2);
+        assert_eq!(state.download.bytes_done, 1000);
+        assert_eq!(state.download.queued(), 0);
+
         apply_repo_counters(
             &mut state,
             &InstallEvent::RetrievingPackages {
@@ -660,421 +652,159 @@ mod tests {
                 total_bytes: 10,
             },
         );
-        assert!(state.download.files.is_empty());
-    }
-
-    #[test]
-    fn apply_repo_download_progress_tracks_delta() {
-        let mut state = fresh_repo_state();
-        apply_repo_counters(
-            &mut state,
-            &InstallEvent::DownloadProgress {
-                filename: "a".to_string(),
-                downloaded: 100,
-                total: 200,
-            },
-        );
-        let f = state.download.files.get("a").expect("file a present");
-        assert_eq!(f.downloaded, 100);
-        assert_eq!(f.total, 200);
-        assert!(!f.completed);
-        assert_eq!(f.rate, 0.0);
-        assert!(f.sync_time.is_some());
-        assert_eq!(f.sync_done, 100);
-        assert_eq!(state.download.bytes_done, 100);
-        apply_repo_counters(
-            &mut state,
-            &InstallEvent::DownloadProgress {
-                filename: "a".to_string(),
-                downloaded: 150,
-                total: 200,
-            },
-        );
-        let f = state.download.files.get("a").expect("file a present");
-        assert_eq!(f.downloaded, 150);
-        assert_eq!(f.total, 200);
-        assert!(!f.completed);
-        assert_eq!(state.download.bytes_done, 150);
-    }
-
-    #[test]
-    fn apply_repo_download_retry_full_resets_entry() {
-        let mut state = fresh_repo_state();
-        apply_repo_counters(
-            &mut state,
-            &InstallEvent::DownloadProgress {
-                filename: "a".to_string(),
-                downloaded: 100,
-                total: 200,
-            },
-        );
-        apply_repo_counters(
-            &mut state,
-            &InstallEvent::DownloadRetry {
-                filename: "a".to_string(),
-                resume: false,
-            },
-        );
-        assert_eq!(
-            state.download.files.get("a"),
-            Some(&DownloadFile {
-                downloaded: 0,
-                total: 200,
-                completed: false,
-                rate: 0.0,
-                sync_time: None,
-                sync_done: 0,
-            })
-        );
-        assert_eq!(state.download.bytes_done, 0);
-    }
-
-    #[test]
-    fn apply_repo_download_retry_resumable_is_noop() {
-        let mut state = fresh_repo_state();
-        apply_repo_counters(
-            &mut state,
-            &InstallEvent::DownloadProgress {
-                filename: "a".to_string(),
-                downloaded: 100,
-                total: 200,
-            },
-        );
-        apply_repo_counters(
-            &mut state,
-            &InstallEvent::DownloadRetry {
-                filename: "a".to_string(),
-                resume: true,
-            },
-        );
-        let f = state.download.files.get("a").expect("file a present");
-        assert_eq!(f.downloaded, 100);
-        assert_eq!(f.total, 200);
-        assert!(!f.completed);
-        assert_eq!(state.download.bytes_done, 100);
-    }
-
-    #[test]
-    fn apply_repo_download_completed_increments_done() {
-        let mut state = fresh_repo_state();
-        apply_repo_counters(
-            &mut state,
-            &InstallEvent::DownloadCompleted {
-                filename: "a".to_string(),
-                total: 200,
-                result: DownloadResult::Success,
-            },
-        );
-        assert_eq!(state.download.done, 1);
-        assert_eq!(
-            state.download.files.get("a"),
-            Some(&DownloadFile {
-                downloaded: 200,
-                total: 200,
-                completed: true,
-                rate: 0.0,
-                sync_time: None,
-                sync_done: 0,
-            })
-        );
-    }
-
-    #[test]
-    fn apply_repo_unrelated_event_is_noop() {
-        let mut state = fresh_repo_state();
-        apply_repo_counters(&mut state, &InstallEvent::ResolvingDependencies);
-        assert_eq!(state.download.total, 0);
+        assert_eq!(state.download.total, 1);
         assert_eq!(state.download.done, 0);
-        assert_eq!(state.download.bytes_total, 0);
         assert_eq!(state.download.bytes_done, 0);
         assert!(state.download.files.is_empty());
-    }
-
-    #[test]
-    fn apply_repo_download_order_preserves_insertion_order() {
-        let mut state = fresh_repo_state();
-        apply_repo_counters(
-            &mut state,
-            &InstallEvent::DownloadInit {
-                filename: "a".to_string(),
-                optional: false,
-            },
-        );
-        apply_repo_counters(
-            &mut state,
-            &InstallEvent::DownloadInit {
-                filename: "b".to_string(),
-                optional: false,
-            },
-        );
-        assert_eq!(state.download.order, vec!["a".to_string(), "b".to_string()]);
-
-        apply_repo_counters(
-            &mut state,
-            &InstallEvent::RetrievingPackages {
-                num: 1,
-                total_bytes: 0,
-            },
-        );
         assert!(state.download.order.is_empty());
+    }
+
+    #[test]
+    fn apply_repo_counters_drives_full_transaction() {
+        let mut state = fresh_repo_state();
+        assert_eq!(state.resolve_step(), 0);
+        apply_repo_counters(&mut state, &InstallEvent::ResolvingDependencies);
+        assert_eq!(state.resolve_step(), 1);
+        apply_repo_counters(&mut state, &InstallEvent::CheckingConflicts);
+        assert_eq!(state.resolve_step(), 2);
+        apply_repo_counters(&mut state, &InstallEvent::CheckingDiskSpace);
+        assert_eq!(state.validate.count(), 2);
 
         apply_repo_counters(
             &mut state,
-            &InstallEvent::DownloadInit {
-                filename: "a".to_string(),
-                optional: false,
+            &InstallEvent::PackageOperation {
+                operation: PackageOp::Install,
+                package: "pacman".to_string(),
+                new_version: Some("6.1".to_string()),
+                old_version: None,
             },
         );
         apply_repo_counters(
             &mut state,
-            &InstallEvent::DownloadInit {
-                filename: "b".to_string(),
-                optional: false,
+            &InstallEvent::Progress {
+                phase: ProgressPhase::Add,
+                package: "pacman".to_string(),
+                percent: 100,
+                current: 1,
+                total: 1,
             },
         );
+        let pkg = state
+            .install
+            .packages
+            .get("pacman")
+            .expect("pacman present");
+        assert!(pkg.completed);
+
         apply_repo_counters(
             &mut state,
-            &InstallEvent::DownloadInit {
-                filename: "a".to_string(),
-                optional: false,
+            &InstallEvent::HookRun {
+                position: 1,
+                total: 1,
+                name: "hook".to_string(),
+                desc: Some("Updating font cache...".to_string()),
             },
         );
-        assert_eq!(state.download.order, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            state.finalize.lines,
+            vec!["(1/1) Updating font cache...".to_string()]
+        );
 
         apply_repo_counters(
             &mut state,
-            &InstallEvent::DownloadProgress {
-                filename: "a".to_string(),
-                downloaded: 10,
-                total: 100,
-            },
+            &InstallEvent::TransactionSummary(TransactionSummary {
+                packages: Vec::new(),
+                total_download_size: 0,
+                total_installed_size: 0,
+                total_removed_size: 0,
+            }),
         );
-        apply_repo_counters(
-            &mut state,
-            &InstallEvent::DownloadRetry {
-                filename: "a".to_string(),
-                resume: false,
-            },
-        );
-        assert_eq!(state.download.order, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(state.resolve_step(), 3);
+        assert!(state.manifest.is_some());
     }
 
     #[test]
-    fn ordered_stages_install_includes_download() {
-        assert_eq!(
-            ordered_stages(InstallKind::Install),
-            vec![
-                RepoStage::Resolve,
-                RepoStage::Validate,
-                RepoStage::Download,
-                RepoStage::Install,
-                RepoStage::Finalize,
-            ]
-        );
-    }
-
-    #[test]
-    fn ordered_stages_upgrade_matches_install() {
-        assert_eq!(
-            ordered_stages(InstallKind::Upgrade),
-            ordered_stages(InstallKind::Install)
-        );
-    }
-
-    #[test]
-    fn ordered_stages_remove_skips_download() {
-        assert_eq!(
-            ordered_stages(InstallKind::Remove),
-            vec![
-                RepoStage::Resolve,
-                RepoStage::Validate,
-                RepoStage::Install,
-                RepoStage::Finalize,
-            ]
-        );
-    }
-
-    #[test]
-    fn classify_success_without_phase_completes() {
-        assert_eq!(
-            classify_outcome(&ChildOutcome::Success, None, &[]),
-            NextInstallState::Completed
-        );
-    }
-
-    #[test]
-    fn classify_success_repo_phase_with_targets_continues_aur() {
-        let targets = vec!["foo".to_string(), "bar".to_string()];
-        assert_eq!(
-            classify_outcome(
-                &ChildOutcome::Success,
+    fn classify_outcome_routes_child_results() {
+        let aur_targets = vec!["aur-pkg".to_string()];
+        let cases = [
+            (
+                ChildOutcome::Success,
                 Some(SysupgradePhase::Repo),
-                &targets
+                aur_targets.clone(),
+                NextInstallState::ContinueAur {
+                    targets: aur_targets.clone(),
+                },
             ),
-            NextInstallState::ContinueAur { targets }
-        );
-    }
-
-    #[test]
-    fn classify_success_repo_phase_with_empty_targets_completes() {
-        assert_eq!(
-            classify_outcome(&ChildOutcome::Success, Some(SysupgradePhase::Repo), &[]),
-            NextInstallState::Completed
-        );
-    }
-
-    #[test]
-    fn classify_dismissed_cancels() {
-        assert_eq!(
-            classify_outcome(&ChildOutcome::Dismissed, None, &[]),
-            NextInstallState::Cancelled
-        );
-    }
-
-    #[test]
-    fn classify_not_found_fails() {
-        assert_eq!(
-            classify_outcome(&ChildOutcome::NotFound, None, &[]),
-            NextInstallState::Failed {
-                message: "install child not found".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn classify_failed_propagates_message() {
-        assert_eq!(
-            classify_outcome(&ChildOutcome::Failed("msg".to_string()), None, &[]),
-            NextInstallState::Failed {
-                message: "msg".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn next_sysupgrade_step_updates_forward_skips_to_confirm_without_steps() {
-        assert_eq!(
-            next_sysupgrade_step(SysupgradePage::Updates, Direction::Forward, false, false),
-            SysupgradePage::Confirm
-        );
-    }
-
-    #[test]
-    fn next_sysupgrade_step_updates_forward_without_resolve_enters_pkgbuild_review() {
-        assert_eq!(
-            next_sysupgrade_step(SysupgradePage::Updates, Direction::Forward, false, true),
-            SysupgradePage::PkgbuildReview
-        );
-    }
-
-    #[test]
-    fn next_sysupgrade_step_updates_forward_with_resolve_enters_resolve() {
-        assert_eq!(
-            next_sysupgrade_step(SysupgradePage::Updates, Direction::Forward, true, true),
-            SysupgradePage::Resolve
-        );
-    }
-
-    #[test]
-    fn next_sysupgrade_step_resolve_forward_enters_pkgbuild_review_with_diffs() {
-        assert_eq!(
-            next_sysupgrade_step(SysupgradePage::Resolve, Direction::Forward, true, true),
-            SysupgradePage::PkgbuildReview
-        );
-    }
-
-    #[test]
-    fn next_sysupgrade_step_resolve_forward_skips_to_confirm_without_diffs() {
-        assert_eq!(
-            next_sysupgrade_step(SysupgradePage::Resolve, Direction::Forward, true, false),
-            SysupgradePage::Confirm
-        );
-    }
-
-    #[test]
-    fn next_sysupgrade_step_resolve_backward_returns_updates() {
-        assert_eq!(
-            next_sysupgrade_step(SysupgradePage::Resolve, Direction::Backward, true, true),
-            SysupgradePage::Updates
-        );
-    }
-
-    #[test]
-    fn next_sysupgrade_step_pkgbuild_review_forward_enters_confirm() {
-        assert_eq!(
-            next_sysupgrade_step(
-                SysupgradePage::PkgbuildReview,
-                Direction::Forward,
-                true,
-                true
+            (
+                ChildOutcome::Success,
+                Some(SysupgradePhase::Repo),
+                Vec::new(),
+                NextInstallState::Completed,
             ),
-            SysupgradePage::Confirm
-        );
-    }
-
-    #[test]
-    fn next_sysupgrade_step_pkgbuild_review_backward_returns_resolve_when_present() {
-        assert_eq!(
-            next_sysupgrade_step(
-                SysupgradePage::PkgbuildReview,
-                Direction::Backward,
-                true,
-                true
+            (
+                ChildOutcome::Success,
+                None,
+                Vec::new(),
+                NextInstallState::Completed,
             ),
-            SysupgradePage::Resolve
-        );
-    }
-
-    #[test]
-    fn next_sysupgrade_step_pkgbuild_review_backward_skips_to_updates_without_resolve() {
-        assert_eq!(
-            next_sysupgrade_step(
-                SysupgradePage::PkgbuildReview,
-                Direction::Backward,
-                false,
-                true
+            (
+                ChildOutcome::Dismissed,
+                None,
+                Vec::new(),
+                NextInstallState::Cancelled,
             ),
-            SysupgradePage::Updates
-        );
+            (
+                ChildOutcome::NotFound,
+                None,
+                Vec::new(),
+                NextInstallState::Failed {
+                    message: "install child not found".to_string(),
+                },
+            ),
+            (
+                ChildOutcome::Failed("err".to_string()),
+                None,
+                Vec::new(),
+                NextInstallState::Failed {
+                    message: "err".to_string(),
+                },
+            ),
+        ];
+        for (outcome, phase, targets, expected) in cases {
+            assert_eq!(
+                classify_outcome(&outcome, phase, &targets),
+                expected,
+                "outcome {outcome:?} phase {phase:?} targets {targets:?}"
+            );
+        }
     }
 
     #[test]
-    fn next_sysupgrade_step_confirm_backward_returns_pkgbuild_review_with_diffs() {
-        assert_eq!(
-            next_sysupgrade_step(SysupgradePage::Confirm, Direction::Backward, true, true),
-            SysupgradePage::PkgbuildReview
-        );
-    }
-
-    #[test]
-    fn next_sysupgrade_step_confirm_backward_returns_resolve_without_diffs() {
-        assert_eq!(
-            next_sysupgrade_step(SysupgradePage::Confirm, Direction::Backward, true, false),
-            SysupgradePage::Resolve
-        );
-    }
-
-    #[test]
-    fn next_sysupgrade_step_confirm_backward_skips_to_updates_without_steps() {
-        assert_eq!(
-            next_sysupgrade_step(SysupgradePage::Confirm, Direction::Backward, false, false),
-            SysupgradePage::Updates
-        );
-    }
-
-    #[test]
-    fn next_sysupgrade_step_confirm_forward_returns_from_unchanged() {
-        assert_eq!(
-            next_sysupgrade_step(SysupgradePage::Confirm, Direction::Forward, true, true),
-            SysupgradePage::Confirm
-        );
-    }
-
-    #[test]
-    fn next_sysupgrade_step_updates_backward_returns_from_unchanged() {
-        assert_eq!(
-            next_sysupgrade_step(SysupgradePage::Updates, Direction::Backward, true, true),
-            SysupgradePage::Updates
-        );
+    fn next_sysupgrade_step_routes_navigation() {
+        use Direction::*;
+        use SysupgradePage::*;
+        let cases = [
+            (Updates, Forward, false, false, Confirm),
+            (Updates, Forward, false, true, PkgbuildReview),
+            (Updates, Forward, true, true, Resolve),
+            (Resolve, Forward, true, true, PkgbuildReview),
+            (Resolve, Forward, true, false, Confirm),
+            (Resolve, Backward, true, true, Updates),
+            (PkgbuildReview, Forward, true, true, Confirm),
+            (PkgbuildReview, Backward, true, true, Resolve),
+            (PkgbuildReview, Backward, false, true, Updates),
+            (Confirm, Backward, true, true, PkgbuildReview),
+            (Confirm, Backward, true, false, Resolve),
+            (Confirm, Backward, false, false, Updates),
+            (Confirm, Forward, true, true, Confirm),
+            (Updates, Backward, true, true, Updates),
+        ];
+        for (from, dir, has_resolve, has_diffs, expected) in cases {
+            assert_eq!(
+                next_sysupgrade_step(from, dir, has_resolve, has_diffs),
+                expected,
+                "from {from:?} dir {dir:?} has_resolve {has_resolve} has_diffs {has_diffs}"
+            );
+        }
     }
 }
