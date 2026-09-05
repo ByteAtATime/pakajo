@@ -121,7 +121,7 @@ fn summary_entry(pkg: &SummaryPackage) -> ResolvedEntry<'_> {
     ResolvedEntry {
         qualified,
         old_version: pkg.old_version.as_deref(),
-        new_version: (!pkg.is_removal).then(|| pkg.new_version.as_str()),
+        new_version: (!pkg.is_removal).then_some(pkg.new_version.as_str()),
         net_size: Some(net_bytes(pkg)),
     }
 }
