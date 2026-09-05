@@ -16,7 +16,7 @@ use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
 
 use crate::Element;
-use crate::components::divider::divider;
+use cosmic::widget::divider;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ListRect {
@@ -246,7 +246,7 @@ fn results_list<'a>(
         let row = search_result_row(result, index, is_selected);
         let row = scroller.wrap_row(index, row);
         if index > 0 {
-            list = list.push(divider());
+            list = list.push(divider::horizontal::default());
         }
         list = list.push(row);
     }

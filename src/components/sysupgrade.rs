@@ -9,10 +9,10 @@ use pakajo::question::{collect_approvals, default_approve, encode_approvals};
 use pakajo::transaction_state::{Direction, SysupgradePage, next_sysupgrade_step};
 
 use crate::Element;
-use crate::components::divider::divider;
 use crate::components::transaction::Transaction;
 use crate::components::transaction::review::{ReviewModel, candidate_label, unsupported_banner};
 use crate::components::updates::{aur_upgrade_row, muted};
+use cosmic::widget::divider;
 
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -543,7 +543,7 @@ fn manifest_section(summary: &TransactionSummary) -> Element<'_> {
         card = card.push(muted(net_label));
     }
 
-    card = card.push(divider());
+    card = card.push(divider::horizontal::default());
 
     let total = summary.packages.len();
     for pkg in summary.packages.iter().take(6) {

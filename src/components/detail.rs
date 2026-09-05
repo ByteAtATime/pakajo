@@ -9,9 +9,9 @@ use pakajo::utils::format_bytes;
 use std::time::Duration;
 
 use crate::Element;
-use crate::components::divider::divider;
 use crate::components::icons;
 use crate::components::transaction::TransactionMessage;
+use cosmic::widget::divider;
 
 pub const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
 
@@ -100,7 +100,7 @@ fn render_group<'a>(name: &'a str, members: &'a [GroupMember]) -> Element<'a> {
     let mut col = Column::new()
         .spacing(12)
         .push(text(name.to_string()).font(cosmic::font::bold()).size(22.0))
-        .push(divider());
+        .push(divider::horizontal::default());
 
     for member in members {
         let mut row = Row::new()
@@ -431,7 +431,7 @@ fn section_header<'a>(title: String) -> Element<'a> {
     Column::new()
         .spacing(4)
         .push(text(title).font(cosmic::font::semibold()).size(14.0))
-        .push(divider())
+        .push(divider::horizontal::default())
         .into()
 }
 

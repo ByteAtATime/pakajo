@@ -32,7 +32,7 @@ use components::transaction::review::ReviewModel;
 use components::transaction::{Action, Transaction, TransactionMessage};
 use components::updates::{RefreshKind, UpdatesMessage, UpdatesState};
 
-use crate::components::divider::{divider, vdivider};
+use cosmic::widget::divider;
 
 pub type Element<'a> = cosmic::Element<'a, Message>;
 
@@ -324,14 +324,14 @@ impl PakajoApp {
                 &self.query,
             ))
             .push(
-                Column::new().push(divider()).push(
+                Column::new().push(divider::horizontal::default()).push(
                     Row::new()
                         .push(results_scroller(
                             &self.results,
                             self.selected_index,
                             &self.scroller,
                         ))
-                        .push(vdivider())
+                        .push(divider::vertical::default())
                         .push(detail_view(
                             &self.detail,
                             checking,

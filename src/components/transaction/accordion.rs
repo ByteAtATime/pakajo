@@ -2,13 +2,13 @@ use super::TransactionMessage;
 use super::shared::{accent_color, destructive_color, muted, muted_color, on_color, tinted};
 use super::state::StageState;
 use crate::Element;
-use crate::components::divider::divider;
 use cosmic::iced::alignment::Vertical;
 use cosmic::iced::{Background, Border, Color, Length, Shadow};
+use cosmic::widget::divider;
 use cosmic::widget::{Column, Row, button, container, scrollable, space, text};
 
 pub(super) fn action_footer() -> Element<'static> {
-    let header_divider = divider();
+    let header_divider = divider::horizontal::default();
     let close =
         button::standard("Close").on_press(crate::Message::Transaction(TransactionMessage::Close));
     Column::new()
