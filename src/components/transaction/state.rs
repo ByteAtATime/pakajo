@@ -223,6 +223,7 @@ impl TransactionModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pakajo::events::LogLevel;
 
     fn aur_model() -> TransactionModel {
         let mut model =
@@ -508,5 +509,32 @@ mod tests {
         );
         model.finish(ChildOutcome::Success);
         assert_eq!(model.aur_stage_state(AurStage::Finalize), StageState::Done);
+    }
+
+    #[test]
+    fn log_alerts_do_not_advance_stage_state() {
+        let mut model = aur_model();
+        model.apply_event(&InstallEvent::CloningRepo {
+            package: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildCompleted {
+            package: "pkg-a".to_string(),
+            artifacts: Vec::new(),
+            version: None,
+        });
+        assert_eq!(
+            model.aur_stage_state(AurStage::Finalize),
+            StageState::Pending
+        );
+        model.apply_event(&InstallEvent::Log {
+            level: LogLevel::Error,
+            message: "key unknown\n".to_string(),
+        });
+        assert_eq!(
+            model.aur_stage_state(AurStage::Finalize),
+            StageState::Pending
+        );
+        assert_eq!(model.aur.finalize.alerts.len(), 1);
+        assert!(!model.aur.finalize.is_empty());
     }
 }

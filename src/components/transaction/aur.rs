@@ -13,7 +13,7 @@ use pakajo::utils::format_elapsed;
 use super::SYSTEM_AUR_NAME;
 use super::TransactionMessage;
 use super::accordion::{Section, action_footer, stage_row};
-use super::finalize::{finalize_log, finalize_section};
+use super::finalize::finalize_section;
 use super::install::{install_section, install_view};
 use super::shared::{
     ResolvedEntry, accent_color, counter_suffix, destructive_color, muted, on_color, pill,
@@ -314,10 +314,7 @@ fn aur_install_section(model: &TransactionModel, state: StageState) -> Section<'
 
 fn aur_finalize_section(model: &TransactionModel, state: StageState) -> Section<'_> {
     let mut section = finalize_section(&model.aur.finalize, state);
-    if state == StageState::Failed && !model.aur.finalize.lines.is_empty() {
-        section.content = Some(finalize_log(&model.aur.finalize.lines));
-    }
-    if state == StageState::Done && model.aur.finalize.lines.is_empty() {
+    if state == StageState::Done && model.aur.finalize.is_empty() {
         section.content = Some(resolve_empty_view());
     }
     section

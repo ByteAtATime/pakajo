@@ -54,6 +54,10 @@ pub(super) fn destructive_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().destructive.base)
 }
 
+pub(super) fn warning_color(theme: &cosmic::Theme) -> Color {
+    Color::from(theme.cosmic().warning.base)
+}
+
 pub(super) fn pill(
     label: impl Into<String>,
     color_fn: fn(&cosmic::Theme) -> Color,

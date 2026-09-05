@@ -1,10 +1,12 @@
 use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, container, scrollable, text};
+use pakajo::events::LogLevel;
 use pakajo::transaction_state::FinalizeState;
 
 use crate::Element;
 
 use super::accordion::Section;
+use super::shared::{destructive_color, tinted, warning_color};
 use super::state::StageState;
 
 const LOG_HEIGHT: f32 = 200.0;
@@ -13,19 +15,25 @@ pub(super) fn finalize_section(finalize: &FinalizeState, state: StageState) -> S
     Section {
         label: "Finalize",
         state,
-        content: match state {
-            StageState::Active | StageState::Done if !finalize.lines.is_empty() => {
-                Some(finalize_log(&finalize.lines))
-            }
-            _ => None,
-        },
+        content: (!finalize.is_empty()).then(|| finalize_log(finalize)),
         header_suffix: None,
     }
 }
 
-pub(super) fn finalize_log(lines: &[String]) -> Element<'_> {
+fn finalize_log(finalize: &FinalizeState) -> Element<'_> {
     let mut col = Column::new().spacing(2);
-    for line in lines {
+    for (level, message) in &finalize.alerts {
+        let (prefix, color) = match level {
+            LogLevel::Warning => ("warning:", warning_color as fn(&cosmic::Theme) -> Color),
+            LogLevel::Error => ("error:", destructive_color as fn(&cosmic::Theme) -> Color),
+            LogLevel::Debug => continue,
+        };
+        col = col.push(tinted(
+            text(format!("{prefix} {message}")).font(cosmic::font::mono()),
+            color,
+        ));
+    }
+    for line in &finalize.lines {
         col = col.push(text(line.clone()).font(cosmic::font::mono()));
     }
     container(scrollable(col).height(Length::Fixed(LOG_HEIGHT)))

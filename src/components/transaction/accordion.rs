@@ -37,8 +37,7 @@ pub(super) fn stage_row(section: Section<'_>, expanded: bool, index: usize) -> E
     let header = header_row(state, label, header_suffix);
 
     let content: Element<'_> = match state {
-        StageState::Pending => header,
-        StageState::Active => match content {
+        StageState::Pending | StageState::Active => match content {
             Some(content) => Column::new()
                 .spacing(6)
                 .push(header)

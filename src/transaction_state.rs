@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::time::Instant;
 
-use crate::events::{InstallEvent, PackageOp, ProgressPhase, TransactionSummary};
+use crate::events::{InstallEvent, LogLevel, PackageOp, ProgressPhase, TransactionSummary};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallKind {
@@ -101,6 +101,13 @@ pub struct InstallState {
 #[derive(Debug, Clone, Default)]
 pub struct FinalizeState {
     pub lines: Vec<String>,
+    pub alerts: Vec<(LogLevel, String)>,
+}
+
+impl FinalizeState {
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty() && self.alerts.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -262,6 +269,12 @@ fn apply_finalize(state: &mut FinalizeState, ev: &InstallEvent) {
                 state.lines.push(trimmed.to_string());
             }
         }
+        InstallEvent::Log { level, message } => {
+            let trimmed = message.trim_end();
+            if !trimmed.is_empty() && matches!(level, LogLevel::Warning | LogLevel::Error) {
+                state.alerts.push((*level, trimmed.to_string()));
+            }
+        }
         _ => {}
     }
 }
@@ -354,7 +367,9 @@ pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
         InstallEvent::Progress { phase, .. } if is_install_phase(phase) => {
             apply_install(&mut state.install, ev);
         }
-        InstallEvent::HookRun { .. } | InstallEvent::ScriptletInfo { .. } => {
+        InstallEvent::HookRun { .. }
+        | InstallEvent::ScriptletInfo { .. }
+        | InstallEvent::Log { .. } => {
             apply_finalize(&mut state.finalize, ev);
         }
         InstallEvent::RetrievingPackages { .. }
@@ -602,7 +617,9 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant)
         | DownloadProgress { .. }
         | DownloadRetry { .. }
         | DownloadCompleted { .. } => apply_download(&mut state.download, ev),
-        HookRun { .. } | ScriptletInfo { .. } => apply_finalize(&mut state.finalize, ev),
+        HookRun { .. } | ScriptletInfo { .. } | Log { .. } => {
+            apply_finalize(&mut state.finalize, ev)
+        }
         _ => {}
     }
     if !state.build_order.is_empty()
@@ -736,12 +753,19 @@ pub fn next_sysupgrade_step(
 mod tests {
     use super::*;
     use crate::events::{
-        DownloadResult, InstallEvent, PackageOp, ProgressPhase, TransactionSummary,
+        DownloadResult, InstallEvent, LogLevel, PackageOp, ProgressPhase, TransactionSummary,
     };
     use crate::install::ChildOutcome;
 
     fn fresh_repo_state() -> RepoState {
         RepoState::default()
+    }
+
+    fn log(level: LogLevel, message: &str) -> InstallEvent {
+        InstallEvent::Log {
+            level,
+            message: message.to_string(),
+        }
     }
 
     #[test]
@@ -919,6 +943,23 @@ mod tests {
         );
         assert_eq!(state.resolve_step(), 3);
         assert!(state.manifest.is_some());
+    }
+
+    #[test]
+    fn apply_repo_counters_collects_log_alerts() {
+        let mut state = fresh_repo_state();
+        apply_repo_counters(&mut state, &log(LogLevel::Warning, "dep cycle\n"));
+        apply_repo_counters(&mut state, &log(LogLevel::Debug, "noise\n"));
+        apply_repo_counters(&mut state, &log(LogLevel::Error, "  \n"));
+        apply_repo_counters(&mut state, &log(LogLevel::Error, "unknown key\n"));
+        assert_eq!(
+            state.finalize.alerts,
+            [
+                (LogLevel::Warning, "dep cycle".to_string()),
+                (LogLevel::Error, "unknown key".to_string())
+            ]
+        );
+        assert!(state.finalize.lines.is_empty());
     }
 
     #[test]
