@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use cosmic::iced::{Background, Border, Color, Length};
-use cosmic::widget::{Column, Row, button, checkbox, container, radio, scrollable, space, text};
+use cosmic::widget::{Column, button, checkbox, container, dialog, radio, scrollable, text};
 use pakajo::question::{ProviderCandidate, QuestionSet};
 
 use super::TransactionMessage;
@@ -58,11 +58,10 @@ impl ReviewModel {
     }
 
     pub(crate) fn view(&self, name: &str) -> Element<'_> {
-        let title = format!("Review installation of {}", name);
-        let mut col = Column::new().spacing(16).push(text(title));
+        let mut body = Column::new().spacing(16);
 
         if !self.qs.conflicts.is_empty() {
-            col = col.push(text("Conflicts"));
+            body = body.push(text("Conflicts"));
             for (i, conflict) in self.qs.conflicts.iter().enumerate() {
                 let label = format!("Replace {} with {}", conflict.removable, conflict.incoming);
                 let checked = self.conflict_checks.get(i).copied().unwrap_or(false);
@@ -71,14 +70,14 @@ impl ReviewModel {
                         ReviewMessage::ToggleConflict(i),
                     ))
                 });
-                col = col.push(item);
+                body = body.push(item);
             }
         }
 
         if !self.qs.providers.is_empty() {
-            col = col.push(text("Providers"));
+            body = body.push(text("Providers"));
             for prompt in &self.qs.providers {
-                col = col.push(text(prompt.depend.clone()));
+                body = body.push(text(prompt.depend.clone()));
                 let selected = self
                     .provider_choices
                     .get(&prompt.depend)
@@ -95,20 +94,31 @@ impl ReviewModel {
                             },
                         ))
                     });
-                    col = col.push(item);
+                    body = body.push(item);
                 }
             }
         }
 
         if self.qs.had_unsupported_question {
-            col = col.push(unsupported_banner(&self.qs.unsupported_summary));
+            body = body.push(unsupported_banner(&self.qs.unsupported_summary));
         }
 
-        col = col.push(review_footer(self.approving));
-        container(scrollable(col))
-            .class(cosmic::theme::Container::Dialog(true))
-            .padding([24.0, 24.0])
-            .width(Length::Fixed(570.0))
+        let confirm = if self.approving {
+            button::suggested("Loading...")
+        } else {
+            button::suggested("Confirm").on_press(crate::Message::Transaction(
+                TransactionMessage::ApproveReview,
+            ))
+        };
+        let cancel = button::standard("Cancel").on_press(crate::Message::Transaction(
+            TransactionMessage::CancelReview,
+        ));
+
+        dialog()
+            .title(format!("Review installation of {name}"))
+            .control(scrollable(body).height(Length::Fixed(400.0)))
+            .primary_action(confirm)
+            .secondary_action(cancel)
             .into()
     }
 }
@@ -138,24 +148,5 @@ pub(crate) fn unsupported_banner(summary: &str) -> Element<'static> {
             },
             ..Default::default()
         })
-        .into()
-}
-
-fn review_footer(approving: bool) -> Element<'static> {
-    let cancel = button::standard("Cancel").on_press(crate::Message::Transaction(
-        TransactionMessage::CancelReview,
-    ));
-    let confirm = if approving {
-        button::standard("Loading...")
-    } else {
-        button::standard("Confirm").on_press(crate::Message::Transaction(
-            TransactionMessage::ApproveReview,
-        ))
-    };
-    Row::new()
-        .spacing(8)
-        .push(space::horizontal())
-        .push(cancel)
-        .push(confirm)
         .into()
 }

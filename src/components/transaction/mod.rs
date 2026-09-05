@@ -1,7 +1,8 @@
 use std::env::current_exe;
 
 use cosmic::app::Task;
-use cosmic::iced::stream::channel;
+use cosmic::iced::{Background, Color, Length, stream::channel};
+use cosmic::widget::container;
 use futures::{SinkExt as _, StreamExt as _, channel::oneshot};
 
 use pakajo::build::{BuildDecision, run_build};
@@ -434,10 +435,12 @@ impl Transaction {
     }
 
     pub(crate) fn dialog(&self) -> Option<Element<'_>> {
-        if let Some(r) = self.model.review.as_ref() {
-            return Some(r.view(&self.model.name));
-        }
-        self.model.pkgbuild_review.as_ref().map(|p| p.view())
+        let content = if let Some(r) = self.model.review.as_ref() {
+            r.view(&self.model.name)
+        } else {
+            self.model.pkgbuild_review.as_ref().map(|p| p.view())?
+        };
+        Some(dialog_backdrop(content))
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -458,4 +461,17 @@ impl Transaction {
     pub(crate) fn name(&self) -> &str {
         &self.model.name
     }
+}
+
+fn dialog_backdrop(content: Element<'_>) -> Element<'_> {
+    container(content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(|_theme: &cosmic::Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.5))),
+            ..Default::default()
+        })
+        .into()
 }

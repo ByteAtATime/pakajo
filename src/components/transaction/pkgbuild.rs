@@ -1,5 +1,5 @@
 use cosmic::iced::{Color, Length};
-use cosmic::widget::{Column, Row, button, container, scrollable, space, text};
+use cosmic::widget::{Column, Row, button, container, dialog, scrollable, text};
 
 use pakajo::pkgbuild::PkgbuildDiff;
 
@@ -51,17 +51,27 @@ impl PkgbuildModel {
             None => scrollable(text("No PKGBUILD to review")).height(Length::Fixed(400.0)),
         };
 
-        let col = Column::new()
-            .spacing(16)
-            .push(text("Review PKGBUILD"))
-            .push_maybe((self.diffs.len() > 1).then_some(tabs))
-            .push(body)
-            .push(pkgbuild_footer(self.current, self.diffs.len()));
+        let cancel = button::standard("Cancel").on_press(crate::Message::Transaction(
+            TransactionMessage::CancelPkgbuild,
+        ));
+        let primary = if self.current + 1 < self.diffs.len() {
+            button::suggested("Next").on_press(crate::Message::Transaction(
+                TransactionMessage::Pkgbuild(PkgbuildMessage::SelectTab(self.current + 1)),
+            ))
+        } else {
+            button::suggested("Accept").on_press(crate::Message::Transaction(
+                TransactionMessage::ApprovePkgbuild,
+            ))
+        };
 
-        container(col)
-            .class(cosmic::theme::Container::Dialog(true))
-            .padding([24.0, 24.0])
-            .width(Length::Fixed(570.0))
+        let mut review = dialog().title("Review PKGBUILD");
+        if self.diffs.len() > 1 {
+            review = review.control(tabs);
+        }
+        review
+            .control(body)
+            .primary_action(primary)
+            .secondary_action(cancel)
             .into()
     }
 }
@@ -110,25 +120,4 @@ fn tone_style(theme: &cosmic::Theme, tone: DiffTone) -> container::Style {
         text_color: Some(color),
         ..Default::default()
     }
-}
-
-fn pkgbuild_footer(current: usize, len: usize) -> Element<'static> {
-    let cancel = button::standard("Cancel").on_press(crate::Message::Transaction(
-        TransactionMessage::CancelPkgbuild,
-    ));
-    let right = if current + 1 < len {
-        button::standard("Next").on_press(crate::Message::Transaction(
-            TransactionMessage::Pkgbuild(PkgbuildMessage::SelectTab(current + 1)),
-        ))
-    } else {
-        button::standard("Accept").on_press(crate::Message::Transaction(
-            TransactionMessage::ApprovePkgbuild,
-        ))
-    };
-    Row::new()
-        .spacing(8)
-        .push(space::horizontal())
-        .push(cancel)
-        .push(right)
-        .into()
 }
