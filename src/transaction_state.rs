@@ -458,12 +458,22 @@ pub struct ResolvedDep {
     pub version: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildStatus {
+    Fetching,
+    Building,
+    Done,
+    Failed,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AurState {
     pub resolve_started: bool,
     pub deps: HashMap<String, ResolvedDep>,
     pub dep_order: Vec<String>,
     pub resolve_complete: bool,
+    pub builds: HashMap<String, BuildStatus>,
+    pub build_order: Vec<String>,
 }
 
 pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent) {
@@ -490,6 +500,23 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent) {
         }
         ResolutionComplete { .. } => {
             state.resolve_complete = true;
+        }
+        CloningRepo { package } => {
+            if !state.builds.contains_key(package) {
+                state.build_order.push(package.clone());
+                state.builds.insert(package.clone(), BuildStatus::Fetching);
+            }
+        }
+        BuildStarted { package } => {
+            if let Some(status) = state.builds.get_mut(package) {
+                *status = BuildStatus::Building;
+            }
+        }
+        BuildOutput { .. } => {}
+        BuildCompleted { package, .. } => {
+            if let Some(status) = state.builds.get_mut(package) {
+                *status = BuildStatus::Done;
+            }
         }
         _ => {}
     }

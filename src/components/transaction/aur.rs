@@ -1,13 +1,16 @@
 use std::borrow::Cow;
 
-use cosmic::widget::{Column, Row, scrollable, text};
-use pakajo::transaction_state::{AurStage, InstallKind, ResolvedDep, ordered_aur_stages};
+use cosmic::iced::alignment::Vertical;
+use cosmic::widget::{Column, Row, scrollable, space, text};
+use pakajo::transaction_state::{
+    AurStage, BuildStatus, InstallKind, ResolvedDep, ordered_aur_stages,
+};
 
 use super::SYSTEM_AUR_NAME;
 use super::accordion::{Section, action_footer, stage_row};
 use super::shared::{
-    ResolvedEntry, accent_color, muted, pill, resolve_empty_view, resolve_package_row,
-    resolve_single_suffix, success_color,
+    ResolvedEntry, accent_color, counter_suffix, muted, on_color, pill, resolve_empty_view,
+    resolve_package_row, resolve_single_suffix, success_color, tinted,
 };
 use super::state::{StageState, TransactionModel, TransactionStatus};
 use crate::Element;
@@ -27,7 +30,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
         let state = model.aur_stage_state(*stage);
         let section = match *stage {
             AurStage::Resolve => resolve_section(model, state),
-            AurStage::Build => pending_section("Build", state),
+            AurStage::Build => build_section(model, state),
             AurStage::Install => pending_section("Install", state),
             AurStage::Finalize => pending_section("Finalize", state),
         };
@@ -107,6 +110,85 @@ fn resolve_list_view(ordered: &[(&String, &ResolvedDep)]) -> Element<'static> {
     let mut col = Column::new().spacing(10);
     for (name, dep) in ordered {
         col = col.push(resolve_package_row(&aur_entry(name, dep)));
+    }
+    col.into()
+}
+
+fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
+    let mut section = Section {
+        label: "Build",
+        state,
+        content: None,
+        header_suffix: None,
+    };
+    let ordered: Vec<(&String, &BuildStatus)> = model
+        .aur
+        .build_order
+        .iter()
+        .filter_map(|name| model.aur.builds.get(name).map(|status| (name, status)))
+        .collect();
+    let done = ordered
+        .iter()
+        .filter(|(_, status)| **status == BuildStatus::Done)
+        .count();
+    match state {
+        StageState::Active => {
+            section.header_suffix = Some(counter_suffix(done, ordered.len(), "built"));
+            if !ordered.is_empty() {
+                section.content = Some(build_list_view(&ordered));
+            }
+        }
+        StageState::Done => {
+            if ordered.is_empty() {
+                section.content = Some(resolve_empty_view());
+                return section;
+            }
+            if ordered.len() == 1 {
+                let (name, _) = ordered[0];
+                section.header_suffix = Some(resolve_single_suffix(&build_entry(name)));
+                return section;
+            }
+            section.content = Some(build_list_view(&ordered));
+            section.header_suffix = Some(counter_suffix(done, ordered.len(), "built"));
+        }
+        _ => {}
+    }
+    section
+}
+
+fn build_entry(name: &str) -> ResolvedEntry<'_> {
+    ResolvedEntry {
+        qualified: Cow::Borrowed(name),
+        old_version: None,
+        new_version: None,
+        net_size: None,
+    }
+}
+
+fn build_status_word(status: BuildStatus) -> &'static str {
+    match status {
+        BuildStatus::Fetching => "fetching",
+        BuildStatus::Building => "building",
+        BuildStatus::Done => "done",
+        BuildStatus::Failed => "failed",
+    }
+}
+
+fn build_card(name: &str, status: BuildStatus) -> Element<'static> {
+    let left = tinted(text(name.to_string()).font(cosmic::font::mono()), on_color);
+    Row::new()
+        .align_y(Vertical::Center)
+        .spacing(8)
+        .push(left)
+        .push(space::horizontal())
+        .push(muted(text(build_status_word(status))))
+        .into()
+}
+
+fn build_list_view(ordered: &[(&String, &BuildStatus)]) -> Element<'static> {
+    let mut col = Column::new().spacing(10);
+    for (name, status) in ordered {
+        col = col.push(build_card(name, **status));
     }
     col.into()
 }

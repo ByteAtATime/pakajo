@@ -148,7 +148,22 @@ impl TransactionModel {
                     StageState::Active
                 }
             }
-            Build | Install | Finalize => StageState::Pending,
+            Build => {
+                if self.aur.build_order.is_empty() {
+                    StageState::Pending
+                } else if self
+                    .aur
+                    .build_order
+                    .iter()
+                    .filter_map(|name| self.aur.builds.get(name))
+                    .all(|status| *status == pakajo::transaction_state::BuildStatus::Done)
+                {
+                    StageState::Done
+                } else {
+                    StageState::Active
+                }
+            }
+            Install | Finalize => StageState::Pending,
         }
     }
 }
