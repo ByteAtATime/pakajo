@@ -597,7 +597,7 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant)
                 let segment = line.rsplit('\r').next().unwrap_or("");
                 let stripped = crate::color::ansi_strip(segment);
                 if !stripped.trim().is_empty() {
-                    entry.tail.push(stripped);
+                    entry.tail.push(segment.to_string());
                     if entry.tail.len() > BUILD_TAIL_LIMIT {
                         entry.tail.remove(0);
                     }
@@ -1081,6 +1081,30 @@ mod tests {
         );
         let entry = state.builds.get("yay").expect("yay present");
         assert_eq!(entry.tail.last().expect("tail nonempty"), " 100%");
+    }
+
+    #[test]
+    fn build_tail_stores_raw_ansi_verbatim() {
+        let mut state = AurState::default();
+        let now = Instant::now();
+        apply_aur_counters(
+            &mut state,
+            &InstallEvent::CloningRepo {
+                package: "yay".to_string(),
+            },
+            now,
+        );
+        let raw = "\x1b[1m==>\x1b[0m pkg";
+        apply_aur_counters(
+            &mut state,
+            &InstallEvent::BuildOutput {
+                package: "yay".to_string(),
+                line: raw.to_string(),
+            },
+            now,
+        );
+        let entry = state.builds.get("yay").expect("yay present");
+        assert_eq!(entry.tail, vec![raw.to_string()]);
     }
 
     #[test]

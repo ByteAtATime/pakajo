@@ -1,8 +1,8 @@
 use std::io::IsTerminal;
 use std::sync::LazyLock;
 
-static ANSI_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-9;?]*[A-Za-z]|\(B)")
+pub(crate) static ANSI_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-9;:?]*[A-Za-z]|\(B)")
         .expect("valid ansi strip regex")
 });
 

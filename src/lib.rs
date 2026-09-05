@@ -1,3 +1,4 @@
+pub mod ansi;
 pub mod answerer;
 pub mod aur;
 pub mod build;
