@@ -3,7 +3,6 @@ use std::collections::hash_map::Entry;
 use std::time::Instant;
 
 use crate::events::{InstallEvent, PackageOp, ProgressPhase, TransactionSummary};
-use crate::install::InstallProgress;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallKind {
@@ -143,22 +142,6 @@ fn is_install_phase(phase: &ProgressPhase) -> bool {
     matches!(phase, Add | Upgrade | Downgrade | Reinstall | Remove)
 }
 
-#[derive(Debug, Clone)]
-pub struct AurState {
-    pub manifest: Option<TransactionSummary>,
-    pub stage: AurStage,
-    pub building: Option<String>,
-    pub cloning: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CellState {
-    Done,
-    Active,
-    Failed,
-    Pending,
-}
-
 pub fn event_stage(ev: &InstallEvent) -> Option<RepoStage> {
     use InstallEvent::*;
     use RepoStage::*;
@@ -227,30 +210,6 @@ pub fn aur_event_stage(ev: &InstallEvent) -> Option<AurStage> {
         },
         TransactionDone | HookRun { .. } | ScriptletInfo { .. } => Some(Finalize),
         _ => None,
-    }
-}
-
-pub fn cell_state(status: &InstallProgress, current_idx: usize, idx: usize) -> CellState {
-    match status {
-        InstallProgress::Completed => CellState::Done,
-        InstallProgress::Failed(_) => {
-            if idx < current_idx {
-                CellState::Done
-            } else if idx == current_idx {
-                CellState::Failed
-            } else {
-                CellState::Pending
-            }
-        }
-        _ => {
-            if idx < current_idx {
-                CellState::Done
-            } else if idx == current_idx {
-                CellState::Active
-            } else {
-                CellState::Pending
-            }
-        }
     }
 }
 
@@ -558,7 +517,6 @@ mod tests {
     use super::*;
     use crate::events::{DownloadResult, InstallEvent, PackageOp, ProgressPhase};
     use crate::install::ChildOutcome;
-    use crate::install::InstallProgress;
     use std::collections::HashMap;
 
     #[test]
@@ -711,39 +669,6 @@ mod tests {
             install_packages: HashMap::new(),
             finalize_lines: Vec::new(),
         }
-    }
-
-    #[test]
-    fn cell_state_completed_is_done_for_any_index() {
-        assert_eq!(
-            cell_state(&InstallProgress::Completed, 0, 0),
-            CellState::Done
-        );
-        assert_eq!(
-            cell_state(&InstallProgress::Completed, 2, 5),
-            CellState::Done
-        );
-    }
-
-    #[test]
-    fn cell_state_failed_partitions_by_current_index() {
-        let status = InstallProgress::Failed("boom".to_string());
-        assert_eq!(cell_state(&status, 2, 0), CellState::Done);
-        assert_eq!(cell_state(&status, 2, 2), CellState::Failed);
-        assert_eq!(cell_state(&status, 2, 3), CellState::Pending);
-    }
-
-    #[test]
-    fn cell_state_running_partitions_by_current_index() {
-        assert_eq!(cell_state(&InstallProgress::Running, 2, 0), CellState::Done);
-        assert_eq!(
-            cell_state(&InstallProgress::Running, 2, 2),
-            CellState::Active
-        );
-        assert_eq!(
-            cell_state(&InstallProgress::Running, 2, 3),
-            CellState::Pending
-        );
     }
 
     #[test]
