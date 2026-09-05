@@ -27,13 +27,10 @@ fn finalize_log(finalize: &FinalizeState) -> Element<'_> {
             LogLevel::Error => ("error:", destructive_color as fn(&cosmic::Theme) -> Color),
             LogLevel::Debug => continue,
         };
-        col = col.push(tinted(
-            text(format!("{prefix} {message}")).font(cosmic::font::mono()),
-            color,
-        ));
+        col = col.push(tinted(text::monotext(format!("{prefix} {message}")), color));
     }
     for line in &finalize.lines {
-        col = col.push(text(line.clone()).font(cosmic::font::mono()));
+        col = col.push(text::monotext(line.clone()));
     }
     container(scrollable(col).height(Length::Fixed(LOG_HEIGHT)))
         .width(Length::Fill)

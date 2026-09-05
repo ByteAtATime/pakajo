@@ -396,10 +396,10 @@ impl crate::PakajoApp {
 
         if !preview.aur.is_empty() {
             let mut aur_col = Column::new().spacing(8);
-            aur_col = aur_col.push(
-                text(format!("AUR packages to build ({})", preview.aur.len()))
-                    .font(cosmic::font::semibold()),
-            );
+            aur_col = aur_col.push(text::caption_heading(format!(
+                "AUR packages to build ({})",
+                preview.aur.len()
+            )));
             for candidate in &preview.aur {
                 aur_col = aur_col.push(aur_upgrade_row(candidate));
             }
@@ -532,7 +532,7 @@ fn manifest_section(summary: &TransactionSummary) -> Element<'_> {
     let mut card = Column::new().spacing(10);
 
     let mut top = Row::new().align_y(Alignment::Center).spacing(8);
-    top = top.push(text(counts_left).font(cosmic::font::semibold()));
+    top = top.push(text::heading(counts_left));
     top = top.push(space::horizontal());
     if let Some(download) = download_right {
         top = top.push(muted(download));
@@ -560,7 +560,7 @@ fn manifest_section(summary: &TransactionSummary) -> Element<'_> {
 
 fn blocked_banner(failure: &PrepareFailure) -> Element<'static> {
     let mut col = Column::new().spacing(6);
-    col = col.push(text("Cannot complete this upgrade").font(cosmic::font::semibold()));
+    col = col.push(text::heading("Cannot complete this upgrade"));
     match failure {
         PrepareFailure::Unsatisfied(deps) => {
             for dep in deps {

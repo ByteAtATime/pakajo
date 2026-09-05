@@ -202,11 +202,7 @@ fn build_progress_suffix(
 }
 
 fn elapsed_label(duration: std::time::Duration) -> Element<'static> {
-    muted(
-        text(format_elapsed(duration))
-            .font(cosmic::font::mono())
-            .size(12.0),
-    )
+    muted(text::monotext(format_elapsed(duration)))
 }
 
 fn tail_view(tail: &[String], lines: usize) -> Element<'static> {
@@ -296,7 +292,6 @@ fn build_line_element(line: &str) -> Element<'static> {
         .collect();
     Rich::with_spans(spans)
         .font(cosmic::font::mono())
-        .size(12.0)
         .width(Length::Fill)
         .class(cosmic::theme::Text::Custom(tail_default_style))
         .into()
@@ -384,10 +379,5 @@ fn aur_finalize_section(model: &TransactionModel, state: StageState) -> Section<
 }
 
 fn failure_note(message: &str) -> Element<'static> {
-    tinted(
-        text(message.to_string())
-            .font(cosmic::font::mono())
-            .size(12.0),
-        destructive_color,
-    )
+    tinted(text::monotext(message.to_string()), destructive_color)
 }

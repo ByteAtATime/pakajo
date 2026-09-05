@@ -178,7 +178,7 @@ pub fn search_input_id() -> Id {
 }
 
 fn filter_pill(label: &str, value: SearchFilter, selected: bool) -> Element<'static> {
-    let mut pill = button::custom(text(label.to_string()).size(13))
+    let mut pill = button::custom(text::caption(label.to_string()))
         .on_press(crate::Message::Search(SearchMessage::FilterChanged(value)))
         .padding([2, 8]);
     if selected {
@@ -209,7 +209,7 @@ pub fn search_status_bar<'a>(
                 .spacing(8)
                 .align_y(Alignment::Center)
                 .padding([0.0, cosmic::theme::spacing().space_s as f32])
-                .push(text(header_text).size(13))
+                .push(text::caption_heading(header_text))
                 .push(space::horizontal())
                 .push(filter_pill(
                     "All",
@@ -326,14 +326,11 @@ pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool)
         .spacing(8)
         .align_y(Alignment::Center)
         .push(
-            text(result.name.clone())
-                .font(cosmic::font::bold())
-                .size(16)
+            crate::components::row_title(result.name.clone())
                 .class(cosmic::theme::Text::Color(name_color)),
         )
         .push(
-            text(result.version.clone())
-                .size(13)
+            text::monotext(result.version.clone())
                 .width(Length::Fill)
                 .wrapping(cosmic::iced::widget::text::Wrapping::None)
                 .ellipsize(cosmic::iced::widget::text::Ellipsize::End(
@@ -352,7 +349,7 @@ pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool)
                 .size(16)
         }))
         .push(
-            container(text(repo.to_string()).size(12))
+            container(text::caption(repo.to_string()))
                 .padding([2, 6])
                 .class(cosmic::theme::Container::custom(
                     move |theme: &cosmic::Theme| cosmic::iced::widget::container::Style {

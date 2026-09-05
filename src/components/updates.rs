@@ -90,8 +90,25 @@ pub fn destructive<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> El
     themed_text(content, destructive_text_style)
 }
 
-pub fn success<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
-    themed_text(content, success_text_style)
+pub fn themed_mono_text<'a>(
+    content: impl Into<std::borrow::Cow<'a, str>> + 'a,
+    style_fn: fn(&cosmic::Theme) -> cosmic::iced::widget::text::Style,
+) -> Element<'a> {
+    text::monotext(content)
+        .class(cosmic::theme::Text::Custom(style_fn))
+        .into()
+}
+
+pub fn muted_mono<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
+    themed_mono_text(content, muted_text_style)
+}
+
+pub fn destructive_mono<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
+    themed_mono_text(content, destructive_text_style)
+}
+
+pub fn success_mono<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
+    themed_mono_text(content, success_text_style)
 }
 
 pub fn colored_version_delta(old: &str, new: &str) -> Element<'static> {
@@ -101,11 +118,15 @@ pub fn colored_version_delta(old: &str, new: &str) -> Element<'static> {
         .spacing(4)
         .push(
             Row::new()
-                .push(muted(common.clone()))
-                .push(destructive(old_suffix)),
+                .push(muted_mono(common.clone()))
+                .push(destructive_mono(old_suffix)),
         )
         .push(text(" \u{2192} "))
-        .push(Row::new().push(muted(common)).push(success(new_suffix)))
+        .push(
+            Row::new()
+                .push(muted_mono(common))
+                .push(success_mono(new_suffix)),
+        )
         .into()
 }
 
@@ -114,9 +135,9 @@ pub fn aur_version_delta<'a>(candidate: &'a AurUpgradeCandidate) -> Element<'a> 
         Row::new()
             .align_y(Alignment::Center)
             .spacing(4)
-            .push(success(&candidate.local_version))
+            .push(success_mono(&candidate.local_version))
             .push(text(" \u{2192} "))
-            .push(success("latest-commit"))
+            .push(success_mono("latest-commit"))
             .into()
     } else {
         colored_version_delta(&candidate.local_version, &candidate.remote_version)
@@ -126,7 +147,7 @@ pub fn aur_version_delta<'a>(candidate: &'a AurUpgradeCandidate) -> Element<'a> 
 pub fn repo_upgrade_row(r: &RepoUpgrade) -> Element<'_> {
     let left = Row::new()
         .spacing(6)
-        .push(text(&r.name).font(cosmic::font::semibold()))
+        .push(crate::components::row_title(r.name.clone()))
         .push(muted(&r.repo));
     let right = Row::new()
         .spacing(8)
@@ -148,7 +169,7 @@ pub fn aur_upgrade_row(c: &AurUpgradeCandidate) -> Element<'_> {
         .align_y(Alignment::Center)
         .width(Length::Fill)
         .spacing(12)
-        .push(text(&c.name).font(cosmic::font::semibold()))
+        .push(crate::components::row_title(c.name.clone()))
         .push(Space::new().width(Length::Fill))
         .push(aur_version_delta(c))
         .into()
@@ -158,7 +179,7 @@ pub fn updates_section_header(title: &str) -> Element<'static> {
     Column::new()
         .spacing(4)
         .push(Space::new().height(16.0))
-        .push(text(title.to_string()).font(cosmic::font::semibold()))
+        .push(text::heading(title.to_string()))
         .into()
 }
 

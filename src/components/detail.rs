@@ -99,14 +99,14 @@ pub fn detail_view<'a>(
 fn render_group<'a>(name: &'a str, members: &'a [GroupMember]) -> Element<'a> {
     let mut col = Column::new()
         .spacing(12)
-        .push(text(name.to_string()).font(cosmic::font::bold()).size(22.0))
+        .push(text::title3(name.to_string()))
         .push(divider::horizontal::default());
 
     for member in members {
         let mut row = Row::new()
             .spacing(8)
             .align_y(Alignment::Center)
-            .push(text(member.name.clone()).font(cosmic::font::semibold()))
+            .push(crate::components::row_title(member.name.clone()))
             .push_maybe(member.description.as_ref().map(|d| muted(d.clone())));
 
         if member.installed {
@@ -220,8 +220,8 @@ fn render_header<'a>(
     let title_row = Row::new()
         .spacing(12)
         .align_y(Alignment::Center)
-        .push(text(formatted_name).font(cosmic::font::bold()).size(24.0))
-        .push(muted(&pkg.version))
+        .push(text::title3(formatted_name))
+        .push(muted_mono(&pkg.version))
         .push(Space::new().width(Length::Fill))
         .push(actions);
 
@@ -363,7 +363,7 @@ fn render_opt_dependencies<'a>(pkg: &'a Package) -> Element<'a> {
         let row = Row::new()
             .align_y(Alignment::Center)
             .width(Length::Fill)
-            .push(text(dep.name.clone()).font(cosmic::font::semibold()))
+            .push(crate::components::row_title(dep.name.clone()))
             .push(Space::new().width(Length::Fill))
             .push_maybe(dep.reason.as_ref().map(|r| muted(r.clone())));
 
@@ -400,7 +400,7 @@ fn info_item<'a>(icon: Element<'a>, label: String) -> Element<'a> {
 }
 
 fn badge_tag<'a>(label: String, color_fn: fn(&cosmic::Theme) -> Color) -> Element<'a> {
-    container(text(label).size(13.0).wrapping(Wrapping::None))
+    container(text::caption(label).wrapping(Wrapping::None))
         .padding([4.0, 8.0])
         .style(move |theme: &cosmic::Theme| {
             let c = color_fn(theme);
@@ -418,7 +418,7 @@ fn badge_tag<'a>(label: String, color_fn: fn(&cosmic::Theme) -> Color) -> Elemen
 }
 
 fn secondary_tag<'a>(label: String) -> Element<'a> {
-    container(text(label).size(13.0))
+    container(text::caption(label))
         .padding([4.0, 8.0])
         .style(|theme: &cosmic::Theme| {
             let cosmic = theme.cosmic();
@@ -440,7 +440,7 @@ fn secondary_tag<'a>(label: String) -> Element<'a> {
 fn section_header<'a>(title: String) -> Element<'a> {
     Column::new()
         .spacing(4)
-        .push(text(title).font(cosmic::font::semibold()).size(14.0))
+        .push(text::heading(title))
         .push(divider::horizontal::default())
         .into()
 }
@@ -462,16 +462,24 @@ fn card_style(theme: &cosmic::Theme) -> container::Style {
     }
 }
 
+fn muted_style(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
+    let mut on = Color::from(theme.cosmic().background(false).on);
+    on.a = 0.6;
+    cosmic::iced::widget::text::Style {
+        color: Some(on),
+        ..Default::default()
+    }
+}
+
 fn muted<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
     text(content)
-        .class(cosmic::theme::Text::Custom(|theme| {
-            let mut on = Color::from(theme.cosmic().background(false).on);
-            on.a = 0.6;
-            cosmic::iced::widget::text::Style {
-                color: Some(on),
-                ..Default::default()
-            }
-        }))
+        .class(cosmic::theme::Text::Custom(muted_style))
+        .into()
+}
+
+fn muted_mono<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
+    text::monotext(content)
+        .class(cosmic::theme::Text::Custom(muted_style))
         .into()
 }
 

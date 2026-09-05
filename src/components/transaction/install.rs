@@ -82,13 +82,10 @@ fn install_single_suffix(state: &InstallState) -> Element<'_> {
 }
 
 fn version_label(pkg: &InstallPackage) -> Element<'static> {
-    muted(
-        text(version_change(
-            pkg.old_version.as_deref(),
-            pkg.new_version.as_deref(),
-        ))
-        .font(cosmic::font::mono()),
-    )
+    muted(text::monotext(version_change(
+        pkg.old_version.as_deref(),
+        pkg.new_version.as_deref(),
+    )))
 }
 
 fn package_row<'a>(name: &'a str, pkg: &'a InstallPackage) -> Element<'a> {

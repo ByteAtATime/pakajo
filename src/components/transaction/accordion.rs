@@ -144,11 +144,7 @@ fn header_row<'a>(
     label: &'static str,
     suffix: Option<Element<'a>>,
 ) -> Element<'a> {
-    let label_widget = match state {
-        StageState::Active => text(label).font(cosmic::font::bold()).size(18.0),
-        StageState::Done => text(label).font(cosmic::font::semibold()),
-        _ => text(label),
-    };
+    let label_widget = text::title4(label);
     let label_color_fn: fn(&cosmic::Theme) -> Color = match state {
         StageState::Done => on_color,
         StageState::Active => accent_color,

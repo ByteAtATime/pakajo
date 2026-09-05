@@ -76,7 +76,7 @@ enum DiffTone {
 pub(crate) fn diff_lines_column(diff: &PkgbuildDiff) -> Element<'_> {
     let mut lines = Column::new().spacing(0);
     for line in diff.diff.lines() {
-        let line_widget = text(line.to_string()).font(cosmic::font::mono());
+        let line_widget = text::monotext(line.to_string());
         let element: Element<'_> = match diff_tone(line) {
             Some(tone) => container(line_widget)
                 .style(move |theme: &cosmic::Theme| tone_style(theme, tone))

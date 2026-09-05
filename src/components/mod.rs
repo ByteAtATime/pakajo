@@ -4,3 +4,9 @@ pub mod search;
 pub mod sysupgrade;
 pub mod transaction;
 pub mod updates;
+
+pub fn row_title<'a>(
+    content: impl Into<std::borrow::Cow<'a, str>> + 'a,
+) -> cosmic::widget::text::Text<'a, cosmic::Theme, cosmic::Renderer> {
+    cosmic::widget::text::body(content).font(cosmic::font::semibold())
+}

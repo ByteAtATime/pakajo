@@ -13,7 +13,7 @@ use crate::components::icons::circle_check;
 const STREAM_ROW_HEIGHT: f32 = 36.0;
 
 pub(super) fn mono_text(name: &str) -> Element<'static> {
-    tinted(text(name.to_string()).font(cosmic::font::mono()), on_color)
+    tinted(text::monotext(name.to_string()), on_color)
 }
 
 fn file_name(filename: &str) -> Element<'static> {
@@ -296,9 +296,13 @@ pub(crate) struct ResolvedEntry<'a> {
 
 pub(crate) fn resolve_package_row(entry: &ResolvedEntry<'_>) -> Element<'static> {
     let left = mono_text(&entry.qualified);
-    let mut right = Row::new().align_y(Vertical::Center).spacing(8).push(muted(
-        text(version_change(entry.old_version, entry.new_version)).font(cosmic::font::mono()),
-    ));
+    let mut right = Row::new()
+        .align_y(Vertical::Center)
+        .spacing(8)
+        .push(muted(text::monotext(version_change(
+            entry.old_version,
+            entry.new_version,
+        ))));
     if let Some(net) = entry.net_size {
         right = right.push(text(format_signed_bytes(net)));
     }
@@ -321,7 +325,7 @@ pub(crate) fn resolve_single_suffix(entry: &ResolvedEntry<'_>) -> Element<'stati
     let mut row = Row::new()
         .align_y(Vertical::Center)
         .spacing(8)
-        .push(muted(text(name_version).font(cosmic::font::mono())));
+        .push(muted(text::monotext(name_version)));
     if let Some(net) = entry.net_size {
         let size_color: fn(&cosmic::Theme) -> Color = if net >= 0 {
             accent_color
