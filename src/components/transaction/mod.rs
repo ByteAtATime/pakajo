@@ -23,6 +23,8 @@ pub(crate) use state::{TransactionModel, TransactionStatus};
 
 mod accordion;
 
+mod download;
+
 mod finalize;
 
 mod install;

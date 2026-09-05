@@ -1,12 +1,12 @@
 use cosmic::widget::{Column, scrollable, text};
-use pakajo::transaction_state::{InstallKind, RepoStage, RepoState};
+use pakajo::transaction_state::{InstallKind, RepoStage};
 
-use super::accordion::{Section, action_footer, stage_row};
+use super::accordion::{action_footer, stage_row};
+use super::download::download_section;
 use super::finalize::finalize_section;
 use super::install::install_section;
 use super::resolve::resolve_section;
-use super::shared::download_view;
-use super::state::{StageState, TransactionModel, TransactionStatus};
+use super::state::{TransactionModel, TransactionStatus};
 use super::validate::validate_section;
 use crate::Element;
 
@@ -20,22 +20,12 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
     for (i, stage) in model.stages.iter().enumerate() {
         let state = model.stage_state(i);
         let expanded = model.expanded.contains(&i);
-        let section = if *stage == RepoStage::Resolve {
-            resolve_section(&model.repo_state, state)
-        } else if *stage == RepoStage::Validate {
-            validate_section(&model.repo_state, state)
-        } else if *stage == RepoStage::Install {
-            install_section(&model.repo_state, state)
-        } else if *stage == RepoStage::Finalize {
-            finalize_section(&model.repo_state, state)
-        } else {
-            Section {
-                label: stage_label(*stage),
-                state,
-                content: (state == StageState::Active)
-                    .then(|| active_view(&model.repo_state, *stage)),
-                header_suffix: None,
-            }
+        let section = match *stage {
+            RepoStage::Resolve => resolve_section(&model.repo_state, state),
+            RepoStage::Validate => validate_section(&model.repo_state, state),
+            RepoStage::Download => download_section(&model.repo_state, state),
+            RepoStage::Install => install_section(&model.repo_state, state),
+            RepoStage::Finalize => finalize_section(&model.repo_state, state),
         };
         panels = panels.push(stage_row(section, expanded, i));
     }
@@ -44,21 +34,4 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
         col = col.push(action_footer());
     }
     scrollable(col).into()
-}
-
-fn active_view(state: &RepoState, stage: RepoStage) -> Element<'_> {
-    match stage {
-        RepoStage::Download => download_view(&state.download),
-        _ => text(format!("running phase {}", stage_label(stage))).into(),
-    }
-}
-
-fn stage_label(stage: RepoStage) -> &'static str {
-    match stage {
-        RepoStage::Resolve => "Resolve",
-        RepoStage::Validate => "Validate",
-        RepoStage::Download => "Download",
-        RepoStage::Install => "Install",
-        RepoStage::Finalize => "Finalize",
-    }
 }

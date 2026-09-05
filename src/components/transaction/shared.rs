@@ -284,6 +284,10 @@ fn compact_view(state: &DownloadState) -> Element<'_> {
     col.into()
 }
 
+pub(super) fn counter_suffix(done: usize, total: usize, unit: &str) -> Element<'static> {
+    muted(text(format!("{done} / {total} {unit}")))
+}
+
 pub(super) fn download_view(state: &DownloadState) -> Element<'_> {
     if state.total < 4 {
         return rich_view(state);

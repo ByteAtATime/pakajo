@@ -10,7 +10,8 @@ use crate::components::icons::circle_check;
 
 use super::accordion::Section;
 use super::shared::{
-    accent_color, destructive_color, muted, on_color, pill, success_color, tinted, version_change,
+    accent_color, counter_suffix, destructive_color, muted, on_color, pill, success_color, tinted,
+    version_change,
 };
 use super::state::StageState;
 
@@ -69,7 +70,7 @@ fn install_counter_suffix(state: &InstallState, done: bool) -> Element<'_> {
     } else {
         state.packages.values().filter(|pkg| pkg.completed).count()
     };
-    muted(text(format!("{finished} / {total} packages")))
+    counter_suffix(finished, total, "packages")
 }
 
 fn install_single_suffix(state: &InstallState) -> Element<'_> {
