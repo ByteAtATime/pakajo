@@ -1,7 +1,6 @@
 use cosmic::iced::alignment::Vertical;
-use cosmic::iced::widget::progress_bar;
 use cosmic::iced::{Color, Length};
-use cosmic::widget::{Column, Row, container, space, text};
+use cosmic::widget::{Column, Row, space, text};
 use pakajo::events::PackageOp;
 use pakajo::transaction_state::{InstallPackage, InstallState};
 
@@ -10,33 +9,25 @@ use crate::components::icons::circle_check;
 
 use super::accordion::Section;
 use super::shared::{
-    accent_color, counter_suffix, destructive_color, muted, on_color, pill, success_color, tinted,
-    version_change,
+    accent_color, counter_suffix, destructive_color, mono_text, muted, pill, success_color,
+    thin_bar, tinted, version_change,
 };
 use super::state::StageState;
 
 const GROUP_GAP: f32 = 8.0;
 
 pub(super) fn install_section(install: &InstallState, state: StageState) -> Section<'_> {
-    let mut section = Section {
-        label: "Install",
-        state,
-        content: None,
-        header_suffix: None,
-    };
+    let mut section = Section::new("Install", state);
     match state {
         StageState::Done if install.order.len() == 1 => {
             section.header_suffix = Some(install_single_suffix(install));
         }
-        StageState::Active if !install.order.is_empty() => {
-            section.content = Some(install_view(install, false));
+        StageState::Active | StageState::Done if !install.order.is_empty() => {
+            let done = state == StageState::Done;
+            section.content = Some(install_view(install, done));
             if install.order.len() > 1 {
-                section.header_suffix = Some(install_counter_suffix(install, false));
+                section.header_suffix = Some(install_counter_suffix(install, done));
             }
-        }
-        StageState::Done if !install.order.is_empty() => {
-            section.content = Some(install_view(install, true));
-            section.header_suffix = Some(install_counter_suffix(install, true));
         }
         _ => {}
     }
@@ -84,37 +75,36 @@ fn install_single_suffix(state: &InstallState) -> Element<'_> {
     Row::new()
         .align_y(Vertical::Center)
         .spacing(8)
-        .push(package_name(name))
-        .push(muted(
-            text(version_change(
-                pkg.old_version.as_deref(),
-                pkg.new_version.as_deref(),
-            ))
-            .font(cosmic::font::mono()),
-        ))
+        .push(mono_text(name))
+        .push(version_label(pkg))
         .push(op_pill(pkg.operation))
         .into()
+}
+
+fn version_label(pkg: &InstallPackage) -> Element<'static> {
+    muted(
+        text(version_change(
+            pkg.old_version.as_deref(),
+            pkg.new_version.as_deref(),
+        ))
+        .font(cosmic::font::mono()),
+    )
 }
 
 fn package_row<'a>(name: &'a str, pkg: &'a InstallPackage) -> Element<'a> {
     let top = Row::new()
         .align_y(Vertical::Center)
         .spacing(8)
-        .push(package_name(name))
-        .push(muted(
-            text(version_change(
-                pkg.old_version.as_deref(),
-                pkg.new_version.as_deref(),
-            ))
-            .font(cosmic::font::mono()),
-        ))
+        .push(mono_text(name))
+        .push(version_label(pkg))
         .push(space::horizontal())
         .push(op_pill(pkg.operation))
         .push(tinted(text(format!("{:.0}%", pkg.percent)), accent_color));
-    let bar = progress_bar(0.0..=100.0, pkg.percent)
-        .length(Length::Fill)
-        .girth(6.0);
-    Column::new().spacing(6).push(top).push(bar).into()
+    Column::new()
+        .spacing(6)
+        .push(top)
+        .push(thin_bar(pkg.percent))
+        .into()
 }
 
 fn completed_row<'a>(name: &'a str, pkg: &'a InstallPackage) -> Element<'a> {
@@ -122,25 +112,10 @@ fn completed_row<'a>(name: &'a str, pkg: &'a InstallPackage) -> Element<'a> {
         .align_y(Vertical::Center)
         .spacing(8)
         .push(cosmic::widget::icon(circle_check()).size(14))
-        .push(package_name(name))
-        .push(muted(
-            text(version_change(
-                pkg.old_version.as_deref(),
-                pkg.new_version.as_deref(),
-            ))
-            .font(cosmic::font::mono()),
-        ))
+        .push(mono_text(name))
+        .push(version_label(pkg))
         .push(space::horizontal())
         .push(op_pill(pkg.operation))
-        .into()
-}
-
-fn package_name(name: &str) -> Element<'static> {
-    container(text(name.to_string()).font(cosmic::font::mono()))
-        .style(|t: &cosmic::Theme| container::Style {
-            text_color: Some(on_color(t)),
-            ..Default::default()
-        })
         .into()
 }
 

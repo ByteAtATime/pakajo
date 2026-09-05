@@ -5,30 +5,17 @@ use super::shared::{counter_suffix, download_view};
 use super::state::StageState;
 
 pub(super) fn download_section(repo: &RepoState, state: StageState) -> Section<'_> {
+    let mut section = Section::new("Download", state);
     if repo.download.total == 0 {
-        return Section {
-            label: "Download",
-            state,
-            content: None,
-            header_suffix: None,
-        };
+        return section;
     }
-    match state {
-        StageState::Active | StageState::Done => Section {
-            label: "Download",
-            state,
-            content: Some(download_view(&repo.download)),
-            header_suffix: Some(counter_suffix(
-                repo.download.done,
-                repo.download.total,
-                "packages",
-            )),
-        },
-        _ => Section {
-            label: "Download",
-            state,
-            content: None,
-            header_suffix: None,
-        },
+    if matches!(state, StageState::Active | StageState::Done) {
+        section.content = Some(download_view(&repo.download));
+        section.header_suffix = Some(counter_suffix(
+            repo.download.done,
+            repo.download.total,
+            "packages",
+        ));
     }
+    section
 }

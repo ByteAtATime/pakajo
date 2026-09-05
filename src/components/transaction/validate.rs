@@ -11,16 +11,13 @@ use super::shared::muted;
 use super::state::StageState;
 
 pub(super) fn validate_section(repo: &RepoState, state: StageState) -> Section<'_> {
-    Section {
-        label: "Validate",
-        state,
-        content: None,
-        header_suffix: match state {
-            StageState::Active => Some(validate_suffix(repo, false)),
-            StageState::Done => Some(validate_suffix(repo, true)),
-            _ => None,
-        },
-    }
+    let mut section = Section::new("Validate", state);
+    section.header_suffix = match state {
+        StageState::Active => Some(validate_suffix(repo, false)),
+        StageState::Done => Some(validate_suffix(repo, true)),
+        _ => None,
+    };
+    section
 }
 
 fn validate_suffix(repo: &RepoState, done: bool) -> Element<'_> {

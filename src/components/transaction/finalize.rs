@@ -12,12 +12,11 @@ use super::state::StageState;
 const LOG_HEIGHT: f32 = 200.0;
 
 pub(super) fn finalize_section(finalize: &FinalizeState, state: StageState) -> Section<'_> {
-    Section {
-        label: "Finalize",
-        state,
-        content: (!finalize.is_empty()).then(|| finalize_log(finalize)),
-        header_suffix: None,
+    let mut section = Section::new("Finalize", state);
+    if !finalize.is_empty() {
+        section.content = Some(finalize_log(finalize));
     }
+    section
 }
 
 fn finalize_log(finalize: &FinalizeState) -> Element<'_> {

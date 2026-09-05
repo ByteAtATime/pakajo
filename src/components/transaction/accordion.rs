@@ -5,7 +5,7 @@ use crate::Element;
 use crate::components::divider::divider;
 use cosmic::iced::alignment::Vertical;
 use cosmic::iced::{Background, Border, Color, Length, Shadow};
-use cosmic::widget::{Column, Row, button, container, space, text};
+use cosmic::widget::{Column, Row, button, container, scrollable, space, text};
 
 pub(super) fn action_footer() -> Element<'static> {
     let header_divider = divider();
@@ -23,6 +23,33 @@ pub(super) struct Section<'a> {
     pub(super) state: StageState,
     pub(super) content: Option<Element<'a>>,
     pub(super) header_suffix: Option<Element<'a>>,
+}
+
+impl<'a> Section<'a> {
+    pub(super) fn new(label: &'static str, state: StageState) -> Self {
+        Self {
+            label,
+            state,
+            content: None,
+            header_suffix: None,
+        }
+    }
+}
+
+pub(super) fn sections_view(
+    title: String,
+    sections: Vec<(Section<'_>, bool)>,
+    finished: bool,
+) -> Element<'_> {
+    let mut panels = Column::new().spacing(6);
+    for (i, (section, expanded)) in sections.into_iter().enumerate() {
+        panels = panels.push(stage_row(section, expanded, i));
+    }
+    let mut col = Column::new().spacing(16).push(text(title)).push(panels);
+    if finished {
+        col = col.push(action_footer());
+    }
+    scrollable(col).into()
 }
 
 pub(super) fn stage_row(section: Section<'_>, expanded: bool, index: usize) -> Element<'_> {
@@ -45,19 +72,16 @@ pub(super) fn stage_row(section: Section<'_>, expanded: bool, index: usize) -> E
                 .into(),
             None => header,
         },
-        StageState::Failed => match content {
-            Some(detail) => Column::new()
+        StageState::Failed => {
+            let mut col = Column::new()
                 .spacing(6)
                 .push(header)
-                .push(muted(text("failed")))
-                .push(detail)
-                .into(),
-            None => Column::new()
-                .spacing(6)
-                .push(header)
-                .push(muted(text("failed")))
-                .into(),
-        },
+                .push(muted(text("failed")));
+            if let Some(detail) = content {
+                col = col.push(detail);
+            }
+            col.into()
+        }
         StageState::Done => match content {
             Some(detail) if expanded || !has_suffix => toggle_detail(header, index, detail),
             Some(_) => done_toggle(header, index),
@@ -80,13 +104,18 @@ pub(super) fn stage_row(section: Section<'_>, expanded: bool, index: usize) -> E
 const GLYPH_GUTTER_WIDTH: f32 = 18.0;
 
 fn done_toggle(header: Element<'_>, index: usize) -> Element<'_> {
-    button::custom(header)
+    toggle_button(header, TransactionMessage::ToggleStage(index))
+}
+
+pub(super) fn toggle_button<'a>(
+    header: impl Into<Element<'a>>,
+    message: TransactionMessage,
+) -> Element<'a> {
+    button::custom(header.into())
         .padding([2.0, 0.0])
         .width(Length::Fill)
         .class(cosmic::theme::Button::Transparent)
-        .on_press(crate::Message::Transaction(
-            TransactionMessage::ToggleStage(index),
-        ))
+        .on_press(crate::Message::Transaction(message))
         .into()
 }
 
@@ -99,17 +128,11 @@ fn toggle_detail<'a>(header: Element<'a>, index: usize, detail: Element<'a>) -> 
 }
 
 fn stage_glyph(state: StageState) -> Element<'static> {
-    let glyph_text: &'static str = match state {
-        StageState::Done => "✓",
-        StageState::Active => "●",
-        StageState::Pending => "○",
-        StageState::Failed => "✗",
-    };
-    let glyph_color_fn: fn(&cosmic::Theme) -> Color = match state {
-        StageState::Done => accent_color,
-        StageState::Active => accent_color,
-        StageState::Pending => muted_color,
-        StageState::Failed => destructive_color,
+    let (glyph_text, glyph_color_fn): (&'static str, fn(&cosmic::Theme) -> Color) = match state {
+        StageState::Done => ("✓", accent_color),
+        StageState::Active => ("●", accent_color),
+        StageState::Pending => ("○", muted_color),
+        StageState::Failed => ("✗", destructive_color),
     };
     container(tinted(text(glyph_text), glyph_color_fn))
         .width(Length::Fixed(GLYPH_GUTTER_WIDTH))
@@ -152,60 +175,41 @@ fn stage_panel_style(theme: &cosmic::Theme, state: StageState) -> container::Sty
     let divider = Color::from(cosmic.background(false).divider);
     let on = Color::from(cosmic.background(false).on);
 
-    match state {
-        StageState::Active => {
-            let accent = Color::from(cosmic.accent.base);
-            container::Style {
-                text_color: Some(on),
-                background: Some(Background::Color(surface_base)),
-                border: Border {
-                    radius: 8.0.into(),
-                    width: 2.0,
-                    color: accent,
-                },
-                shadow: Shadow {
-                    color: Color { a: 0.10, ..accent },
-                    offset: Default::default(),
-                    blur_radius: 15.0,
-                },
-                ..Default::default()
-            }
-        }
-        StageState::Failed => {
-            let destructive = Color::from(cosmic.destructive.base);
-            container::Style {
-                text_color: Some(on),
-                background: Some(Background::Color(surface_base)),
-                border: Border {
-                    radius: 8.0.into(),
-                    width: 2.0,
-                    color: destructive,
-                },
-                ..Default::default()
-            }
-        }
-        StageState::Done => container::Style {
-            text_color: Some(on),
-            background: Some(Background::Color(surface_high)),
-            border: Border {
-                radius: 8.0.into(),
-                width: 1.0,
-                color: divider,
-            },
-            ..Default::default()
-        },
-        StageState::Pending => container::Style {
-            text_color: Some(Color { a: 0.5, ..on }),
-            background: Some(Background::Color(Color {
+    let accent = Color::from(cosmic.accent.base);
+    let destructive = Color::from(cosmic.destructive.base);
+    let (background, border_color, text_color) = match state {
+        StageState::Active => (surface_base, accent, on),
+        StageState::Failed => (surface_base, destructive, on),
+        StageState::Done => (surface_high, divider, on),
+        StageState::Pending => (
+            Color {
                 a: 0.35,
                 ..surface_mid
-            })),
-            border: Border {
-                radius: 8.0.into(),
-                width: 1.0,
-                color: Color { a: 0.4, ..divider },
             },
-            ..Default::default()
+            Color { a: 0.4, ..divider },
+            Color { a: 0.5, ..on },
+        ),
+    };
+    let mut style = container::Style {
+        text_color: Some(text_color),
+        background: Some(Background::Color(background)),
+        border: Border {
+            radius: 8.0.into(),
+            width: if matches!(state, StageState::Active | StageState::Failed) {
+                2.0
+            } else {
+                1.0
+            },
+            color: border_color,
         },
+        ..Default::default()
+    };
+    if state == StageState::Active {
+        style.shadow = Shadow {
+            color: Color { a: 0.10, ..accent },
+            offset: Default::default(),
+            blur_radius: 15.0,
+        };
     }
+    style
 }

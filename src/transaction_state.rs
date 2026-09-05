@@ -385,46 +385,45 @@ pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent) {
 
 const DOWNLOAD_RATE_SAMPLE_MS: u128 = 200;
 
-fn update_download_rate(state: &mut DownloadState) {
+fn sample_rate(sync_time: &mut Option<Instant>, sync_done: &mut i64, current: i64, rate: &mut f64) {
     let now = Instant::now();
-    let sync_time = match state.sync_time {
+    let previous = match *sync_time {
         Some(t) => t,
         None => {
-            state.sync_time = Some(now);
-            state.sync_done = state.bytes_done;
+            *sync_time = Some(now);
+            *sync_done = current;
             return;
         }
     };
-    let timediff = now.duration_since(sync_time).as_millis();
+    let timediff = now.duration_since(previous).as_millis();
     if timediff < DOWNLOAD_RATE_SAMPLE_MS {
         return;
     }
-    let chunk = (state.bytes_done - state.sync_done).max(0);
-    state.sync_done = state.bytes_done;
-    state.sync_time = Some(now);
+    let chunk = (current - *sync_done).max(0);
+    *sync_done = current;
+    *sync_time = Some(now);
     let chunk_rate = chunk as f64 * 1000.0 / timediff as f64;
-    state.rate = (chunk_rate + 2.0 * state.rate) / 3.0;
+    *rate = (chunk_rate + 2.0 * *rate) / 3.0;
+}
+
+fn update_download_rate(state: &mut DownloadState) {
+    let current = state.bytes_done;
+    sample_rate(
+        &mut state.sync_time,
+        &mut state.sync_done,
+        current,
+        &mut state.rate,
+    );
 }
 
 fn update_file_rate(file: &mut DownloadFile) {
-    let now = Instant::now();
-    let sync_time = match file.sync_time {
-        Some(t) => t,
-        None => {
-            file.sync_time = Some(now);
-            file.sync_done = file.downloaded;
-            return;
-        }
-    };
-    let timediff = now.duration_since(sync_time).as_millis();
-    if timediff < DOWNLOAD_RATE_SAMPLE_MS {
-        return;
-    }
-    let chunk = (file.downloaded - file.sync_done).max(0);
-    file.sync_done = file.downloaded;
-    file.sync_time = Some(now);
-    let chunk_rate = chunk as f64 * 1000.0 / timediff as f64;
-    file.rate = (chunk_rate + 2.0 * file.rate) / 3.0;
+    let current = file.downloaded;
+    sample_rate(
+        &mut file.sync_time,
+        &mut file.sync_done,
+        current,
+        &mut file.rate,
+    );
 }
 
 fn ensure_download_file<'a>(state: &'a mut DownloadState, filename: &str) -> &'a mut DownloadFile {

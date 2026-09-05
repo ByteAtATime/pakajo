@@ -17,12 +17,7 @@ use super::shared::{
 use super::state::StageState;
 
 pub(super) fn resolve_section(repo: &RepoState, state: StageState) -> Section<'_> {
-    let mut section = Section {
-        label: "Resolve",
-        state,
-        content: None,
-        header_suffix: None,
-    };
+    let mut section = Section::new("Resolve", state);
     match state {
         StageState::Active => section.header_suffix = Some(resolve_active_view(repo)),
         StageState::Done => match repo.manifest.as_ref() {

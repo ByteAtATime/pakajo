@@ -155,20 +155,25 @@ impl TransactionModel {
         matches!(self.source, PackageSource::Aur) && self.kind != InstallKind::Remove
     }
 
+    fn aur_failed_at(&self, stage: AurStage) -> bool {
+        matches!(self.status, TransactionStatus::Done(_))
+            && !matches!(self.status, TransactionStatus::Done(ChildOutcome::Success))
+            && self.aur.last_aur_stage == Some(stage)
+    }
+
     pub(crate) fn aur_stage_state(&self, stage: AurStage) -> StageState {
         use AurStage::*;
         if matches!(self.status, TransactionStatus::Checking) {
             return StageState::Pending;
         }
         let done_success = matches!(self.status, TransactionStatus::Done(ChildOutcome::Success));
-        let done_failed = matches!(self.status, TransactionStatus::Done(_)) && !done_success;
         match stage {
             Resolve => {
                 if !self.aur.resolve_started {
                     StageState::Pending
                 } else if self.aur.resolve_complete {
                     StageState::Done
-                } else if done_failed {
+                } else if self.aur_failed_at(Resolve) {
                     StageState::Failed
                 } else {
                     StageState::Active
@@ -185,14 +190,14 @@ impl TransactionModel {
                     .all(|entry| entry.status == BuildStatus::Done)
                 {
                     StageState::Done
-                } else if done_failed && self.aur.last_aur_stage == Some(Build) {
+                } else if self.aur_failed_at(Build) {
                     StageState::Failed
                 } else {
                     StageState::Active
                 }
             }
             Install => {
-                if done_failed && self.aur.last_aur_stage == Some(Install) {
+                if self.aur_failed_at(Install) {
                     StageState::Failed
                 } else if done_success {
                     StageState::Done
@@ -206,7 +211,7 @@ impl TransactionModel {
                 }
             }
             Finalize => {
-                if done_failed && self.aur.last_aur_stage == Some(Finalize) {
+                if self.aur_failed_at(Finalize) {
                     StageState::Failed
                 } else if done_success {
                     StageState::Done

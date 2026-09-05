@@ -5,7 +5,7 @@ use std::time::Instant;
 use cosmic::iced::alignment::Vertical;
 use cosmic::iced::widget::text::{Rich, Span};
 use cosmic::iced::{Color, Length};
-use cosmic::widget::{Column, Row, button, scrollable, space, text};
+use cosmic::widget::{Column, Row, space, text};
 use pakajo::ansi::{self, AnsiColor, StyledSpan};
 use pakajo::transaction_state::{
     AurStage, BuildPackage, BuildStatus, InstallKind, ResolvedDep, ordered_aur_stages,
@@ -14,11 +14,11 @@ use pakajo::utils::format_elapsed;
 
 use super::SYSTEM_AUR_NAME;
 use super::TransactionMessage;
-use super::accordion::{Section, action_footer, stage_row};
+use super::accordion::{Section, sections_view, toggle_button};
 use super::finalize::finalize_section;
 use super::install::{install_section, install_view};
 use super::shared::{
-    ResolvedEntry, accent_color, counter_suffix, destructive_color, muted, muted_color, on_color,
+    ResolvedEntry, accent_color, counter_suffix, destructive_color, mono_text, muted, muted_color,
     pill, resolve_empty_view, resolve_package_row, resolve_single_suffix, success_color, tinted,
 };
 use super::state::{StageState, TransactionModel, TransactionStatus};
@@ -34,7 +34,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
             InstallKind::Upgrade => format!("Upgrading {}", model.name),
         }
     };
-    let mut panels = Column::new().spacing(6);
+    let mut sections = Vec::new();
     for (i, stage) in ordered_aur_stages().iter().enumerate() {
         let state = model.aur_stage_state(*stage);
         let mut section = match *stage {
@@ -52,22 +52,14 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
                 None => note,
             });
         }
-        panels = panels.push(stage_row(section, model.expanded.contains(&i), i));
+        sections.push((section, model.expanded.contains(&i)));
     }
-    let mut col = Column::new().spacing(16).push(text(title)).push(panels);
-    if matches!(model.status, TransactionStatus::Done(_)) {
-        col = col.push(action_footer());
-    }
-    scrollable(col).into()
+    let finished = matches!(model.status, TransactionStatus::Done(_));
+    sections_view(title, sections, finished)
 }
 
 fn resolve_section(model: &TransactionModel, state: StageState) -> Section<'_> {
-    let mut section = Section {
-        label: "Resolve",
-        state,
-        content: None,
-        header_suffix: None,
-    };
+    let mut section = Section::new("Resolve", state);
     let ordered: Vec<(&String, &ResolvedDep)> = model
         .aur
         .dep_order
@@ -133,12 +125,7 @@ fn resolve_list_view(ordered: &[(&String, &ResolvedDep)]) -> Element<'static> {
 }
 
 fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
-    let mut section = Section {
-        label: "Build",
-        state,
-        content: None,
-        header_suffix: None,
-    };
+    let mut section = Section::new("Build", state);
     let ordered: Vec<(&String, &BuildPackage)> = model
         .aur
         .build_order
@@ -151,16 +138,10 @@ fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
         .count();
     match state {
         StageState::Active => {
-            let mut suffix =
-                Row::new()
-                    .spacing(6)
-                    .push(counter_suffix(done, ordered.len(), "built"));
-            if let Some((_, first)) = ordered.first() {
-                suffix = suffix.push(elapsed_label(
-                    model.now.saturating_duration_since(first.started),
-                ));
-            }
-            section.header_suffix = Some(suffix.into());
+            let elapsed = ordered
+                .first()
+                .map(|(_, first)| model.now.saturating_duration_since(first.started));
+            section.header_suffix = Some(build_progress_suffix(&ordered, done, elapsed));
             if !ordered.is_empty() {
                 section.content = Some(build_list_view(&ordered, &model.expanded_cards, model.now));
             }
@@ -191,20 +172,12 @@ fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
                 section.header_suffix = Some(suffix.into());
                 return section;
             }
-            let mut suffix =
-                Row::new()
-                    .spacing(6)
-                    .push(counter_suffix(done, ordered.len(), "built"));
-            if let Some((_, first)) = ordered.first()
-                && let Some(duration) = model
-                    .aur
-                    .build_ended
-                    .map(|end| end.saturating_duration_since(first.started))
-            {
-                suffix = suffix.push(elapsed_label(duration));
-            }
+            let elapsed = match (ordered.first(), model.aur.build_ended) {
+                (Some((_, first)), Some(end)) => Some(end.saturating_duration_since(first.started)),
+                _ => None,
+            };
             section.content = Some(build_list_view(&ordered, &model.expanded_cards, model.now));
-            section.header_suffix = Some(suffix.into());
+            section.header_suffix = Some(build_progress_suffix(&ordered, done, elapsed));
         }
         StageState::Failed if !ordered.is_empty() => {
             section.content = Some(build_list_view(&ordered, &model.expanded_cards, model.now));
@@ -212,6 +185,20 @@ fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
         _ => {}
     }
     section
+}
+
+fn build_progress_suffix(
+    ordered: &[(&String, &BuildPackage)],
+    done: usize,
+    elapsed: Option<std::time::Duration>,
+) -> Element<'static> {
+    let mut suffix = Row::new()
+        .spacing(6)
+        .push(counter_suffix(done, ordered.len(), "built"));
+    if let Some(duration) = elapsed {
+        suffix = suffix.push(elapsed_label(duration));
+    }
+    suffix.into()
 }
 
 fn elapsed_label(duration: std::time::Duration) -> Element<'static> {
@@ -325,11 +312,10 @@ fn build_status_word(status: BuildStatus) -> &'static str {
 }
 
 fn build_card(name: &str, entry: &BuildPackage, expanded: bool, now: Instant) -> Element<'static> {
-    let left = tinted(text(name.to_string()).font(cosmic::font::mono()), on_color);
     let mut header_row = Row::new()
         .align_y(Vertical::Center)
         .spacing(8)
-        .push(left)
+        .push(mono_text(name))
         .push(space::horizontal())
         .push(muted(text(build_status_word(entry.status))));
     if let Some(duration) = match entry.status {
@@ -345,14 +331,8 @@ fn build_card(name: &str, entry: &BuildPackage, expanded: bool, now: Instant) ->
     if tail.is_empty() {
         return row;
     }
-    let header: Element<'static> = button::custom(row)
-        .padding([2.0, 0.0])
-        .width(Length::Fill)
-        .class(cosmic::theme::Button::Transparent)
-        .on_press(crate::Message::Transaction(
-            TransactionMessage::ToggleBuildCard(name.to_string()),
-        ))
-        .into();
+    let header: Element<'static> =
+        toggle_button(row, TransactionMessage::ToggleBuildCard(name.to_string()));
     if expanded || matches!(entry.status, BuildStatus::Fetching | BuildStatus::Building) {
         let lines = if expanded { usize::MAX } else { 5 };
         return Column::new()

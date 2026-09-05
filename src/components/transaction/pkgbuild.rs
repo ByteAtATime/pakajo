@@ -4,6 +4,7 @@ use cosmic::widget::{Column, Row, button, container, scrollable, space, text};
 use pakajo::pkgbuild::PkgbuildDiff;
 
 use super::TransactionMessage;
+use super::shared::muted_color;
 use crate::Element;
 
 #[derive(Clone, Debug)]
@@ -109,11 +110,6 @@ fn tone_style(theme: &cosmic::Theme, tone: DiffTone) -> container::Style {
         text_color: Some(color),
         ..Default::default()
     }
-}
-
-fn muted_color(theme: &cosmic::Theme) -> Color {
-    let on = Color::from(theme.cosmic().background(false).on);
-    Color { a: 0.5, ..on }
 }
 
 fn pkgbuild_footer(current: usize, len: usize) -> Element<'static> {

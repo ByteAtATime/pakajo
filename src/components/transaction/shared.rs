@@ -12,6 +12,21 @@ use crate::components::icons::circle_check;
 
 const STREAM_ROW_HEIGHT: f32 = 36.0;
 
+pub(super) fn mono_text(name: &str) -> Element<'static> {
+    tinted(text(name.to_string()).font(cosmic::font::mono()), on_color)
+}
+
+fn file_name(filename: &str) -> Element<'static> {
+    container(mono_text(filename)).width(Length::Fill).into()
+}
+
+pub(super) fn thin_bar(value: f32) -> Element<'static> {
+    progress_bar(0.0..=100.0, value)
+        .length(Length::Fill)
+        .girth(6.0)
+        .into()
+}
+
 pub(super) fn muted<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
     container(content)
         .style(|t: &cosmic::Theme| container::Style {
@@ -115,22 +130,13 @@ fn files_in_order(state: &DownloadState) -> impl Iterator<Item = (&str, &Downloa
 
 fn active_card(filename: &str, file: &DownloadFile) -> Element<'static> {
     let pct = percent(file.downloaded, file.total);
-    let name = text(filename.to_string()).font(cosmic::font::mono());
-    let name = container(name)
-        .width(Length::Fill)
-        .style(|t: &cosmic::Theme| container::Style {
-            text_color: Some(on_color(t)),
-            ..Default::default()
-        });
     let pct_text = tinted(text(format!("{:.0}%", pct)), accent_color);
     let top = Row::new()
         .align_y(Vertical::Center)
-        .push(name)
+        .push(file_name(filename))
         .push(space::horizontal())
         .push(pct_text);
-    let bar = progress_bar(0.0..=100.0, pct as f32)
-        .length(Length::Fill)
-        .girth(6.0);
+    let bar = thin_bar(pct as f32);
     let eta_str = eta(file.downloaded, file.total, file.rate);
     let bottom = Row::new()
         .align_y(Vertical::Center)
@@ -151,17 +157,11 @@ fn active_card(filename: &str, file: &DownloadFile) -> Element<'static> {
 }
 
 fn completed_row(filename: &str, file: &DownloadFile) -> Element<'static> {
-    let name_widget = container(text(filename.to_string()).font(cosmic::font::mono()))
-        .width(Length::Fill)
-        .style(|t: &cosmic::Theme| container::Style {
-            text_color: Some(on_color(t)),
-            ..Default::default()
-        });
     Row::new()
         .align_y(Vertical::Center)
         .spacing(8)
         .push(cosmic::widget::icon(circle_check()).size(14))
-        .push(name_widget)
+        .push(file_name(filename))
         .push(space::horizontal())
         .push(muted(text(format_bytes(file.total))))
         .into()
@@ -195,12 +195,7 @@ fn stream_row(filename: &str, file: &DownloadFile) -> Element<'static> {
         format_bytes(file.total),
         speed_str
     );
-    let name = container(text(filename.to_string()).font(cosmic::font::mono()))
-        .width(Length::Fill)
-        .style(|t: &cosmic::Theme| container::Style {
-            text_color: Some(on_color(t)),
-            ..Default::default()
-        });
+    let name = file_name(filename);
     let foreground = Row::new()
         .align_y(Vertical::Center)
         .padding([0.0, 12.0])
@@ -251,9 +246,7 @@ fn compact_view(state: &DownloadState) -> Element<'_> {
         .push(space::horizontal())
         .push(tinted(text(format!("{:.0}%", pct)), accent_color));
 
-    let bar = progress_bar(0.0..=100.0, pct as f32)
-        .length(Length::Fill)
-        .girth(6.0);
+    let bar = thin_bar(pct as f32);
 
     let eta_str = eta(done, total, state.rate);
 
@@ -302,10 +295,7 @@ pub(crate) struct ResolvedEntry<'a> {
 }
 
 pub(crate) fn resolve_package_row(entry: &ResolvedEntry<'_>) -> Element<'static> {
-    let left = tinted(
-        text(entry.qualified.to_string()).font(cosmic::font::mono()),
-        on_color,
-    );
+    let left = mono_text(&entry.qualified);
     let mut right = Row::new().align_y(Vertical::Center).spacing(8).push(muted(
         text(version_change(entry.old_version, entry.new_version)).font(cosmic::font::mono()),
     ));
