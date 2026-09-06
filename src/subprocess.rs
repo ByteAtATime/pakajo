@@ -1,6 +1,6 @@
 use std::io::BufReader;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 
 use anyhow::Context as _;
 use futures::SinkExt as _;
@@ -114,13 +114,22 @@ impl InstallSink for ChannelSink {
     }
 }
 
+pub fn stream_child<S: InstallSink + ?Sized>(
+    mut child: Child,
+    sink: &mut S,
+) -> std::io::Result<ExitStatus> {
+    let stdout = child.stdout.take().expect("piped stdout");
+    read_event_stream(BufReader::new(stdout), sink);
+    Ok(child.wait()?)
+}
+
 pub fn run_job_to_channel(exe: PathBuf, job: ChildJob, mut tx: mpsc::Sender<StreamItem>) {
     let mut cmd = graphical_escalation_command(&exe.to_string_lossy());
     job.apply(&mut cmd);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
-    let mut child = match cmd.spawn() {
+    let child = match cmd.spawn() {
         Ok(child) => child,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             send_item(&mut tx, StreamItem::Done(ChildOutcome::NotFound));
@@ -134,10 +143,9 @@ pub fn run_job_to_channel(exe: PathBuf, job: ChildJob, mut tx: mpsc::Sender<Stre
             return;
         }
     };
-    let stdout = child.stdout.take().expect("piped stdout");
     let mut sink = ChannelSink::new(tx.clone());
-    read_event_stream(BufReader::new(stdout), &mut sink);
-    send_item(&mut tx, StreamItem::Done(map_outcome(child.wait())));
+    let status = stream_child(child, &mut sink);
+    send_item(&mut tx, StreamItem::Done(map_outcome(status)));
 }
 
 #[cfg(test)]

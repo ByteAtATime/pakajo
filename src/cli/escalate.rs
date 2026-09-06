@@ -1,16 +1,22 @@
-use std::io::BufReader;
 use std::process::{Child, Command, Stdio};
 
 use super::privs::{is_root, stdin_is_tty};
-use crate::events;
 use crate::subprocess::{ChildJob, spawn_escalated};
 
-fn run_escalated_child(mut child: Child, json: bool) -> anyhow::Result<i32> {
-    let stdout = child.stdout.take().expect("piped stdout");
+fn run_escalated_child(child: Child, json: bool) -> anyhow::Result<i32> {
     let mut sink = super::sink_for(json);
-    events::read_event_stream(BufReader::new(stdout), &mut *sink);
-    let status = child.wait()?;
+    let status = crate::subprocess::stream_child(child, &mut *sink)?;
     Ok(status.code().unwrap_or(1))
+}
+
+fn escalate_exit(result: anyhow::Result<i32>) -> i32 {
+    match result {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    }
 }
 
 pub fn escalate_result(
@@ -31,40 +37,27 @@ pub fn escalate_result(
 }
 
 pub fn escalate(targets: &[String], as_deps: bool, json: bool, approvals_b64: Option<&str>) -> ! {
-    let code = match escalate_result(targets, as_deps, json, approvals_b64) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    };
-    std::process::exit(code);
+    std::process::exit(escalate_exit(escalate_result(
+        targets,
+        as_deps,
+        json,
+        approvals_b64,
+    )))
 }
 
 pub fn escalate_remove(targets: &[String], json: bool) -> ! {
-    let child = match spawn_escalated(
+    let result = spawn_escalated(
         &ChildJob::Remove {
             targets: targets.to_vec(),
         },
         Stdio::inherit(),
-    ) {
-        Ok(child) => child,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    };
-    match run_escalated_child(child, json) {
-        Ok(code) => std::process::exit(code),
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    }
+    )
+    .and_then(|child| run_escalated_child(child, json));
+    std::process::exit(escalate_exit(result))
 }
 
 pub fn escalate_upgrade(no_refresh: bool, ignores: &[String], json: bool) -> i32 {
-    let child = match spawn_escalated(
+    let result = spawn_escalated(
         &ChildJob::Upgrade {
             no_refresh,
             ignores: ignores.to_vec(),
@@ -72,20 +65,9 @@ pub fn escalate_upgrade(no_refresh: bool, ignores: &[String], json: bool) -> i32
             approvals_b64: None,
         },
         Stdio::inherit(),
-    ) {
-        Ok(child) => child,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    };
-    match run_escalated_child(child, json) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    }
+    )
+    .and_then(|child| run_escalated_child(child, json));
+    escalate_exit(result)
 }
 
 pub trait PrivilegeEscalator {
