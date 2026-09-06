@@ -30,8 +30,8 @@ mod privs;
 use self::privs::{is_root, stdin_is_tty};
 
 mod escalate;
-pub use self::escalate::escalation_command;
 use self::escalate::{escalate, escalate_remove, escalate_result, escalate_upgrade};
+pub use self::escalate::{escalation_command, graphical_escalation_command};
 
 mod commands;
 use self::commands::{

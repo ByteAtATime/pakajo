@@ -1,17 +1,12 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use anyhow::Context as _;
-use futures::channel::mpsc;
 
 use crate::aur::AurInfo;
-use crate::cli::escalation_command;
 use crate::events::{InstallEvent, InstallSink, LogLevel, TransactionSummary, summaries_match};
-use crate::install::{
-    QuestionState, StreamItem, build_summary, register_callbacks, run_json_child,
-};
+use crate::install::{QuestionState, build_summary, register_callbacks};
 use crate::resolve::AurQuery;
 
 pub fn write_fingerprint_file(summary_bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
@@ -47,24 +42,6 @@ pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
             .context("failed to refresh sync DBs")?;
     }
     repo_sysupgrade_into(&mut handle, sink, answerer, preview.as_ref())
-}
-
-pub fn run_sysupgrade_process(
-    exe: PathBuf,
-    fingerprint_file: String,
-    tx: mpsc::Sender<StreamItem>,
-    approvals_b64: Option<String>,
-) {
-    let mut cmd = escalation_command(&exe.to_string_lossy());
-    cmd.arg("upgrade")
-        .arg("--json")
-        .arg("--repo-only")
-        .arg("--fingerprint-file")
-        .arg(&fingerprint_file);
-    if let Some(b64) = &approvals_b64 {
-        cmd.arg("--approvals").arg(b64);
-    }
-    run_json_child(cmd, tx);
 }
 
 pub fn apply_ignores(handle: &mut alpm::Alpm, config: &pacmanconf::Config, extra: &[String]) {

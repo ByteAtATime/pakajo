@@ -1,11 +1,10 @@
 use std::cell::RefCell;
-use std::process::Command;
 use std::rc::Rc;
 
 use anyhow::{Context, anyhow};
 
 use crate::events::InstallSink;
-use crate::install::{QuestionState, StreamItem, register_callbacks, run_json_child};
+use crate::install::{QuestionState, register_callbacks};
 
 pub fn run_remove<S: InstallSink + 'static, F: FnOnce() -> bool>(
     targets: &[String],
@@ -97,19 +96,6 @@ fn classify_prepare_error(err: alpm::PrepareError) -> anyhow::Error {
         Some(other) => anyhow!("trans_prepare failed: {other:?}"),
         None => anyhow!("trans_prepare failed: {}", err.error()),
     }
-}
-
-pub fn run_remove_process(
-    exe: std::path::PathBuf,
-    names: Vec<String>,
-    tx: futures::channel::mpsc::Sender<StreamItem>,
-) {
-    let mut cmd = Command::new(&exe);
-    cmd.arg("remove").arg("--json");
-    for name in &names {
-        cmd.arg(name);
-    }
-    run_json_child(cmd, tx);
 }
 
 pub fn spawn_remove_child(targets: &[String]) -> anyhow::Result<std::process::Child> {

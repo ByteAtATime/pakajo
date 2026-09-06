@@ -8,13 +8,12 @@ use futures::{SinkExt as _, StreamExt as _};
 use pakajo::build::{BuildDecision, run_build};
 use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
 use pakajo::events::InstallEvent;
-use pakajo::install::{ChildOutcome, StreamItem, run_install_process};
+use pakajo::install::{ChildOutcome, StreamItem};
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::progress::{InstallKind, SysupgradePhase};
 use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
-use pakajo::remove::run_remove_process;
-use pakajo::upgrade::run_sysupgrade_process;
+use pakajo::subprocess::{ChannelSink, ChildJob, run_job_to_channel, send_item};
 
 use crate::Element;
 
@@ -99,34 +98,11 @@ fn classify_outcome(
         ChildOutcome::Success => NextInstallState::Completed,
         ChildOutcome::Dismissed => NextInstallState::Cancelled,
         ChildOutcome::NotFound => NextInstallState::Failed {
-            message: "install child not found".to_string(),
+            message: "pkexec not found".to_string(),
         },
         ChildOutcome::Failed(message) => NextInstallState::Failed {
             message: message.clone(),
         },
-    }
-}
-
-enum StreamedLaunch {
-    Install {
-        name: String,
-        approvals: Option<String>,
-    },
-    Remove {
-        name: String,
-    },
-    SysupgradeRepo {
-        fingerprint: String,
-        approvals: Option<String>,
-    },
-}
-
-struct CosmicBuildSink {
-    tx: futures::channel::mpsc::Sender<StreamItem>,
-}
-impl pakajo::events::InstallSink for CosmicBuildSink {
-    fn event(&mut self, event: InstallEvent) {
-        let _ = self.tx.try_send(StreamItem::Event(event));
     }
 }
 
@@ -357,18 +333,21 @@ impl Transaction {
 
     fn launch_subprocess(&mut self, approvals_b64: Option<String>) -> Action {
         let name = self.model.name.clone();
-        self.launch_streamed(StreamedLaunch::Install {
-            name,
-            approvals: approvals_b64,
+        self.launch_streamed(ChildJob::Install {
+            targets: vec![name],
+            as_deps: false,
+            approvals_b64,
         })
     }
 
     fn launch_remove_subprocess(&mut self) -> Action {
         let name = self.model.name.clone();
-        self.launch_streamed(StreamedLaunch::Remove { name })
+        self.launch_streamed(ChildJob::Remove {
+            targets: vec![name],
+        })
     }
 
-    fn launch_streamed(&mut self, launch: StreamedLaunch) -> Action {
+    fn launch_streamed(&mut self, job: ChildJob) -> Action {
         let exe = match current_exe() {
             Ok(exe) => exe,
             Err(e) => {
@@ -377,20 +356,9 @@ impl Transaction {
             }
         };
         self.model.status = TransactionStatus::Running;
-        let stream = match launch {
-            StreamedLaunch::Install { name, approvals } => spawn_transaction_stream(move |tx| {
-                run_install_process(exe, vec![name], tx, approvals);
-            }),
-            StreamedLaunch::Remove { name } => spawn_transaction_stream(move |tx| {
-                run_remove_process(exe, vec![name], tx);
-            }),
-            StreamedLaunch::SysupgradeRepo {
-                fingerprint,
-                approvals,
-            } => spawn_transaction_stream(move |tx| {
-                run_sysupgrade_process(exe, fingerprint, tx, approvals);
-            }),
-        };
+        let stream = spawn_transaction_stream(move |tx| {
+            run_job_to_channel(exe, job, tx);
+        });
         Action::Run(stream)
     }
 
@@ -405,9 +373,11 @@ impl Transaction {
                 InstallKind::Upgrade,
             ),
         };
-        let task = match transaction.launch_streamed(StreamedLaunch::SysupgradeRepo {
-            fingerprint: fingerprint_file,
-            approvals: approvals_b64,
+        let task = match transaction.launch_streamed(ChildJob::Upgrade {
+            no_refresh: false,
+            ignores: vec![],
+            fingerprint_file: Some(fingerprint_file),
+            approvals_b64,
         }) {
             Action::Run(task) => task,
             _ => Task::none(),
@@ -423,7 +393,7 @@ impl Transaction {
         );
         model.status = TransactionStatus::Running;
         let stream = spawn_transaction_stream(move |mut raw_tx| {
-            let mut sink = CosmicBuildSink { tx: raw_tx.clone() };
+            let mut sink = ChannelSink::new(raw_tx.clone());
             let result = run_build(
                 &targets,
                 false,
@@ -437,7 +407,7 @@ impl Transaction {
                 Ok(()) => ChildOutcome::Success,
                 Err(e) => ChildOutcome::Failed(format!("{e:#}")),
             };
-            let _ = raw_tx.try_send(StreamItem::Done(outcome));
+            send_item(&mut raw_tx, StreamItem::Done(outcome));
         });
         (Self { model }, stream)
     }
@@ -530,7 +500,7 @@ mod tests {
                 None,
                 Vec::new(),
                 NextInstallState::Failed {
-                    message: "install child not found".to_string(),
+                    message: "pkexec not found".to_string(),
                 },
             ),
             (

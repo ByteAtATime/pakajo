@@ -131,6 +131,10 @@ pub fn escalation_command(exe: &str) -> Command {
     select_privilege_escalator(is_root(), stdin_is_tty()).build_command(exe)
 }
 
+pub fn graphical_escalation_command(exe: &str) -> Command {
+    select_privilege_escalator(is_root(), false).build_command(exe)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

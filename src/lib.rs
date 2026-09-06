@@ -23,6 +23,7 @@ pub mod search;
 pub mod srcinfo_io;
 pub mod stats;
 pub mod stub_pkg;
+pub mod subprocess;
 pub mod updates;
 pub mod upgrade;
 pub mod utils;

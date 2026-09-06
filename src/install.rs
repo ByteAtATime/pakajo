@@ -1,11 +1,10 @@
 use std::cell::RefCell;
 use std::io;
 use std::path::PathBuf;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
 use std::rc::Rc;
 
 use anyhow::{Context, anyhow};
-use futures::channel::mpsc;
 
 use alpm::DownloadResult as AlpmDownloadResult;
 use alpm::LogLevel as AlpmLogLevel;
@@ -472,73 +471,6 @@ fn convert_log_level(level: AlpmLogLevel) -> Option<LogLevel> {
     } else {
         None
     }
-}
-
-fn send_with_retry(tx: &mut mpsc::Sender<StreamItem>, item: StreamItem) {
-    let mut item = item;
-    loop {
-        match tx.try_send(item) {
-            Ok(()) => return,
-            Err(err) if err.is_disconnected() => return,
-            Err(err) => {
-                item = err.into_inner();
-                std::thread::yield_now();
-            }
-        }
-    }
-}
-
-struct ChannelSink<'a> {
-    tx: &'a mut mpsc::Sender<StreamItem>,
-}
-
-impl<'a> InstallSink for ChannelSink<'a> {
-    fn event(&mut self, event: InstallEvent) {
-        send_with_retry(self.tx, StreamItem::Event(event));
-    }
-}
-
-pub fn run_json_child(mut cmd: Command, mut tx: mpsc::Sender<StreamItem>) {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            send_with_retry(&mut tx, StreamItem::Done(ChildOutcome::NotFound));
-            return;
-        }
-        Err(err) => {
-            send_with_retry(
-                &mut tx,
-                StreamItem::Done(ChildOutcome::Failed(err.to_string())),
-            );
-            return;
-        }
-    };
-    let stdout = child.stdout.take().expect("piped");
-    crate::events::read_event_stream(
-        std::io::BufReader::new(stdout),
-        &mut ChannelSink { tx: &mut tx },
-    );
-    send_with_retry(&mut tx, StreamItem::Done(map_outcome(child.wait())));
-}
-
-pub fn run_install_process(
-    exe: PathBuf,
-    names: Vec<String>,
-    tx: mpsc::Sender<StreamItem>,
-    approvals_b64: Option<String>,
-) {
-    let mut cmd = Command::new(&exe);
-    cmd.arg("install").arg("--json");
-    if let Some(b64) = &approvals_b64 {
-        cmd.arg("--approvals").arg(b64);
-    }
-    for name in &names {
-        cmd.arg(name);
-    }
-    run_json_child(cmd, tx);
 }
 
 pub fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
