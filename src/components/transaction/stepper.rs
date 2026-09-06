@@ -26,6 +26,7 @@ pub(super) struct Section<'a> {
     pub(super) state: StageState,
     pub(super) content: Option<Element<'a>>,
     pub(super) header_suffix: Option<Element<'a>>,
+    pub(super) toggle_index: usize,
 }
 
 impl<'a> Section<'a> {
@@ -35,7 +36,13 @@ impl<'a> Section<'a> {
             state,
             content: None,
             header_suffix: None,
+            toggle_index: 0,
         }
+    }
+
+    pub(super) fn with_toggle_index(mut self, index: usize) -> Self {
+        self.toggle_index = index;
+        self
     }
 }
 
@@ -49,7 +56,14 @@ pub(super) fn sections_view(
     let mut panels = Column::new();
     for (i, (section, expanded)) in sections.into_iter().enumerate() {
         let prev_state = if i > 0 { Some(states[i - 1]) } else { None };
-        panels = panels.push(stage_row(section, expanded, i, prev_state, i + 1 < count));
+        let toggle_index = section.toggle_index;
+        panels = panels.push(stage_row(
+            section,
+            expanded,
+            toggle_index,
+            prev_state,
+            i + 1 < count,
+        ));
     }
     let mut col = Column::new()
         .spacing(16)
@@ -74,6 +88,7 @@ pub(super) fn stage_row(
         state,
         content,
         header_suffix,
+        toggle_index: _,
     } = section;
     let gutter = stage_gutter(state, prev_state, has_next);
     let has_suffix = header_suffix.is_some();

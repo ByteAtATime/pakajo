@@ -1,25 +1,31 @@
 use std::borrow::Cow;
 
+use cosmic::iced::Length;
 use cosmic::iced::alignment::Vertical;
-use cosmic::iced::{Background, Border, Color, Length};
-use cosmic::widget::{Column, Row, container, text};
+use cosmic::iced::widget::progress_bar;
+use cosmic::widget::{Column, Row, text};
 use pakajo::events::{SummaryPackage, TransactionSummary, target_version};
-use pakajo::progress::RepoState;
+use pakajo::progress::{RepoState, VALIDATE_TOTAL};
 use pakajo::utils::format_bytes;
 
 use crate::Element;
 
 use super::shared::{
-    ResolvedEntry, accent_color, format_signed_bytes, muted, muted_color, pill, resolve_empty_view,
+    ResolvedEntry, accent_color, format_signed_bytes, muted, pill, resolve_empty_view,
     resolve_package_row, resolve_single_suffix, success_color,
 };
 use super::state::StageState;
 use super::stepper::Section;
 
-pub(super) fn resolve_section(repo: &RepoState, state: StageState) -> Section<'_> {
-    let mut section = Section::new("Resolve", state);
+pub(super) fn prepare_section(repo: &RepoState, state: StageState) -> Section<'_> {
+    let mut section = Section::new("Prepare", state);
     match state {
-        StageState::Active => section.header_suffix = Some(resolve_active_view(repo)),
+        StageState::Active => {
+            section.header_suffix = Some(prepare_active_view(repo));
+            if let Some(summary) = repo.manifest.as_ref() {
+                section.content = Some(resolve_done_view(summary));
+            }
+        }
         StageState::Done => match repo.manifest.as_ref() {
             Some(summary) if summary.packages.len() == 1 => {
                 section.header_suffix = Some(single_package_suffix(&summary.packages[0]));
@@ -35,12 +41,32 @@ pub(super) fn resolve_section(repo: &RepoState, state: StageState) -> Section<'_
     section
 }
 
-fn resolve_active_view(state: &RepoState) -> Element<'_> {
-    match state.resolve_step() {
-        0 => status_row("Preparing...", None),
-        1 => status_row("Resolving dependencies...", Some(1)),
-        _ => status_row("Checking dependencies...", Some(2)),
-    }
+fn prepare_active_view(repo: &RepoState) -> Element<'_> {
+    let validate_count = repo.validate.count();
+    let units = (repo.resolve.started as usize) + (repo.resolve.checking as usize) + validate_count;
+    let total = 2 + VALIDATE_TOTAL;
+    let pct = units as f32 / total as f32 * 100.0;
+    let label = if validate_count > 0 {
+        format!(
+            "{} ({}/{})",
+            repo.validate.label, validate_count, VALIDATE_TOTAL
+        )
+    } else if repo.resolve.checking {
+        "Checking dependencies...".to_string()
+    } else if repo.resolve.started {
+        "Resolving dependencies...".to_string()
+    } else {
+        "Preparing...".to_string()
+    };
+    let bar = progress_bar(0.0..=100.0, pct)
+        .length(Length::Fixed(120.0))
+        .girth(6.0);
+    Row::new()
+        .align_y(Vertical::Center)
+        .spacing(8)
+        .push(muted(text(label)))
+        .push(bar)
+        .into()
 }
 
 fn resolve_done_view(summary: &TransactionSummary) -> Element<'_> {
@@ -54,47 +80,6 @@ fn resolve_done_view(summary: &TransactionSummary) -> Element<'_> {
         col = col.push(resolve_package_row(&summary_entry(pkg)));
     }
     col.into()
-}
-
-fn status_row(label: &str, done_dots: Option<usize>) -> Element<'_> {
-    let mut row = Row::new()
-        .align_y(Vertical::Center)
-        .spacing(8)
-        .push(muted(text(label)));
-    if let Some(done) = done_dots {
-        row = row.push(step_dots(done));
-    }
-    row.into()
-}
-
-fn step_dots(done: usize) -> Element<'static> {
-    let mut row = Row::new().align_y(Vertical::Center).spacing(6);
-    for i in 0..3 {
-        row = row.push(step_dot(i, done));
-    }
-    row.into()
-}
-
-fn step_dot(index: usize, done: usize) -> Element<'static> {
-    let color_fn: fn(&cosmic::Theme) -> Color = if index < done {
-        success_color
-    } else if index == done {
-        accent_color
-    } else {
-        muted_color
-    };
-    container(text(""))
-        .width(Length::Fixed(8.0))
-        .height(Length::Fixed(8.0))
-        .style(move |theme: &cosmic::Theme| container::Style {
-            background: Some(Background::Color(color_fn(theme))),
-            border: Border {
-                radius: theme.cosmic().corner_radii.radius_xs.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into()
 }
 
 fn single_package_suffix(pkg: &SummaryPackage) -> Element<'_> {

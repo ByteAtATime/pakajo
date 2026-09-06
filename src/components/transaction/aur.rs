@@ -50,6 +50,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
                 None => note,
             });
         }
+        let section = section.with_toggle_index(i);
         sections.push((section, model.expanded.contains(&i)));
     }
     let finished = matches!(model.status, TransactionStatus::Done(_));
