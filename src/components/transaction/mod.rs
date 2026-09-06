@@ -28,8 +28,6 @@ mod accordion;
 
 mod aur;
 
-mod download;
-
 mod finalize;
 
 mod install;
@@ -40,8 +38,6 @@ mod resolve;
 
 mod shared;
 pub(crate) use shared::format_signed_bytes;
-
-mod validate;
 
 mod pkgbuild;
 pub(crate) use pkgbuild::diff_lines_column;

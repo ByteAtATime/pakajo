@@ -1,3 +1,4 @@
+pub(crate) mod ansi;
 pub mod detail;
 pub mod icons;
 pub mod search;
