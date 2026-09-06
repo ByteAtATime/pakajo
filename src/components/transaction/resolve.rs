@@ -9,12 +9,12 @@ use pakajo::utils::format_bytes;
 
 use crate::Element;
 
-use super::accordion::Section;
 use super::shared::{
     ResolvedEntry, accent_color, format_signed_bytes, muted, muted_color, pill, resolve_empty_view,
     resolve_package_row, resolve_single_suffix, success_color,
 };
 use super::state::StageState;
+use super::stepper::Section;
 
 pub(super) fn resolve_section(repo: &RepoState, state: StageState) -> Section<'_> {
     let mut section = Section::new("Resolve", state);

@@ -4,12 +4,12 @@ use cosmic::iced::widget::progress_bar;
 use cosmic::widget::{Row, text};
 use pakajo::progress::{InstallKind, RepoStage, RepoState, VALIDATE_TOTAL};
 
-use super::accordion::{Section, sections_view};
 use super::finalize::finalize_section;
 use super::install::install_section;
 use super::resolve::resolve_section;
 use super::shared::{counter_suffix, download_view, muted};
 use super::state::{StageState, TransactionModel, TransactionStatus};
+use super::stepper::{Section, sections_view};
 use crate::Element;
 
 pub(super) fn view(model: &TransactionModel) -> Element<'_> {

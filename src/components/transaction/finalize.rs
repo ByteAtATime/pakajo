@@ -5,9 +5,9 @@ use pakajo::progress::FinalizeState;
 
 use crate::Element;
 
-use super::accordion::Section;
 use super::shared::{destructive_color, tinted, warning_color};
 use super::state::StageState;
+use super::stepper::Section;
 
 const LOG_HEIGHT: f32 = 200.0;
 

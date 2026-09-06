@@ -7,12 +7,12 @@ use pakajo::progress::{InstallPackage, InstallState};
 use crate::Element;
 use crate::components::icons::circle_check;
 
-use super::accordion::Section;
 use super::shared::{
     accent_color, counter_suffix, destructive_color, mono_text, muted, pill, success_color,
     thin_bar, tinted, version_change,
 };
 use super::state::StageState;
+use super::stepper::Section;
 
 const GROUP_GAP: f32 = 8.0;
 

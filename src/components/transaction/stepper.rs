@@ -3,8 +3,10 @@ use super::shared::{accent_color, destructive_color, muted, muted_color, on_colo
 use super::state::StageState;
 use crate::Element;
 use crate::components::icons;
-use cosmic::iced::alignment::Vertical;
-use cosmic::iced::{Background, Border, Color, Length, Shadow};
+use cosmic::iced::alignment::{Horizontal, Vertical};
+use cosmic::iced::border::Radius;
+use cosmic::iced::widget::Stack;
+use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::divider;
 use cosmic::widget::{Column, Row, button, container, scrollable, space, text};
 
@@ -42,9 +44,12 @@ pub(super) fn sections_view(
     sections: Vec<(Section<'_>, bool)>,
     finished: bool,
 ) -> Element<'_> {
-    let mut panels = Column::new().spacing(6);
+    let count = sections.len();
+    let states: Vec<StageState> = sections.iter().map(|(s, _)| s.state).collect();
+    let mut panels = Column::new();
     for (i, (section, expanded)) in sections.into_iter().enumerate() {
-        panels = panels.push(stage_row(section, expanded, i));
+        let prev_state = if i > 0 { Some(states[i - 1]) } else { None };
+        panels = panels.push(stage_row(section, expanded, i, prev_state, i + 1 < count));
     }
     let mut col = Column::new().spacing(16).push(text(title)).push(panels);
     if finished {
@@ -53,14 +58,20 @@ pub(super) fn sections_view(
     scrollable(col).into()
 }
 
-pub(super) fn stage_row(section: Section<'_>, expanded: bool, index: usize) -> Element<'_> {
+pub(super) fn stage_row(
+    section: Section<'_>,
+    expanded: bool,
+    index: usize,
+    prev_state: Option<StageState>,
+    has_next: bool,
+) -> Element<'_> {
     let Section {
         label,
         state,
         content,
         header_suffix,
     } = section;
-    let gutter = stage_glyph(state);
+    let gutter = stage_gutter(state, prev_state, has_next);
     let has_suffix = header_suffix.is_some();
     let header = header_row(state, label, header_suffix);
 
@@ -90,21 +101,101 @@ pub(super) fn stage_row(section: Section<'_>, expanded: bool, index: usize) -> E
         },
     };
 
-    let body = Row::new()
+    Row::new()
         .align_y(Vertical::Top)
         .spacing(8)
         .push(gutter)
-        .push(container(content).width(Length::Fill));
-
-    container(body)
-        .padding([12.0, 16.0])
-        .width(Length::Fill)
-        .style(move |theme: &cosmic::Theme| stage_panel_style(theme, state))
+        .push(
+            container(content)
+                .width(Length::Fill)
+                .padding([0.0, 0.0, STEP_GAP, 0.0]),
+        )
         .into()
 }
 
 const GLYPH_GUTTER_WIDTH: f32 = 18.0;
 const TITLE_LINE_HEIGHT: f32 = 30.0;
+const CONNECTOR_WIDTH: f32 = 2.0;
+const STEP_GAP: f32 = 14.0;
+
+fn stage_gutter(
+    state: StageState,
+    prev_state: Option<StageState>,
+    has_next: bool,
+) -> Element<'static> {
+    let mut stack = Stack::new();
+    if let Some(prev) = prev_state {
+        stack = stack.push(rail_incoming(prev));
+    }
+    if has_next {
+        stack = stack.push(rail_outgoing(state));
+    }
+    stack
+        .push(node_backing())
+        .push(stage_glyph(state))
+        .width(Length::Fixed(GLYPH_GUTTER_WIDTH))
+        .height(Length::Fill)
+        .into()
+}
+
+fn rail_line(height: Length, state: StageState) -> Element<'static> {
+    container(text(""))
+        .width(Length::Fixed(CONNECTOR_WIDTH))
+        .height(height)
+        .style(move |theme: &cosmic::Theme| {
+            let cosmic = theme.cosmic();
+            let color = match state {
+                StageState::Done => Color::from(cosmic.accent.base),
+                _ => Color::from(cosmic.background(false).divider),
+            };
+            container::Style {
+                background: Some(Background::Color(color)),
+                ..Default::default()
+            }
+        })
+        .into()
+}
+
+fn rail_incoming(prev: StageState) -> Element<'static> {
+    container(rail_line(Length::Fill, prev))
+        .width(Length::Fill)
+        .height(Length::Fixed(TITLE_LINE_HEIGHT / 2.0))
+        .align_x(Horizontal::Center)
+        .into()
+}
+
+fn rail_outgoing(state: StageState) -> Element<'static> {
+    container(rail_line(Length::Fill, state))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding([TITLE_LINE_HEIGHT / 2.0, 0.0, 0.0, 0.0])
+        .align_x(Horizontal::Center)
+        .into()
+}
+
+fn node_backing() -> Element<'static> {
+    let disc = container(text(""))
+        .width(Length::Fixed(GLYPH_GUTTER_WIDTH))
+        .height(Length::Fixed(GLYPH_GUTTER_WIDTH))
+        .style(|theme: &cosmic::Theme| {
+            let cosmic = theme.cosmic();
+            container::Style {
+                background: Some(Background::Color(Color::from(
+                    cosmic.background(false).base,
+                ))),
+                border: Border {
+                    radius: Radius::from(GLYPH_GUTTER_WIDTH / 2.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        });
+    container(disc)
+        .width(Length::Fixed(GLYPH_GUTTER_WIDTH))
+        .height(Length::Fixed(TITLE_LINE_HEIGHT))
+        .align_y(Vertical::Center)
+        .into()
+}
 
 fn done_toggle(header: Element<'_>, index: usize) -> Element<'_> {
     toggle_button(header, TransactionMessage::ToggleStage(index))
@@ -176,51 +267,4 @@ fn header_row<'a>(
         row = row.push(suffix);
     }
     row.into()
-}
-
-fn stage_panel_style(theme: &cosmic::Theme, state: StageState) -> container::Style {
-    let cosmic = theme.cosmic();
-    let surface_base = Color::from(cosmic.background(false).base);
-    let surface_mid = Color::from(cosmic.background(false).small_widget);
-    let surface_high = Color::from(cosmic.background(false).component.base);
-    let divider = Color::from(cosmic.background(false).divider);
-    let on = Color::from(cosmic.background(false).on);
-
-    let accent = Color::from(cosmic.accent.base);
-    let destructive = Color::from(cosmic.destructive.base);
-    let (background, border_color, text_color) = match state {
-        StageState::Active => (surface_base, accent, on),
-        StageState::Failed => (surface_base, destructive, on),
-        StageState::Done => (surface_high, divider, on),
-        StageState::Pending => (
-            Color {
-                a: 0.35,
-                ..surface_mid
-            },
-            Color { a: 0.4, ..divider },
-            Color { a: 0.5, ..on },
-        ),
-    };
-    let mut style = container::Style {
-        text_color: Some(text_color),
-        background: Some(Background::Color(background)),
-        border: Border {
-            radius: cosmic.corner_radii.radius_s.into(),
-            width: if matches!(state, StageState::Active | StageState::Failed) {
-                2.0
-            } else {
-                1.0
-            },
-            color: border_color,
-        },
-        ..Default::default()
-    };
-    if state == StageState::Active {
-        style.shadow = Shadow {
-            color: Color { a: 0.10, ..accent },
-            offset: Default::default(),
-            blur_radius: 15.0,
-        };
-    }
-    style
 }

@@ -11,7 +11,6 @@ use pakajo::utils::format_elapsed;
 
 use super::SYSTEM_AUR_NAME;
 use super::TransactionMessage;
-use super::accordion::{Section, sections_view, toggle_button};
 use super::finalize::finalize_section;
 use super::install::{install_section, install_view};
 use super::shared::{
@@ -19,6 +18,7 @@ use super::shared::{
     resolve_empty_view, resolve_package_row, resolve_single_suffix, success_color, tinted,
 };
 use super::state::{StageState, TransactionModel, TransactionStatus};
+use super::stepper::{Section, sections_view, toggle_button};
 use crate::Element;
 use crate::components::ansi::build_line_element;
 

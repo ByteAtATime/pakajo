@@ -24,7 +24,7 @@ mod state;
 
 pub(crate) use state::{TransactionModel, TransactionStatus};
 
-mod accordion;
+mod stepper;
 
 mod aur;
 
