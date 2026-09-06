@@ -1,7 +1,7 @@
 mod pty;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::Stdio;
 
 use anyhow::Context as _;
 
@@ -330,36 +330,20 @@ fn makepkg_command(dir: &Path, no_check: bool) -> std::process::Command {
     cmd
 }
 
-pub fn spawn_install_child(
-    targets: &[String],
-    as_deps: bool,
-    approvals_b64: Option<&str>,
-) -> anyhow::Result<Child> {
-    let exe = std::env::current_exe().context("failed to determine executable path")?;
-    let mut cmd = crate::cli::escalation_command(&exe.to_string_lossy());
-    cmd.arg("install").arg("--json");
-    if as_deps {
-        cmd.arg("--asdeps");
-    }
-    if let Some(b64) = approvals_b64 {
-        cmd.arg("--approvals").arg(b64);
-    }
-    for target in targets {
-        cmd.arg(target);
-    }
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    cmd.spawn().context("failed to spawn install child")
-}
-
 fn run_install_child<S: InstallSink + ?Sized>(
     targets: &[String],
     as_deps: bool,
     sink: &mut S,
     approvals_b64: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut child = spawn_install_child(targets, as_deps, approvals_b64)?;
+    let mut child = crate::subprocess::spawn_escalated(
+        &crate::subprocess::ChildJob::Install {
+            targets: targets.to_vec(),
+            as_deps,
+            approvals_b64: approvals_b64.map(String::from),
+        },
+        Stdio::inherit(),
+    )?;
     let stdout = child.stdout.take().expect("piped stdout");
     crate::events::read_event_stream(std::io::BufReader::new(stdout), sink);
     let status = child.wait().context("install child did not complete")?;

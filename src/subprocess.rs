@@ -1,11 +1,12 @@
 use std::io::BufReader;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
+use anyhow::Context as _;
 use futures::SinkExt as _;
 use futures::channel::mpsc;
 
-use crate::cli::graphical_escalation_command;
+use crate::cli::{escalation_command, graphical_escalation_command};
 use crate::events::{InstallEvent, InstallSink, read_event_stream};
 use crate::install::{ChildOutcome, StreamItem, map_outcome};
 
@@ -80,6 +81,17 @@ impl ChildJob {
             }
         }
     }
+}
+
+pub fn spawn_escalated(job: &ChildJob, stdin: Stdio) -> anyhow::Result<Child> {
+    let exe = std::env::current_exe().context("failed to determine executable path")?;
+    let mut cmd = escalation_command(&exe.to_string_lossy());
+    job.apply(&mut cmd);
+    cmd.stdin(stdin)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    cmd.spawn()
+        .with_context(|| format!("failed to spawn {} child", job.subcommand()))
 }
 
 pub fn send_item(tx: &mut mpsc::Sender<StreamItem>, item: StreamItem) {

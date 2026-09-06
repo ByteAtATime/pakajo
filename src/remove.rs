@@ -98,20 +98,6 @@ fn classify_prepare_error(err: alpm::PrepareError) -> anyhow::Error {
     }
 }
 
-pub fn spawn_remove_child(targets: &[String]) -> anyhow::Result<std::process::Child> {
-    use std::process::Stdio;
-    let exe = std::env::current_exe().context("failed to determine executable path")?;
-    let mut cmd = crate::cli::escalation_command(&exe.to_string_lossy());
-    cmd.arg("remove").arg("--json");
-    for target in targets {
-        cmd.arg(target);
-    }
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    cmd.spawn().context("failed to spawn remove child")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
