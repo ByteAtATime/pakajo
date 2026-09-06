@@ -8,12 +8,13 @@ use futures::{SinkExt as _, StreamExt as _};
 use pakajo::build::{BuildDecision, run_build};
 use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
 use pakajo::events::InstallEvent;
-use pakajo::install::{ChildOutcome, StreamItem};
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::progress::{InstallKind, SysupgradePhase};
 use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
-use pakajo::subprocess::{ChannelSink, ChildJob, run_job_to_channel, send_item};
+use pakajo::subprocess::{
+    ChannelSink, ChildJob, ChildOutcome, StreamItem, run_job_to_channel, send_item,
+};
 
 use crate::Element;
 

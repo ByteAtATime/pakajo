@@ -609,8 +609,8 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant)
     }
 }
 
-pub fn finish_aur(state: &mut AurState, outcome: &crate::install::ChildOutcome, now: Instant) {
-    use crate::install::ChildOutcome;
+pub fn finish_aur(state: &mut AurState, outcome: &crate::subprocess::ChildOutcome, now: Instant) {
+    use crate::subprocess::ChildOutcome;
     if matches!(outcome, ChildOutcome::Success) {
         return;
     }
@@ -636,7 +636,7 @@ mod tests {
     use crate::events::{
         DownloadResult, InstallEvent, LogLevel, PackageOp, ProgressPhase, TransactionSummary,
     };
-    use crate::install::ChildOutcome;
+    use crate::subprocess::ChildOutcome;
 
     fn fresh_repo_state() -> RepoState {
         RepoState::default()

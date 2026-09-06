@@ -1,4 +1,4 @@
-use std::io::BufReader;
+use std::io::{self, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
@@ -8,7 +8,33 @@ use futures::channel::mpsc;
 
 use crate::cli::{escalation_command, graphical_escalation_command};
 use crate::events::{InstallEvent, InstallSink, read_event_stream};
-use crate::install::{ChildOutcome, StreamItem, map_outcome};
+
+#[derive(Clone, Debug)]
+pub enum ChildOutcome {
+    Success,
+    Dismissed,
+    NotFound,
+    Failed(String),
+}
+
+pub enum StreamItem {
+    Event(InstallEvent),
+    Done(ChildOutcome),
+}
+
+pub fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
+    let code = match status {
+        Err(error) => return ChildOutcome::Failed(error.to_string()),
+        Ok(status) => status.code(),
+    };
+    match code {
+        Some(0) => ChildOutcome::Success,
+        Some(126) => ChildOutcome::Dismissed,
+        Some(127) => ChildOutcome::NotFound,
+        Some(exit) => ChildOutcome::Failed(format!("install failed (exit {exit})")),
+        None => ChildOutcome::Failed("install killed by signal".to_string()),
+    }
+}
 
 pub enum ChildJob {
     Install {

@@ -1,7 +1,5 @@
 use std::cell::RefCell;
-use std::io;
 use std::path::PathBuf;
-use std::process::ExitStatus;
 use std::rc::Rc;
 
 use anyhow::{Context, anyhow};
@@ -43,19 +41,6 @@ pub enum InstallProgress {
     PkgbuildReview,
     Completed,
     Cancelled,
-}
-
-#[derive(Clone, Debug)]
-pub enum ChildOutcome {
-    Success,
-    Dismissed,
-    NotFound,
-    Failed(String),
-}
-
-pub enum StreamItem {
-    Event(InstallEvent),
-    Done(ChildOutcome),
 }
 
 pub enum InstallTarget {
@@ -470,20 +455,6 @@ fn convert_log_level(level: AlpmLogLevel) -> Option<LogLevel> {
         Some(LogLevel::Warning)
     } else {
         None
-    }
-}
-
-pub fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
-    let code = match status {
-        Err(error) => return ChildOutcome::Failed(error.to_string()),
-        Ok(status) => status.code(),
-    };
-    match code {
-        Some(0) => ChildOutcome::Success,
-        Some(126) => ChildOutcome::Dismissed,
-        Some(127) => ChildOutcome::NotFound,
-        Some(exit) => ChildOutcome::Failed(format!("install failed (exit {exit})")),
-        None => ChildOutcome::Failed("install killed by signal".to_string()),
     }
 }
 
