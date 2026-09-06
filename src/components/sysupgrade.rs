@@ -1,6 +1,6 @@
 use cosmic::app::Task;
 use cosmic::iced::{Alignment, Background, Border, Color, Length};
-use cosmic::widget::{Column, Row, button, checkbox, container, radio, scrollable, space, text};
+use cosmic::widget::{Column, Row, button, container, scrollable, space, text};
 
 use anyhow::Context as _;
 use pakajo::dry_run::{PrepareFailure, SysupgradePreview};
@@ -62,11 +62,10 @@ pub fn next_sysupgrade_step(
 
 use crate::Element;
 use crate::components::theme::{
-    accent_color, destructive_color, muted_text as muted, pill, success_color,
+    accent_color, destructive_color, muted_text as muted, pill, success_color, warning_color,
 };
-use crate::components::transaction::Transaction;
-use crate::components::transaction::format_signed_bytes;
-use crate::components::transaction::review::{ReviewModel, candidate_label, unsupported_banner};
+use crate::components::transaction::review::{ReviewModel, ReviewSelection, review_body};
+use crate::components::transaction::{Transaction, format_signed_bytes};
 use crate::components::updates::aur_upgrade_row;
 use cosmic::widget::divider;
 
@@ -277,7 +276,7 @@ impl crate::PakajoApp {
         let next = next_sysupgrade_step(from, dir, has_resolve, has_diffs);
         if matches!(next, crate::Page::PkgbuildReview) {
             self.pkgbuild_review_index = 0;
-        };
+        }
         eprintln!(
             "[pakajo] sysupgrade route {:?} {:?} -> {:?}",
             from, dir, next
@@ -301,41 +300,16 @@ impl crate::PakajoApp {
         let mut body = Column::new().spacing(16).padding([0.0, 12.0]);
 
         if let Some(r) = &self.sysupgrade_review {
-            if !r.qs.conflicts.is_empty() {
-                body = body.push(text("Conflicts"));
-                for (i, conflict) in r.qs.conflicts.iter().enumerate() {
-                    let label =
-                        format!("Replace {} with {}", conflict.removable, conflict.incoming);
-                    let checked = r.conflict_checks.get(i).copied().unwrap_or(false);
-                    let item = checkbox(checked).label(label).on_toggle(move |_| {
-                        crate::Message::Sysupgrade(SysupgradeMessage::ToggleConflict(i))
-                    });
-                    body = body.push(item);
-                }
-            }
-
-            if !r.qs.providers.is_empty() {
-                body = body.push(text("Providers"));
-                for prompt in &r.qs.providers {
-                    body = body.push(text(prompt.depend.clone()));
-                    let selected = r.provider_choices.get(&prompt.depend).copied().unwrap_or(0);
-                    for (idx, candidate) in prompt.candidates.iter().enumerate() {
-                        let label = candidate_label(candidate);
-                        let depend = prompt.depend.clone();
-                        let item = radio(text(label), idx, Some(selected), move |chosen: usize| {
-                            crate::Message::Sysupgrade(SysupgradeMessage::SelectProvider {
-                                depend: depend.clone(),
-                                idx: chosen,
-                            })
-                        });
-                        body = body.push(item);
-                    }
-                }
-            }
-
-            if r.qs.had_unsupported_question {
-                body = body.push(unsupported_banner(&r.qs.unsupported_summary));
-            }
+            let inner =
+                review_body(&r.qs, &r.conflict_checks, &r.provider_choices).map(|selection| {
+                    crate::Message::Sysupgrade(match selection {
+                        ReviewSelection::ToggleConflict(i) => SysupgradeMessage::ToggleConflict(i),
+                        ReviewSelection::SelectProvider { depend, idx } => {
+                            SysupgradeMessage::SelectProvider { depend, idx }
+                        }
+                    })
+                });
+            body = body.push(inner);
         }
 
         let column = Column::new()
@@ -583,7 +557,7 @@ fn blocked_banner(failure: &PrepareFailure) -> Element<'static> {
     container(col)
         .padding(12)
         .style(|theme: &cosmic::Theme| {
-            let warn = Color::from(theme.cosmic().warning.base);
+            let warn = warning_color(theme);
             container::Style {
                 text_color: Some(warn),
                 background: Some(Background::Color(Color { a: 0.12, ..warn })),

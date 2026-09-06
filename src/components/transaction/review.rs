@@ -13,6 +13,53 @@ pub enum ReviewMessage {
     SelectProvider { depend: String, idx: usize },
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum ReviewSelection {
+    ToggleConflict(usize),
+    SelectProvider { depend: String, idx: usize },
+}
+
+pub(crate) fn review_body<'a>(
+    qs: &'a QuestionSet,
+    checks: &'a [bool],
+    choices: &'a HashMap<String, usize>,
+) -> cosmic::Element<'a, ReviewSelection> {
+    let mut body = Column::new().spacing(16);
+    if !qs.conflicts.is_empty() {
+        body = body.push(text("Conflicts"));
+        for (i, conflict) in qs.conflicts.iter().enumerate() {
+            let label = format!("Replace {} with {}", conflict.removable, conflict.incoming);
+            let checked = checks.get(i).copied().unwrap_or(false);
+            let item = checkbox(checked)
+                .label(label)
+                .on_toggle(move |_| ReviewSelection::ToggleConflict(i));
+            body = body.push(item);
+        }
+    }
+    if !qs.providers.is_empty() {
+        body = body.push(text("Providers"));
+        for prompt in &qs.providers {
+            body = body.push(text(prompt.depend.clone()));
+            let selected = choices.get(&prompt.depend).copied().unwrap_or(0);
+            for (idx, candidate) in prompt.candidates.iter().enumerate() {
+                let label = candidate_label(candidate);
+                let depend = prompt.depend.clone();
+                let item = radio(text(label), idx, Some(selected), move |chosen: usize| {
+                    ReviewSelection::SelectProvider {
+                        depend: depend.clone(),
+                        idx: chosen,
+                    }
+                });
+                body = body.push(item);
+            }
+        }
+    }
+    if qs.had_unsupported_question {
+        body = body.push(unsupported_banner(&qs.unsupported_summary));
+    }
+    body.into()
+}
+
 pub(crate) struct ReviewModel {
     pub(crate) qs: QuestionSet,
     pub(crate) conflict_checks: Vec<bool>,
@@ -58,50 +105,15 @@ impl ReviewModel {
     }
 
     pub(crate) fn view(&self, name: &str) -> Element<'_> {
-        let mut body = Column::new().spacing(16);
-
-        if !self.qs.conflicts.is_empty() {
-            body = body.push(text("Conflicts"));
-            for (i, conflict) in self.qs.conflicts.iter().enumerate() {
-                let label = format!("Replace {} with {}", conflict.removable, conflict.incoming);
-                let checked = self.conflict_checks.get(i).copied().unwrap_or(false);
-                let item = checkbox(checked).label(label).on_toggle(move |_| {
-                    crate::Message::Transaction(TransactionMessage::Review(
-                        ReviewMessage::ToggleConflict(i),
-                    ))
-                });
-                body = body.push(item);
-            }
-        }
-
-        if !self.qs.providers.is_empty() {
-            body = body.push(text("Providers"));
-            for prompt in &self.qs.providers {
-                body = body.push(text(prompt.depend.clone()));
-                let selected = self
-                    .provider_choices
-                    .get(&prompt.depend)
-                    .copied()
-                    .unwrap_or(0);
-                for (idx, candidate) in prompt.candidates.iter().enumerate() {
-                    let label = candidate_label(candidate);
-                    let depend = prompt.depend.clone();
-                    let item = radio(text(label), idx, Some(selected), move |chosen: usize| {
-                        crate::Message::Transaction(TransactionMessage::Review(
-                            ReviewMessage::SelectProvider {
-                                depend: depend.clone(),
-                                idx: chosen,
-                            },
-                        ))
-                    });
-                    body = body.push(item);
-                }
-            }
-        }
-
-        if self.qs.had_unsupported_question {
-            body = body.push(unsupported_banner(&self.qs.unsupported_summary));
-        }
+        let body =
+            review_body(&self.qs, &self.conflict_checks, &self.provider_choices).map(|selection| {
+                crate::Message::Transaction(TransactionMessage::Review(match selection {
+                    ReviewSelection::ToggleConflict(i) => ReviewMessage::ToggleConflict(i),
+                    ReviewSelection::SelectProvider { depend, idx } => {
+                        ReviewMessage::SelectProvider { depend, idx }
+                    }
+                }))
+            });
 
         let confirm = if self.approving {
             button::suggested("Loading...")
@@ -123,7 +135,7 @@ impl ReviewModel {
     }
 }
 
-pub(crate) fn candidate_label(candidate: &ProviderCandidate) -> String {
+fn candidate_label(candidate: &ProviderCandidate) -> String {
     let qualified = match &candidate.repo {
         Some(repo) => format!("{repo}/{}", candidate.name),
         None => candidate.name.clone(),
@@ -134,7 +146,7 @@ pub(crate) fn candidate_label(candidate: &ProviderCandidate) -> String {
     }
 }
 
-pub(crate) fn unsupported_banner(summary: &str) -> Element<'static> {
+fn unsupported_banner(summary: &str) -> cosmic::Element<'_, ReviewSelection> {
     container(text(summary.to_string()))
         .padding([12.0, 16.0])
         .width(Length::Fill)
