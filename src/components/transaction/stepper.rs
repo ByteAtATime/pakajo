@@ -51,7 +51,11 @@ pub(super) fn sections_view(
         let prev_state = if i > 0 { Some(states[i - 1]) } else { None };
         panels = panels.push(stage_row(section, expanded, i, prev_state, i + 1 < count));
     }
-    let mut col = Column::new().spacing(16).push(text(title)).push(panels);
+    let mut col = Column::new()
+        .spacing(16)
+        .padding([16.0, 20.0])
+        .push(text(title))
+        .push(panels);
     if finished {
         col = col.push(action_footer());
     }
