@@ -10,7 +10,6 @@ pub mod engine;
 pub mod fuzzy;
 pub mod hydrate;
 pub mod index;
-pub mod perf;
 pub mod query;
 pub mod tiers;
 
@@ -56,7 +55,6 @@ pub fn dispatch_search(
     group_index: &[(String, String)],
     filter: SearchFilter,
 ) -> Vec<SearchResult> {
-    let _span = perf::PerfSpan::new("search");
     let lowered: Option<HashSet<String>> = if filter == SearchFilter::Installed {
         Some(installed.iter().map(|name| name.to_lowercase()).collect())
     } else {
