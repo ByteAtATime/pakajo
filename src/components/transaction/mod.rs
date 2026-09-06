@@ -3,7 +3,7 @@ use std::env::current_exe;
 use cosmic::app::Task;
 use cosmic::iced::{Background, Color, Length, stream::channel};
 use cosmic::widget::container;
-use futures::{SinkExt as _, StreamExt as _, channel::oneshot};
+use futures::{SinkExt as _, StreamExt as _};
 
 use pakajo::build::{BuildDecision, run_build};
 use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
@@ -111,10 +111,23 @@ fn classify_outcome(
     }
 }
 
+enum StreamedLaunch {
+    Install {
+        name: String,
+        approvals: Option<String>,
+    },
+    Remove {
+        name: String,
+    },
+    SysupgradeRepo {
+        fingerprint: String,
+        approvals: Option<String>,
+    },
+}
+
 struct CosmicBuildSink {
     tx: futures::channel::mpsc::Sender<StreamItem>,
 }
-
 impl pakajo::events::InstallSink for CosmicBuildSink {
     fn event(&mut self, event: InstallEvent) {
         let _ = self.tx.try_send(StreamItem::Event(event));
@@ -165,25 +178,17 @@ pub(crate) struct Transaction {
 impl Transaction {
     pub(crate) fn start(name: String, source: PackageSource) -> (Self, Task<crate::Message>) {
         let model = TransactionModel::new(name.clone(), source, InstallKind::Install);
-        let (otx, orx) = oneshot::channel();
         let name_for_dry = name.clone();
         let is_repo = matches!(source, PackageSource::Repo);
-        std::thread::spawn(move || {
-            let result = if is_repo {
-                dry_run_for_repo_targets(std::slice::from_ref(&name_for_dry))
-            } else {
-                dry_run_for_target(&name_for_dry)
-            };
-            let _ = otx.send(result);
-        });
-        let task = Task::perform(
-            async move {
-                match orx.await {
-                    Ok(Ok(qs)) => Ok(qs),
-                    Ok(Err(e)) => Err(format!("{e:#}")),
-                    Err(_) => Err("dry-run channel closed".to_string()),
+        let task = crate::components::task::blocking_task(
+            move || {
+                if is_repo {
+                    dry_run_for_repo_targets(std::slice::from_ref(&name_for_dry))
+                } else {
+                    dry_run_for_target(&name_for_dry)
                 }
             },
+            "dry-run channel closed",
             |result| crate::Message::Transaction(TransactionMessage::DryRunResult(result)).into(),
         );
         (Self { model }, task)
@@ -339,20 +344,10 @@ impl Transaction {
     fn proceed_after_conflicts(&mut self, approvals: Option<String>) -> Action {
         self.model.pending_approvals = approvals;
         if matches!(self.model.source, PackageSource::Aur) {
-            let (otx, orx) = oneshot::channel();
             let target = self.model.name.clone();
-            std::thread::spawn(move || {
-                let result = prepare_pkgbuild_diffs(std::slice::from_ref(&target));
-                let _ = otx.send(result);
-            });
-            let task = Task::perform(
-                async move {
-                    match orx.await {
-                        Ok(Ok(diffs)) => Ok(diffs),
-                        Ok(Err(e)) => Err(format!("{e:#}")),
-                        Err(_) => Err("pkgbuild fetch channel closed".to_string()),
-                    }
-                },
+            let task = crate::components::task::blocking_task(
+                move || prepare_pkgbuild_diffs(std::slice::from_ref(&target)),
+                "pkgbuild fetch channel closed",
                 |result| {
                     crate::Message::Transaction(TransactionMessage::PkgbuildResult(result)).into()
                 },
@@ -365,22 +360,19 @@ impl Transaction {
     }
 
     fn launch_subprocess(&mut self, approvals_b64: Option<String>) -> Action {
-        let exe = match current_exe() {
-            Ok(exe) => exe,
-            Err(e) => {
-                eprintln!("[pakajo] failed to resolve current_exe: {e}");
-                return Action::None;
-            }
-        };
-        self.model.status = TransactionStatus::Running;
         let name = self.model.name.clone();
-        let stream = spawn_transaction_stream(move |tx| {
-            run_install_process(exe, vec![name], tx, approvals_b64);
-        });
-        Action::Run(stream)
+        self.launch_streamed(StreamedLaunch::Install {
+            name,
+            approvals: approvals_b64,
+        })
     }
 
     fn launch_remove_subprocess(&mut self) -> Action {
+        let name = self.model.name.clone();
+        self.launch_streamed(StreamedLaunch::Remove { name })
+    }
+
+    fn launch_streamed(&mut self, launch: StreamedLaunch) -> Action {
         let exe = match current_exe() {
             Ok(exe) => exe,
             Err(e) => {
@@ -389,10 +381,20 @@ impl Transaction {
             }
         };
         self.model.status = TransactionStatus::Running;
-        let name = self.model.name.clone();
-        let stream = spawn_transaction_stream(move |tx| {
-            run_remove_process(exe, vec![name], tx);
-        });
+        let stream = match launch {
+            StreamedLaunch::Install { name, approvals } => spawn_transaction_stream(move |tx| {
+                run_install_process(exe, vec![name], tx, approvals);
+            }),
+            StreamedLaunch::Remove { name } => spawn_transaction_stream(move |tx| {
+                run_remove_process(exe, vec![name], tx);
+            }),
+            StreamedLaunch::SysupgradeRepo {
+                fingerprint,
+                approvals,
+            } => spawn_transaction_stream(move |tx| {
+                run_sysupgrade_process(exe, fingerprint, tx, approvals);
+            }),
+        };
         Action::Run(stream)
     }
 
@@ -400,32 +402,21 @@ impl Transaction {
         fingerprint_file: String,
         approvals_b64: Option<String>,
     ) -> (Self, Task<crate::Message>) {
-        let exe = match current_exe() {
-            Ok(exe) => exe,
-            Err(e) => {
-                eprintln!("[pakajo] failed to resolve current_exe: {e}");
-                return (
-                    Self {
-                        model: TransactionModel::new(
-                            "system".to_string(),
-                            PackageSource::Repo,
-                            InstallKind::Upgrade,
-                        ),
-                    },
-                    Task::none(),
-                );
-            }
+        let mut transaction = Self {
+            model: TransactionModel::new(
+                "system".to_string(),
+                PackageSource::Repo,
+                InstallKind::Upgrade,
+            ),
         };
-        let mut model = TransactionModel::new(
-            "system".to_string(),
-            PackageSource::Repo,
-            InstallKind::Upgrade,
-        );
-        model.status = TransactionStatus::Running;
-        let stream = spawn_transaction_stream(move |tx| {
-            run_sysupgrade_process(exe, fingerprint_file, tx, approvals_b64);
-        });
-        (Self { model }, stream)
+        let task = match transaction.launch_streamed(StreamedLaunch::SysupgradeRepo {
+            fingerprint: fingerprint_file,
+            approvals: approvals_b64,
+        }) {
+            Action::Run(task) => task,
+            _ => Task::none(),
+        };
+        (transaction, task)
     }
 
     pub(crate) fn start_sysupgrade_aur(targets: Vec<String>) -> (Self, Task<crate::Message>) {

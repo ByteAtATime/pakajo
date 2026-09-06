@@ -359,19 +359,9 @@ impl crate::PakajoApp {
         if !self.has_displayable_updates() {
             self.updates_state = UpdatesState::Loading;
         }
-        let (tx, rx) = futures::channel::oneshot::channel();
-        std::thread::spawn(move || {
-            let result = pakajo::updates::pending_updates(devel_source);
-            let _ = tx.send(result);
-        });
-        Task::perform(
-            async move {
-                match rx.await {
-                    Ok(Ok(fetch)) => Ok(fetch),
-                    Ok(Err(e)) => Err(format!("{e:#}")),
-                    Err(_) => Err("updates check cancelled".to_string()),
-                }
-            },
+        crate::components::task::blocking_task(
+            move || pakajo::updates::pending_updates(devel_source),
+            "updates check cancelled",
             |result| crate::Message::Updates(UpdatesMessage::Fetched(result)).into(),
         )
     }

@@ -98,9 +98,8 @@ impl crate::PakajoApp {
         }
         self.sysupgrade_preview_in_flight = true;
         eprintln!("[pakajo] starting sysupgrade preview");
-        let (tx, rx) = futures::channel::oneshot::channel();
-        std::thread::spawn(move || {
-            let result = (|| -> anyhow::Result<SysupgradePreview> {
+        crate::components::task::blocking_task(
+            move || -> anyhow::Result<SysupgradePreview> {
                 let config = pacmanconf::Config::new().context("failed to read pacman config")?;
                 let mut handle = pakajo::pacman::init_alpm_rootless(&config)?;
                 pakajo::pacman::refresh_sync_dbs_rootless(&mut handle)?;
@@ -114,17 +113,8 @@ impl crate::PakajoApp {
                     }
                 }
                 Ok(preview)
-            })();
-            let _ = tx.send(result.map_err(|e| format!("{e:#}")));
-        });
-        Task::perform(
-            async move {
-                match rx.await {
-                    Ok(Ok(p)) => Ok(p),
-                    Ok(Err(e)) => Err(e),
-                    Err(_) => Err("sysupgrade preview cancelled".to_string()),
-                }
             },
+            "sysupgrade preview cancelled",
             |result| crate::Message::Sysupgrade(SysupgradeMessage::PreviewFetched(result)).into(),
         )
     }
