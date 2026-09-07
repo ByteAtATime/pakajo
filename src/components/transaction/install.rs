@@ -8,8 +8,8 @@ use crate::Element;
 use crate::components::icons::circle_check;
 
 use super::shared::{
-    accent_color, counter_suffix, destructive_color, mono_text, muted, pill, success_color,
-    thin_bar, tinted, version_change,
+    accent_color, counter_suffix, destructive_color, mono_text, muted, percent, pill,
+    single_summary, success_color, thin_bar, tinted, version_change,
 };
 use super::state::StageState;
 use super::stepper::Section;
@@ -20,13 +20,21 @@ pub(super) fn install_section(install: &InstallState, state: StageState) -> Sect
     let mut section = Section::new("Install", state);
     match state {
         StageState::Done if install.order.len() == 1 => {
-            section.header_suffix = Some(install_single_suffix(install));
+            section.summary = Some(install_single_suffix(install));
         }
-        StageState::Active | StageState::Done if !install.order.is_empty() => {
-            let done = state == StageState::Done;
-            section.content = Some(install_view(install, done));
+        StageState::Active if !install.order.is_empty() => {
+            section.content = Some(install_view(install, false));
+            section.suffix = Some(install_counter_suffix(install));
+            section.progress = Some(install_percent(install));
+        }
+        StageState::Done if !install.order.is_empty() => {
+            section.content = Some(install_view(install, true));
             if install.order.len() > 1 {
-                section.header_suffix = Some(install_counter_suffix(install, done));
+                section.summary = Some(counter_suffix(
+                    install.order.len(),
+                    install.order.len(),
+                    "packages",
+                ));
             }
         }
         _ => {}
@@ -54,14 +62,16 @@ pub(super) fn install_view(state: &InstallState, done: bool) -> Element<'_> {
     col.into()
 }
 
-fn install_counter_suffix(state: &InstallState, done: bool) -> Element<'_> {
-    let total = state.order.len();
-    let finished = if done {
-        total
-    } else {
-        state.packages.values().filter(|pkg| pkg.completed).count()
-    };
-    counter_suffix(finished, total, "packages")
+fn install_finished(state: &InstallState) -> usize {
+    state.packages.values().filter(|pkg| pkg.completed).count()
+}
+
+fn install_counter_suffix(state: &InstallState) -> Element<'static> {
+    counter_suffix(install_finished(state), state.order.len(), "packages")
+}
+
+fn install_percent(state: &InstallState) -> f32 {
+    percent(install_finished(state) as i64, state.order.len() as i64) as f32
 }
 
 fn install_single_suffix(state: &InstallState) -> Element<'_> {
@@ -72,13 +82,13 @@ fn install_single_suffix(state: &InstallState) -> Element<'_> {
     let Some((name, pkg)) = entry else {
         return muted(text("1 package"));
     };
-    Row::new()
-        .align_y(Vertical::Center)
-        .spacing(8)
-        .push(mono_text(name))
-        .push(version_label(pkg))
-        .push(op_pill(pkg.operation))
-        .into()
+    let version = version_change(pkg.old_version.as_deref(), pkg.new_version.as_deref());
+    single_summary(
+        name,
+        Some(version.as_str()),
+        Some(op_badge(pkg.operation)),
+        None,
+    )
 }
 
 fn version_label(pkg: &InstallPackage) -> Element<'static> {
@@ -116,13 +126,17 @@ fn completed_row<'a>(name: &'a str, pkg: &'a InstallPackage) -> Element<'a> {
         .into()
 }
 
-fn op_pill(operation: PackageOp) -> Element<'static> {
-    let (label, color_fn): (_, fn(&cosmic::Theme) -> Color) = match operation {
+fn op_badge(operation: PackageOp) -> (&'static str, fn(&cosmic::Theme) -> Color) {
+    match operation {
         PackageOp::Install => ("Install", success_color),
         PackageOp::Upgrade => ("Upgrade", accent_color),
         PackageOp::Reinstall => ("Reinstall", accent_color),
         PackageOp::Downgrade => ("Downgrade", accent_color),
         PackageOp::Remove => ("Remove", destructive_color),
-    };
-    pill(label, color_fn)
+    }
+}
+
+fn op_pill(operation: PackageOp) -> Element<'static> {
+    let (label, color) = op_badge(operation);
+    pill(label, color)
 }

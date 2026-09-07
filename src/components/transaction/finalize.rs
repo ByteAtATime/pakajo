@@ -5,7 +5,7 @@ use pakajo::progress::FinalizeState;
 
 use crate::Element;
 
-use super::shared::{destructive_color, tinted, warning_color};
+use super::shared::{destructive_color, muted, tinted, warning_color};
 use super::state::StageState;
 use super::stepper::Section;
 
@@ -16,7 +16,23 @@ pub(super) fn finalize_section(finalize: &FinalizeState, state: StageState) -> S
     if !finalize.is_empty() {
         section.content = Some(finalize_log(finalize));
     }
+    let alerts = finalize
+        .alerts
+        .iter()
+        .filter(|(level, _)| !matches!(level, LogLevel::Debug))
+        .count();
+    if alerts > 0 {
+        section.summary = Some(muted(text(alert_summary(alerts))));
+    }
     section
+}
+
+fn alert_summary(count: usize) -> String {
+    if count == 1 {
+        "1 alert".to_string()
+    } else {
+        format!("{count} alerts")
+    }
 }
 
 fn finalize_log(finalize: &FinalizeState) -> Element<'_> {

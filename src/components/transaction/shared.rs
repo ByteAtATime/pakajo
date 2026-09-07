@@ -213,6 +213,32 @@ pub(super) fn counter_suffix(done: usize, total: usize, unit: &str) -> Element<'
     muted(text(format!("{done} / {total} {unit}")))
 }
 
+pub(super) fn summary_text(parts: &[String]) -> Element<'static> {
+    muted(text(parts.join(" · ")))
+}
+
+pub(super) fn single_summary<'a>(
+    name: &str,
+    version: Option<&str>,
+    badge: Option<(impl Into<String>, fn(&cosmic::Theme) -> Color)>,
+    trailing: Option<Element<'a>>,
+) -> Element<'a> {
+    let mut row = Row::new()
+        .align_y(Vertical::Center)
+        .spacing(8)
+        .push(mono_text(name));
+    if let Some(version) = version.filter(|v| !v.is_empty()) {
+        row = row.push(muted(text::monotext(version.to_string())));
+    }
+    if let Some((label, color)) = badge {
+        row = row.push(pill(label, color));
+    }
+    if let Some(trailing) = trailing {
+        row = row.push(trailing);
+    }
+    row.into()
+}
+
 pub(crate) struct ResolvedEntry<'a> {
     pub qualified: Cow<'a, str>,
     pub old_version: Option<&'a str>,
@@ -239,28 +265,6 @@ pub(crate) fn resolve_package_row(entry: &ResolvedEntry<'_>) -> Element<'static>
         .push(space::horizontal())
         .push(right)
         .into()
-}
-
-pub(crate) fn resolve_single_suffix(entry: &ResolvedEntry<'_>) -> Element<'static> {
-    let name_version = match entry.new_version {
-        Some(version) if !version.is_empty() => {
-            format!("{} {version}", entry.qualified)
-        }
-        _ => entry.qualified.to_string(),
-    };
-    let mut row = Row::new()
-        .align_y(Vertical::Center)
-        .spacing(8)
-        .push(muted(text::monotext(name_version)));
-    if let Some(net) = entry.net_size {
-        let size_color: fn(&cosmic::Theme) -> Color = if net >= 0 {
-            accent_color
-        } else {
-            success_color
-        };
-        row = row.push(pill(format_signed_bytes(net), size_color));
-    }
-    row.into()
 }
 
 pub(crate) fn resolve_empty_view() -> Element<'static> {

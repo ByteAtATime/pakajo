@@ -5,7 +5,7 @@ use crate::Element;
 use crate::components::icons;
 use cosmic::iced::alignment::{Horizontal, Vertical};
 use cosmic::iced::border::Radius;
-use cosmic::iced::widget::Stack;
+use cosmic::iced::widget::{Stack, progress_bar};
 use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::divider;
 use cosmic::widget::{Column, Row, button, container, scrollable, space, text};
@@ -25,7 +25,9 @@ pub(super) struct Section<'a> {
     pub(super) label: &'static str,
     pub(super) state: StageState,
     pub(super) content: Option<Element<'a>>,
-    pub(super) header_suffix: Option<Element<'a>>,
+    pub(super) suffix: Option<Element<'a>>,
+    pub(super) progress: Option<f32>,
+    pub(super) summary: Option<Element<'a>>,
     pub(super) toggle_index: usize,
 }
 
@@ -35,7 +37,9 @@ impl<'a> Section<'a> {
             label,
             state,
             content: None,
-            header_suffix: None,
+            suffix: None,
+            progress: None,
+            summary: None,
             toggle_index: 0,
         }
     }
@@ -87,12 +91,17 @@ pub(super) fn stage_row(
         label,
         state,
         content,
-        header_suffix,
+        suffix,
+        progress,
+        summary,
         toggle_index: _,
     } = section;
     let gutter = stage_gutter(state, prev_state, has_next);
-    let has_suffix = header_suffix.is_some();
-    let header = header_row(state, label, header_suffix);
+    let has_detail = content.is_some();
+    let has_summary = summary.is_some();
+    let chevron =
+        (state == StageState::Done && has_detail && has_summary).then(|| chevron_icon(expanded));
+    let header = header_row(state, label, suffix, progress, summary, chevron);
 
     let content: Element<'_> = match state {
         StageState::Pending | StageState::Active => match content {
@@ -114,8 +123,14 @@ pub(super) fn stage_row(
             col.into()
         }
         StageState::Done => match content {
-            Some(detail) if expanded || !has_suffix => toggle_detail(header, index, detail),
-            Some(_) => done_toggle(header, index),
+            Some(detail) if has_summary => {
+                if expanded {
+                    toggle_detail(header, index, detail)
+                } else {
+                    done_toggle(header, index)
+                }
+            }
+            Some(detail) => Column::new().spacing(6).push(header).push(detail).into(),
             None => header,
         },
     };
@@ -267,6 +282,9 @@ fn header_row<'a>(
     state: StageState,
     label: &'static str,
     suffix: Option<Element<'a>>,
+    progress: Option<f32>,
+    summary: Option<Element<'a>>,
+    chevron: Option<Element<'a>>,
 ) -> Element<'a> {
     let label_widget = text::title4(label);
     let label_color_fn: fn(&cosmic::Theme) -> Color = match state {
@@ -282,8 +300,49 @@ fn header_row<'a>(
         .spacing(8)
         .push(tinted(label_widget, label_color_fn))
         .push(space::horizontal());
-    if let Some(suffix) = suffix {
-        row = row.push(suffix);
+    match state {
+        StageState::Active => {
+            if let Some(suffix) = suffix {
+                row = row.push(suffix);
+            }
+            if let Some(pct) = progress {
+                row = row.push(header_progress(pct));
+            }
+        }
+        StageState::Done => {
+            if let Some(summary) = summary {
+                row = row.push(summary);
+            }
+            if let Some(chevron) = chevron {
+                row = row.push(chevron);
+            }
+        }
+        StageState::Pending | StageState::Failed => {}
     }
     row.into()
+}
+
+fn header_progress(pct: f32) -> Element<'static> {
+    progress_bar(0.0..=100.0, pct)
+        .length(Length::Fixed(120.0))
+        .girth(6.0)
+        .into()
+}
+
+fn chevron_icon(expanded: bool) -> Element<'static> {
+    let glyph = if expanded {
+        icons::chevron_down()
+    } else {
+        icons::chevron_right()
+    };
+    container(
+        cosmic::widget::icon(glyph)
+            .size(14)
+            .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
+                move |theme: &cosmic::Theme| cosmic::widget::svg::Style {
+                    color: Some(muted_color(theme)),
+                },
+            ))),
+    )
+    .into()
 }

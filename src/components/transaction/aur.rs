@@ -14,8 +14,8 @@ use super::TransactionMessage;
 use super::finalize::finalize_section;
 use super::install::{install_section, install_view};
 use super::shared::{
-    ResolvedEntry, accent_color, counter_suffix, destructive_color, mono_text, muted, pill,
-    resolve_empty_view, resolve_package_row, resolve_single_suffix, success_color, tinted,
+    ResolvedEntry, counter_suffix, destructive_color, mono_text, muted, resolve_empty_view,
+    resolve_package_row, single_summary, summary_text, tinted,
 };
 use super::state::{StageState, TransactionModel, TransactionStatus};
 use super::stepper::{Section, sections_view, toggle_button};
@@ -39,7 +39,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
             AurStage::Resolve => resolve_section(model, state),
             AurStage::Build => build_section(model, state),
             AurStage::Install => aur_install_section(model, state),
-            AurStage::Finalize => aur_finalize_section(model, state),
+            AurStage::Finalize => finalize_section(&model.aur.finalize, state),
         };
         if state == StageState::Failed
             && let Some(message) = model.failure_message.as_deref()
@@ -67,7 +67,7 @@ fn resolve_section(model: &TransactionModel, state: StageState) -> Section<'_> {
         .collect();
     match state {
         StageState::Active => {
-            section.header_suffix = Some(muted(text(format!("{} resolved", ordered.len()))));
+            section.suffix = Some(muted(text(format!("{} resolved", ordered.len()))));
             if !ordered.is_empty() {
                 section.content = Some(resolve_list_view(&ordered));
             }
@@ -79,27 +79,37 @@ fn resolve_section(model: &TransactionModel, state: StageState) -> Section<'_> {
             }
             if ordered.len() == 1 {
                 let (name, dep) = ordered[0];
-                section.header_suffix = Some(resolve_single_suffix(&aur_entry(name, dep)));
+                let qualified = match dep.repository.as_deref() {
+                    Some(repo) => format!("{repo}/{name}"),
+                    None => format!("aur/{name}"),
+                };
+                section.summary = Some(single_summary(
+                    &qualified,
+                    dep.version.as_deref(),
+                    None::<(String, fn(&cosmic::Theme) -> cosmic::iced::Color)>,
+                    None,
+                ));
                 return section;
             }
             section.content = Some(resolve_list_view(&ordered));
-            section.header_suffix = Some(resolve_suffix(&ordered));
+            section.summary = Some(resolve_summary(&ordered));
         }
         _ => {}
     }
     section
 }
 
-fn resolve_suffix(ordered: &[(&String, &ResolvedDep)]) -> Element<'static> {
+fn resolve_summary(ordered: &[(&String, &ResolvedDep)]) -> Element<'static> {
     let aur = ordered
         .iter()
         .filter(|(_, dep)| dep.repository.is_none())
         .count();
-    Row::new()
-        .spacing(6)
-        .push(pill(format!("{} pkgs", ordered.len()), accent_color))
-        .push(pill(format!("{aur} AUR"), success_color))
-        .into()
+    let count = ordered.len();
+    let mut parts = vec![format!("{count} / {count} packages")];
+    if aur > 0 {
+        parts.push(format!("{aur} AUR"));
+    }
+    summary_text(&parts)
 }
 
 fn aur_entry<'a>(name: &'a str, dep: &'a ResolvedDep) -> ResolvedEntry<'a> {
@@ -140,7 +150,7 @@ fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
             let elapsed = ordered
                 .first()
                 .map(|(_, first)| model.now.saturating_duration_since(first.started));
-            section.header_suffix = Some(build_progress_suffix(&ordered, done, elapsed));
+            section.suffix = Some(build_progress_suffix(&ordered, done, elapsed));
             if !ordered.is_empty() {
                 section.content = Some(build_list_view(&ordered, &model.expanded_cards, model.now));
             }
@@ -152,23 +162,17 @@ fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
             }
             if ordered.len() == 1 {
                 let (name, entry) = ordered[0];
-                let mut suffix =
-                    Row::new()
-                        .spacing(6)
-                        .push(resolve_single_suffix(&ResolvedEntry {
-                            qualified: Cow::Borrowed(name.as_str()),
-                            old_version: None,
-                            new_version: None,
-                            net_size: None,
-                        }));
-                if let Some(duration) = model
+                let elapsed = model
                     .aur
                     .build_ended
                     .map(|end| end.saturating_duration_since(entry.started))
-                {
-                    suffix = suffix.push(elapsed_label(duration));
-                }
-                section.header_suffix = Some(suffix.into());
+                    .map(elapsed_label);
+                section.summary = Some(single_summary(
+                    name,
+                    None,
+                    None::<(String, fn(&cosmic::Theme) -> cosmic::iced::Color)>,
+                    elapsed,
+                ));
                 return section;
             }
             let elapsed = match (ordered.first(), model.aur.build_ended) {
@@ -176,7 +180,7 @@ fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
                 _ => None,
             };
             section.content = Some(build_list_view(&ordered, &model.expanded_cards, model.now));
-            section.header_suffix = Some(build_progress_suffix(&ordered, done, elapsed));
+            section.summary = Some(build_summary(&ordered, elapsed));
         }
         StageState::Failed if !ordered.is_empty() => {
             section.content = Some(build_list_view(&ordered, &model.expanded_cards, model.now));
@@ -193,11 +197,23 @@ fn build_progress_suffix(
 ) -> Element<'static> {
     let mut suffix = Row::new()
         .spacing(6)
-        .push(counter_suffix(done, ordered.len(), "built"));
+        .push(counter_suffix(done, ordered.len(), "packages"));
     if let Some(duration) = elapsed {
         suffix = suffix.push(elapsed_label(duration));
     }
     suffix.into()
+}
+
+fn build_summary(
+    ordered: &[(&String, &BuildPackage)],
+    elapsed: Option<std::time::Duration>,
+) -> Element<'static> {
+    let count = ordered.len();
+    let mut parts = vec![format!("{count} / {count} packages")];
+    if let Some(duration) = elapsed {
+        parts.push(format_elapsed(duration));
+    }
+    summary_text(&parts)
 }
 
 fn elapsed_label(duration: std::time::Duration) -> Element<'static> {
@@ -281,14 +297,6 @@ fn aur_install_section(model: &TransactionModel, state: StageState) -> Section<'
     }
     if state == StageState::Failed && !model.aur.install.order.is_empty() {
         section.content = Some(install_view(&model.aur.install, false));
-    }
-    section
-}
-
-fn aur_finalize_section(model: &TransactionModel, state: StageState) -> Section<'_> {
-    let mut section = finalize_section(&model.aur.finalize, state);
-    if state == StageState::Done && model.aur.finalize.is_empty() {
-        section.content = Some(resolve_empty_view());
     }
     section
 }

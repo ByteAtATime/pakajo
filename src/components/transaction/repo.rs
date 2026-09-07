@@ -1,7 +1,7 @@
 use super::finalize::finalize_section;
 use super::install::install_section;
 use super::resolve::prepare_section;
-use super::shared::{counter_suffix, download_view};
+use super::shared::{counter_suffix, download_view, percent};
 use super::state::{StageState, TransactionModel, TransactionStatus};
 use super::stepper::{Section, sections_view};
 use crate::Element;
@@ -62,13 +62,30 @@ pub(super) fn download_section(repo: &RepoState, state: StageState) -> Section<'
     if repo.download.total == 0 {
         return section;
     }
-    if matches!(state, StageState::Active | StageState::Done) {
-        section.content = Some(download_view(&repo.download));
-        section.header_suffix = Some(counter_suffix(
-            repo.download.done,
-            repo.download.total,
-            "packages",
-        ));
+    match state {
+        StageState::Active => {
+            section.content = Some(download_view(&repo.download));
+            section.suffix = Some(counter_suffix(
+                repo.download.done,
+                repo.download.total,
+                "packages",
+            ));
+            if repo.download.bytes_total.max(0) > 0 {
+                section.progress = Some(percent(
+                    repo.download.bytes_done.max(0),
+                    repo.download.bytes_total.max(0),
+                ) as f32);
+            }
+        }
+        StageState::Done => {
+            section.content = Some(download_view(&repo.download));
+            section.summary = Some(counter_suffix(
+                repo.download.done,
+                repo.download.total,
+                "packages",
+            ));
+        }
+        _ => {}
     }
     section
 }
