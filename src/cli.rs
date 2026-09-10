@@ -26,7 +26,7 @@ mod spinner;
 pub use self::sinks::ConsoleSink;
 use self::sinks::{EscalatedSink, JsonSink};
 
-mod privs;
+pub(crate) mod privs;
 use self::privs::{is_root, stdin_is_tty};
 
 mod escalate;

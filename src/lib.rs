@@ -7,6 +7,7 @@ pub mod cli;
 pub mod color;
 pub mod db;
 pub mod devel;
+pub mod dispatch;
 pub mod dry_run;
 pub mod events;
 pub mod git;
