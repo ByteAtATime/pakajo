@@ -3,7 +3,6 @@ pub const MARKER: &str = "__dispatch";
 const REMOVE: &str = "remove";
 const INSTALL: &str = "install";
 const UPGRADE_REPO: &str = "upgrade-repo";
-const BUILD_AUR: &str = "build-aur";
 const STREAM: &str = "--stream";
 const AS_DEPS: &str = "--asdeps";
 const NO_REFRESH: &str = "--no-refresh";
@@ -96,20 +95,8 @@ impl Operation {
                 }
                 argv
             }
-            Operation::BuildAur {
-                targets,
-                as_deps,
-                stream,
-            } => {
-                let mut argv = vec![BUILD_AUR.to_string()];
-                if *stream {
-                    argv.push(STREAM.to_string());
-                }
-                if *as_deps {
-                    argv.push(AS_DEPS.to_string());
-                }
-                argv.extend(targets.iter().cloned());
-                argv
+            Operation::BuildAur { .. } => {
+                panic!("BuildAur is not wire-representable")
             }
         }
     }
@@ -119,7 +106,6 @@ impl Operation {
             Some(REMOVE) => decode_remove(&argv[1..]),
             Some(INSTALL) => decode_install(&argv[1..]),
             Some(UPGRADE_REPO) => decode_upgrade_repo(&argv[1..]),
-            Some(BUILD_AUR) => decode_build_aur(&argv[1..]),
             _ => None,
         }
     }
@@ -182,24 +168,6 @@ fn decode_upgrade_repo(argv: &[String]) -> Option<Operation> {
         ignores,
         fingerprint_path,
         approvals_path,
-        stream,
-    })
-}
-
-fn decode_build_aur(argv: &[String]) -> Option<Operation> {
-    let mut stream = false;
-    let mut as_deps = false;
-    let mut targets = Vec::new();
-    for arg in argv {
-        match arg.as_str() {
-            STREAM => stream = true,
-            AS_DEPS => as_deps = true,
-            _ => targets.push(arg.clone()),
-        }
-    }
-    Some(Operation::BuildAur {
-        targets,
-        as_deps,
         stream,
     })
 }
@@ -316,28 +284,6 @@ mod tests {
             stream: false,
         };
         assert_eq!(operation.encode(), ["upgrade-repo"]);
-        assert_eq!(Operation::decode(&operation.encode()), Some(operation));
-    }
-
-    #[test]
-    fn build_aur_full_round_trip() {
-        let operation = Operation::BuildAur {
-            targets: vec!["cava-git".to_string()],
-            as_deps: false,
-            stream: true,
-        };
-        assert_eq!(operation.encode(), ["build-aur", "--stream", "cava-git"]);
-        assert_eq!(Operation::decode(&operation.encode()), Some(operation));
-    }
-
-    #[test]
-    fn build_aur_as_deps_round_trip() {
-        let operation = Operation::BuildAur {
-            targets: vec!["cava-git".to_string()],
-            as_deps: true,
-            stream: false,
-        };
-        assert_eq!(operation.encode(), ["build-aur", "--asdeps", "cava-git"]);
         assert_eq!(Operation::decode(&operation.encode()), Some(operation));
     }
 

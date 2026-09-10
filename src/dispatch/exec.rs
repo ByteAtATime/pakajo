@@ -585,12 +585,6 @@ mod tests {
     }
 
     #[test]
-    fn build_aur_operation_always_streams() {
-        let operation = build_aur_operation(&["cava-git".to_string()], false);
-        assert!(operation.encode().contains(&"--stream".to_string()));
-    }
-
-    #[test]
     fn approvals_file_deleted_after_normal_exit() {
         let path = {
             let file = ApprovalsFile::write(br#"{"approved_conflicts":[]}"#).expect("write file");
