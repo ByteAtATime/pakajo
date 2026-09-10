@@ -337,11 +337,24 @@ impl Transaction {
             return self.launch_aur_in_process(approvals_b64);
         }
         let name = self.model.name.clone();
-        self.launch_streamed(ChildJob::Install {
-            targets: vec![name],
-            as_deps: false,
-            approvals_b64,
-        })
+        let exe = match current_exe() {
+            Ok(exe) => exe,
+            Err(e) => {
+                eprintln!("[pakajo] failed to resolve current_exe: {e}");
+                return Action::None;
+            }
+        };
+        self.model.status = TransactionStatus::Running;
+        let stream = spawn_transaction_stream(move |tx| {
+            pakajo::dispatch::exec::run_install_to_channel(
+                exe,
+                vec![name],
+                false,
+                approvals_b64,
+                tx,
+            );
+        });
+        Action::Run(stream)
     }
 
     fn launch_aur_in_process(&mut self, approvals_b64: Option<String>) -> Action {

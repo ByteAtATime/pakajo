@@ -15,6 +15,7 @@ mod info;
 
 mod prompts;
 use self::prompts::{confirm_build, confirm_proceed_to_review};
+pub(crate) use self::prompts::{confirm_install, confirm_install_stderr};
 pub(crate) use self::prompts::{confirm_remove, confirm_remove_stderr};
 
 mod review;
@@ -29,14 +30,13 @@ pub(crate) mod privs;
 use self::privs::{is_root, stdin_is_tty};
 
 mod escalate;
-use self::escalate::{escalate, escalate_result, escalate_upgrade};
+use self::escalate::escalate_upgrade;
 pub(crate) use self::escalate::{escalation_command, graphical_escalation_command};
 
 mod commands;
-pub(crate) use self::commands::answerer_for;
-use self::commands::{
-    alpm_handle, decode_approvals, root_install, run_aur_sync, run_gendb, run_search,
-};
+pub(crate) use self::commands::decode_approvals;
+pub(crate) use self::commands::{alpm_handle, answerer_for};
+use self::commands::{run_aur_sync, run_gendb, run_search};
 
 mod complete;
 mod completions;
@@ -81,34 +81,15 @@ pub fn install_subcommand(args: InstallArgs) -> ! {
     let positionals = expand_groups(&handle, &positionals, stdin_is_tty() && !args.json);
 
     if is_root() {
-        let approvals = decode_approvals_or_exit(args.approvals_b64.as_deref());
-        exit_with_result(root_install(
-            &handle,
-            &positionals,
-            args.as_deps,
-            args.json,
-            approvals,
-        ));
+        crate::dispatch::child::run_install_root(&positionals, args.as_deps, args.json, None);
     }
 
     let (repo_or_file, aur) = split_install_targets(&handle, &positionals);
 
     if aur.is_empty() {
-        install_repo_only(
-            &handle,
-            &positionals,
-            args.as_deps,
-            args.json,
-            args.approvals_b64.as_deref(),
-        );
+        install_repo_only(&handle, &positionals, args.as_deps, args.json);
     } else if repo_or_file.is_empty() {
-        install_aur_only(
-            &aur,
-            args.as_deps,
-            args.json,
-            args.skip_review,
-            args.approvals_b64.as_deref(),
-        );
+        install_aur_only(&aur, args.as_deps, args.json, args.skip_review);
     } else {
         install_mixed(
             &handle,
@@ -117,31 +98,18 @@ pub fn install_subcommand(args: InstallArgs) -> ! {
             args.as_deps,
             args.json,
             args.skip_review,
-            args.approvals_b64.as_deref(),
         );
     }
 }
 
-fn install_repo_only(
-    handle: &alpm::Alpm,
-    positionals: &[String],
-    as_deps: bool,
-    json: bool,
-    approvals_b64: Option<&str>,
-) -> ! {
+fn install_repo_only(handle: &alpm::Alpm, positionals: &[String], as_deps: bool, json: bool) -> ! {
     if !json {
         print_sync_preamble(handle, positionals);
     }
-    escalate(positionals, as_deps, json, approvals_b64);
+    crate::dispatch::exec::run_install(positionals, as_deps, json, None);
 }
 
-fn install_aur_only(
-    aur: &[String],
-    as_deps: bool,
-    json: bool,
-    skip_review: bool,
-    approvals_b64: Option<&str>,
-) -> ! {
+fn install_aur_only(aur: &[String], as_deps: bool, json: bool, skip_review: bool) -> ! {
     let mut sink: Box<dyn InstallSink> = sink_for(json);
     let callbacks = build_callbacks(json, skip_review);
     exit_with_result(crate::build::run_build(
@@ -151,7 +119,7 @@ fn install_aur_only(
         &mut *sink,
         callbacks.confirm,
         callbacks.review,
-        approvals_b64,
+        None,
     ));
 }
 
@@ -162,12 +130,11 @@ fn install_mixed(
     as_deps: bool,
     json: bool,
     skip_review: bool,
-    approvals_b64: Option<&str>,
 ) -> ! {
     if !json {
         print_sync_preamble(handle, repo_or_file);
     }
-    match escalate_result(repo_or_file, as_deps, json, approvals_b64) {
+    match crate::dispatch::exec::run_install_result(repo_or_file, as_deps, json, None) {
         Ok(0) => {}
         Ok(code) => std::process::exit(code),
         Err(e) => {
@@ -184,7 +151,7 @@ fn install_mixed(
         &mut *sink,
         callbacks.confirm,
         callbacks.review,
-        approvals_b64,
+        None,
     );
     if let Err(e) = &result {
         eprintln!("warning: repo packages installed; AUR phase failed: {e:#}");
@@ -408,7 +375,7 @@ fn expand_remove_groups(
     out
 }
 
-fn classify_target(s: &str) -> InstallTarget {
+pub(crate) fn classify_target(s: &str) -> InstallTarget {
     const FILE_SUFFIXES: &[&str] = &[".pkg.tar", ".pkg.tar.gz", ".pkg.tar.zst", ".pkg.tar.xz"];
     if FILE_SUFFIXES.iter().any(|suffix| s.ends_with(suffix)) {
         InstallTarget::File(s.into())

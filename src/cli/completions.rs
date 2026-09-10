@@ -37,7 +37,7 @@ _pakajo_dyn() {
         install|add|-S|search|info) mode=available ;;
         remove|uninstall|rm|-R) mode=installed ;;
     esac
-    if [[ $cur == -* || $prev == --approvals || -z $mode ]]; then
+    if [[ $cur == -* || -z $mode ]]; then
         _pakajo "$@"
         return
     fi
@@ -61,7 +61,7 @@ _pakajo() {
         install|add|-S|search|info) mode=available ;;
         remove|uninstall|rm|-R) mode=installed ;;
     esac
-    if (( CURRENT > 2 )) && [[ -n $mode && ${words[CURRENT]} != -* && $prev != --approvals ]]; then
+    if (( CURRENT > 2 )) && [[ -n $mode && ${words[CURRENT]} != -* ]]; then
         local -a pkgs
         pkgs=(${(f)"$(pakajo __complete $mode "${words[CURRENT]}" 2>/dev/null)"})
         if (( ${#pkgs} > 0 )); then
@@ -84,9 +84,6 @@ function __pakajo_pkg_mode
     set -l sub $tokens[2]
     set -l cur (commandline -ct)
     if string match -q -- '-*' $cur
-        return 1
-    end
-    if contains -- $tokens[-1] --approvals
         return 1
     end
     switch $sub

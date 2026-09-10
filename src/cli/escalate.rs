@@ -20,32 +20,6 @@ fn escalate_exit(result: anyhow::Result<i32>) -> i32 {
     }
 }
 
-pub fn escalate_result(
-    targets: &[String],
-    as_deps: bool,
-    json: bool,
-    approvals_b64: Option<&str>,
-) -> anyhow::Result<i32> {
-    let child = spawn_escalated(
-        &ChildJob::Install {
-            targets: targets.to_vec(),
-            as_deps,
-            approvals_b64: approvals_b64.map(String::from),
-        },
-        Stdio::inherit(),
-    )?;
-    run_escalated_child(child, json)
-}
-
-pub fn escalate(targets: &[String], as_deps: bool, json: bool, approvals_b64: Option<&str>) -> ! {
-    std::process::exit(escalate_exit(escalate_result(
-        targets,
-        as_deps,
-        json,
-        approvals_b64,
-    )))
-}
-
 pub fn escalate_upgrade(no_refresh: bool, ignores: &[String], json: bool) -> i32 {
     let result = spawn_escalated(
         &ChildJob::Upgrade {

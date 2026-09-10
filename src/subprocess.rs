@@ -37,11 +37,6 @@ pub fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
 }
 
 pub enum ChildJob {
-    Install {
-        targets: Vec<String>,
-        as_deps: bool,
-        approvals_b64: Option<String>,
-    },
     Upgrade {
         no_refresh: bool,
         ignores: Vec<String>,
@@ -53,7 +48,6 @@ pub enum ChildJob {
 impl ChildJob {
     fn subcommand(&self) -> &'static str {
         match self {
-            ChildJob::Install { .. } => "install",
             ChildJob::Upgrade { .. } => "upgrade",
         }
     }
@@ -61,21 +55,6 @@ impl ChildJob {
     fn apply(&self, cmd: &mut Command) {
         cmd.arg(self.subcommand()).arg("--json");
         match self {
-            ChildJob::Install {
-                targets,
-                as_deps,
-                approvals_b64,
-            } => {
-                if *as_deps {
-                    cmd.arg("--asdeps");
-                }
-                if let Some(b64) = approvals_b64 {
-                    cmd.arg("--approvals").arg(b64);
-                }
-                for target in targets {
-                    cmd.arg(target);
-                }
-            }
             ChildJob::Upgrade {
                 no_refresh,
                 ignores,
@@ -175,37 +154,6 @@ mod tests {
         cmd.get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
-    }
-
-    #[test]
-    fn install_job_matches_cli_vector() {
-        let job = ChildJob::Install {
-            targets: vec!["sl".to_string(), "figlet".to_string()],
-            as_deps: true,
-            approvals_b64: Some("QUJD".to_string()),
-        };
-        assert_eq!(
-            args_of(&job),
-            [
-                "install",
-                "--json",
-                "--asdeps",
-                "--approvals",
-                "QUJD",
-                "sl",
-                "figlet"
-            ]
-        );
-    }
-
-    #[test]
-    fn install_job_minimal_matches_gui_vector() {
-        let job = ChildJob::Install {
-            targets: vec!["sl".to_string()],
-            as_deps: false,
-            approvals_b64: None,
-        };
-        assert_eq!(args_of(&job), ["install", "--json", "sl"]);
     }
 
     #[test]

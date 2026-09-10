@@ -1,11 +1,7 @@
 use anyhow::Context as _;
 use base64::Engine as _;
 
-use super::classify_target;
 use super::privs::stdin_is_tty;
-use super::prompts::{confirm_install, confirm_install_stderr};
-use super::sinks::{ConsoleSink, EscalatedSink, JsonSink};
-use crate::install::{self, InstallTarget};
 use crate::package::PackageSource;
 use crate::search::SearchResult;
 
@@ -165,51 +161,5 @@ pub fn answerer_for(
         Box::new(crate::answerer::StdioAnswerer::new())
     } else {
         Box::new(crate::answerer::NonInteractiveAnswerer)
-    }
-}
-
-pub fn root_install(
-    handle: &alpm::Alpm,
-    positionals: &[String],
-    as_deps: bool,
-    json: bool,
-    approvals: Option<crate::question::Approvals>,
-) -> anyhow::Result<()> {
-    let targets = positionals
-        .iter()
-        .map(|s| classify_target(s))
-        .collect::<Vec<_>>();
-    let needs_lookup = targets.iter().any(|t| matches!(t, InstallTarget::Repo(_)));
-    if needs_lookup {
-        for target in &targets {
-            if let InstallTarget::Repo(name) = target
-                && !crate::package::repo_exists(handle, name)
-            {
-                anyhow::bail!("cannot build packages as root; re-run without privilege escalation");
-            }
-        }
-    }
-    let interactive = approvals.is_none() && stdin_is_tty();
-    let answerer = answerer_for(approvals);
-    if json {
-        if interactive {
-            install::run_install(
-                &targets,
-                as_deps,
-                EscalatedSink::new(),
-                confirm_install_stderr,
-                answerer,
-            )
-        } else {
-            install::run_install(&targets, as_deps, JsonSink::new(), || true, answerer)
-        }
-    } else {
-        install::run_install(
-            &targets,
-            as_deps,
-            ConsoleSink::new(),
-            confirm_install,
-            answerer,
-        )
     }
 }

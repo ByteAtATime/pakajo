@@ -336,24 +336,7 @@ fn run_install_child<S: InstallSink + ?Sized>(
     sink: &mut S,
     approvals_b64: Option<&str>,
 ) -> anyhow::Result<()> {
-    let child = crate::subprocess::spawn_escalated(
-        &crate::subprocess::ChildJob::Install {
-            targets: targets.to_vec(),
-            as_deps,
-            approvals_b64: approvals_b64.map(String::from),
-        },
-        Stdio::inherit(),
-    )?;
-    let status =
-        crate::subprocess::stream_child(child, sink).context("install child did not complete")?;
-    if !status.success() {
-        anyhow::bail!(
-            "privileged install of [{}] failed (exit {})",
-            targets.join(", "),
-            status.code().unwrap_or(-1)
-        );
-    }
-    Ok(())
+    crate::dispatch::exec::run_install_to_sink(targets, as_deps, approvals_b64, sink)
 }
 
 #[cfg(test)]
