@@ -125,11 +125,18 @@ fn operation_command(operation: &Operation, exe: &str, graphical: bool) -> Comma
     cmd
 }
 
-fn cli_sink(stream: bool) -> Box<dyn crate::events::InstallSink> {
-    if stream {
+fn parent_sink(json: bool) -> Box<dyn crate::events::InstallSink> {
+    if json {
         Box::new(JsonSink::new())
     } else {
         Box::new(ConsoleSink::new())
+    }
+}
+
+pub(crate) fn remove_operation(targets: &[String]) -> Operation {
+    Operation::Remove {
+        targets: targets.to_vec(),
+        stream: true,
     }
 }
 
@@ -172,8 +179,8 @@ fn finish_channel(
     send_item(tx, StreamItem::Done(map_outcome(status)));
 }
 
-pub fn run_remove(targets: &[String], stream: bool) -> ! {
-    std::process::exit(match run_remove_result(targets, stream) {
+pub fn run_remove(targets: &[String], json: bool) -> ! {
+    std::process::exit(match run_remove_result(targets, json) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("{e:#}");
@@ -182,13 +189,10 @@ pub fn run_remove(targets: &[String], stream: bool) -> ! {
     });
 }
 
-fn run_remove_result(targets: &[String], stream: bool) -> anyhow::Result<i32> {
-    let operation = Operation::Remove {
-        targets: targets.to_vec(),
-        stream,
-    };
+fn run_remove_result(targets: &[String], json: bool) -> anyhow::Result<i32> {
+    let operation = remove_operation(targets);
     let child = spawn_cli_child(&operation, "remove")?;
-    let mut sink = cli_sink(stream);
+    let mut sink = parent_sink(json);
     let status = stream_child(child, &mut *sink)?;
     Ok(status.code().unwrap_or(1))
 }
@@ -213,11 +217,11 @@ pub fn run_remove_to_channel(
 pub fn run_install(
     targets: &[String],
     as_deps: bool,
-    stream: bool,
+    json: bool,
     approvals_b64: Option<&str>,
 ) -> ! {
     std::process::exit(
-        match run_install_result(targets, as_deps, stream, approvals_b64) {
+        match run_install_result(targets, as_deps, json, approvals_b64) {
             Ok(code) => code,
             Err(e) => {
                 eprintln!("{e:#}");
@@ -230,27 +234,26 @@ pub fn run_install(
 fn install_operation(
     targets: &[String],
     as_deps: bool,
-    stream: bool,
     approvals: Option<&ApprovalsFile>,
 ) -> Operation {
     Operation::Install {
         targets: targets.to_vec(),
         as_deps,
         approvals_path: approvals.map(|file| file.path().to_string_lossy().into_owned()),
-        stream,
+        stream: true,
     }
 }
 
 pub(crate) fn run_install_result(
     targets: &[String],
     as_deps: bool,
-    stream: bool,
+    json: bool,
     approvals_b64: Option<&str>,
 ) -> anyhow::Result<i32> {
     let approvals = approvals_b64.map(ApprovalsFile::write_b64).transpose()?;
-    let operation = install_operation(targets, as_deps, stream, approvals.as_ref());
+    let operation = install_operation(targets, as_deps, approvals.as_ref());
     let child = spawn_cli_child(&operation, "install")?;
-    let mut sink = cli_sink(stream);
+    let mut sink = parent_sink(json);
     let status = stream_child(child, &mut *sink)?;
     Ok(status.code().unwrap_or(1))
 }
@@ -262,7 +265,7 @@ pub fn run_install_to_sink<S: crate::events::InstallSink + ?Sized>(
     sink: &mut S,
 ) -> anyhow::Result<()> {
     let approvals = approvals_b64.map(ApprovalsFile::write_b64).transpose()?;
-    let operation = install_operation(targets, as_deps, true, approvals.as_ref());
+    let operation = install_operation(targets, as_deps, approvals.as_ref());
     let child = spawn_cli_child(&operation, "install")?;
     let status = stream_child(child, sink).context("install child did not complete")?;
     if !status.success() {
@@ -296,7 +299,7 @@ pub fn run_install_to_channel(
             return;
         }
     };
-    let operation = install_operation(&targets, as_deps, true, approvals.as_ref());
+    let operation = install_operation(&targets, as_deps, approvals.as_ref());
     let Some(child) = spawn_channel_child(&operation, &exe.to_string_lossy(), &mut tx) else {
         return;
     };
@@ -308,7 +311,6 @@ pub fn run_install_to_channel(
 fn upgrade_repo_operation(
     no_refresh: bool,
     ignores: &[String],
-    stream: bool,
     fingerprint_path: Option<&str>,
     approvals: Option<&ApprovalsFile>,
 ) -> Operation {
@@ -317,12 +319,12 @@ fn upgrade_repo_operation(
         ignores: ignores.to_vec(),
         fingerprint_path: fingerprint_path.map(str::to_string),
         approvals_path: approvals.map(|file| file.path().to_string_lossy().into_owned()),
-        stream,
+        stream: true,
     }
 }
 
-pub fn run_upgrade_repo(no_refresh: bool, ignores: &[String], stream: bool) -> ! {
-    std::process::exit(match run_upgrade_repo_result(no_refresh, ignores, stream) {
+pub fn run_upgrade_repo(no_refresh: bool, ignores: &[String], json: bool) -> ! {
+    std::process::exit(match run_upgrade_repo_result(no_refresh, ignores, json) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("{e:#}");
@@ -334,11 +336,11 @@ pub fn run_upgrade_repo(no_refresh: bool, ignores: &[String], stream: bool) -> !
 pub(crate) fn run_upgrade_repo_result(
     no_refresh: bool,
     ignores: &[String],
-    stream: bool,
+    json: bool,
 ) -> anyhow::Result<i32> {
-    let operation = upgrade_repo_operation(no_refresh, ignores, stream, None, None);
+    let operation = upgrade_repo_operation(no_refresh, ignores, None, None);
     let child = spawn_cli_child(&operation, "upgrade")?;
-    let mut sink = cli_sink(stream);
+    let mut sink = parent_sink(json);
     let status = stream_child(child, &mut *sink)?;
     Ok(status.code().unwrap_or(1))
 }
@@ -368,7 +370,6 @@ pub fn run_upgrade_repo_to_channel(
     let operation = upgrade_repo_operation(
         no_refresh,
         &ignores,
-        true,
         fingerprint_path.as_deref(),
         approvals.as_ref(),
     );
@@ -452,6 +453,24 @@ mod tests {
                 "argv must not contain approvals payload: {arg:?}"
             );
         }
+    }
+
+    #[test]
+    fn remove_operation_always_streams() {
+        let operation = remove_operation(&["sl".to_string()]);
+        assert!(operation.encode().contains(&"--stream".to_string()));
+    }
+
+    #[test]
+    fn install_operation_always_streams() {
+        let operation = install_operation(&["sl".to_string()], false, None);
+        assert!(operation.encode().contains(&"--stream".to_string()));
+    }
+
+    #[test]
+    fn upgrade_repo_operation_always_streams() {
+        let operation = upgrade_repo_operation(false, &["foo".to_string()], None, None);
+        assert!(operation.encode().contains(&"--stream".to_string()));
     }
 
     #[test]
