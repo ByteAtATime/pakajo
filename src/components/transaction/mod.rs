@@ -5,6 +5,7 @@ use cosmic::iced::{Background, Color, Length, stream::channel};
 use cosmic::widget::container;
 use futures::{SinkExt as _, StreamExt as _};
 
+use pakajo::dispatch::exec::{ChildOutcome, StreamItem};
 use pakajo::dispatch::protocol::{Completion, classify_completion};
 use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
 use pakajo::events::InstallEvent;
@@ -12,7 +13,6 @@ use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::progress::{InstallKind, SysupgradePhase};
 use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
-use pakajo::subprocess::{ChildOutcome, StreamItem};
 
 use crate::Element;
 

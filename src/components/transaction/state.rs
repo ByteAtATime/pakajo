@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 
+use pakajo::dispatch::exec::ChildOutcome;
 use pakajo::events::InstallEvent;
 use pakajo::package::PackageSource;
 use pakajo::progress::{
     AurStage, AurState, BuildStatus, InstallKind, RepoStage, RepoState, apply_aur_counters,
     apply_repo_counters, event_stage, finish_aur, ordered_aur_stages, ordered_stages,
 };
-use pakajo::subprocess::ChildOutcome;
 
 use super::pkgbuild::PkgbuildModel;
 use super::review::ReviewModel;

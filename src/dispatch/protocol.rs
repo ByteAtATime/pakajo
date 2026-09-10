@@ -1,9 +1,9 @@
 use crate::build::BuildDecision;
+use crate::dispatch::exec::ChildOutcome;
 use crate::dispatch::operation::Operation;
 use crate::pkgbuild::PkgbuildInfo;
 use crate::progress::SysupgradePhase;
 use crate::resolve::BuildPlan;
-use crate::subprocess::ChildOutcome;
 
 pub trait Decider {
     fn confirm_build(&self, plan: &BuildPlan) -> BuildDecision;
@@ -102,8 +102,8 @@ pub fn classify_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dispatch::exec::ChildOutcome;
     use crate::resolve::{BuildLayer, BuildPlan};
-    use crate::subprocess::ChildOutcome;
 
     fn empty_plan() -> BuildPlan {
         BuildPlan {

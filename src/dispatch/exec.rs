@@ -1,10 +1,11 @@
-use std::io;
+use std::io::{self, BufReader};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 
 use anyhow::Context as _;
 use base64::Engine as _;
+use futures::SinkExt as _;
 
 use crate::cli::privs::{is_root, stdin_is_tty};
 use crate::cli::{ConsoleSink, JsonSink};
@@ -12,7 +13,49 @@ use crate::dispatch::operation::{MARKER, Operation};
 use crate::dispatch::protocol::{
     AutomaticDecider, Decider as _, Placement, TerminalDecider, place,
 };
-use crate::subprocess::{ChannelSink, ChildOutcome, StreamItem, send_item, stream_child};
+use crate::events::{InstallEvent, InstallSink, read_event_stream};
+
+#[derive(Clone, Debug)]
+pub enum ChildOutcome {
+    Success,
+    Dismissed,
+    NotFound,
+    Failed(String),
+}
+
+pub enum StreamItem {
+    Event(InstallEvent),
+    Done(ChildOutcome),
+}
+
+fn send_item(tx: &mut futures::channel::mpsc::Sender<StreamItem>, item: StreamItem) {
+    futures::executor::block_on(tx.send(item)).ok();
+}
+
+pub struct ChannelSink {
+    tx: futures::channel::mpsc::Sender<StreamItem>,
+}
+
+impl ChannelSink {
+    pub fn new(tx: futures::channel::mpsc::Sender<StreamItem>) -> Self {
+        Self { tx }
+    }
+}
+
+impl InstallSink for ChannelSink {
+    fn event(&mut self, event: InstallEvent) {
+        send_item(&mut self.tx, StreamItem::Event(event));
+    }
+}
+
+fn stream_child<S: InstallSink + ?Sized>(
+    mut child: Child,
+    sink: &mut S,
+) -> std::io::Result<ExitStatus> {
+    let stdout = child.stdout.take().expect("piped stdout");
+    read_event_stream(BufReader::new(stdout), sink);
+    child.wait()
+}
 
 pub trait PrivilegeEscalator {
     fn build_command(&self, exe: &str) -> Command;
@@ -46,7 +89,7 @@ impl PrivilegeEscalator for Sudo {
     }
 }
 
-pub(crate) fn select_privilege_escalator(root: bool, tty: bool) -> Box<dyn PrivilegeEscalator> {
+fn select_privilege_escalator(root: bool, tty: bool) -> Box<dyn PrivilegeEscalator> {
     if root {
         Box::new(Direct)
     } else if tty {
@@ -56,15 +99,15 @@ pub(crate) fn select_privilege_escalator(root: bool, tty: bool) -> Box<dyn Privi
     }
 }
 
-pub fn escalation_command(exe: &str) -> Command {
+fn escalation_command(exe: &str) -> Command {
     select_privilege_escalator(is_root(), stdin_is_tty()).build_command(exe)
 }
 
-pub fn graphical_escalation_command(exe: &str) -> Command {
+fn graphical_escalation_command(exe: &str) -> Command {
     select_privilege_escalator(is_root(), false).build_command(exe)
 }
 
-pub fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
+fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
     let code = match status {
         Err(error) => return ChildOutcome::Failed(error.to_string()),
         Ok(status) => status.code(),
@@ -78,12 +121,12 @@ pub fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
     }
 }
 
-pub struct ApprovalsFile {
+struct ApprovalsFile {
     path: PathBuf,
 }
 
 impl ApprovalsFile {
-    pub fn write(json: &[u8]) -> io::Result<ApprovalsFile> {
+    fn write(json: &[u8]) -> io::Result<ApprovalsFile> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path =
@@ -97,14 +140,14 @@ impl ApprovalsFile {
         Ok(ApprovalsFile { path })
     }
 
-    pub fn write_b64(b64: &str) -> anyhow::Result<ApprovalsFile> {
+    fn write_b64(b64: &str) -> anyhow::Result<ApprovalsFile> {
         let json = base64::engine::general_purpose::STANDARD
             .decode(b64)
             .context("--approvals is not valid base64")?;
         ApprovalsFile::write(&json).context("failed to write approvals file")
     }
 
-    pub fn path(&self) -> &Path {
+    fn path(&self) -> &Path {
         &self.path
     }
 }
@@ -136,7 +179,7 @@ fn parent_sink(json: bool) -> Box<dyn crate::events::InstallSink> {
     }
 }
 
-pub(crate) fn remove_operation(targets: &[String]) -> Operation {
+fn remove_operation(targets: &[String]) -> Operation {
     Operation::Remove {
         targets: targets.to_vec(),
         stream: true,
@@ -326,16 +369,6 @@ fn upgrade_repo_operation(
     }
 }
 
-pub fn run_upgrade_repo(no_refresh: bool, ignores: &[String], json: bool) -> ! {
-    std::process::exit(match run_upgrade_repo_result(no_refresh, ignores, json) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("{e:#}");
-            1
-        }
-    });
-}
-
 pub(crate) fn run_upgrade_repo_result(
     no_refresh: bool,
     ignores: &[String],
@@ -384,7 +417,7 @@ pub fn run_upgrade_repo_to_channel(
     finish_channel(status, &mut tx);
 }
 
-pub(crate) fn build_aur_operation(targets: &[String], as_deps: bool) -> Operation {
+fn build_aur_operation(targets: &[String], as_deps: bool) -> Operation {
     Operation::BuildAur {
         targets: targets.to_vec(),
         as_deps,

@@ -64,7 +64,7 @@ pub fn dispatch(cli: Cli) {
     }
 }
 
-pub fn install_subcommand(args: InstallArgs) -> ! {
+fn install_subcommand(args: InstallArgs) -> ! {
     let positionals = dedup_positionals(args.positionals);
 
     if positionals.is_empty() {
@@ -133,7 +133,7 @@ fn install_mixed(
     exit_with_result(result);
 }
 
-pub fn search_subcommand(args: SearchArgs) -> ! {
+fn search_subcommand(args: SearchArgs) -> ! {
     if args.query.is_empty() {
         eprintln!("usage: pakajo search <query>");
         std::process::exit(2);
@@ -142,27 +142,27 @@ pub fn search_subcommand(args: SearchArgs) -> ! {
     exit_with_result(run_search(&query));
 }
 
-pub fn info_subcommand(args: InfoArgs) -> ! {
+fn info_subcommand(args: InfoArgs) -> ! {
     info::run(args.targets)
 }
 
-pub fn aur_sync_subcommand() -> ! {
+fn aur_sync_subcommand() -> ! {
     exit_with_result(run_aur_sync());
 }
 
-pub fn gendb_subcommand() -> ! {
+fn gendb_subcommand() -> ! {
     exit_with_result(run_gendb());
 }
 
-pub fn completions_subcommand(args: CompletionsArgs) -> ! {
+fn completions_subcommand(args: CompletionsArgs) -> ! {
     exit_with_result(completions::run(args.shell));
 }
 
-pub fn clean_subcommand(args: CleanArgs) -> ! {
+fn clean_subcommand(args: CleanArgs) -> ! {
     exit_with_result(crate::clean::run_clean(args.remove));
 }
 
-pub fn remove_subcommand(args: RemoveArgs) -> ! {
+fn remove_subcommand(args: RemoveArgs) -> ! {
     let positionals = dedup_positionals(args.positionals);
 
     if positionals.is_empty() {
@@ -180,7 +180,7 @@ pub fn remove_subcommand(args: RemoveArgs) -> ! {
     crate::dispatch::exec::run_remove(&positionals, args.json);
 }
 
-pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {
+fn upgrade_subcommand(args: UpgradeArgs) -> ! {
     if args.repo_only {
         let answerer = answerer_for(None);
         match crate::dispatch::child::select_upgrade_repo_presentation(args.json) {
