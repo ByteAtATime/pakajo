@@ -333,12 +333,38 @@ impl Transaction {
     }
 
     fn launch_subprocess(&mut self, approvals_b64: Option<String>) -> Action {
+        if self.model.is_aur() {
+            return self.launch_aur_in_process(approvals_b64);
+        }
         let name = self.model.name.clone();
         self.launch_streamed(ChildJob::Install {
             targets: vec![name],
             as_deps: false,
             approvals_b64,
         })
+    }
+
+    fn launch_aur_in_process(&mut self, approvals_b64: Option<String>) -> Action {
+        let name = self.model.name.clone();
+        self.model.status = TransactionStatus::Running;
+        let stream = spawn_transaction_stream(move |mut raw_tx| {
+            let mut sink = ChannelSink::new(raw_tx.clone());
+            let result = run_build(
+                &[name],
+                false,
+                false,
+                &mut sink,
+                |_| BuildDecision::Proceed,
+                |_| true,
+                approvals_b64.as_deref(),
+            );
+            let outcome = match result {
+                Ok(()) => ChildOutcome::Success,
+                Err(e) => ChildOutcome::Failed(format!("{e:#}")),
+            };
+            send_item(&mut raw_tx, StreamItem::Done(outcome));
+        });
+        Action::Run(stream)
     }
 
     fn launch_remove_subprocess(&mut self) -> Action {
