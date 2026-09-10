@@ -45,6 +45,20 @@ pub fn select_install_presentation(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpgradeRepoPresentation {
+    Stream,
+    Console,
+}
+
+pub fn select_upgrade_repo_presentation(stream: bool) -> UpgradeRepoPresentation {
+    if stream {
+        UpgradeRepoPresentation::Stream
+    } else {
+        UpgradeRepoPresentation::Console
+    }
+}
+
 pub fn read_approvals_file(path: &str) -> anyhow::Result<crate::question::Approvals> {
     let bytes = std::fs::read(path).map_err(|_| anyhow::anyhow!("malformed dispatch argv"))?;
     serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("malformed dispatch argv"))
@@ -65,6 +79,31 @@ pub fn run(argv: &[String]) -> ! {
                 .transpose();
             match approvals {
                 Ok(approvals) => run_install_root(&targets, as_deps, stream, approvals),
+                Err(e) => {
+                    eprintln!("{e:#}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Operation::UpgradeRepo {
+            no_refresh,
+            ignores,
+            fingerprint_path,
+            approvals_path,
+            stream,
+        }) => {
+            let approvals = approvals_path
+                .as_deref()
+                .map(read_approvals_file)
+                .transpose();
+            match approvals {
+                Ok(approvals) => run_upgrade_repo_root(
+                    &no_refresh,
+                    &ignores,
+                    fingerprint_path.as_deref(),
+                    stream,
+                    approvals,
+                ),
                 Err(e) => {
                     eprintln!("{e:#}");
                     std::process::exit(1);
@@ -108,6 +147,32 @@ fn exit_with_result(result: anyhow::Result<()>) -> ! {
             eprintln!("{e:#}");
             std::process::exit(1);
         }
+    }
+}
+
+pub fn run_upgrade_repo_root(
+    no_refresh: &bool,
+    ignores: &[String],
+    fingerprint_path: Option<&str>,
+    stream: bool,
+    approvals: Option<crate::question::Approvals>,
+) -> ! {
+    let answerer = answerer_for(approvals);
+    match select_upgrade_repo_presentation(stream) {
+        UpgradeRepoPresentation::Stream => exit_with_result(crate::upgrade::run_repo_sysupgrade(
+            *no_refresh,
+            ignores,
+            JsonSink::new(),
+            answerer,
+            fingerprint_path,
+        )),
+        UpgradeRepoPresentation::Console => exit_with_result(crate::upgrade::run_repo_sysupgrade(
+            *no_refresh,
+            ignores,
+            ConsoleSink::new(),
+            answerer,
+            fingerprint_path,
+        )),
     }
 }
 
@@ -209,6 +274,19 @@ mod tests {
                 select_install_presentation(stream, has_approvals, tty),
                 expected,
                 "select_install_presentation(stream={stream}, has_approvals={has_approvals}, tty={tty})"
+            );
+        }
+    }
+
+    #[test]
+    fn upgrade_repo_presentation_keys_on_stream_alone() {
+        use UpgradeRepoPresentation::{Console, Stream};
+        let cases = [(true, Stream), (false, Console)];
+        for (stream, expected) in cases {
+            assert_eq!(
+                select_upgrade_repo_presentation(stream),
+                expected,
+                "select_upgrade_repo_presentation(stream={stream})"
             );
         }
     }

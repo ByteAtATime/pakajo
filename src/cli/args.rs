@@ -54,8 +54,6 @@ pub struct UpgradeArgs {
     pub skip_review: bool,
     #[arg(long = "fingerprint-file")]
     pub fingerprint_file: Option<String>,
-    #[arg(long = "approvals")]
-    pub approvals_b64: Option<String>,
 }
 
 #[derive(Args)]

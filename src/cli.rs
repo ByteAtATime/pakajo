@@ -29,12 +29,7 @@ pub(crate) use self::sinks::{EscalatedSink, JsonSink};
 pub(crate) mod privs;
 use self::privs::{is_root, stdin_is_tty};
 
-mod escalate;
-use self::escalate::escalate_upgrade;
-pub(crate) use self::escalate::{escalation_command, graphical_escalation_command};
-
 mod commands;
-pub(crate) use self::commands::decode_approvals;
 pub(crate) use self::commands::{alpm_handle, answerer_for};
 use self::commands::{run_aur_sync, run_gendb, run_search};
 
@@ -207,25 +202,27 @@ pub fn remove_subcommand(args: RemoveArgs) -> ! {
 }
 
 pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {
-    let approvals = decode_approvals_or_exit(args.approvals_b64.as_deref());
     if args.repo_only {
-        let answerer = answerer_for(approvals);
-        if args.json {
-            exit_with_result(crate::upgrade::run_repo_sysupgrade(
-                args.no_refresh,
-                &args.ignores,
-                JsonSink::new(),
-                answerer,
-                args.fingerprint_file.as_deref(),
-            ));
-        } else {
-            exit_with_result(crate::upgrade::run_repo_sysupgrade(
-                args.no_refresh,
-                &args.ignores,
-                ConsoleSink::new(),
-                answerer,
-                args.fingerprint_file.as_deref(),
-            ));
+        let answerer = answerer_for(None);
+        match crate::dispatch::child::select_upgrade_repo_presentation(args.json) {
+            crate::dispatch::child::UpgradeRepoPresentation::Stream => {
+                exit_with_result(crate::upgrade::run_repo_sysupgrade(
+                    args.no_refresh,
+                    &args.ignores,
+                    JsonSink::new(),
+                    answerer,
+                    args.fingerprint_file.as_deref(),
+                ));
+            }
+            crate::dispatch::child::UpgradeRepoPresentation::Console => {
+                exit_with_result(crate::upgrade::run_repo_sysupgrade(
+                    args.no_refresh,
+                    &args.ignores,
+                    ConsoleSink::new(),
+                    answerer,
+                    args.fingerprint_file.as_deref(),
+                ));
+            }
         }
     }
 
@@ -248,7 +245,17 @@ pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {
         candidates: aur_targets.clone(),
     });
 
-    let exit_code = escalate_upgrade(args.no_refresh, &args.ignores, args.json);
+    let exit_code = match crate::dispatch::exec::run_upgrade_repo_result(
+        args.no_refresh,
+        &args.ignores,
+        args.json,
+    ) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    };
     if exit_code == 0 && !aur_targets.is_empty() {
         let aur_names: Vec<String> = aur_targets.iter().map(|c| c.name.clone()).collect();
         let mut build_sink: Box<dyn InstallSink> = sink_for(args.json);
@@ -441,16 +448,6 @@ fn usage_error() -> ! {
 fn alpm_handle_or_exit() -> alpm::Alpm {
     match alpm_handle() {
         Ok(h) => h,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
-    }
-}
-
-fn decode_approvals_or_exit(approvals_b64: Option<&str>) -> Option<crate::question::Approvals> {
-    match approvals_b64.map(decode_approvals).transpose() {
-        Ok(opt) => opt,
         Err(e) => {
             eprintln!("{e:#}");
             std::process::exit(1);

@@ -1,7 +1,7 @@
 use std::io;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 
 use anyhow::Context as _;
 use base64::Engine as _;
@@ -112,6 +112,66 @@ impl Drop for ApprovalsFile {
     }
 }
 
+fn operation_command(operation: &Operation, exe: &str, graphical: bool) -> Command {
+    let mut cmd = if graphical {
+        graphical_escalation_command(exe)
+    } else {
+        escalation_command(exe)
+    };
+    cmd.arg(MARKER);
+    for arg in operation.encode() {
+        cmd.arg(arg);
+    }
+    cmd
+}
+
+fn cli_sink(stream: bool) -> Box<dyn crate::events::InstallSink> {
+    if stream {
+        Box::new(JsonSink::new())
+    } else {
+        Box::new(ConsoleSink::new())
+    }
+}
+
+fn spawn_cli_child(operation: &Operation, name: &str) -> anyhow::Result<Child> {
+    let exe = std::env::current_exe().context("failed to determine executable path")?;
+    let mut cmd = operation_command(operation, &exe.to_string_lossy(), false);
+    cmd.stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    cmd.spawn()
+        .with_context(|| format!("failed to spawn {name} child"))
+}
+
+fn spawn_channel_child(
+    operation: &Operation,
+    exe: &str,
+    tx: &mut futures::channel::mpsc::Sender<StreamItem>,
+) -> Option<Child> {
+    let mut cmd = operation_command(operation, exe, true);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    match cmd.spawn() {
+        Ok(child) => Some(child),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            send_item(tx, StreamItem::Done(ChildOutcome::NotFound));
+            None
+        }
+        Err(err) => {
+            send_item(tx, StreamItem::Done(ChildOutcome::Failed(err.to_string())));
+            None
+        }
+    }
+}
+
+fn finish_channel(
+    status: io::Result<ExitStatus>,
+    tx: &mut futures::channel::mpsc::Sender<StreamItem>,
+) {
+    send_item(tx, StreamItem::Done(map_outcome(status)));
+}
+
 pub fn run_remove(targets: &[String], stream: bool) -> ! {
     std::process::exit(match run_remove_result(targets, stream) {
         Ok(code) => code,
@@ -127,21 +187,8 @@ fn run_remove_result(targets: &[String], stream: bool) -> anyhow::Result<i32> {
         targets: targets.to_vec(),
         stream,
     };
-    let exe = std::env::current_exe().context("failed to determine executable path")?;
-    let mut cmd = escalation_command(&exe.to_string_lossy());
-    cmd.arg(MARKER);
-    for arg in operation.encode() {
-        cmd.arg(arg);
-    }
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    let child = cmd.spawn().context("failed to spawn remove child")?;
-    let mut sink: Box<dyn crate::events::InstallSink> = if stream {
-        Box::new(JsonSink::new())
-    } else {
-        Box::new(ConsoleSink::new())
-    };
+    let child = spawn_cli_child(&operation, "remove")?;
+    let mut sink = cli_sink(stream);
     let status = stream_child(child, &mut *sink)?;
     Ok(status.code().unwrap_or(1))
 }
@@ -155,31 +202,12 @@ pub fn run_remove_to_channel(
         targets,
         stream: true,
     };
-    let mut cmd = graphical_escalation_command(&exe.to_string_lossy());
-    cmd.arg(MARKER);
-    for arg in operation.encode() {
-        cmd.arg(arg);
-    }
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    let child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            send_item(&mut tx, StreamItem::Done(ChildOutcome::NotFound));
-            return;
-        }
-        Err(err) => {
-            send_item(
-                &mut tx,
-                StreamItem::Done(ChildOutcome::Failed(err.to_string())),
-            );
-            return;
-        }
+    let Some(child) = spawn_channel_child(&operation, &exe.to_string_lossy(), &mut tx) else {
+        return;
     };
     let mut sink = ChannelSink::new(tx.clone());
     let status = stream_child(child, &mut sink);
-    send_item(&mut tx, StreamItem::Done(map_outcome(status)));
+    finish_channel(status, &mut tx);
 }
 
 pub fn run_install(
@@ -213,19 +241,6 @@ fn install_operation(
     }
 }
 
-fn install_command(operation: &Operation, exe: &str, graphical: bool) -> Command {
-    let mut cmd = if graphical {
-        graphical_escalation_command(exe)
-    } else {
-        escalation_command(exe)
-    };
-    cmd.arg(MARKER);
-    for arg in operation.encode() {
-        cmd.arg(arg);
-    }
-    cmd
-}
-
 pub(crate) fn run_install_result(
     targets: &[String],
     as_deps: bool,
@@ -234,17 +249,8 @@ pub(crate) fn run_install_result(
 ) -> anyhow::Result<i32> {
     let approvals = approvals_b64.map(ApprovalsFile::write_b64).transpose()?;
     let operation = install_operation(targets, as_deps, stream, approvals.as_ref());
-    let exe = std::env::current_exe().context("failed to determine executable path")?;
-    let mut cmd = install_command(&operation, &exe.to_string_lossy(), false);
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    let child = cmd.spawn().context("failed to spawn install child")?;
-    let mut sink: Box<dyn crate::events::InstallSink> = if stream {
-        Box::new(JsonSink::new())
-    } else {
-        Box::new(ConsoleSink::new())
-    };
+    let child = spawn_cli_child(&operation, "install")?;
+    let mut sink = cli_sink(stream);
     let status = stream_child(child, &mut *sink)?;
     Ok(status.code().unwrap_or(1))
 }
@@ -257,12 +263,7 @@ pub fn run_install_to_sink<S: crate::events::InstallSink + ?Sized>(
 ) -> anyhow::Result<()> {
     let approvals = approvals_b64.map(ApprovalsFile::write_b64).transpose()?;
     let operation = install_operation(targets, as_deps, true, approvals.as_ref());
-    let exe = std::env::current_exe().context("failed to determine executable path")?;
-    let mut cmd = install_command(&operation, &exe.to_string_lossy(), false);
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    let child = cmd.spawn().context("failed to spawn install child")?;
+    let child = spawn_cli_child(&operation, "install")?;
     let status = stream_child(child, sink).context("install child did not complete")?;
     if !status.success() {
         anyhow::bail!(
@@ -296,27 +297,87 @@ pub fn run_install_to_channel(
         }
     };
     let operation = install_operation(&targets, as_deps, true, approvals.as_ref());
-    let mut cmd = install_command(&operation, &exe.to_string_lossy(), true);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    let child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            send_item(&mut tx, StreamItem::Done(ChildOutcome::NotFound));
-            return;
+    let Some(child) = spawn_channel_child(&operation, &exe.to_string_lossy(), &mut tx) else {
+        return;
+    };
+    let mut sink = ChannelSink::new(tx.clone());
+    let status = stream_child(child, &mut sink);
+    finish_channel(status, &mut tx);
+}
+
+fn upgrade_repo_operation(
+    no_refresh: bool,
+    ignores: &[String],
+    stream: bool,
+    fingerprint_path: Option<&str>,
+    approvals: Option<&ApprovalsFile>,
+) -> Operation {
+    Operation::UpgradeRepo {
+        no_refresh,
+        ignores: ignores.to_vec(),
+        fingerprint_path: fingerprint_path.map(str::to_string),
+        approvals_path: approvals.map(|file| file.path().to_string_lossy().into_owned()),
+        stream,
+    }
+}
+
+pub fn run_upgrade_repo(no_refresh: bool, ignores: &[String], stream: bool) -> ! {
+    std::process::exit(match run_upgrade_repo_result(no_refresh, ignores, stream) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("{e:#}");
+            1
         }
+    });
+}
+
+pub(crate) fn run_upgrade_repo_result(
+    no_refresh: bool,
+    ignores: &[String],
+    stream: bool,
+) -> anyhow::Result<i32> {
+    let operation = upgrade_repo_operation(no_refresh, ignores, stream, None, None);
+    let child = spawn_cli_child(&operation, "upgrade")?;
+    let mut sink = cli_sink(stream);
+    let status = stream_child(child, &mut *sink)?;
+    Ok(status.code().unwrap_or(1))
+}
+
+pub fn run_upgrade_repo_to_channel(
+    exe: PathBuf,
+    no_refresh: bool,
+    ignores: Vec<String>,
+    fingerprint_path: Option<String>,
+    approvals_b64: Option<String>,
+    mut tx: futures::channel::mpsc::Sender<StreamItem>,
+) {
+    let approvals = match approvals_b64
+        .as_deref()
+        .map(ApprovalsFile::write_b64)
+        .transpose()
+    {
+        Ok(approvals) => approvals,
         Err(err) => {
             send_item(
                 &mut tx,
-                StreamItem::Done(ChildOutcome::Failed(err.to_string())),
+                StreamItem::Done(ChildOutcome::Failed(format!("{err:#}"))),
             );
             return;
         }
     };
+    let operation = upgrade_repo_operation(
+        no_refresh,
+        &ignores,
+        true,
+        fingerprint_path.as_deref(),
+        approvals.as_ref(),
+    );
+    let Some(child) = spawn_channel_child(&operation, &exe.to_string_lossy(), &mut tx) else {
+        return;
+    };
     let mut sink = ChannelSink::new(tx.clone());
     let status = stream_child(child, &mut sink);
-    send_item(&mut tx, StreamItem::Done(map_outcome(status)));
+    finish_channel(status, &mut tx);
 }
 
 #[cfg(test)]

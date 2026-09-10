@@ -12,9 +12,7 @@ use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::progress::{InstallKind, SysupgradePhase};
 use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
-use pakajo::subprocess::{
-    ChannelSink, ChildJob, ChildOutcome, StreamItem, run_job_to_channel, send_item,
-};
+use pakajo::subprocess::{ChannelSink, ChildOutcome, StreamItem, send_item};
 
 use crate::Element;
 
@@ -396,21 +394,6 @@ impl Transaction {
         Action::Run(stream)
     }
 
-    fn launch_streamed(&mut self, job: ChildJob) -> Action {
-        let exe = match current_exe() {
-            Ok(exe) => exe,
-            Err(e) => {
-                eprintln!("[pakajo] failed to resolve current_exe: {e}");
-                return Action::None;
-            }
-        };
-        self.model.status = TransactionStatus::Running;
-        let stream = spawn_transaction_stream(move |tx| {
-            run_job_to_channel(exe, job, tx);
-        });
-        Action::Run(stream)
-    }
-
     pub(crate) fn start_sysupgrade_repo(
         fingerprint_file: String,
         approvals_b64: Option<String>,
@@ -422,16 +405,25 @@ impl Transaction {
                 InstallKind::Upgrade,
             ),
         };
-        let task = match transaction.launch_streamed(ChildJob::Upgrade {
-            no_refresh: false,
-            ignores: vec![],
-            fingerprint_file: Some(fingerprint_file),
-            approvals_b64,
-        }) {
-            Action::Run(task) => task,
-            _ => Task::none(),
+        let exe = match current_exe() {
+            Ok(exe) => exe,
+            Err(e) => {
+                eprintln!("[pakajo] failed to resolve current_exe: {e}");
+                return (transaction, Task::none());
+            }
         };
-        (transaction, task)
+        transaction.model.status = TransactionStatus::Running;
+        let stream = spawn_transaction_stream(move |tx| {
+            pakajo::dispatch::exec::run_upgrade_repo_to_channel(
+                exe,
+                false,
+                vec![],
+                Some(fingerprint_file),
+                approvals_b64,
+                tx,
+            );
+        });
+        (transaction, stream)
     }
 
     pub(crate) fn start_sysupgrade_aur(targets: Vec<String>) -> (Self, Task<crate::Message>) {

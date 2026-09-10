@@ -2,8 +2,12 @@ pub const MARKER: &str = "__dispatch";
 
 const REMOVE: &str = "remove";
 const INSTALL: &str = "install";
+const UPGRADE_REPO: &str = "upgrade-repo";
 const STREAM: &str = "--stream";
 const AS_DEPS: &str = "--asdeps";
+const NO_REFRESH: &str = "--no-refresh";
+const IGNORE: &str = "--ignore";
+const FINGERPRINT_FILE: &str = "--fingerprint-file";
 const APPROVALS_FILE: &str = "--approvals-file";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -15,6 +19,13 @@ pub enum Operation {
     Install {
         targets: Vec<String>,
         as_deps: bool,
+        approvals_path: Option<String>,
+        stream: bool,
+    },
+    UpgradeRepo {
+        no_refresh: bool,
+        ignores: Vec<String>,
+        fingerprint_path: Option<String>,
         approvals_path: Option<String>,
         stream: bool,
     },
@@ -51,6 +62,34 @@ impl Operation {
                 argv.extend(targets.iter().cloned());
                 argv
             }
+            Operation::UpgradeRepo {
+                no_refresh,
+                ignores,
+                fingerprint_path,
+                approvals_path,
+                stream,
+            } => {
+                let mut argv = vec![UPGRADE_REPO.to_string()];
+                if *stream {
+                    argv.push(STREAM.to_string());
+                }
+                if *no_refresh {
+                    argv.push(NO_REFRESH.to_string());
+                }
+                for name in ignores {
+                    argv.push(IGNORE.to_string());
+                    argv.push(name.clone());
+                }
+                if let Some(path) = fingerprint_path {
+                    argv.push(FINGERPRINT_FILE.to_string());
+                    argv.push(path.clone());
+                }
+                if let Some(path) = approvals_path {
+                    argv.push(APPROVALS_FILE.to_string());
+                    argv.push(path.clone());
+                }
+                argv
+            }
         }
     }
 
@@ -58,6 +97,7 @@ impl Operation {
         match argv.first().map(String::as_str) {
             Some(REMOVE) => decode_remove(&argv[1..]),
             Some(INSTALL) => decode_install(&argv[1..]),
+            Some(UPGRADE_REPO) => decode_upgrade_repo(&argv[1..]),
             _ => None,
         }
     }
@@ -93,6 +133,32 @@ fn decode_install(argv: &[String]) -> Option<Operation> {
     Some(Operation::Install {
         targets,
         as_deps,
+        approvals_path,
+        stream,
+    })
+}
+
+fn decode_upgrade_repo(argv: &[String]) -> Option<Operation> {
+    let mut stream = false;
+    let mut no_refresh = false;
+    let mut ignores = Vec::new();
+    let mut fingerprint_path = None;
+    let mut approvals_path = None;
+    let mut parts = argv.iter();
+    while let Some(arg) = parts.next() {
+        match arg.as_str() {
+            STREAM => stream = true,
+            NO_REFRESH => no_refresh = true,
+            IGNORE => ignores.push(parts.next()?.clone()),
+            FINGERPRINT_FILE => fingerprint_path = Some(parts.next()?.clone()),
+            APPROVALS_FILE => approvals_path = Some(parts.next()?.clone()),
+            _ => return None,
+        }
+    }
+    Some(Operation::UpgradeRepo {
+        no_refresh,
+        ignores,
+        fingerprint_path,
         approvals_path,
         stream,
     })
@@ -169,6 +235,47 @@ mod tests {
             operation.encode(),
             ["install", "--stream", "--asdeps", "sl"]
         );
+        assert_eq!(Operation::decode(&operation.encode()), Some(operation));
+    }
+
+    #[test]
+    fn upgrade_repo_full_round_trip() {
+        let operation = Operation::UpgradeRepo {
+            no_refresh: true,
+            ignores: vec!["foo".to_string(), "bar".to_string()],
+            fingerprint_path: Some("/tmp/fp.json".to_string()),
+            approvals_path: Some("/tmp/pakajo-approvals-1.json".to_string()),
+            stream: true,
+        };
+        assert_eq!(
+            operation.encode(),
+            [
+                "upgrade-repo",
+                "--stream",
+                "--no-refresh",
+                "--ignore",
+                "foo",
+                "--ignore",
+                "bar",
+                "--fingerprint-file",
+                "/tmp/fp.json",
+                "--approvals-file",
+                "/tmp/pakajo-approvals-1.json",
+            ]
+        );
+        assert_eq!(Operation::decode(&operation.encode()), Some(operation));
+    }
+
+    #[test]
+    fn upgrade_repo_minimal_round_trip() {
+        let operation = Operation::UpgradeRepo {
+            no_refresh: false,
+            ignores: vec![],
+            fingerprint_path: None,
+            approvals_path: None,
+            stream: false,
+        };
+        assert_eq!(operation.encode(), ["upgrade-repo"]);
         assert_eq!(Operation::decode(&operation.encode()), Some(operation));
     }
 

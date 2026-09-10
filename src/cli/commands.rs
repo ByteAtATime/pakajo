@@ -1,5 +1,4 @@
 use anyhow::Context as _;
-use base64::Engine as _;
 
 use super::privs::stdin_is_tty;
 use crate::package::PackageSource;
@@ -143,13 +142,6 @@ fn print_search_results(rows: &[SearchResult]) {
         println!("{repo}/{name} {version}{metadata_block}");
         println!("    {desc}");
     }
-}
-
-pub fn decode_approvals(b64: &str) -> anyhow::Result<crate::question::Approvals> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .context("--approvals is not valid base64")?;
-    serde_json::from_slice(&bytes).context("--approvals is not valid JSON")
 }
 
 pub fn answerer_for(
