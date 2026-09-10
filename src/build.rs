@@ -10,6 +10,7 @@ use crate::events::{InstallEvent, InstallSink, PkgbuildReviewEntry};
 use crate::pkgbuild::PkgbuildInfo;
 use crate::resolve::BuildPlan;
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum BuildDecision {
     Proceed,
     Review,

@@ -1,5 +1,5 @@
-use std::io::{self, BufReader};
-use std::os::unix::fs::PermissionsExt as _;
+use std::io::{self, BufReader, Write as _};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 
@@ -10,9 +10,7 @@ use futures::SinkExt as _;
 use crate::cli::privs::{is_root, stdin_is_tty};
 use crate::cli::{ConsoleSink, JsonSink};
 use crate::dispatch::operation::{MARKER, Operation};
-use crate::dispatch::protocol::{
-    AutomaticDecider, Decider as _, Placement, TerminalDecider, place,
-};
+use crate::dispatch::protocol::{AutomaticDecider, Placement, TerminalDecider, place};
 use crate::events::{InstallEvent, InstallSink, read_event_stream};
 
 #[derive(Clone, Debug)]
@@ -131,13 +129,14 @@ impl ApprovalsFile {
         let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path =
             std::env::temp_dir().join(format!("pakajo-approvals-{}-{id}.json", std::process::id()));
-        let file = std::fs::OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(&path)?;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        std::fs::write(&path, json)?;
-        Ok(ApprovalsFile { path })
+        let guard = ApprovalsFile { path };
+        file.write_all(json)?;
+        Ok(guard)
     }
 
     fn write_b64(b64: &str) -> anyhow::Result<ApprovalsFile> {
@@ -179,6 +178,21 @@ fn parent_sink(json: bool) -> Box<dyn crate::events::InstallSink> {
     }
 }
 
+fn channel_approvals(
+    approvals_b64: Option<&str>,
+    tx: &mut futures::channel::mpsc::Sender<StreamItem>,
+) -> Option<Option<ApprovalsFile>> {
+    match approvals_b64.map(ApprovalsFile::write_b64).transpose() {
+        Ok(approvals) => Some(approvals),
+        Err(err) => {
+            send_item(
+                tx,
+                StreamItem::Done(ChildOutcome::Failed(format!("{err:#}"))),
+            );
+            None
+        }
+    }
+}
 fn remove_operation(targets: &[String]) -> Operation {
     Operation::Remove {
         targets: targets.to_vec(),
@@ -248,10 +262,7 @@ pub fn run_remove_to_channel(
     targets: Vec<String>,
     mut tx: futures::channel::mpsc::Sender<StreamItem>,
 ) {
-    let operation = Operation::Remove {
-        targets,
-        stream: true,
-    };
+    let operation = remove_operation(&targets);
     let Some(child) = spawn_channel_child(&operation, &exe.to_string_lossy(), &mut tx) else {
         return;
     };
@@ -331,19 +342,8 @@ pub fn run_install_to_channel(
     approvals_b64: Option<String>,
     mut tx: futures::channel::mpsc::Sender<StreamItem>,
 ) {
-    let approvals = match approvals_b64
-        .as_deref()
-        .map(ApprovalsFile::write_b64)
-        .transpose()
-    {
-        Ok(approvals) => approvals,
-        Err(err) => {
-            send_item(
-                &mut tx,
-                StreamItem::Done(ChildOutcome::Failed(format!("{err:#}"))),
-            );
-            return;
-        }
+    let Some(approvals) = channel_approvals(approvals_b64.as_deref(), &mut tx) else {
+        return;
     };
     let operation = install_operation(&targets, as_deps, approvals.as_ref());
     let Some(child) = spawn_channel_child(&operation, &exe.to_string_lossy(), &mut tx) else {
@@ -389,19 +389,8 @@ pub fn run_upgrade_repo_to_channel(
     approvals_b64: Option<String>,
     mut tx: futures::channel::mpsc::Sender<StreamItem>,
 ) {
-    let approvals = match approvals_b64
-        .as_deref()
-        .map(ApprovalsFile::write_b64)
-        .transpose()
-    {
-        Ok(approvals) => approvals,
-        Err(err) => {
-            send_item(
-                &mut tx,
-                StreamItem::Done(ChildOutcome::Failed(format!("{err:#}"))),
-            );
-            return;
-        }
+    let Some(approvals) = channel_approvals(approvals_b64.as_deref(), &mut tx) else {
+        return;
     };
     let operation = upgrade_repo_operation(
         no_refresh,
@@ -425,11 +414,11 @@ fn build_aur_operation(targets: &[String], as_deps: bool) -> Operation {
     }
 }
 
-fn run_build_aur_inner(
+fn execute_build_aur<S: crate::events::InstallSink + ?Sized>(
     targets: &[String],
     as_deps: bool,
+    sink: &mut S,
     decider: &dyn crate::dispatch::protocol::Decider,
-    sink: &mut dyn crate::events::InstallSink,
     approvals_b64: Option<&str>,
 ) -> anyhow::Result<()> {
     crate::build::run_build(
@@ -441,6 +430,22 @@ fn run_build_aur_inner(
         |pkgbuilds| decider.review_pkgbuilds(pkgbuilds),
         approvals_b64,
     )
+}
+
+pub(crate) fn run_build_aur_result(
+    targets: &[String],
+    as_deps: bool,
+    json: bool,
+    skip_review: bool,
+    approvals_b64: Option<&str>,
+) -> anyhow::Result<()> {
+    let operation = build_aur_operation(targets, as_deps);
+    if !matches!(place(&operation), Placement::InProcess) {
+        anyhow::bail!("BuildAur must execute in-process");
+    }
+    let decider = TerminalDecider::new(json, skip_review);
+    let mut sink = parent_sink(json);
+    execute_build_aur(targets, as_deps, &mut *sink, &decider, approvals_b64)
 }
 
 pub fn run_build_aur(
@@ -461,22 +466,6 @@ pub fn run_build_aur(
     );
 }
 
-pub(crate) fn run_build_aur_result(
-    targets: &[String],
-    as_deps: bool,
-    json: bool,
-    skip_review: bool,
-    approvals_b64: Option<&str>,
-) -> anyhow::Result<()> {
-    let operation = build_aur_operation(targets, as_deps);
-    if !matches!(place(&operation), Placement::InProcess) {
-        anyhow::bail!("BuildAur must execute in-process");
-    }
-    let decider = TerminalDecider::new(json, skip_review);
-    let mut sink = parent_sink(json);
-    run_build_aur_inner(targets, as_deps, &decider, &mut *sink, approvals_b64)
-}
-
 pub fn run_build_aur_to_channel(
     targets: Vec<String>,
     as_deps: bool,
@@ -495,13 +484,11 @@ pub fn run_build_aur_to_channel(
     }
     let decider = AutomaticDecider;
     let mut sink = ChannelSink::new(tx.clone());
-    let result = crate::build::run_build(
+    let result = execute_build_aur(
         &targets,
-        false,
         as_deps,
         &mut sink,
-        |plan| decider.confirm_build(plan),
-        |pkgbuilds| decider.review_pkgbuilds(pkgbuilds),
+        &decider,
         approvals_b64.as_deref(),
     );
     let outcome = match result {
@@ -586,21 +573,15 @@ mod tests {
     }
 
     #[test]
-    fn remove_operation_always_streams() {
-        let operation = remove_operation(&["sl".to_string()]);
-        assert!(operation.encode().contains(&"--stream".to_string()));
-    }
-
-    #[test]
-    fn install_operation_always_streams() {
-        let operation = install_operation(&["sl".to_string()], false, None);
-        assert!(operation.encode().contains(&"--stream".to_string()));
-    }
-
-    #[test]
-    fn upgrade_repo_operation_always_streams() {
-        let operation = upgrade_repo_operation(false, &["foo".to_string()], None, None);
-        assert!(operation.encode().contains(&"--stream".to_string()));
+    fn parented_operations_always_stream() {
+        let operations = [
+            remove_operation(&["sl".to_string()]),
+            install_operation(&["sl".to_string()], false, None),
+            upgrade_repo_operation(false, &["foo".to_string()], None, None),
+        ];
+        for operation in &operations {
+            assert!(operation.encode().contains(&"--stream".to_string()));
+        }
     }
 
     #[test]
@@ -615,35 +596,6 @@ mod tests {
             let file = ApprovalsFile::write(br#"{"approved_conflicts":[]}"#).expect("write file");
             let path = file.path().to_path_buf();
             assert!(path.exists());
-            drop(file);
-            path
-        };
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn approvals_file_deleted_after_nonzero_exit() {
-        let path = {
-            let file = ApprovalsFile::write(br#"{"approved_conflicts":[]}"#).expect("write file");
-            let path = file.path().to_path_buf();
-            let outcome: anyhow::Result<i32> = Err(anyhow::anyhow!("child exited 1"));
-            assert!(outcome.is_err());
-            drop(file);
-            path
-        };
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn approvals_file_deleted_after_spawn_failure() {
-        let path = {
-            let file = ApprovalsFile::write(br#"{"approved_conflicts":[]}"#).expect("write file");
-            let path = file.path().to_path_buf();
-            let spawn: std::io::Result<()> = Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "pkexec not found",
-            ));
-            assert!(spawn.is_err());
             drop(file);
             path
         };

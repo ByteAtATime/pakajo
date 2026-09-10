@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn decider_terminal_and_automatic_answer_both_prompts() {
+    fn deterministic_json_and_automatic_deciders_answer_both_prompts() {
         use crate::build::BuildDecision;
         let plan = empty_plan();
         let terminal = TerminalDecider::new(true, false);
@@ -126,10 +126,7 @@ mod tests {
             (&automatic, BuildDecision::Proceed, true),
         ];
         for (decider, expected_confirm, expected_review) in cases {
-            assert!(matches!(
-                decider.confirm_build(&plan),
-                ref actual if std::mem::discriminant(actual) == std::mem::discriminant(&expected_confirm)
-            ));
+            assert_eq!(decider.confirm_build(&plan), expected_confirm);
             assert_eq!(decider.review_pkgbuilds(&[]), expected_review);
         }
     }
