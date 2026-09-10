@@ -5,14 +5,14 @@ use cosmic::iced::{Background, Color, Length, stream::channel};
 use cosmic::widget::container;
 use futures::{SinkExt as _, StreamExt as _};
 
-use pakajo::build::{BuildDecision, run_build};
+use pakajo::dispatch::protocol::{Completion, classify_completion};
 use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
 use pakajo::events::InstallEvent;
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::progress::{InstallKind, SysupgradePhase};
 use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
-use pakajo::subprocess::{ChannelSink, ChildOutcome, StreamItem, send_item};
+use pakajo::subprocess::{ChildOutcome, StreamItem};
 
 use crate::Element;
 
@@ -70,39 +70,6 @@ pub(crate) enum Action {
     Finished,
     InstallSucceeded,
     ContinueAur(Vec<String>),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum NextInstallState {
-    ContinueAur { targets: Vec<String> },
-    Completed,
-    Cancelled,
-    Failed { message: String },
-}
-
-fn classify_outcome(
-    outcome: &ChildOutcome,
-    active_phase: Option<SysupgradePhase>,
-    aur_targets: &[String],
-) -> NextInstallState {
-    if matches!(outcome, ChildOutcome::Success)
-        && active_phase == Some(SysupgradePhase::Repo)
-        && !aur_targets.is_empty()
-    {
-        return NextInstallState::ContinueAur {
-            targets: aur_targets.to_vec(),
-        };
-    }
-    match outcome {
-        ChildOutcome::Success => NextInstallState::Completed,
-        ChildOutcome::Dismissed => NextInstallState::Cancelled,
-        ChildOutcome::NotFound => NextInstallState::Failed {
-            message: "pkexec not found".to_string(),
-        },
-        ChildOutcome::Failed(message) => NextInstallState::Failed {
-            message: message.clone(),
-        },
-    }
 }
 
 fn spawn_transaction_stream(
@@ -195,10 +162,10 @@ impl Transaction {
             }
             TransactionMessage::InstallDone(outcome) => {
                 eprintln!("[pakajo] install outcome: {outcome:?}");
-                let next = classify_outcome(&outcome, active_phase, aur_targets);
+                let next = classify_completion(&outcome, active_phase, aur_targets);
                 match next {
-                    NextInstallState::ContinueAur { targets } => Action::ContinueAur(targets),
-                    NextInstallState::Completed => {
+                    Completion::ContinueAur { targets } => Action::ContinueAur(targets),
+                    Completion::Completed => {
                         self.model.finish(outcome);
                         Action::InstallSucceeded
                     }
@@ -358,22 +325,8 @@ impl Transaction {
     fn launch_aur_in_process(&mut self, approvals_b64: Option<String>) -> Action {
         let name = self.model.name.clone();
         self.model.status = TransactionStatus::Running;
-        let stream = spawn_transaction_stream(move |mut raw_tx| {
-            let mut sink = ChannelSink::new(raw_tx.clone());
-            let result = run_build(
-                &[name],
-                false,
-                false,
-                &mut sink,
-                |_| BuildDecision::Proceed,
-                |_| true,
-                approvals_b64.as_deref(),
-            );
-            let outcome = match result {
-                Ok(()) => ChildOutcome::Success,
-                Err(e) => ChildOutcome::Failed(format!("{e:#}")),
-            };
-            send_item(&mut raw_tx, StreamItem::Done(outcome));
+        let stream = spawn_transaction_stream(move |tx| {
+            pakajo::dispatch::exec::run_build_aur_to_channel(vec![name], false, approvals_b64, tx);
         });
         Action::Run(stream)
     }
@@ -433,22 +386,8 @@ impl Transaction {
             InstallKind::Upgrade,
         );
         model.status = TransactionStatus::Running;
-        let stream = spawn_transaction_stream(move |mut raw_tx| {
-            let mut sink = ChannelSink::new(raw_tx.clone());
-            let result = run_build(
-                &targets,
-                false,
-                false,
-                &mut sink,
-                |_| BuildDecision::Proceed,
-                |_| true,
-                None,
-            );
-            let outcome = match result {
-                Ok(()) => ChildOutcome::Success,
-                Err(e) => ChildOutcome::Failed(format!("{e:#}")),
-            };
-            send_item(&mut raw_tx, StreamItem::Done(outcome));
+        let stream = spawn_transaction_stream(move |tx| {
+            pakajo::dispatch::exec::run_build_aur_to_channel(targets, false, None, tx);
         });
         (Self { model }, stream)
     }
@@ -500,65 +439,4 @@ fn dialog_backdrop(content: Element<'_>) -> Element<'_> {
             ..Default::default()
         })
         .into()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn classify_outcome_routes_child_results() {
-        let aur_targets = vec!["aur-pkg".to_string()];
-        let cases = [
-            (
-                ChildOutcome::Success,
-                Some(SysupgradePhase::Repo),
-                aur_targets.clone(),
-                NextInstallState::ContinueAur {
-                    targets: aur_targets.clone(),
-                },
-            ),
-            (
-                ChildOutcome::Success,
-                Some(SysupgradePhase::Repo),
-                Vec::new(),
-                NextInstallState::Completed,
-            ),
-            (
-                ChildOutcome::Success,
-                None,
-                Vec::new(),
-                NextInstallState::Completed,
-            ),
-            (
-                ChildOutcome::Dismissed,
-                None,
-                Vec::new(),
-                NextInstallState::Cancelled,
-            ),
-            (
-                ChildOutcome::NotFound,
-                None,
-                Vec::new(),
-                NextInstallState::Failed {
-                    message: "pkexec not found".to_string(),
-                },
-            ),
-            (
-                ChildOutcome::Failed("err".to_string()),
-                None,
-                Vec::new(),
-                NextInstallState::Failed {
-                    message: "err".to_string(),
-                },
-            ),
-        ];
-        for (outcome, phase, targets, expected) in cases {
-            assert_eq!(
-                classify_outcome(&outcome, phase, &targets),
-                expected,
-                "outcome {outcome:?} phase {phase:?} targets {targets:?}"
-            );
-        }
-    }
 }
