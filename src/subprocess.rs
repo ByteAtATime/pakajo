@@ -3,11 +3,11 @@ use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
 use anyhow::Context as _;
-use futures::SinkExt as _;
 use futures::channel::mpsc;
+use futures::SinkExt as _;
 
 use crate::cli::{escalation_command, graphical_escalation_command};
-use crate::events::{InstallEvent, InstallSink, read_event_stream};
+use crate::events::{read_event_stream, InstallEvent, InstallSink};
 
 #[derive(Clone, Debug)]
 pub enum ChildOutcome {
@@ -146,7 +146,7 @@ pub fn stream_child<S: InstallSink + ?Sized>(
 ) -> std::io::Result<ExitStatus> {
     let stdout = child.stdout.take().expect("piped stdout");
     read_event_stream(BufReader::new(stdout), sink);
-    Ok(child.wait()?)
+    child.wait()
 }
 
 pub fn run_job_to_channel(exe: PathBuf, job: ChildJob, mut tx: mpsc::Sender<StreamItem>) {
