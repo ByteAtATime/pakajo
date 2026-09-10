@@ -13,12 +13,11 @@ mod summary;
 
 mod info;
 
-mod prompts;
-use self::prompts::{confirm_build, confirm_proceed_to_review};
+pub(crate) mod prompts;
 pub(crate) use self::prompts::{confirm_install, confirm_install_stderr};
 pub(crate) use self::prompts::{confirm_remove, confirm_remove_stderr};
 
-mod review;
+pub(crate) mod review;
 
 mod chomp;
 mod sinks;
@@ -105,17 +104,7 @@ fn install_repo_only(handle: &alpm::Alpm, positionals: &[String], as_deps: bool,
 }
 
 fn install_aur_only(aur: &[String], as_deps: bool, json: bool, skip_review: bool) -> ! {
-    let mut sink: Box<dyn InstallSink> = sink_for(json);
-    let callbacks = build_callbacks(json, skip_review);
-    exit_with_result(crate::build::run_build(
-        aur,
-        false,
-        as_deps,
-        &mut *sink,
-        callbacks.confirm,
-        callbacks.review,
-        None,
-    ));
+    crate::dispatch::exec::run_build_aur(aur, as_deps, json, skip_review, None);
 }
 
 fn install_mixed(
@@ -137,17 +126,7 @@ fn install_mixed(
             std::process::exit(1);
         }
     }
-    let mut sink: Box<dyn InstallSink> = sink_for(json);
-    let callbacks = build_callbacks(json, skip_review);
-    let result = crate::build::run_build(
-        aur,
-        false,
-        as_deps,
-        &mut *sink,
-        callbacks.confirm,
-        callbacks.review,
-        None,
-    );
+    let result = crate::dispatch::exec::run_build_aur_result(aur, as_deps, json, skip_review, None);
     if let Err(e) = &result {
         eprintln!("warning: repo packages installed; AUR phase failed: {e:#}");
     }
@@ -258,15 +237,11 @@ pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {
     };
     if exit_code == 0 && !aur_targets.is_empty() {
         let aur_names: Vec<String> = aur_targets.iter().map(|c| c.name.clone()).collect();
-        let mut build_sink: Box<dyn InstallSink> = sink_for(args.json);
-        let callbacks = build_callbacks(args.json, args.skip_review);
-        let result = crate::build::run_build(
+        let result = crate::dispatch::exec::run_build_aur_result(
             &aur_names,
             false,
-            false,
-            &mut *build_sink,
-            callbacks.confirm,
-            callbacks.review,
+            args.json,
+            args.skip_review,
             None,
         );
         if let Err(e) = &result {
@@ -275,34 +250,6 @@ pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {
         exit_with_result(result);
     }
     std::process::exit(exit_code);
-}
-
-struct BuildCallbacks<C> {
-    confirm: C,
-    review: ReviewCallback,
-}
-
-type ReviewCallback = fn(&[crate::pkgbuild::PkgbuildInfo]) -> bool;
-
-fn build_callbacks(
-    json: bool,
-    skip_review: bool,
-) -> BuildCallbacks<impl FnOnce(&crate::resolve::BuildPlan) -> crate::build::BuildDecision> {
-    let confirm = move |plan: &crate::resolve::BuildPlan| -> crate::build::BuildDecision {
-        if json {
-            crate::build::BuildDecision::Review
-        } else if skip_review {
-            confirm_build(plan)
-        } else {
-            confirm_proceed_to_review(plan)
-        }
-    };
-    let review: ReviewCallback = if json {
-        |_| true
-    } else {
-        self::review::review_pkgbuilds
-    };
-    BuildCallbacks { confirm, review }
 }
 
 fn sink_for(json: bool) -> Box<dyn InstallSink> {

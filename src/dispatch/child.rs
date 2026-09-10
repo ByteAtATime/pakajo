@@ -110,6 +110,10 @@ pub fn run(argv: &[String]) -> ! {
                 }
             }
         }
+        Some(Operation::BuildAur { .. }) => {
+            eprintln!("cannot build packages as root; re-run without privilege escalation");
+            std::process::exit(1);
+        }
         None => {
             eprintln!("malformed dispatch argv");
             std::process::exit(1);

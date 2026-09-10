@@ -9,6 +9,9 @@ use base64::Engine as _;
 use crate::cli::privs::{is_root, stdin_is_tty};
 use crate::cli::{ConsoleSink, JsonSink};
 use crate::dispatch::operation::{MARKER, Operation};
+use crate::dispatch::protocol::{
+    AutomaticDecider, Decider as _, Placement, TerminalDecider, place,
+};
 use crate::subprocess::{ChannelSink, ChildOutcome, StreamItem, send_item, stream_child};
 
 pub trait PrivilegeEscalator {
@@ -381,6 +384,100 @@ pub fn run_upgrade_repo_to_channel(
     finish_channel(status, &mut tx);
 }
 
+pub(crate) fn build_aur_operation(targets: &[String], as_deps: bool) -> Operation {
+    Operation::BuildAur {
+        targets: targets.to_vec(),
+        as_deps,
+        stream: true,
+    }
+}
+
+fn run_build_aur_inner(
+    targets: &[String],
+    as_deps: bool,
+    decider: &dyn crate::dispatch::protocol::Decider,
+    sink: &mut dyn crate::events::InstallSink,
+    approvals_b64: Option<&str>,
+) -> anyhow::Result<()> {
+    crate::build::run_build(
+        targets,
+        false,
+        as_deps,
+        sink,
+        |plan| decider.confirm_build(plan),
+        |pkgbuilds| decider.review_pkgbuilds(pkgbuilds),
+        approvals_b64,
+    )
+}
+
+pub fn run_build_aur(
+    targets: &[String],
+    as_deps: bool,
+    json: bool,
+    skip_review: bool,
+    approvals_b64: Option<&str>,
+) -> ! {
+    std::process::exit(
+        match run_build_aur_result(targets, as_deps, json, skip_review, approvals_b64) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e:#}");
+                1
+            }
+        },
+    );
+}
+
+pub(crate) fn run_build_aur_result(
+    targets: &[String],
+    as_deps: bool,
+    json: bool,
+    skip_review: bool,
+    approvals_b64: Option<&str>,
+) -> anyhow::Result<()> {
+    let operation = build_aur_operation(targets, as_deps);
+    if !matches!(place(&operation), Placement::InProcess) {
+        anyhow::bail!("BuildAur must execute in-process");
+    }
+    let decider = TerminalDecider::new(json, skip_review);
+    let mut sink = parent_sink(json);
+    run_build_aur_inner(targets, as_deps, &decider, &mut *sink, approvals_b64)
+}
+
+pub fn run_build_aur_to_channel(
+    targets: Vec<String>,
+    as_deps: bool,
+    approvals_b64: Option<String>,
+    mut tx: futures::channel::mpsc::Sender<StreamItem>,
+) {
+    let operation = build_aur_operation(&targets, as_deps);
+    if !matches!(place(&operation), Placement::InProcess) {
+        send_item(
+            &mut tx,
+            StreamItem::Done(ChildOutcome::Failed(
+                "BuildAur must execute in-process".to_string(),
+            )),
+        );
+        return;
+    }
+    let decider = AutomaticDecider;
+    let mut sink = ChannelSink::new(tx.clone());
+    let result = crate::build::run_build(
+        &targets,
+        false,
+        as_deps,
+        &mut sink,
+        |plan| decider.confirm_build(plan),
+        |pkgbuilds| decider.review_pkgbuilds(pkgbuilds),
+        approvals_b64.as_deref(),
+    );
+    let outcome = match result {
+        Ok(()) => ChildOutcome::Success,
+        Err(e) => ChildOutcome::Failed(format!("{e:#}")),
+    };
+    send_item(&mut tx, StreamItem::Done(outcome));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,6 +567,12 @@ mod tests {
     #[test]
     fn upgrade_repo_operation_always_streams() {
         let operation = upgrade_repo_operation(false, &["foo".to_string()], None, None);
+        assert!(operation.encode().contains(&"--stream".to_string()));
+    }
+
+    #[test]
+    fn build_aur_operation_always_streams() {
+        let operation = build_aur_operation(&["cava-git".to_string()], false);
         assert!(operation.encode().contains(&"--stream".to_string()));
     }
 
