@@ -14,9 +14,8 @@ mod summary;
 mod info;
 
 mod prompts;
-use self::prompts::{
-    confirm_build, confirm_proceed_to_review, confirm_remove, confirm_remove_stderr,
-};
+use self::prompts::{confirm_build, confirm_proceed_to_review};
+pub(crate) use self::prompts::{confirm_remove, confirm_remove_stderr};
 
 mod review;
 
@@ -24,18 +23,19 @@ mod chomp;
 mod sinks;
 mod spinner;
 pub use self::sinks::ConsoleSink;
-use self::sinks::{EscalatedSink, JsonSink};
+pub(crate) use self::sinks::{EscalatedSink, JsonSink};
 
 pub(crate) mod privs;
 use self::privs::{is_root, stdin_is_tty};
 
 mod escalate;
-use self::escalate::{escalate, escalate_remove, escalate_result, escalate_upgrade};
+use self::escalate::{escalate, escalate_result, escalate_upgrade};
 pub(crate) use self::escalate::{escalation_command, graphical_escalation_command};
 
 mod commands;
+pub(crate) use self::commands::answerer_for;
 use self::commands::{
-    alpm_handle, answerer_for, decode_approvals, root_install, run_aur_sync, run_gendb, run_search,
+    alpm_handle, decode_approvals, root_install, run_aur_sync, run_gendb, run_search,
 };
 
 mod complete;
@@ -43,6 +43,9 @@ mod completions;
 
 pub fn parse() -> Cli {
     let mut argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).map(String::as_str) == Some(crate::dispatch::operation::MARKER) {
+        crate::dispatch::child::run(&argv[2..]);
+    }
     match argv.get(1).map(String::as_str) {
         Some("__complete") => exit_with_result(complete::run(&argv[2..])),
         Some("-S") => argv[1] = "install".to_string(),
@@ -230,35 +233,10 @@ pub fn remove_subcommand(args: RemoveArgs) -> ! {
     let positionals = expand_remove_groups(&handle, &positionals, stdin_is_tty() && !args.json);
 
     if is_root() {
-        let interactive = stdin_is_tty();
-        let answerer = answerer_for(None);
-        if args.json {
-            if interactive {
-                exit_with_result(crate::remove::run_remove(
-                    &positionals,
-                    EscalatedSink::new(),
-                    confirm_remove_stderr,
-                    answerer,
-                ));
-            } else {
-                exit_with_result(crate::remove::run_remove(
-                    &positionals,
-                    JsonSink::new(),
-                    || true,
-                    answerer,
-                ));
-            }
-        } else {
-            exit_with_result(crate::remove::run_remove(
-                &positionals,
-                ConsoleSink::new(),
-                confirm_remove,
-                answerer,
-            ));
-        }
+        crate::dispatch::child::run_remove_root(&positionals, args.json);
     }
 
-    escalate_remove(&positionals, args.json);
+    crate::dispatch::exec::run_remove(&positionals, args.json);
 }
 
 pub fn upgrade_subcommand(args: UpgradeArgs) -> ! {

@@ -46,17 +46,6 @@ pub fn escalate(targets: &[String], as_deps: bool, json: bool, approvals_b64: Op
     )))
 }
 
-pub fn escalate_remove(targets: &[String], json: bool) -> ! {
-    let result = spawn_escalated(
-        &ChildJob::Remove {
-            targets: targets.to_vec(),
-        },
-        Stdio::inherit(),
-    )
-    .and_then(|child| run_escalated_child(child, json));
-    std::process::exit(escalate_exit(result))
-}
-
 pub fn escalate_upgrade(no_refresh: bool, ignores: &[String], json: bool) -> i32 {
     let result = spawn_escalated(
         &ChildJob::Upgrade {

@@ -42,9 +42,6 @@ pub enum ChildJob {
         as_deps: bool,
         approvals_b64: Option<String>,
     },
-    Remove {
-        targets: Vec<String>,
-    },
     Upgrade {
         no_refresh: bool,
         ignores: Vec<String>,
@@ -57,7 +54,6 @@ impl ChildJob {
     fn subcommand(&self) -> &'static str {
         match self {
             ChildJob::Install { .. } => "install",
-            ChildJob::Remove { .. } => "remove",
             ChildJob::Upgrade { .. } => "upgrade",
         }
     }
@@ -76,11 +72,6 @@ impl ChildJob {
                 if let Some(b64) = approvals_b64 {
                     cmd.arg("--approvals").arg(b64);
                 }
-                for target in targets {
-                    cmd.arg(target);
-                }
-            }
-            ChildJob::Remove { targets } => {
                 for target in targets {
                     cmd.arg(target);
                 }
@@ -215,14 +206,6 @@ mod tests {
             approvals_b64: None,
         };
         assert_eq!(args_of(&job), ["install", "--json", "sl"]);
-    }
-
-    #[test]
-    fn remove_job_matches_vector() {
-        let job = ChildJob::Remove {
-            targets: vec!["sl".to_string(), "figlet".to_string()],
-        };
-        assert_eq!(args_of(&job), ["remove", "--json", "sl", "figlet"]);
     }
 
     #[test]

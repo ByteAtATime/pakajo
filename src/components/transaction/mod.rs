@@ -369,9 +369,18 @@ impl Transaction {
 
     fn launch_remove_subprocess(&mut self) -> Action {
         let name = self.model.name.clone();
-        self.launch_streamed(ChildJob::Remove {
-            targets: vec![name],
-        })
+        let exe = match current_exe() {
+            Ok(exe) => exe,
+            Err(e) => {
+                eprintln!("[pakajo] failed to resolve current_exe: {e}");
+                return Action::None;
+            }
+        };
+        self.model.status = TransactionStatus::Running;
+        let stream = spawn_transaction_stream(move |tx| {
+            pakajo::dispatch::exec::run_remove_to_channel(exe, vec![name], tx);
+        });
+        Action::Run(stream)
     }
 
     fn launch_streamed(&mut self, job: ChildJob) -> Action {
