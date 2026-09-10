@@ -3,11 +3,11 @@ use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
 use anyhow::Context as _;
-use futures::channel::mpsc;
 use futures::SinkExt as _;
+use futures::channel::mpsc;
 
 use crate::cli::{escalation_command, graphical_escalation_command};
-use crate::events::{read_event_stream, InstallEvent, InstallSink};
+use crate::events::{InstallEvent, InstallSink, read_event_stream};
 
 #[derive(Clone, Debug)]
 pub enum ChildOutcome {
