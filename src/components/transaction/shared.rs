@@ -217,10 +217,12 @@ pub(super) fn summary_text(parts: &[String]) -> Element<'static> {
     muted(text(parts.join(" · ")))
 }
 
+pub(super) type BadgeColor = fn(&cosmic::Theme) -> Color;
+
 pub(super) fn single_summary<'a>(
     name: &str,
     version: Option<&str>,
-    badge: Option<(impl Into<String>, fn(&cosmic::Theme) -> Color)>,
+    badge: Option<(impl Into<String>, BadgeColor)>,
     trailing: Option<Element<'a>>,
 ) -> Element<'a> {
     let mut row = Row::new()
