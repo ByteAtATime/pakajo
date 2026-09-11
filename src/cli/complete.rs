@@ -8,19 +8,39 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     match what {
         "installed" => print_installed(prefix),
         "available" => print_available(prefix),
-        _ => anyhow::bail!("expected `installed` or `available`"),
+        "any" => print_any(prefix),
+        _ => anyhow::bail!("expected `installed`, `available` or `any`"),
     }
 }
 
-fn print_installed(prefix: &str) -> anyhow::Result<()> {
+fn print_any(prefix: &str) -> anyhow::Result<()> {
+    let mut names = installed_names(prefix)?;
+    match indexed_names_with_prefix(prefix) {
+        Some(remote) => names.extend(remote),
+        None => names.extend(repo_names_with_prefix(prefix)?),
+    }
+    names.sort_unstable();
+    names.dedup();
+    names.truncate(NAME_LIMIT);
+    for name in names {
+        println!("{name}");
+    }
+    Ok(())
+}
+
+fn installed_names(prefix: &str) -> anyhow::Result<Vec<String>> {
     let handle = alpm_handle()?;
-    let mut names: Vec<String> = handle
+    Ok(handle
         .localdb()
         .pkgs()
         .iter()
         .map(|p| p.name().to_string())
         .filter(|n| n.starts_with(prefix))
-        .collect();
+        .collect())
+}
+
+fn print_installed(prefix: &str) -> anyhow::Result<()> {
+    let mut names = installed_names(prefix)?;
     names.sort_unstable();
     names.truncate(NAME_LIMIT);
     for name in names {
