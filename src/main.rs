@@ -114,18 +114,18 @@ impl Application for PakajoApp {
             })
             .map(Arc::new);
 
-        let (alpm, installed_names, group_index) = match pacmanconf::Config::new()
+        let group_index = Arc::new(Vec::new());
+        let (alpm, installed_names) = match pacmanconf::Config::new()
             .context("failed to read pacman config")
             .and_then(|cfg| init_alpm(&cfg))
         {
             Ok(handle) => {
                 let installed = Arc::new(pakajo::package::installed_names(&handle));
-                let groups = Arc::new(pakajo::package::group_index(&handle));
-                (Some(handle), installed, groups)
+                (Some(handle), installed)
             }
             Err(e) => {
-                eprintln!("[pakajo] failed to snapshot installed packages and groups: {e:#}");
-                (None, Arc::new(HashSet::new()), Arc::new(Vec::new()))
+                eprintln!("[pakajo] failed to snapshot installed packages: {e:#}");
+                (None, Arc::new(HashSet::new()))
             }
         };
 
@@ -208,7 +208,20 @@ impl Application for PakajoApp {
             }
             None => app.start_updates_check(RefreshKind::Launch),
         };
-        (app, task)
+        let groups_task = Task::perform(
+            async {
+                pacmanconf::Config::new()
+                    .map_err(anyhow::Error::new)
+                    .and_then(|cfg| init_alpm(&cfg))
+                    .map(|handle| Arc::new(pakajo::package::group_index(&handle)))
+                    .unwrap_or_else(|e| {
+                        eprintln!("[pakajo] failed to index package groups: {e:#}");
+                        Arc::new(Vec::new())
+                    })
+            },
+            |index| Message::Search(SearchMessage::GroupsLoaded(index)).into(),
+        );
+        (app, Task::batch([task, groups_task]))
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {

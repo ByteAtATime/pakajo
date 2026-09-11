@@ -134,6 +134,7 @@ pub enum SearchMessage {
         seq: u64,
         results: Vec<SearchResult>,
     },
+    GroupsLoaded(Arc<Vec<(String, String)>>),
     FilterChanged(SearchFilter),
     SelectDelta(i32),
     SelectIndex(usize),
@@ -398,6 +399,14 @@ pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool)
 impl crate::PakajoApp {
     pub(crate) fn handle_search(&mut self, message: SearchMessage) -> Task<crate::Message> {
         match message {
+            SearchMessage::GroupsLoaded(index) => {
+                self.group_index = index;
+                if self.query.trim().is_empty() {
+                    Task::none()
+                } else {
+                    self.begin_search()
+                }
+            }
             SearchMessage::QueryChanged(text) => {
                 self.query = text.clone();
                 self.search_seq = self.search_seq.wrapping_add(1);
