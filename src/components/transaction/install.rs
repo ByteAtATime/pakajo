@@ -2,7 +2,7 @@ use cosmic::iced::alignment::Vertical;
 use cosmic::iced::{Color, Length};
 use cosmic::widget::{Column, Row, space, text};
 use pakajo::events::PackageOp;
-use pakajo::progress::{InstallPackage, InstallState};
+use pakajo::progress::{InstallKind, InstallPackage, InstallState};
 
 use crate::Element;
 use crate::components::icons::circle_check;
@@ -16,8 +16,16 @@ use super::stepper::Section;
 
 const GROUP_GAP: f32 = 8.0;
 
-pub(super) fn install_section(install: &InstallState, state: StageState) -> Section<'_> {
-    let mut section = Section::new("Install", state);
+pub(super) fn install_section(
+    install: &InstallState,
+    state: StageState,
+    kind: InstallKind,
+) -> Section<'_> {
+    let label = match kind {
+        InstallKind::Remove => "Remove",
+        InstallKind::Install | InstallKind::Upgrade => "Install",
+    };
+    let mut section = Section::new(label, state);
     match state {
         StageState::Done if install.order.len() == 1 => {
             section.summary = Some(install_single_suffix(install));

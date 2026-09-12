@@ -26,7 +26,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
                 RepoStage::Resolve => prepare_section(&model.repo_state, state),
                 RepoStage::Validate => continue,
                 RepoStage::Download => download_section(&model.repo_state, state),
-                RepoStage::Install => install_section(&model.repo_state.install, state),
+                RepoStage::Install => install_section(&model.repo_state.install, state, model.kind),
                 RepoStage::Finalize => finalize_section(&model.repo_state.finalize, state),
             };
             section.with_toggle_index(i)

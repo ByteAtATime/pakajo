@@ -283,7 +283,7 @@ fn build_list_view(
 }
 
 fn aur_install_section(model: &TransactionModel, state: StageState) -> Section<'_> {
-    let mut section = install_section(&model.aur.install, state);
+    let mut section = install_section(&model.aur.install, state, model.kind);
     let download = &model.aur.download;
     if state == StageState::Active && download.total > 0 && download.done < download.total {
         let line = muted(text(format!(
