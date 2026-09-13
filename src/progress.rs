@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::time::Instant;
 
 use crate::dispatch::exec::ChildOutcome;
@@ -55,7 +54,7 @@ impl RateSampler {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct DownloadFile {
     pub downloaded: i64,
     pub total: i64,
@@ -373,18 +372,10 @@ pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent, now: Instan
 }
 
 fn ensure_download_file<'a>(state: &'a mut DownloadState, filename: &str) -> &'a mut DownloadFile {
-    match state.files.entry(filename.to_string()) {
-        Entry::Occupied(e) => e.into_mut(),
-        Entry::Vacant(e) => {
-            state.order.push(filename.to_string());
-            e.insert(DownloadFile {
-                downloaded: 0,
-                total: 0,
-                completed: false,
-                sampler: RateSampler::default(),
-            })
-        }
+    if !state.files.contains_key(filename) {
+        state.order.push(filename.to_string());
     }
+    state.files.entry(filename.to_string()).or_default()
 }
 
 pub fn ordered_stages(kind: InstallKind) -> &'static [RepoStage] {
@@ -715,8 +706,10 @@ mod tests {
     fn apply_repo_download_lifecycle_tracks_progress_retry_and_reset() {
         let mut state = RepoState::default();
         apply_repo_event(&mut state, &retrieving(2, 1000));
-        assert_eq!(state.download.total, 2);
-        assert_eq!(state.download.bytes_total, 1000);
+        assert_eq!(
+            (state.download.total, state.download.bytes_total),
+            (2, 1000)
+        );
         assert_eq!(state.download.queued(), 2);
 
         for name in ["pkg-a", "pkg-b", "pkg-a"] {
@@ -744,8 +737,7 @@ mod tests {
 
         apply_repo_event(&mut state, &retrieving(1, 10));
         assert_eq!(state.download.total, 1);
-        assert_eq!(state.download.done, 0);
-        assert_eq!(state.download.bytes_done, 0);
+        assert_eq!((state.download.done, state.download.bytes_done), (0, 0));
         assert!(state.download.files.is_empty());
         assert!(state.download.order.is_empty());
     }
@@ -890,33 +882,15 @@ mod tests {
         let mut sampler = RateSampler::default();
 
         sampler.sample(base, 1000);
-        assert_eq!(
-            sampler,
-            RateSampler {
-                sync_time: Some(base),
-                sync_done: 1000,
-                rate: 0.0,
-            }
-        );
+        assert_eq!(sampler.sync_time, Some(base));
+        assert_eq!((sampler.sync_done, sampler.rate), (1000, 0.0));
 
         sampler.sample(at(100), 1500);
-        assert_eq!(
-            sampler,
-            RateSampler {
-                sync_time: Some(base),
-                sync_done: 1000,
-                rate: 0.0,
-            }
-        );
+        assert_eq!(sampler.sync_time, Some(base));
+        assert_eq!((sampler.sync_done, sampler.rate), (1000, 0.0));
 
         sampler.sample(at(500), 2500);
-        assert_eq!(
-            sampler,
-            RateSampler {
-                sync_time: Some(at(500)),
-                sync_done: 2500,
-                rate: 1000.0,
-            }
-        );
+        assert_eq!(sampler.sync_time, Some(at(500)));
+        assert_eq!((sampler.sync_done, sampler.rate), (2500, 1000.0));
     }
 }
