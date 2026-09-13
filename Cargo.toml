@@ -40,3 +40,10 @@ debug = ["libcosmic/debug"]
 [[bench]]
 name = "search"
 harness = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
