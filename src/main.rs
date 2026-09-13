@@ -101,6 +101,7 @@ impl Application for PakajoApp {
     fn init(mut core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
         core.window.show_headerbar = false;
         core.window.content_container = false;
+        core.window.sharp_corners = true;
         let search_engine = PackageDb::db_path()
             .ok()
             .and_then(|p| SearchEngine::new(p).ok())
