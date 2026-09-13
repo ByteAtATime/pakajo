@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use cosmic::iced::widget::{Id, scrollable};
-use cosmic::widget::{Column, Row, container, rectangle_tracker, text_input};
+use cosmic::widget::{Column, Row, container, popover, rectangle_tracker, text_input};
 use cosmic::{
     Application,
     app::{self, Core, Settings, Task},
@@ -106,6 +106,7 @@ impl Application for PakajoApp {
         core.window.show_headerbar = false;
         core.window.content_container = false;
         core.window.sharp_corners = true;
+        core.window.use_template = false;
         let search_engine = PackageDb::db_path()
             .ok()
             .and_then(|p| SearchEngine::new(p).ok())
@@ -304,29 +305,35 @@ impl Application for PakajoApp {
     }
 
     fn view(&self) -> Element<'_> {
-        if let Some(t) = self.overlay_transaction() {
-            return container(t.view())
+        let content: Element<'_> = if let Some(t) = self.overlay_transaction() {
+            container(t.view())
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .into();
-        }
-        let page = match self.page {
-            Page::Search => self.search_page(),
-            Page::Updates => self.updates_page(),
-            Page::Resolve => self.resolve_page(),
-            Page::PkgbuildReview => self.pkgbuild_review_page(),
-            Page::Confirm => self.confirm_page(),
+                .into()
+        } else {
+            let page = match self.page {
+                Page::Search => self.search_page(),
+                Page::Updates => self.updates_page(),
+                Page::Resolve => self.resolve_page(),
+                Page::PkgbuildReview => self.pkgbuild_review_page(),
+                Page::Confirm => self.confirm_page(),
+            };
+            Column::new()
+                .push(container(page).width(Length::Fill).height(Length::Fill))
+                .push(divider::horizontal::default())
+                .push(footer::footer(
+                    self.transaction.as_ref(),
+                    self.updates_badge(),
+                ))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
         };
-        Column::new()
-            .push(container(page).width(Length::Fill).height(Length::Fill))
-            .push(divider::horizontal::default())
-            .push(footer::footer(
-                self.transaction.as_ref(),
-                self.updates_badge(),
-            ))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        let mut pop = popover(content).modal(true);
+        if let Some(dialog) = self.dialog() {
+            pop = pop.popup(dialog);
+        }
+        pop.into()
     }
 
     fn dialog(&self) -> Option<Element<'_>> {
