@@ -4,10 +4,11 @@ use cosmic::iced::stream::channel;
 use cosmic::iced::{Alignment, Background, Border, Color, Length, Padding};
 use cosmic::widget::{
     Column, Row, Space, button, container, flex_row, icon, responsive, row, scrollable, text,
+    tooltip,
 };
 use futures::SinkExt as _;
 use pakajo::package::{self, Package, PackageSource};
-use pakajo::utils::format_bytes;
+use pakajo::utils::{format_bytes, group_thousands};
 use std::time::Duration;
 
 use crate::Element;
@@ -273,9 +274,14 @@ fn render_info_bar<'a>(pkg: &'a Package) -> Element<'a> {
                 format_bytes(data.download_size),
                 format_bytes(data.installed_size)
             );
-            info_row = info_row.push(info_item(
-                icon(icons::hard_drive()).size(16).into(),
-                size_str,
+            info_row = info_row.push(tooltip(
+                info_item(icon(icons::hard_drive()).size(16).into(), size_str),
+                text(format!(
+                    "{} B download, {} B installed",
+                    group_thousands(data.download_size),
+                    group_thousands(data.installed_size)
+                )),
+                tooltip::Position::FollowCursor,
             ));
         }
         pakajo::package::PackageKind::Aur(data) => {

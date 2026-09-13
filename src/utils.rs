@@ -31,6 +31,22 @@ pub fn format_bytes(bytes: i64) -> String {
     format!("{value:.1} {}", UNITS[unit])
 }
 
+pub fn group_thousands(value: i64) -> String {
+    let digits = value.unsigned_abs().to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.char_indices() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    if value < 0 {
+        format!("-{grouped}")
+    } else {
+        grouped
+    }
+}
+
 pub fn format_mib(bytes: i64) -> String {
     let mut val = bytes as f64 / 1048576.0;
     if val < 0.0 && val > -0.005 {
@@ -209,6 +225,16 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(format_elapsed(input), expected);
         }
+    }
+
+    #[test]
+    fn group_thousands_digit_grouping() {
+        assert_eq!(group_thousands(0), "0");
+        assert_eq!(group_thousands(999), "999");
+        assert_eq!(group_thousands(1000), "1,000");
+        assert_eq!(group_thousands(1234567), "1,234,567");
+        assert_eq!(group_thousands(12884901), "12,884,901");
+        assert_eq!(group_thousands(-1234567), "-1,234,567");
     }
 
     #[test]
