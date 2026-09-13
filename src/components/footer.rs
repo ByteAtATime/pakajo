@@ -32,16 +32,14 @@ fn summary(kind: InstallKind, name: &str, status: &TransactionStatus) -> String 
     }
 }
 
-fn bar_and_tint(transaction: &Transaction) -> (f32, Tint) {
-    let value = transaction.overall_progress();
-    let tint = match transaction.status() {
-        TransactionStatus::Checking | TransactionStatus::Running => theme::success_color,
+fn tint(transaction: &Transaction) -> Tint {
+    match transaction.status() {
+        TransactionStatus::Checking | TransactionStatus::Running => theme::on_color,
         TransactionStatus::Done(ChildOutcome::Success) => theme::success_color,
         TransactionStatus::Done(ChildOutcome::Failed(_)) => theme::destructive_color,
         TransactionStatus::Done(ChildOutcome::NotFound) => theme::destructive_color,
         TransactionStatus::Done(ChildOutcome::Dismissed) => theme::warning_color,
-    };
-    (value, tint)
+    }
 }
 
 pub(crate) fn footer(
@@ -57,14 +55,15 @@ pub(crate) fn footer(
             .width(Length::Fill)
             .into();
     };
-    let (bar, tint) = bar_and_tint(active);
+    let progress = active.overall_progress();
     let label = text(summary(active.kind(), active.name(), active.status()));
+    let tint = tint(active);
     Row::new()
         .align_y(Vertical::Center)
         .width(Length::Fill)
         .push(container(badge).padding([6.0, 12.0]))
         .push(
-            button::custom(cluster_row(label.into(), bar))
+            button::custom(cluster_row(label.into(), progress))
                 .padding([6.0, 12.0])
                 .width(Length::Fill)
                 .class(cosmic::theme::Button::Custom {
