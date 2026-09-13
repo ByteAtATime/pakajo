@@ -38,6 +38,10 @@ use cosmic::widget::divider;
 pub type Element<'a> = cosmic::Element<'a, Message>;
 
 fn main() -> iced::Result {
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).map(String::as_str) == Some(pakajo::dispatch::operation::MARKER) {
+        std::process::exit(pakajo::dispatch::child::run(&argv[2..]));
+    }
     let cli = cli::parse();
     cli::dispatch(cli);
     let settings = Settings::default().client_decorations(false);

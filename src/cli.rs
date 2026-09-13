@@ -1,6 +1,7 @@
 use crate::color;
+use crate::dispatch::child::{Presentation, code_from};
 use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem};
-use crate::dispatch::operation::{BuildOperation, PrivilegedOperation};
+use crate::dispatch::operation::{BuildOperation, ChildOperation, PrivilegedOperation};
 use crate::dispatch::protocol::TerminalDecider;
 use crate::events::{InstallEvent, InstallSink};
 use crate::install::InstallTarget;
@@ -41,9 +42,6 @@ mod completions;
 
 pub fn parse() -> Cli {
     let mut argv: Vec<String> = std::env::args().collect();
-    if argv.get(1).map(String::as_str) == Some(crate::dispatch::operation::MARKER) {
-        crate::dispatch::child::run(&argv[2..]);
-    }
     match argv.get(1).map(String::as_str) {
         Some("__complete") => exit_with_result(complete::run(&argv[2..])),
         Some("-S") => argv[1] = "install".to_string(),
@@ -112,7 +110,13 @@ fn install_subcommand(args: InstallArgs) -> i32 {
     let positionals = expand_groups(&handle, &positionals, stdin_is_tty() && !args.json);
 
     if is_root() {
-        crate::dispatch::child::run_install_root(&positionals, args.as_deps, args.json, None);
+        let operation = ChildOperation::Install {
+            targets: positionals,
+            as_deps: args.as_deps,
+            approvals_path: None,
+            stream: args.json,
+        };
+        return code_from(operation.execute());
     }
 
     let (repo_or_file, aur) = split_install_targets(&handle, &positionals);
@@ -225,7 +229,11 @@ fn remove_subcommand(args: RemoveArgs) -> i32 {
     let positionals = expand_remove_groups(&handle, &positionals, stdin_is_tty() && !args.json);
 
     if is_root() {
-        crate::dispatch::child::run_remove_root(&positionals, args.json);
+        let operation = ChildOperation::Remove {
+            targets: positionals,
+            stream: args.json,
+        };
+        return code_from(operation.execute());
     }
 
     let operation = PrivilegedOperation::Remove {
@@ -238,7 +246,7 @@ fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
     if args.repo_only {
         let answerer = answerer_for(None);
         match crate::dispatch::child::select_upgrade_repo_presentation(args.json) {
-            crate::dispatch::child::UpgradeRepoPresentation::Stream => {
+            Presentation::SilentStream => {
                 exit_with_result(crate::upgrade::run_repo_sysupgrade(
                     args.no_refresh,
                     &args.ignores,
@@ -247,7 +255,7 @@ fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
                     args.fingerprint_file.as_deref(),
                 ));
             }
-            crate::dispatch::child::UpgradeRepoPresentation::Console => {
+            Presentation::Console | Presentation::InteractiveStream => {
                 exit_with_result(crate::upgrade::run_repo_sysupgrade(
                     args.no_refresh,
                     &args.ignores,
