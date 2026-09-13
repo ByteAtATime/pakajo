@@ -11,7 +11,7 @@ const FINGERPRINT_FILE: &str = "--fingerprint-file";
 const APPROVALS_FILE: &str = "--approvals-file";
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Operation {
+pub enum PrivilegedOperation {
     Remove {
         targets: Vec<String>,
         stream: bool,
@@ -29,17 +29,18 @@ pub enum Operation {
         approvals_path: Option<String>,
         stream: bool,
     },
-    BuildAur {
-        targets: Vec<String>,
-        as_deps: bool,
-        stream: bool,
-    },
 }
 
-impl Operation {
+#[derive(Debug)]
+pub struct BuildOperation {
+    pub targets: Vec<String>,
+    pub as_deps: bool,
+}
+
+impl PrivilegedOperation {
     pub fn encode(&self) -> Vec<String> {
         match self {
-            Operation::Remove { targets, stream } => {
+            PrivilegedOperation::Remove { targets, stream } => {
                 let mut argv = vec![REMOVE.to_string()];
                 if *stream {
                     argv.push(STREAM.to_string());
@@ -47,7 +48,7 @@ impl Operation {
                 argv.extend(targets.iter().cloned());
                 argv
             }
-            Operation::Install {
+            PrivilegedOperation::Install {
                 targets,
                 as_deps,
                 approvals_path,
@@ -67,7 +68,7 @@ impl Operation {
                 argv.extend(targets.iter().cloned());
                 argv
             }
-            Operation::UpgradeRepo {
+            PrivilegedOperation::UpgradeRepo {
                 no_refresh,
                 ignores,
                 fingerprint_path,
@@ -95,13 +96,10 @@ impl Operation {
                 }
                 argv
             }
-            Operation::BuildAur { .. } => {
-                panic!("BuildAur is not wire-representable")
-            }
         }
     }
 
-    pub fn decode(argv: &[String]) -> Option<Operation> {
+    pub fn decode(argv: &[String]) -> Option<PrivilegedOperation> {
         match argv.first().map(String::as_str) {
             Some(REMOVE) => decode_remove(&argv[1..]),
             Some(INSTALL) => decode_install(&argv[1..]),
@@ -111,7 +109,7 @@ impl Operation {
     }
 }
 
-fn decode_remove(argv: &[String]) -> Option<Operation> {
+fn decode_remove(argv: &[String]) -> Option<PrivilegedOperation> {
     let mut stream = false;
     let mut targets = Vec::new();
     for arg in argv {
@@ -121,10 +119,10 @@ fn decode_remove(argv: &[String]) -> Option<Operation> {
             targets.push(arg.clone());
         }
     }
-    Some(Operation::Remove { targets, stream })
+    Some(PrivilegedOperation::Remove { targets, stream })
 }
 
-fn decode_install(argv: &[String]) -> Option<Operation> {
+fn decode_install(argv: &[String]) -> Option<PrivilegedOperation> {
     let mut stream = false;
     let mut as_deps = false;
     let mut approvals_path = None;
@@ -138,7 +136,7 @@ fn decode_install(argv: &[String]) -> Option<Operation> {
             _ => targets.push(arg.clone()),
         }
     }
-    Some(Operation::Install {
+    Some(PrivilegedOperation::Install {
         targets,
         as_deps,
         approvals_path,
@@ -146,7 +144,7 @@ fn decode_install(argv: &[String]) -> Option<Operation> {
     })
 }
 
-fn decode_upgrade_repo(argv: &[String]) -> Option<Operation> {
+fn decode_upgrade_repo(argv: &[String]) -> Option<PrivilegedOperation> {
     let mut stream = false;
     let mut no_refresh = false;
     let mut ignores = Vec::new();
@@ -163,7 +161,7 @@ fn decode_upgrade_repo(argv: &[String]) -> Option<Operation> {
             _ => return None,
         }
     }
-    Some(Operation::UpgradeRepo {
+    Some(PrivilegedOperation::UpgradeRepo {
         no_refresh,
         ignores,
         fingerprint_path,
@@ -178,27 +176,33 @@ mod tests {
 
     #[test]
     fn remove_streaming_round_trip() {
-        let operation = Operation::Remove {
+        let operation = PrivilegedOperation::Remove {
             targets: vec!["sl".to_string(), "figlet".to_string()],
             stream: true,
         };
         assert_eq!(operation.encode(), ["remove", "--stream", "sl", "figlet"]);
-        assert_eq!(Operation::decode(&operation.encode()), Some(operation));
+        assert_eq!(
+            PrivilegedOperation::decode(&operation.encode()),
+            Some(operation)
+        );
     }
 
     #[test]
     fn remove_plain_round_trip() {
-        let operation = Operation::Remove {
+        let operation = PrivilegedOperation::Remove {
             targets: vec!["sl".to_string()],
             stream: false,
         };
         assert_eq!(operation.encode(), ["remove", "sl"]);
-        assert_eq!(Operation::decode(&operation.encode()), Some(operation));
+        assert_eq!(
+            PrivilegedOperation::decode(&operation.encode()),
+            Some(operation)
+        );
     }
 
     #[test]
     fn install_full_round_trip() {
-        let operation = Operation::Install {
+        let operation = PrivilegedOperation::Install {
             targets: vec!["sl".to_string(), "figlet".to_string()],
             as_deps: true,
             approvals_path: Some("/tmp/pakajo-approvals-1.json".to_string()),
@@ -216,24 +220,30 @@ mod tests {
                 "figlet"
             ]
         );
-        assert_eq!(Operation::decode(&operation.encode()), Some(operation));
+        assert_eq!(
+            PrivilegedOperation::decode(&operation.encode()),
+            Some(operation)
+        );
     }
 
     #[test]
     fn install_minimal_round_trip() {
-        let operation = Operation::Install {
+        let operation = PrivilegedOperation::Install {
             targets: vec!["sl".to_string()],
             as_deps: false,
             approvals_path: None,
             stream: false,
         };
         assert_eq!(operation.encode(), ["install", "sl"]);
-        assert_eq!(Operation::decode(&operation.encode()), Some(operation));
+        assert_eq!(
+            PrivilegedOperation::decode(&operation.encode()),
+            Some(operation)
+        );
     }
 
     #[test]
     fn install_as_deps_round_trip() {
-        let operation = Operation::Install {
+        let operation = PrivilegedOperation::Install {
             targets: vec!["sl".to_string()],
             as_deps: true,
             approvals_path: None,
@@ -243,12 +253,15 @@ mod tests {
             operation.encode(),
             ["install", "--stream", "--asdeps", "sl"]
         );
-        assert_eq!(Operation::decode(&operation.encode()), Some(operation));
+        assert_eq!(
+            PrivilegedOperation::decode(&operation.encode()),
+            Some(operation)
+        );
     }
 
     #[test]
     fn upgrade_repo_full_round_trip() {
-        let operation = Operation::UpgradeRepo {
+        let operation = PrivilegedOperation::UpgradeRepo {
             no_refresh: true,
             ignores: vec!["foo".to_string(), "bar".to_string()],
             fingerprint_path: Some("/tmp/fp.json".to_string()),
@@ -271,12 +284,15 @@ mod tests {
                 "/tmp/pakajo-approvals-1.json",
             ]
         );
-        assert_eq!(Operation::decode(&operation.encode()), Some(operation));
+        assert_eq!(
+            PrivilegedOperation::decode(&operation.encode()),
+            Some(operation)
+        );
     }
 
     #[test]
     fn upgrade_repo_minimal_round_trip() {
-        let operation = Operation::UpgradeRepo {
+        let operation = PrivilegedOperation::UpgradeRepo {
             no_refresh: false,
             ignores: vec![],
             fingerprint_path: None,
@@ -284,12 +300,15 @@ mod tests {
             stream: false,
         };
         assert_eq!(operation.encode(), ["upgrade-repo"]);
-        assert_eq!(Operation::decode(&operation.encode()), Some(operation));
+        assert_eq!(
+            PrivilegedOperation::decode(&operation.encode()),
+            Some(operation)
+        );
     }
 
     #[test]
     fn decode_rejects_foreign_head() {
-        assert_eq!(Operation::decode(&["upgrade".to_string()]), None);
-        assert_eq!(Operation::decode(&[]), None);
+        assert_eq!(PrivilegedOperation::decode(&["upgrade".to_string()]), None);
+        assert_eq!(PrivilegedOperation::decode(&[]), None);
     }
 }

@@ -1,7 +1,7 @@
 use crate::cli::{ConsoleSink, classify_target, privs};
 use crate::cli::{EscalatedSink, JsonSink, answerer_for, confirm_install, confirm_install_stderr};
 use crate::cli::{confirm_remove, confirm_remove_stderr};
-use crate::dispatch::operation::Operation;
+use crate::dispatch::operation::PrivilegedOperation;
 use crate::install::InstallTarget;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,9 +65,9 @@ pub fn read_approvals_file(path: &str) -> anyhow::Result<crate::question::Approv
 }
 
 pub fn run(argv: &[String]) -> ! {
-    match Operation::decode(argv) {
-        Some(Operation::Remove { targets, stream }) => run_remove_root(&targets, stream),
-        Some(Operation::Install {
+    match PrivilegedOperation::decode(argv) {
+        Some(PrivilegedOperation::Remove { targets, stream }) => run_remove_root(&targets, stream),
+        Some(PrivilegedOperation::Install {
             targets,
             as_deps,
             approvals_path,
@@ -85,7 +85,7 @@ pub fn run(argv: &[String]) -> ! {
                 }
             }
         }
-        Some(Operation::UpgradeRepo {
+        Some(PrivilegedOperation::UpgradeRepo {
             no_refresh,
             ignores,
             fingerprint_path,
@@ -98,7 +98,7 @@ pub fn run(argv: &[String]) -> ! {
                 .transpose();
             match approvals {
                 Ok(approvals) => run_upgrade_repo_root(
-                    &no_refresh,
+                    no_refresh,
                     &ignores,
                     fingerprint_path.as_deref(),
                     stream,
@@ -110,7 +110,7 @@ pub fn run(argv: &[String]) -> ! {
                 }
             }
         }
-        Some(Operation::BuildAur { .. }) | None => {
+        None => {
             eprintln!("malformed dispatch argv");
             std::process::exit(1);
         }
@@ -151,7 +151,7 @@ fn exit_with_result(result: anyhow::Result<()>) -> ! {
 }
 
 pub fn run_upgrade_repo_root(
-    no_refresh: &bool,
+    no_refresh: bool,
     ignores: &[String],
     fingerprint_path: Option<&str>,
     stream: bool,
@@ -160,14 +160,14 @@ pub fn run_upgrade_repo_root(
     let answerer = answerer_for(approvals);
     match select_upgrade_repo_presentation(stream) {
         UpgradeRepoPresentation::Stream => exit_with_result(crate::upgrade::run_repo_sysupgrade(
-            *no_refresh,
+            no_refresh,
             ignores,
             JsonSink::new(),
             answerer,
             fingerprint_path,
         )),
         UpgradeRepoPresentation::Console => exit_with_result(crate::upgrade::run_repo_sysupgrade(
-            *no_refresh,
+            no_refresh,
             ignores,
             ConsoleSink::new(),
             answerer,

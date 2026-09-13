@@ -9,8 +9,8 @@ use futures::SinkExt as _;
 use crate::cli::privs::{is_root, stdin_is_tty};
 use crate::cli::{ConsoleSink, JsonSink};
 use crate::dispatch::approvals::ApprovalsFile;
-use crate::dispatch::operation::{MARKER, Operation};
-use crate::dispatch::protocol::{AutomaticDecider, Placement, TerminalDecider, place};
+use crate::dispatch::operation::{BuildOperation, MARKER, PrivilegedOperation};
+use crate::dispatch::protocol::{AutomaticDecider, TerminalDecider};
 use crate::events::{InstallEvent, InstallSink, read_event_stream};
 
 #[derive(Clone, Debug)]
@@ -114,7 +114,7 @@ fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
         Some(0) => ChildOutcome::Success,
         Some(126) => ChildOutcome::Dismissed,
         Some(127) => ChildOutcome::NotFound,
-        Some(exit) => ChildOutcome::Failed(format!("install failed (exit {exit})")),
+        Some(exit) => ChildOutcome::Failed(format!("operation failed (exit {exit})")),
         None => ChildOutcome::Failed("install killed by signal".to_string()),
     }
 }
@@ -126,7 +126,7 @@ fn write_b64(b64: &str) -> anyhow::Result<ApprovalsFile> {
     ApprovalsFile::write(&json).context("failed to write approvals file")
 }
 
-fn operation_command(operation: &Operation, exe: &str, graphical: bool) -> Command {
+fn operation_command(operation: &PrivilegedOperation, exe: &str, graphical: bool) -> Command {
     let mut cmd = if graphical {
         graphical_escalation_command(exe)
     } else {
@@ -162,14 +162,15 @@ fn channel_approvals(
         }
     }
 }
-fn remove_operation(targets: &[String]) -> Operation {
-    Operation::Remove {
+
+fn remove_operation(targets: &[String]) -> PrivilegedOperation {
+    PrivilegedOperation::Remove {
         targets: targets.to_vec(),
         stream: true,
     }
 }
 
-fn spawn_cli_child(operation: &Operation, name: &str) -> anyhow::Result<Child> {
+fn spawn_cli_child(operation: &PrivilegedOperation, name: &str) -> anyhow::Result<Child> {
     let exe = std::env::current_exe().context("failed to determine executable path")?;
     let mut cmd = operation_command(operation, &exe.to_string_lossy(), false);
     cmd.stdin(Stdio::inherit())
@@ -180,7 +181,7 @@ fn spawn_cli_child(operation: &Operation, name: &str) -> anyhow::Result<Child> {
 }
 
 fn spawn_channel_child(
-    operation: &Operation,
+    operation: &PrivilegedOperation,
     exe: &str,
     tx: &mut futures::channel::mpsc::Sender<StreamItem>,
 ) -> Option<Child> {
@@ -261,8 +262,8 @@ fn install_operation(
     targets: &[String],
     as_deps: bool,
     approvals: Option<&ApprovalsFile>,
-) -> Operation {
-    Operation::Install {
+) -> PrivilegedOperation {
+    PrivilegedOperation::Install {
         targets: targets.to_vec(),
         as_deps,
         approvals_path: approvals.map(|file| file.path().to_string_lossy().into_owned()),
@@ -328,8 +329,8 @@ fn upgrade_repo_operation(
     ignores: &[String],
     fingerprint_path: Option<&str>,
     approvals: Option<&ApprovalsFile>,
-) -> Operation {
-    Operation::UpgradeRepo {
+) -> PrivilegedOperation {
+    PrivilegedOperation::UpgradeRepo {
         no_refresh,
         ignores: ignores.to_vec(),
         fingerprint_path: fingerprint_path.map(str::to_string),
@@ -378,25 +379,16 @@ pub fn run_upgrade_repo_to_channel(
     finish_channel(status, &mut tx);
 }
 
-fn build_aur_operation(targets: &[String], as_deps: bool) -> Operation {
-    Operation::BuildAur {
-        targets: targets.to_vec(),
-        as_deps,
-        stream: true,
-    }
-}
-
 fn execute_build_aur<S: crate::events::InstallSink + ?Sized>(
-    targets: &[String],
-    as_deps: bool,
+    operation: &BuildOperation,
     sink: &mut S,
     decider: &dyn crate::dispatch::protocol::Decider,
     approvals_b64: Option<&str>,
 ) -> anyhow::Result<()> {
     crate::build::run_build(
-        targets,
+        &operation.targets,
         false,
-        as_deps,
+        operation.as_deps,
         sink,
         |plan| decider.confirm_build(plan),
         |pkgbuilds| decider.review_pkgbuilds(pkgbuilds),
@@ -411,13 +403,13 @@ pub(crate) fn run_build_aur_result(
     skip_review: bool,
     approvals_b64: Option<&str>,
 ) -> anyhow::Result<()> {
-    let operation = build_aur_operation(targets, as_deps);
-    if !matches!(place(&operation), Placement::InProcess) {
-        anyhow::bail!("BuildAur must execute in-process");
-    }
+    let operation = BuildOperation {
+        targets: targets.to_vec(),
+        as_deps,
+    };
     let decider = TerminalDecider::new(json, skip_review);
     let mut sink = parent_sink(json);
-    execute_build_aur(targets, as_deps, &mut *sink, &decider, approvals_b64)
+    execute_build_aur(&operation, &mut *sink, &decider, approvals_b64)
 }
 
 pub fn run_build_aur(
@@ -444,25 +436,10 @@ pub fn run_build_aur_to_channel(
     approvals_b64: Option<String>,
     mut tx: futures::channel::mpsc::Sender<StreamItem>,
 ) {
-    let operation = build_aur_operation(&targets, as_deps);
-    if !matches!(place(&operation), Placement::InProcess) {
-        send_item(
-            &mut tx,
-            StreamItem::Done(ChildOutcome::Failed(
-                "BuildAur must execute in-process".to_string(),
-            )),
-        );
-        return;
-    }
+    let operation = BuildOperation { targets, as_deps };
     let decider = AutomaticDecider;
     let mut sink = ChannelSink::new(tx.clone());
-    let result = execute_build_aur(
-        &targets,
-        as_deps,
-        &mut sink,
-        &decider,
-        approvals_b64.as_deref(),
-    );
+    let result = execute_build_aur(&operation, &mut sink, &decider, approvals_b64.as_deref());
     let outcome = match result {
         Ok(()) => ChildOutcome::Success,
         Err(e) => ChildOutcome::Failed(format!("{e:#}")),
@@ -531,7 +508,7 @@ mod tests {
             ),
             (
                 Ok(ExitStatusExt::from_raw(1 << 8)),
-                ChildOutcome::Failed("install failed (exit 1)".to_string()),
+                ChildOutcome::Failed("operation failed (exit 1)".to_string()),
             ),
             (
                 Ok(ExitStatusExt::from_raw(9)),

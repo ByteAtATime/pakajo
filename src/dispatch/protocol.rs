@@ -1,6 +1,5 @@
 use crate::build::BuildDecision;
 use crate::dispatch::exec::ChildOutcome;
-use crate::dispatch::operation::Operation;
 use crate::pkgbuild::PkgbuildInfo;
 use crate::progress::SysupgradePhase;
 use crate::resolve::BuildPlan;
@@ -50,19 +49,6 @@ impl Decider for AutomaticDecider {
 
     fn review_pkgbuilds(&self, _pkgbuilds: &[PkgbuildInfo]) -> bool {
         true
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Placement {
-    InProcess,
-    PrivilegedChild,
-}
-
-pub(crate) fn place(operation: &Operation) -> Placement {
-    match operation {
-        Operation::BuildAur { .. } => Placement::InProcess,
-        _ => Placement::PrivilegedChild,
     }
 }
 
@@ -128,49 +114,6 @@ mod tests {
         for (decider, expected_confirm, expected_review) in cases {
             assert_eq!(decider.confirm_build(&plan), expected_confirm);
             assert_eq!(decider.review_pkgbuilds(&[]), expected_review);
-        }
-    }
-
-    #[test]
-    fn placement_routes_only_builds_in_process() {
-        let cases = [
-            (
-                Operation::Remove {
-                    targets: vec!["sl".to_string()],
-                    stream: true,
-                },
-                Placement::PrivilegedChild,
-            ),
-            (
-                Operation::Install {
-                    targets: vec!["sl".to_string()],
-                    as_deps: false,
-                    approvals_path: None,
-                    stream: true,
-                },
-                Placement::PrivilegedChild,
-            ),
-            (
-                Operation::UpgradeRepo {
-                    no_refresh: false,
-                    ignores: vec![],
-                    fingerprint_path: None,
-                    approvals_path: None,
-                    stream: true,
-                },
-                Placement::PrivilegedChild,
-            ),
-            (
-                Operation::BuildAur {
-                    targets: vec!["cava-git".to_string()],
-                    as_deps: false,
-                    stream: true,
-                },
-                Placement::InProcess,
-            ),
-        ];
-        for (operation, expected) in cases {
-            assert_eq!(place(&operation), expected, "place({operation:?})");
         }
     }
 
