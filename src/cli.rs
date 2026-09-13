@@ -1,7 +1,11 @@
 use crate::color;
+use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem};
+use crate::dispatch::operation::{BuildOperation, PrivilegedOperation};
+use crate::dispatch::protocol::TerminalDecider;
 use crate::events::{InstallEvent, InstallSink};
 use crate::install::InstallTarget;
 use clap::Parser;
+use futures::StreamExt as _;
 
 mod args;
 use self::args::{
@@ -51,9 +55,9 @@ pub fn parse() -> Cli {
 
 pub fn dispatch(cli: Cli) {
     match cli.command {
-        Some(Command::Install(a)) => install_subcommand(a),
-        Some(Command::Remove(a)) => remove_subcommand(a),
-        Some(Command::Upgrade(a)) => upgrade_subcommand(a),
+        Some(Command::Install(a)) => std::process::exit(install_subcommand(a)),
+        Some(Command::Remove(a)) => std::process::exit(remove_subcommand(a)),
+        Some(Command::Upgrade(a)) => std::process::exit(upgrade_subcommand(a)),
         Some(Command::Search(a)) => search_subcommand(a),
         Some(Command::Info(a)) => info_subcommand(a),
         Some(Command::Clean(a)) => clean_subcommand(a),
@@ -64,7 +68,40 @@ pub fn dispatch(cli: Cli) {
     }
 }
 
-fn install_subcommand(args: InstallArgs) -> ! {
+fn drain(mut stream: DispatchStream, json: bool) -> ChildOutcome {
+    let mut sink = sink_for(json);
+    while let Some(item) = futures::executor::block_on(stream.next()) {
+        match item {
+            StreamItem::Event(event) => sink.event(event),
+            StreamItem::Done(outcome) => return outcome,
+        }
+    }
+    ChildOutcome::Failed("stream ended".to_string())
+}
+
+fn outcome_code(outcome: &ChildOutcome) -> i32 {
+    if matches!(outcome, ChildOutcome::Success) {
+        return 0;
+    }
+    eprintln!("{}", outcome.reason());
+    1
+}
+
+fn drain_privileged(operation: PrivilegedOperation, json: bool) -> ChildOutcome {
+    let tty = stdin_is_tty();
+    drain(operation.dispatch(tty), json)
+}
+
+fn drain_build(targets: &[String], as_deps: bool, json: bool, skip_review: bool) -> ChildOutcome {
+    let operation = BuildOperation {
+        targets: targets.to_vec(),
+        as_deps,
+    };
+    let decider = Box::new(TerminalDecider::new(json, skip_review));
+    drain(operation.dispatch(decider, None, stdin_is_tty()), json)
+}
+
+fn install_subcommand(args: InstallArgs) -> i32 {
     let positionals = dedup_positionals(args.positionals);
 
     if positionals.is_empty() {
@@ -81,9 +118,9 @@ fn install_subcommand(args: InstallArgs) -> ! {
     let (repo_or_file, aur) = split_install_targets(&handle, &positionals);
 
     if aur.is_empty() {
-        install_repo_only(&handle, &positionals, args.as_deps, args.json);
+        install_repo_only(&handle, &positionals, args.as_deps, args.json)
     } else if repo_or_file.is_empty() {
-        install_aur_only(&aur, args.as_deps, args.json, args.skip_review);
+        install_aur_only(&aur, args.as_deps, args.json, args.skip_review)
     } else {
         install_mixed(
             &handle,
@@ -92,19 +129,29 @@ fn install_subcommand(args: InstallArgs) -> ! {
             args.as_deps,
             args.json,
             args.skip_review,
-        );
+        )
     }
 }
 
-fn install_repo_only(handle: &alpm::Alpm, positionals: &[String], as_deps: bool, json: bool) -> ! {
+fn install_repo_only(
+    handle: &alpm::Alpm,
+    positionals: &[String],
+    as_deps: bool,
+    json: bool,
+) -> i32 {
     if !json {
         print_sync_preamble(handle, positionals);
     }
-    crate::dispatch::exec::run_install(positionals, as_deps, json, None);
+    let operation = PrivilegedOperation::Install {
+        targets: positionals.to_vec(),
+        as_deps,
+        approvals: None,
+    };
+    outcome_code(&drain_privileged(operation, json))
 }
 
-fn install_aur_only(aur: &[String], as_deps: bool, json: bool, skip_review: bool) -> ! {
-    crate::dispatch::exec::run_build_aur(aur, as_deps, json, skip_review, None);
+fn install_aur_only(aur: &[String], as_deps: bool, json: bool, skip_review: bool) -> i32 {
+    outcome_code(&drain_build(aur, as_deps, json, skip_review))
 }
 
 fn install_mixed(
@@ -114,23 +161,27 @@ fn install_mixed(
     as_deps: bool,
     json: bool,
     skip_review: bool,
-) -> ! {
+) -> i32 {
     if !json {
         print_sync_preamble(handle, repo_or_file);
     }
-    match crate::dispatch::exec::run_install_result(repo_or_file, as_deps, json, None) {
-        Ok(0) => {}
-        Ok(code) => std::process::exit(code),
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
+    let operation = PrivilegedOperation::Install {
+        targets: repo_or_file.to_vec(),
+        as_deps,
+        approvals: None,
+    };
+    let repo_outcome = drain_privileged(operation, json);
+    if !matches!(repo_outcome, ChildOutcome::Success) {
+        return outcome_code(&repo_outcome);
+    }
+    match drain_build(aur, as_deps, json, skip_review) {
+        ChildOutcome::Success => 0,
+        outcome => {
+            let reason = outcome.reason();
+            eprintln!("warning: repo packages installed; AUR phase failed: {reason}");
+            1
         }
     }
-    let result = crate::dispatch::exec::run_build_aur_result(aur, as_deps, json, skip_review, None);
-    if let Err(e) = &result {
-        eprintln!("warning: repo packages installed; AUR phase failed: {e:#}");
-    }
-    exit_with_result(result);
 }
 
 fn search_subcommand(args: SearchArgs) -> ! {
@@ -162,7 +213,7 @@ fn clean_subcommand(args: CleanArgs) -> ! {
     exit_with_result(crate::clean::run_clean(args.remove));
 }
 
-fn remove_subcommand(args: RemoveArgs) -> ! {
+fn remove_subcommand(args: RemoveArgs) -> i32 {
     let positionals = dedup_positionals(args.positionals);
 
     if positionals.is_empty() {
@@ -177,10 +228,13 @@ fn remove_subcommand(args: RemoveArgs) -> ! {
         crate::dispatch::child::run_remove_root(&positionals, args.json);
     }
 
-    crate::dispatch::exec::run_remove(&positionals, args.json);
+    let operation = PrivilegedOperation::Remove {
+        targets: positionals,
+    };
+    outcome_code(&drain_privileged(operation, args.json))
 }
 
-fn upgrade_subcommand(args: UpgradeArgs) -> ! {
+fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
     if args.repo_only {
         let answerer = answerer_for(None);
         match crate::dispatch::child::select_upgrade_repo_presentation(args.json) {
@@ -224,32 +278,29 @@ fn upgrade_subcommand(args: UpgradeArgs) -> ! {
         candidates: aur_targets.clone(),
     });
 
-    let exit_code = match crate::dispatch::exec::run_upgrade_repo_result(
-        args.no_refresh,
-        &args.ignores,
-        args.json,
-    ) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("{e:#}");
-            std::process::exit(1);
-        }
+    let operation = PrivilegedOperation::UpgradeRepo {
+        no_refresh: args.no_refresh,
+        ignores: args.ignores.clone(),
+        fingerprint: None,
+        approvals: None,
     };
-    if exit_code == 0 && !aur_targets.is_empty() {
-        let aur_names: Vec<String> = aur_targets.iter().map(|c| c.name.clone()).collect();
-        let result = crate::dispatch::exec::run_build_aur_result(
-            &aur_names,
-            false,
-            args.json,
-            args.skip_review,
-            None,
-        );
-        if let Err(e) = &result {
-            eprintln!("warning: repo packages upgraded; AUR phase failed: {e:#}");
-        }
-        exit_with_result(result);
+    let repo_outcome = drain_privileged(operation, args.json);
+    if !matches!(repo_outcome, ChildOutcome::Success) {
+        return outcome_code(&repo_outcome);
     }
-    std::process::exit(exit_code);
+    if !aur_targets.is_empty() {
+        let aur_names: Vec<String> = aur_targets.iter().map(|c| c.name.clone()).collect();
+        match drain_build(&aur_names, false, args.json, args.skip_review) {
+            ChildOutcome::Success => 0,
+            outcome => {
+                let reason = outcome.reason();
+                eprintln!("warning: repo packages upgraded; AUR phase failed: {reason}");
+                1
+            }
+        }
+    } else {
+        0
+    }
 }
 
 fn sink_for(json: bool) -> Box<dyn InstallSink> {

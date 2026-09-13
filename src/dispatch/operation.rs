@@ -10,8 +10,31 @@ const IGNORE: &str = "--ignore";
 const FINGERPRINT_FILE: &str = "--fingerprint-file";
 const APPROVALS_FILE: &str = "--approvals-file";
 
-#[derive(Clone, Debug, PartialEq)]
 pub enum PrivilegedOperation {
+    Remove {
+        targets: Vec<String>,
+    },
+    Install {
+        targets: Vec<String>,
+        as_deps: bool,
+        approvals: Option<String>,
+    },
+    UpgradeRepo {
+        no_refresh: bool,
+        ignores: Vec<String>,
+        fingerprint: Option<crate::dispatch::approvals::ApprovalsFile>,
+        approvals: Option<String>,
+    },
+}
+
+#[derive(Debug)]
+pub struct BuildOperation {
+    pub targets: Vec<String>,
+    pub as_deps: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ChildOperation {
     Remove {
         targets: Vec<String>,
         stream: bool,
@@ -31,39 +54,28 @@ pub enum PrivilegedOperation {
     },
 }
 
-#[derive(Debug)]
-pub struct BuildOperation {
-    pub targets: Vec<String>,
-    pub as_deps: bool,
-}
-
 impl PrivilegedOperation {
-    pub fn encode(&self) -> Vec<String> {
+    pub(crate) fn wire_args(
+        &self,
+        approvals_path: Option<&str>,
+        fingerprint_path: Option<&str>,
+    ) -> Vec<String> {
         match self {
-            PrivilegedOperation::Remove { targets, stream } => {
-                let mut argv = vec![REMOVE.to_string()];
-                if *stream {
-                    argv.push(STREAM.to_string());
-                }
+            PrivilegedOperation::Remove { targets } => {
+                let mut argv = vec![REMOVE.to_string(), STREAM.to_string()];
                 argv.extend(targets.iter().cloned());
                 argv
             }
             PrivilegedOperation::Install {
-                targets,
-                as_deps,
-                approvals_path,
-                stream,
+                targets, as_deps, ..
             } => {
-                let mut argv = vec![INSTALL.to_string()];
-                if *stream {
-                    argv.push(STREAM.to_string());
-                }
+                let mut argv = vec![INSTALL.to_string(), STREAM.to_string()];
                 if *as_deps {
                     argv.push(AS_DEPS.to_string());
                 }
                 if let Some(path) = approvals_path {
                     argv.push(APPROVALS_FILE.to_string());
-                    argv.push(path.clone());
+                    argv.push(path.to_string());
                 }
                 argv.extend(targets.iter().cloned());
                 argv
@@ -71,14 +83,9 @@ impl PrivilegedOperation {
             PrivilegedOperation::UpgradeRepo {
                 no_refresh,
                 ignores,
-                fingerprint_path,
-                approvals_path,
-                stream,
+                ..
             } => {
-                let mut argv = vec![UPGRADE_REPO.to_string()];
-                if *stream {
-                    argv.push(STREAM.to_string());
-                }
+                let mut argv = vec![UPGRADE_REPO.to_string(), STREAM.to_string()];
                 if *no_refresh {
                     argv.push(NO_REFRESH.to_string());
                 }
@@ -88,18 +95,20 @@ impl PrivilegedOperation {
                 }
                 if let Some(path) = fingerprint_path {
                     argv.push(FINGERPRINT_FILE.to_string());
-                    argv.push(path.clone());
+                    argv.push(path.to_string());
                 }
                 if let Some(path) = approvals_path {
                     argv.push(APPROVALS_FILE.to_string());
-                    argv.push(path.clone());
+                    argv.push(path.to_string());
                 }
                 argv
             }
         }
     }
+}
 
-    pub fn decode(argv: &[String]) -> Option<PrivilegedOperation> {
+impl ChildOperation {
+    pub fn decode(argv: &[String]) -> Option<ChildOperation> {
         match argv.first().map(String::as_str) {
             Some(REMOVE) => decode_remove(&argv[1..]),
             Some(INSTALL) => decode_install(&argv[1..]),
@@ -109,7 +118,7 @@ impl PrivilegedOperation {
     }
 }
 
-fn decode_remove(argv: &[String]) -> Option<PrivilegedOperation> {
+fn decode_remove(argv: &[String]) -> Option<ChildOperation> {
     let mut stream = false;
     let mut targets = Vec::new();
     for arg in argv {
@@ -119,10 +128,10 @@ fn decode_remove(argv: &[String]) -> Option<PrivilegedOperation> {
             targets.push(arg.clone());
         }
     }
-    Some(PrivilegedOperation::Remove { targets, stream })
+    Some(ChildOperation::Remove { targets, stream })
 }
 
-fn decode_install(argv: &[String]) -> Option<PrivilegedOperation> {
+fn decode_install(argv: &[String]) -> Option<ChildOperation> {
     let mut stream = false;
     let mut as_deps = false;
     let mut approvals_path = None;
@@ -136,7 +145,7 @@ fn decode_install(argv: &[String]) -> Option<PrivilegedOperation> {
             _ => targets.push(arg.clone()),
         }
     }
-    Some(PrivilegedOperation::Install {
+    Some(ChildOperation::Install {
         targets,
         as_deps,
         approvals_path,
@@ -144,7 +153,7 @@ fn decode_install(argv: &[String]) -> Option<PrivilegedOperation> {
     })
 }
 
-fn decode_upgrade_repo(argv: &[String]) -> Option<PrivilegedOperation> {
+fn decode_upgrade_repo(argv: &[String]) -> Option<ChildOperation> {
     let mut stream = false;
     let mut no_refresh = false;
     let mut ignores = Vec::new();
@@ -161,7 +170,7 @@ fn decode_upgrade_repo(argv: &[String]) -> Option<PrivilegedOperation> {
             _ => return None,
         }
     }
-    Some(PrivilegedOperation::UpgradeRepo {
+    Some(ChildOperation::UpgradeRepo {
         no_refresh,
         ignores,
         fingerprint_path,
@@ -175,41 +184,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remove_streaming_round_trip() {
+    fn remove_wire_round_trip() {
         let operation = PrivilegedOperation::Remove {
             targets: vec!["sl".to_string(), "figlet".to_string()],
-            stream: true,
         };
-        assert_eq!(operation.encode(), ["remove", "--stream", "sl", "figlet"]);
+        let argv = operation.wire_args(None, None);
+        assert_eq!(argv, ["remove", "--stream", "sl", "figlet"]);
         assert_eq!(
-            PrivilegedOperation::decode(&operation.encode()),
-            Some(operation)
+            ChildOperation::decode(&argv),
+            Some(ChildOperation::Remove {
+                targets: vec!["sl".to_string(), "figlet".to_string()],
+                stream: true,
+            })
         );
     }
 
     #[test]
-    fn remove_plain_round_trip() {
-        let operation = PrivilegedOperation::Remove {
-            targets: vec!["sl".to_string()],
-            stream: false,
-        };
-        assert_eq!(operation.encode(), ["remove", "sl"]);
-        assert_eq!(
-            PrivilegedOperation::decode(&operation.encode()),
-            Some(operation)
-        );
-    }
-
-    #[test]
-    fn install_full_round_trip() {
+    fn install_full_wire_round_trip() {
         let operation = PrivilegedOperation::Install {
             targets: vec!["sl".to_string(), "figlet".to_string()],
             as_deps: true,
-            approvals_path: Some("/tmp/pakajo-approvals-1.json".to_string()),
-            stream: true,
+            approvals: None,
         };
+        let argv = operation.wire_args(Some("/tmp/pakajo-approvals-1.json"), None);
         assert_eq!(
-            operation.encode(),
+            argv,
             [
                 "install",
                 "--stream",
@@ -221,55 +220,67 @@ mod tests {
             ]
         );
         assert_eq!(
-            PrivilegedOperation::decode(&operation.encode()),
-            Some(operation)
+            ChildOperation::decode(&argv),
+            Some(ChildOperation::Install {
+                targets: vec!["sl".to_string(), "figlet".to_string()],
+                as_deps: true,
+                approvals_path: Some("/tmp/pakajo-approvals-1.json".to_string()),
+                stream: true,
+            })
         );
     }
 
     #[test]
-    fn install_minimal_round_trip() {
+    fn install_minimal_wire_round_trip() {
         let operation = PrivilegedOperation::Install {
             targets: vec!["sl".to_string()],
             as_deps: false,
-            approvals_path: None,
-            stream: false,
+            approvals: None,
         };
-        assert_eq!(operation.encode(), ["install", "sl"]);
+        let argv = operation.wire_args(None, None);
+        assert_eq!(argv, ["install", "--stream", "sl"]);
         assert_eq!(
-            PrivilegedOperation::decode(&operation.encode()),
-            Some(operation)
+            ChildOperation::decode(&argv),
+            Some(ChildOperation::Install {
+                targets: vec!["sl".to_string()],
+                as_deps: false,
+                approvals_path: None,
+                stream: true,
+            })
         );
     }
 
     #[test]
-    fn install_as_deps_round_trip() {
+    fn install_as_deps_wire_round_trip() {
         let operation = PrivilegedOperation::Install {
             targets: vec!["sl".to_string()],
             as_deps: true,
-            approvals_path: None,
-            stream: true,
+            approvals: None,
         };
+        let argv = operation.wire_args(None, None);
+        assert_eq!(argv, ["install", "--stream", "--asdeps", "sl"]);
         assert_eq!(
-            operation.encode(),
-            ["install", "--stream", "--asdeps", "sl"]
-        );
-        assert_eq!(
-            PrivilegedOperation::decode(&operation.encode()),
-            Some(operation)
+            ChildOperation::decode(&argv),
+            Some(ChildOperation::Install {
+                targets: vec!["sl".to_string()],
+                as_deps: true,
+                approvals_path: None,
+                stream: true,
+            })
         );
     }
 
     #[test]
-    fn upgrade_repo_full_round_trip() {
+    fn upgrade_repo_full_wire_round_trip() {
         let operation = PrivilegedOperation::UpgradeRepo {
             no_refresh: true,
             ignores: vec!["foo".to_string(), "bar".to_string()],
-            fingerprint_path: Some("/tmp/fp.json".to_string()),
-            approvals_path: Some("/tmp/pakajo-approvals-1.json".to_string()),
-            stream: true,
+            fingerprint: None,
+            approvals: None,
         };
+        let argv = operation.wire_args(Some("/tmp/pakajo-approvals-1.json"), Some("/tmp/fp.json"));
         assert_eq!(
-            operation.encode(),
+            argv,
             [
                 "upgrade-repo",
                 "--stream",
@@ -285,30 +296,42 @@ mod tests {
             ]
         );
         assert_eq!(
-            PrivilegedOperation::decode(&operation.encode()),
-            Some(operation)
+            ChildOperation::decode(&argv),
+            Some(ChildOperation::UpgradeRepo {
+                no_refresh: true,
+                ignores: vec!["foo".to_string(), "bar".to_string()],
+                fingerprint_path: Some("/tmp/fp.json".to_string()),
+                approvals_path: Some("/tmp/pakajo-approvals-1.json".to_string()),
+                stream: true,
+            })
         );
     }
 
     #[test]
-    fn upgrade_repo_minimal_round_trip() {
+    fn upgrade_repo_minimal_wire_round_trip() {
         let operation = PrivilegedOperation::UpgradeRepo {
             no_refresh: false,
             ignores: vec![],
-            fingerprint_path: None,
-            approvals_path: None,
-            stream: false,
+            fingerprint: None,
+            approvals: None,
         };
-        assert_eq!(operation.encode(), ["upgrade-repo"]);
+        let argv = operation.wire_args(None, None);
+        assert_eq!(argv, ["upgrade-repo", "--stream"]);
         assert_eq!(
-            PrivilegedOperation::decode(&operation.encode()),
-            Some(operation)
+            ChildOperation::decode(&argv),
+            Some(ChildOperation::UpgradeRepo {
+                no_refresh: false,
+                ignores: vec![],
+                fingerprint_path: None,
+                approvals_path: None,
+                stream: true,
+            })
         );
     }
 
     #[test]
     fn decode_rejects_foreign_head() {
-        assert_eq!(PrivilegedOperation::decode(&["upgrade".to_string()]), None);
-        assert_eq!(PrivilegedOperation::decode(&[]), None);
+        assert_eq!(ChildOperation::decode(&["upgrade".to_string()]), None);
+        assert_eq!(ChildOperation::decode(&[]), None);
     }
 }

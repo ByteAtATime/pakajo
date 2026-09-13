@@ -1,12 +1,11 @@
-use std::env::current_exe;
-
 use cosmic::app::Task;
 use cosmic::iced::{Background, Color, Length, stream::channel};
 use cosmic::widget::container;
-use futures::{SinkExt as _, StreamExt as _};
+use futures::StreamExt as _;
 
 use pakajo::dispatch::exec::{ChildOutcome, StreamItem};
-use pakajo::dispatch::protocol::{Completion, classify_completion};
+use pakajo::dispatch::operation::{BuildOperation, PrivilegedOperation};
+use pakajo::dispatch::protocol::{AutomaticDecider, Completion, classify_completion};
 use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
 use pakajo::events::InstallEvent;
 use pakajo::package::PackageSource;
@@ -73,17 +72,21 @@ pub(crate) enum Action {
     ContinueAur(Vec<String>),
 }
 
-fn spawn_transaction_stream(
-    worker: impl FnOnce(futures::channel::mpsc::Sender<StreamItem>) + Send + 'static,
-) -> Task<crate::Message> {
-    let (raw_tx, mut raw_rx) = futures::channel::mpsc::channel::<StreamItem>(256);
-    std::thread::spawn(move || {
-        worker(raw_tx);
-    });
+fn stream_privileged(operation: PrivilegedOperation) -> Task<crate::Message> {
+    stream_items(operation.dispatch(false))
+}
+
+fn stream_build(operation: BuildOperation, approvals: Option<String>) -> Task<crate::Message> {
+    let decider = Box::new(AutomaticDecider);
+    stream_items(operation.dispatch(decider, approvals, false))
+}
+
+fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::Message> {
     Task::stream(channel(
         256,
         move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
-            while let Some(item) = raw_rx.next().await {
+            use futures::SinkExt as _;
+            while let Some(item) = rx.next().await {
                 match item {
                     StreamItem::Event(ev) => {
                         let _ = tx
@@ -309,49 +312,32 @@ impl Transaction {
             return self.launch_aur_in_process(approvals_b64);
         }
         let name = self.model.name.clone();
-        let exe = match current_exe() {
-            Ok(exe) => exe,
-            Err(e) => {
-                eprintln!("[pakajo] failed to resolve current_exe: {e}");
-                return Action::None;
-            }
-        };
         self.model.status = TransactionStatus::Running;
-        let stream = spawn_transaction_stream(move |tx| {
-            pakajo::dispatch::exec::run_install_to_channel(
-                exe,
-                vec![name],
-                false,
-                approvals_b64,
-                tx,
-            );
-        });
-        Action::Run(stream)
+        let operation = PrivilegedOperation::Install {
+            targets: vec![name],
+            as_deps: false,
+            approvals: approvals_b64,
+        };
+        Action::Run(stream_privileged(operation))
     }
 
     fn launch_aur_in_process(&mut self, approvals_b64: Option<String>) -> Action {
         let name = self.model.name.clone();
         self.model.status = TransactionStatus::Running;
-        let stream = spawn_transaction_stream(move |tx| {
-            pakajo::dispatch::exec::run_build_aur_to_channel(vec![name], false, approvals_b64, tx);
-        });
-        Action::Run(stream)
+        let operation = BuildOperation {
+            targets: vec![name],
+            as_deps: false,
+        };
+        Action::Run(stream_build(operation, approvals_b64))
     }
 
     fn launch_remove_subprocess(&mut self) -> Action {
         let name = self.model.name.clone();
-        let exe = match current_exe() {
-            Ok(exe) => exe,
-            Err(e) => {
-                eprintln!("[pakajo] failed to resolve current_exe: {e}");
-                return Action::None;
-            }
-        };
         self.model.status = TransactionStatus::Running;
-        let stream = spawn_transaction_stream(move |tx| {
-            pakajo::dispatch::exec::run_remove_to_channel(exe, vec![name], tx);
-        });
-        Action::Run(stream)
+        let operation = PrivilegedOperation::Remove {
+            targets: vec![name],
+        };
+        Action::Run(stream_privileged(operation))
     }
 
     pub(crate) fn start_sysupgrade_repo(
@@ -365,25 +351,14 @@ impl Transaction {
                 InstallKind::Upgrade,
             ),
         };
-        let exe = match current_exe() {
-            Ok(exe) => exe,
-            Err(e) => {
-                eprintln!("[pakajo] failed to resolve current_exe: {e}");
-                return (transaction, Task::none());
-            }
-        };
         transaction.model.status = TransactionStatus::Running;
-        let stream = spawn_transaction_stream(move |tx| {
-            pakajo::dispatch::exec::run_upgrade_repo_to_channel(
-                exe,
-                false,
-                vec![],
-                Some(fingerprint),
-                approvals_b64,
-                tx,
-            );
-        });
-        (transaction, stream)
+        let operation = PrivilegedOperation::UpgradeRepo {
+            no_refresh: false,
+            ignores: vec![],
+            fingerprint: Some(fingerprint),
+            approvals: approvals_b64,
+        };
+        (transaction, stream_privileged(operation))
     }
 
     pub(crate) fn start_sysupgrade_aur(targets: Vec<String>) -> (Self, Task<crate::Message>) {
@@ -393,10 +368,11 @@ impl Transaction {
             InstallKind::Upgrade,
         );
         model.status = TransactionStatus::Running;
-        let stream = spawn_transaction_stream(move |tx| {
-            pakajo::dispatch::exec::run_build_aur_to_channel(targets, false, None, tx);
-        });
-        (Self { model }, stream)
+        let operation = BuildOperation {
+            targets,
+            as_deps: false,
+        };
+        (Self { model }, stream_build(operation, None))
     }
 
     pub(crate) fn view(&self) -> Element<'_> {

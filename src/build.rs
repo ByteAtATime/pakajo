@@ -6,9 +6,18 @@ use std::process::Stdio;
 use anyhow::Context as _;
 
 use crate::aur::AurInfo;
+use crate::dispatch::exec::{ChildOutcome, StreamItem};
+use crate::dispatch::protocol::Decider;
 use crate::events::{InstallEvent, InstallSink, PkgbuildReviewEntry};
 use crate::pkgbuild::PkgbuildInfo;
 use crate::resolve::BuildPlan;
+
+#[derive(Clone, Copy)]
+struct AurBuildConfig {
+    no_check: bool,
+    as_deps: bool,
+    tty: bool,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum BuildDecision {
@@ -22,19 +31,19 @@ pub fn run_build<S: InstallSink + ?Sized>(
     no_check: bool,
     user_as_deps: bool,
     sink: &mut S,
-    confirm: impl FnOnce(&BuildPlan) -> BuildDecision,
-    review: impl FnOnce(&[PkgbuildInfo]) -> bool,
+    decider: &dyn Decider,
     approvals_b64: Option<&str>,
+    tty: bool,
 ) -> anyhow::Result<()> {
     let (alpm, plan) = resolve_and_report(targets, no_check, sink)?;
 
-    let decision = confirm(&plan);
+    let decision = decider.confirm_build(&plan);
     if matches!(decision, BuildDecision::Abort) {
         anyhow::bail!("build cancelled by user");
     }
 
     let pkgbuilds = crate::pkgbuild::collect_for_review(&plan, sink)?;
-    review_if_requested(decision, &pkgbuilds, sink, review)?;
+    review_if_requested(decision, &pkgbuilds, sink, decider)?;
 
     let total_layers = plan.layers.len();
     let arch = alpm.architectures().first();
@@ -45,13 +54,18 @@ pub fn run_build<S: InstallSink + ?Sized>(
         });
 
         if !layer.repo_deps.is_empty() {
-            run_install_child(&layer.repo_deps, true, sink, None)?;
+            run_install_child(&layer.repo_deps, true, sink, None, tty)?;
         }
 
         for info in &layer.aur {
             let dir = clone_dir(&info.package_base)?;
             let as_deps = user_as_deps || !plan.targets.iter().any(|t| t == &info.name);
-            build_and_install_aur(info, &dir, no_check, as_deps, approvals_b64, arch, sink)?;
+            let config = AurBuildConfig {
+                no_check,
+                as_deps,
+                tty,
+            };
+            build_and_install_aur(info, &dir, config, approvals_b64, arch, sink)?;
         }
     }
 
@@ -112,7 +126,7 @@ fn review_if_requested<S: InstallSink + ?Sized>(
     decision: BuildDecision,
     pkgbuilds: &[PkgbuildInfo],
     sink: &mut S,
-    review: impl FnOnce(&[PkgbuildInfo]) -> bool,
+    decider: &dyn Decider,
 ) -> anyhow::Result<()> {
     if !matches!(decision, BuildDecision::Review) {
         return Ok(());
@@ -137,7 +151,7 @@ fn review_if_requested<S: InstallSink + ?Sized>(
                 })
                 .collect(),
         });
-        if !review(&to_review) {
+        if !decider.review_pkgbuilds(&to_review) {
             anyhow::bail!("PKGBUILD review rejected by user");
         }
         for pb in &to_review {
@@ -165,8 +179,7 @@ fn resolved_version(expected: &[String], package: &str) -> Option<String> {
 fn build_and_install_aur<S: InstallSink + ?Sized>(
     info: &AurInfo,
     dir: &Path,
-    no_check: bool,
-    as_deps: bool,
+    config: AurBuildConfig,
     approvals_b64: Option<&str>,
     arch: Option<&str>,
     sink: &mut S,
@@ -174,7 +187,7 @@ fn build_and_install_aur<S: InstallSink + ?Sized>(
     sink.event(InstallEvent::BuildStarted {
         package: info.name.clone(),
     });
-    run_makepkg_streaming(dir, no_check, &info.name, sink)?;
+    run_makepkg_streaming(dir, config.no_check, &info.name, sink)?;
 
     let expected = expected_artifacts(dir)
         .with_context(|| format!("failed to enumerate artifacts for {}", info.name))?;
@@ -195,7 +208,7 @@ fn build_and_install_aur<S: InstallSink + ?Sized>(
         );
     }
 
-    run_install_child(&artifacts, as_deps, sink, approvals_b64)?;
+    run_install_child(&artifacts, config.as_deps, sink, approvals_b64, config.tty)?;
     Ok(())
 }
 
@@ -336,8 +349,32 @@ fn run_install_child<S: InstallSink + ?Sized>(
     as_deps: bool,
     sink: &mut S,
     approvals_b64: Option<&str>,
+    tty: bool,
 ) -> anyhow::Result<()> {
-    crate::dispatch::exec::run_install_to_sink(targets, as_deps, approvals_b64, sink)
+    use futures::StreamExt as _;
+    let operation = crate::dispatch::operation::PrivilegedOperation::Install {
+        targets: targets.to_vec(),
+        as_deps,
+        approvals: approvals_b64.map(str::to_string),
+    };
+    let mut stream = operation.dispatch(tty);
+    while let Some(item) = futures::executor::block_on(stream.next()) {
+        match item {
+            StreamItem::Event(event) => sink.event(event),
+            StreamItem::Done(ChildOutcome::Success) => return Ok(()),
+            StreamItem::Done(outcome) => {
+                anyhow::bail!(
+                    "privileged install of [{}] failed: {}",
+                    targets.join(", "),
+                    outcome.reason()
+                );
+            }
+        }
+    }
+    anyhow::bail!(
+        "privileged install of [{}] failed: stream ended",
+        targets.join(", ")
+    );
 }
 
 #[cfg(test)]

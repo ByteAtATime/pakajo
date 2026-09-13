@@ -1,7 +1,7 @@
 use crate::cli::{ConsoleSink, classify_target, privs};
 use crate::cli::{EscalatedSink, JsonSink, answerer_for, confirm_install, confirm_install_stderr};
 use crate::cli::{confirm_remove, confirm_remove_stderr};
-use crate::dispatch::operation::PrivilegedOperation;
+use crate::dispatch::operation::ChildOperation;
 use crate::install::InstallTarget;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,9 +65,9 @@ pub fn read_approvals_file(path: &str) -> anyhow::Result<crate::question::Approv
 }
 
 pub fn run(argv: &[String]) -> ! {
-    match PrivilegedOperation::decode(argv) {
-        Some(PrivilegedOperation::Remove { targets, stream }) => run_remove_root(&targets, stream),
-        Some(PrivilegedOperation::Install {
+    match ChildOperation::decode(argv) {
+        Some(ChildOperation::Remove { targets, stream }) => run_remove_root(&targets, stream),
+        Some(ChildOperation::Install {
             targets,
             as_deps,
             approvals_path,
@@ -85,7 +85,7 @@ pub fn run(argv: &[String]) -> ! {
                 }
             }
         }
-        Some(PrivilegedOperation::UpgradeRepo {
+        Some(ChildOperation::UpgradeRepo {
             no_refresh,
             ignores,
             fingerprint_path,

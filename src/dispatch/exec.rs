@@ -1,16 +1,14 @@
 use std::io::{self, BufReader};
-use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
 use anyhow::Context as _;
 use base64::Engine as _;
 use futures::SinkExt as _;
 
-use crate::cli::privs::{is_root, stdin_is_tty};
-use crate::cli::{ConsoleSink, JsonSink};
+use crate::cli::privs::is_root;
 use crate::dispatch::approvals::ApprovalsFile;
 use crate::dispatch::operation::{BuildOperation, MARKER, PrivilegedOperation};
-use crate::dispatch::protocol::{AutomaticDecider, TerminalDecider};
+use crate::dispatch::protocol::Decider;
 use crate::events::{InstallEvent, InstallSink, read_event_stream};
 
 #[derive(Clone, Debug)]
@@ -21,10 +19,23 @@ pub enum ChildOutcome {
     Failed(String),
 }
 
+impl ChildOutcome {
+    pub fn reason(&self) -> &str {
+        match self {
+            ChildOutcome::Success => "succeeded",
+            ChildOutcome::Dismissed => "privilege prompt dismissed",
+            ChildOutcome::NotFound => "pkexec not found",
+            ChildOutcome::Failed(message) => message.as_str(),
+        }
+    }
+}
+
 pub enum StreamItem {
     Event(InstallEvent),
     Done(ChildOutcome),
 }
+
+pub type DispatchStream = futures::channel::mpsc::Receiver<StreamItem>;
 
 fn send_item(tx: &mut futures::channel::mpsc::Sender<StreamItem>, item: StreamItem) {
     futures::executor::block_on(tx.send(item)).ok();
@@ -97,12 +108,8 @@ fn select_privilege_escalator(root: bool, tty: bool) -> Box<dyn PrivilegeEscalat
     }
 }
 
-fn escalation_command(exe: &str) -> Command {
-    select_privilege_escalator(is_root(), stdin_is_tty()).build_command(exe)
-}
-
-fn graphical_escalation_command(exe: &str) -> Command {
-    select_privilege_escalator(is_root(), false).build_command(exe)
+fn escalation(exe: &str, tty: bool) -> Command {
+    select_privilege_escalator(is_root(), tty).build_command(exe)
 }
 
 fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
@@ -126,69 +133,23 @@ fn write_b64(b64: &str) -> anyhow::Result<ApprovalsFile> {
     ApprovalsFile::write(&json).context("failed to write approvals file")
 }
 
-fn operation_command(operation: &PrivilegedOperation, exe: &str, graphical: bool) -> Command {
-    let mut cmd = if graphical {
-        graphical_escalation_command(exe)
-    } else {
-        escalation_command(exe)
-    };
-    cmd.arg(MARKER);
-    for arg in operation.encode() {
-        cmd.arg(arg);
-    }
-    cmd
-}
-
-fn parent_sink(json: bool) -> Box<dyn crate::events::InstallSink> {
-    if json {
-        Box::new(JsonSink::new())
-    } else {
-        Box::new(ConsoleSink::new())
-    }
-}
-
-fn channel_approvals(
-    approvals_b64: Option<&str>,
-    tx: &mut futures::channel::mpsc::Sender<StreamItem>,
-) -> Option<Option<ApprovalsFile>> {
-    match approvals_b64.map(write_b64).transpose() {
-        Ok(approvals) => Some(approvals),
-        Err(err) => {
-            send_item(
-                tx,
-                StreamItem::Done(ChildOutcome::Failed(format!("{err:#}"))),
-            );
-            None
-        }
-    }
-}
-
-fn remove_operation(targets: &[String]) -> PrivilegedOperation {
-    PrivilegedOperation::Remove {
-        targets: targets.to_vec(),
-        stream: true,
-    }
-}
-
-fn spawn_cli_child(operation: &PrivilegedOperation, name: &str) -> anyhow::Result<Child> {
-    let exe = std::env::current_exe().context("failed to determine executable path")?;
-    let mut cmd = operation_command(operation, &exe.to_string_lossy(), false);
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    cmd.spawn()
-        .with_context(|| format!("failed to spawn {name} child"))
-}
-
-fn spawn_channel_child(
-    operation: &PrivilegedOperation,
+fn spawn_privileged_child(
+    argv: &[String],
     exe: &str,
+    tty: bool,
     tx: &mut futures::channel::mpsc::Sender<StreamItem>,
 ) -> Option<Child> {
-    let mut cmd = operation_command(operation, exe, true);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+    let mut cmd = escalation(exe, tty);
+    cmd.arg(MARKER);
+    for arg in argv {
+        cmd.arg(arg);
+    }
+    if tty {
+        cmd.stdin(Stdio::inherit());
+    } else {
+        cmd.stdin(Stdio::null());
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::inherit());
     match cmd.spawn() {
         Ok(child) => Some(child),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -202,249 +163,93 @@ fn spawn_channel_child(
     }
 }
 
-fn finish_channel(
-    status: io::Result<ExitStatus>,
+fn run_privileged(
+    operation: PrivilegedOperation,
+    tty: bool,
     tx: &mut futures::channel::mpsc::Sender<StreamItem>,
 ) {
+    let approvals_b64 = match &operation {
+        PrivilegedOperation::Remove { .. } => None,
+        PrivilegedOperation::Install { approvals, .. } => approvals.as_deref(),
+        PrivilegedOperation::UpgradeRepo { approvals, .. } => approvals.as_deref(),
+    };
+    let sealed = match approvals_b64.map(write_b64).transpose() {
+        Ok(sealed) => sealed,
+        Err(err) => {
+            send_item(
+                tx,
+                StreamItem::Done(ChildOutcome::Failed(format!("{err:#}"))),
+            );
+            return;
+        }
+    };
+    let fingerprint_path = match &operation {
+        PrivilegedOperation::UpgradeRepo { fingerprint, .. } => fingerprint
+            .as_ref()
+            .map(|file| file.path().to_string_lossy().into_owned()),
+        _ => None,
+    };
+    let approvals_path = sealed
+        .as_ref()
+        .map(|file| file.path().to_string_lossy().into_owned());
+    let argv = operation.wire_args(approvals_path.as_deref(), fingerprint_path.as_deref());
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(err) => {
+            send_item(
+                tx,
+                StreamItem::Done(ChildOutcome::Failed(format!("{err:#}"))),
+            );
+            return;
+        }
+    };
+    let Some(child) = spawn_privileged_child(&argv, &exe.to_string_lossy(), tty, tx) else {
+        return;
+    };
+    let mut sink = ChannelSink::new(tx.clone());
+    let status = stream_child(child, &mut sink);
     send_item(tx, StreamItem::Done(map_outcome(status)));
 }
 
-pub fn run_remove(targets: &[String], json: bool) -> ! {
-    std::process::exit(match run_remove_result(targets, json) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("{e:#}");
-            1
-        }
-    });
-}
-
-fn run_remove_result(targets: &[String], json: bool) -> anyhow::Result<i32> {
-    let operation = remove_operation(targets);
-    let child = spawn_cli_child(&operation, "remove")?;
-    let mut sink = parent_sink(json);
-    let status = stream_child(child, &mut *sink)?;
-    Ok(status.code().unwrap_or(1))
-}
-
-pub fn run_remove_to_channel(
-    exe: PathBuf,
-    targets: Vec<String>,
-    mut tx: futures::channel::mpsc::Sender<StreamItem>,
-) {
-    let operation = remove_operation(&targets);
-    let Some(child) = spawn_channel_child(&operation, &exe.to_string_lossy(), &mut tx) else {
-        return;
-    };
-    let mut sink = ChannelSink::new(tx.clone());
-    let status = stream_child(child, &mut sink);
-    finish_channel(status, &mut tx);
-}
-
-pub fn run_install(
-    targets: &[String],
-    as_deps: bool,
-    json: bool,
-    approvals_b64: Option<&str>,
-) -> ! {
-    std::process::exit(
-        match run_install_result(targets, as_deps, json, approvals_b64) {
-            Ok(code) => code,
-            Err(e) => {
-                eprintln!("{e:#}");
-                1
-            }
-        },
-    );
-}
-
-fn install_operation(
-    targets: &[String],
-    as_deps: bool,
-    approvals: Option<&ApprovalsFile>,
-) -> PrivilegedOperation {
-    PrivilegedOperation::Install {
-        targets: targets.to_vec(),
-        as_deps,
-        approvals_path: approvals.map(|file| file.path().to_string_lossy().into_owned()),
-        stream: true,
+impl PrivilegedOperation {
+    pub fn dispatch(self, tty: bool) -> DispatchStream {
+        let (tx, rx) = futures::channel::mpsc::channel(256);
+        std::thread::spawn(move || {
+            let mut tx = tx;
+            run_privileged(self, tty, &mut tx);
+        });
+        rx
     }
 }
 
-pub(crate) fn run_install_result(
-    targets: &[String],
-    as_deps: bool,
-    json: bool,
-    approvals_b64: Option<&str>,
-) -> anyhow::Result<i32> {
-    let approvals = approvals_b64.map(write_b64).transpose()?;
-    let operation = install_operation(targets, as_deps, approvals.as_ref());
-    let child = spawn_cli_child(&operation, "install")?;
-    let mut sink = parent_sink(json);
-    let status = stream_child(child, &mut *sink)?;
-    Ok(status.code().unwrap_or(1))
-}
-
-pub fn run_install_to_sink<S: crate::events::InstallSink + ?Sized>(
-    targets: &[String],
-    as_deps: bool,
-    approvals_b64: Option<&str>,
-    sink: &mut S,
-) -> anyhow::Result<()> {
-    let approvals = approvals_b64.map(write_b64).transpose()?;
-    let operation = install_operation(targets, as_deps, approvals.as_ref());
-    let child = spawn_cli_child(&operation, "install")?;
-    let status = stream_child(child, sink).context("install child did not complete")?;
-    if !status.success() {
-        anyhow::bail!(
-            "privileged install of [{}] failed (exit {})",
-            targets.join(", "),
-            status.code().unwrap_or(-1)
-        );
+impl BuildOperation {
+    pub fn dispatch(
+        self,
+        decider: Box<dyn Decider + Send>,
+        approvals: Option<String>,
+        tty: bool,
+    ) -> DispatchStream {
+        let (tx, rx) = futures::channel::mpsc::channel(256);
+        std::thread::spawn(move || {
+            let mut tx = tx;
+            let mut sink = ChannelSink::new(tx.clone());
+            let result = crate::build::run_build(
+                &self.targets,
+                false,
+                self.as_deps,
+                &mut sink,
+                decider.as_ref(),
+                approvals.as_deref(),
+                tty,
+            );
+            let outcome = match result {
+                Ok(()) => ChildOutcome::Success,
+                Err(e) => ChildOutcome::Failed(format!("{e:#}")),
+            };
+            send_item(&mut tx, StreamItem::Done(outcome));
+        });
+        rx
     }
-    Ok(())
-}
-
-pub fn run_install_to_channel(
-    exe: PathBuf,
-    targets: Vec<String>,
-    as_deps: bool,
-    approvals_b64: Option<String>,
-    mut tx: futures::channel::mpsc::Sender<StreamItem>,
-) {
-    let Some(approvals) = channel_approvals(approvals_b64.as_deref(), &mut tx) else {
-        return;
-    };
-    let operation = install_operation(&targets, as_deps, approvals.as_ref());
-    let Some(child) = spawn_channel_child(&operation, &exe.to_string_lossy(), &mut tx) else {
-        return;
-    };
-    let mut sink = ChannelSink::new(tx.clone());
-    let status = stream_child(child, &mut sink);
-    finish_channel(status, &mut tx);
-}
-
-fn upgrade_repo_operation(
-    no_refresh: bool,
-    ignores: &[String],
-    fingerprint_path: Option<&str>,
-    approvals: Option<&ApprovalsFile>,
-) -> PrivilegedOperation {
-    PrivilegedOperation::UpgradeRepo {
-        no_refresh,
-        ignores: ignores.to_vec(),
-        fingerprint_path: fingerprint_path.map(str::to_string),
-        approvals_path: approvals.map(|file| file.path().to_string_lossy().into_owned()),
-        stream: true,
-    }
-}
-
-pub(crate) fn run_upgrade_repo_result(
-    no_refresh: bool,
-    ignores: &[String],
-    json: bool,
-) -> anyhow::Result<i32> {
-    let operation = upgrade_repo_operation(no_refresh, ignores, None, None);
-    let child = spawn_cli_child(&operation, "upgrade")?;
-    let mut sink = parent_sink(json);
-    let status = stream_child(child, &mut *sink)?;
-    Ok(status.code().unwrap_or(1))
-}
-
-pub fn run_upgrade_repo_to_channel(
-    exe: PathBuf,
-    no_refresh: bool,
-    ignores: Vec<String>,
-    fingerprint: Option<ApprovalsFile>,
-    approvals_b64: Option<String>,
-    mut tx: futures::channel::mpsc::Sender<StreamItem>,
-) {
-    let Some(approvals) = channel_approvals(approvals_b64.as_deref(), &mut tx) else {
-        return;
-    };
-    let operation = upgrade_repo_operation(
-        no_refresh,
-        &ignores,
-        fingerprint
-            .as_ref()
-            .map(|file| file.path().to_string_lossy().into_owned())
-            .as_deref(),
-        approvals.as_ref(),
-    );
-    let Some(child) = spawn_channel_child(&operation, &exe.to_string_lossy(), &mut tx) else {
-        return;
-    };
-    let mut sink = ChannelSink::new(tx.clone());
-    let status = stream_child(child, &mut sink);
-    finish_channel(status, &mut tx);
-}
-
-fn execute_build_aur<S: crate::events::InstallSink + ?Sized>(
-    operation: &BuildOperation,
-    sink: &mut S,
-    decider: &dyn crate::dispatch::protocol::Decider,
-    approvals_b64: Option<&str>,
-) -> anyhow::Result<()> {
-    crate::build::run_build(
-        &operation.targets,
-        false,
-        operation.as_deps,
-        sink,
-        |plan| decider.confirm_build(plan),
-        |pkgbuilds| decider.review_pkgbuilds(pkgbuilds),
-        approvals_b64,
-    )
-}
-
-pub(crate) fn run_build_aur_result(
-    targets: &[String],
-    as_deps: bool,
-    json: bool,
-    skip_review: bool,
-    approvals_b64: Option<&str>,
-) -> anyhow::Result<()> {
-    let operation = BuildOperation {
-        targets: targets.to_vec(),
-        as_deps,
-    };
-    let decider = TerminalDecider::new(json, skip_review);
-    let mut sink = parent_sink(json);
-    execute_build_aur(&operation, &mut *sink, &decider, approvals_b64)
-}
-
-pub fn run_build_aur(
-    targets: &[String],
-    as_deps: bool,
-    json: bool,
-    skip_review: bool,
-    approvals_b64: Option<&str>,
-) -> ! {
-    std::process::exit(
-        match run_build_aur_result(targets, as_deps, json, skip_review, approvals_b64) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("{e:#}");
-                1
-            }
-        },
-    );
-}
-
-pub fn run_build_aur_to_channel(
-    targets: Vec<String>,
-    as_deps: bool,
-    approvals_b64: Option<String>,
-    mut tx: futures::channel::mpsc::Sender<StreamItem>,
-) {
-    let operation = BuildOperation { targets, as_deps };
-    let decider = AutomaticDecider;
-    let mut sink = ChannelSink::new(tx.clone());
-    let result = execute_build_aur(&operation, &mut sink, &decider, approvals_b64.as_deref());
-    let outcome = match result {
-        Ok(()) => ChildOutcome::Success,
-        Err(e) => ChildOutcome::Failed(format!("{e:#}")),
-    };
-    send_item(&mut tx, StreamItem::Done(outcome));
 }
 
 #[cfg(test)]
@@ -480,18 +285,6 @@ mod tests {
         assert_eq!(cmd.get_program(), OsStr::new("pkexec"));
         let args: Vec<&OsStr> = cmd.get_args().collect();
         assert_eq!(args, [OsStr::new("x")]);
-    }
-
-    #[test]
-    fn parented_operations_always_stream() {
-        let operations = [
-            remove_operation(&["sl".to_string()]),
-            install_operation(&["sl".to_string()], false, None),
-            upgrade_repo_operation(false, &["foo".to_string()], None, None),
-        ];
-        for operation in &operations {
-            assert!(operation.encode().contains(&"--stream".to_string()));
-        }
     }
 
     #[test]
