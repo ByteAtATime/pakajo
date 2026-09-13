@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::time::Instant;
 
+use crate::dispatch::exec::ChildOutcome;
 use crate::events::{InstallEvent, LogLevel, PackageOp, ProgressPhase, TransactionSummary};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,15 +34,14 @@ pub struct RateSampler {
     pub rate: f64,
 }
 
+const DOWNLOAD_RATE_SAMPLE_MS: u128 = 200;
+
 impl RateSampler {
-    pub fn sample(&mut self, now: Instant, current: i64) {
-        let previous = match self.sync_time {
-            Some(t) => t,
-            None => {
-                self.sync_time = Some(now);
-                self.sync_done = current;
-                return;
-            }
+    fn sample(&mut self, now: Instant, current: i64) {
+        let Some(previous) = self.sync_time else {
+            self.sync_time = Some(now);
+            self.sync_done = current;
+            return;
         };
         let timediff = now.duration_since(previous).as_millis();
         if timediff < DOWNLOAD_RATE_SAMPLE_MS {
@@ -61,6 +61,19 @@ pub struct DownloadFile {
     pub total: i64,
     pub completed: bool,
     pub sampler: RateSampler,
+}
+
+impl DownloadFile {
+    fn complete(&mut self, total: i64) -> Option<i64> {
+        if self.completed {
+            return None;
+        }
+        let delta = total - self.downloaded;
+        self.downloaded = total;
+        self.total = total;
+        self.completed = true;
+        Some(delta)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -153,10 +166,7 @@ impl RepoState {
         if self.resolve.checking {
             return 2;
         }
-        if self.resolve.started {
-            return 1;
-        }
-        0
+        usize::from(self.resolve.started)
     }
 }
 
@@ -208,18 +218,8 @@ pub fn event_stage(ev: &InstallEvent) -> Option<RepoStage> {
         | CheckingDiskSpace
         | LoadingPackages
         | KeyringStart => Some(Validate),
-        Progress { phase, .. } => match phase {
-            ProgressPhase::Conflicts
-            | ProgressPhase::Diskspace
-            | ProgressPhase::Integrity
-            | ProgressPhase::Load
-            | ProgressPhase::Keyring => Some(Validate),
-            ProgressPhase::Add
-            | ProgressPhase::Upgrade
-            | ProgressPhase::Downgrade
-            | ProgressPhase::Reinstall
-            | ProgressPhase::Remove => Some(Install),
-        },
+        Progress { phase, .. } if !is_install_phase(phase) => Some(Validate),
+        Progress { .. } => Some(Install),
         RetrievingPackages { .. }
         | DownloadInit { .. }
         | DownloadProgress { .. }
@@ -315,14 +315,12 @@ fn apply_download(state: &mut DownloadState, ev: &InstallEvent, now: Instant) {
             total,
         } => {
             let entry = ensure_download_file(state, filename);
-            let prev = entry.downloaded;
+            let previous = entry.downloaded;
             entry.downloaded = *downloaded;
             entry.total = *total;
-            let current = entry.downloaded;
-            entry.sampler.sample(now, current);
-            state.bytes_done += *downloaded - prev;
-            let bytes_done = state.bytes_done;
-            state.sampler.sample(now, bytes_done);
+            entry.sampler.sample(now, *downloaded);
+            state.bytes_done += *downloaded - previous;
+            state.sampler.sample(now, state.bytes_done);
         }
         InstallEvent::DownloadRetry { filename, resume } => {
             if !*resume && let Some(f) = state.files.get_mut(filename) {
@@ -334,16 +332,8 @@ fn apply_download(state: &mut DownloadState, ev: &InstallEvent, now: Instant) {
         InstallEvent::DownloadCompleted {
             filename, total, ..
         } => {
-            let f = ensure_download_file(state, filename);
-            let already_completed = f.completed;
-            let prev_downloaded = f.downloaded;
-            if !already_completed {
-                f.downloaded = *total;
-                f.total = *total;
-                f.completed = true;
-            }
-            if !already_completed {
-                state.bytes_done += *total - prev_downloaded;
+            if let Some(delta) = ensure_download_file(state, filename).complete(*total) {
+                state.bytes_done += delta;
             }
             state.done += 1;
         }
@@ -370,9 +360,7 @@ pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent, now: Instan
             state.resolve.checking = true;
             state.manifest = Some(summary.clone());
         }
-        InstallEvent::Log { .. } => {
-            apply_finalize(&mut state.finalize, ev);
-        }
+        InstallEvent::Log { .. } => apply_finalize(&mut state.finalize, ev),
         _ => {}
     }
     match event_stage(ev) {
@@ -383,8 +371,6 @@ pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent, now: Instan
         Some(RepoStage::Resolve) | None => {}
     }
 }
-
-const DOWNLOAD_RATE_SAMPLE_MS: u128 = 200;
 
 fn ensure_download_file<'a>(state: &'a mut DownloadState, filename: &str) -> &'a mut DownloadFile {
     match state.files.entry(filename.to_string()) {
@@ -401,20 +387,12 @@ fn ensure_download_file<'a>(state: &'a mut DownloadState, filename: &str) -> &'a
     }
 }
 
-const ORDERED_STAGES_INSTALL: &[RepoStage] = {
-    use RepoStage::*;
-    &[Resolve, Validate, Download, Install, Finalize]
-};
-
-const ORDERED_STAGES_REMOVE: &[RepoStage] = {
-    use RepoStage::*;
-    &[Resolve, Validate, Install, Finalize]
-};
-
 pub fn ordered_stages(kind: InstallKind) -> &'static [RepoStage] {
+    use InstallKind as Kind;
+    use RepoStage::*;
     match kind {
-        InstallKind::Install | InstallKind::Upgrade => ORDERED_STAGES_INSTALL,
-        InstallKind::Remove => ORDERED_STAGES_REMOVE,
+        Kind::Remove => &[Resolve, Validate, Install, Finalize],
+        Kind::Install | Kind::Upgrade => &[Resolve, Validate, Download, Install, Finalize],
     }
 }
 
@@ -426,13 +404,9 @@ pub enum AurStage {
     Finalize,
 }
 
-const ORDERED_AUR_STAGES: &[AurStage] = {
+pub fn ordered_aur_stages() -> &'static [AurStage] {
     use AurStage::*;
     &[Resolve, Build, Install, Finalize]
-};
-
-pub fn ordered_aur_stages() -> &'static [AurStage] {
-    ORDERED_AUR_STAGES
 }
 
 #[derive(Debug, Clone)]
@@ -447,6 +421,12 @@ pub enum BuildStatus {
     Building,
     Done,
     Failed,
+}
+
+impl BuildStatus {
+    fn in_flight(self) -> bool {
+        matches!(self, Self::Fetching | Self::Building)
+    }
 }
 
 pub const BUILD_TAIL_LIMIT: usize = 200;
@@ -476,13 +456,11 @@ pub struct AurState {
 
 impl AurState {
     pub fn building(&self) -> bool {
-        self.builds
-            .values()
-            .any(|entry| matches!(entry.status, BuildStatus::Fetching | BuildStatus::Building))
+        self.builds.values().any(|entry| entry.status.in_flight())
     }
 }
 
-pub fn event_stage_aur(ev: &InstallEvent) -> Option<AurStage> {
+fn event_stage_aur(ev: &InstallEvent) -> Option<AurStage> {
     use AurStage::*;
     use InstallEvent::*;
     match ev {
@@ -492,23 +470,8 @@ pub fn event_stage_aur(ev: &InstallEvent) -> Option<AurStage> {
         CloningRepo { .. } | BuildStarted { .. } | BuildOutput { .. } | BuildCompleted { .. } => {
             Some(Build)
         }
-        ResolvingDependencies
-        | CheckingConflicts
-        | CheckingDependencies
-        | CheckingFileConflicts
-        | CheckingIntegrity
-        | CheckingDiskSpace
-        | KeyringStart
-        | LoadingPackages
-        | TransactionSummary(_)
-        | RetrievingPackages { .. }
-        | DownloadInit { .. }
-        | DownloadProgress { .. }
-        | DownloadRetry { .. }
-        | DownloadCompleted { .. }
-        | PackageOperation { .. }
-        | Progress { .. } => Some(Install),
         HookRun { .. } | ScriptletInfo { .. } | TransactionDone => Some(Finalize),
+        _ if event_stage(ev).is_some() || matches!(ev, TransactionSummary(_)) => Some(Install),
         _ => None,
     }
 }
@@ -516,13 +479,9 @@ pub fn event_stage_aur(ev: &InstallEvent) -> Option<AurStage> {
 pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant) {
     use InstallEvent::*;
     let stage = event_stage_aur(ev);
-    if let Some(stage) = stage {
-        state.last_aur_stage = Some(stage);
-    }
+    state.last_aur_stage = stage.or(state.last_aur_stage);
     match ev {
-        ResolvingAurDependencies { .. } => {
-            state.resolve_started = true;
-        }
+        ResolvingAurDependencies { .. } => state.resolve_started = true,
         AurDepResolved {
             package,
             repo,
@@ -539,9 +498,7 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant)
                 },
             );
         }
-        ResolutionComplete { .. } => {
-            state.resolve_complete = true;
-        }
+        ResolutionComplete { .. } => state.resolve_complete = true,
         CloningRepo { package } => {
             if !state.builds.contains_key(package) {
                 state.build_order.push(package.clone());
@@ -562,14 +519,13 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant)
             }
         }
         BuildOutput { package, line } => {
-            if let Some(entry) = state.builds.get_mut(package) {
-                let segment = line.rsplit('\r').next().unwrap_or("");
-                let stripped = crate::color::ansi_strip(segment);
-                if !stripped.trim().is_empty() {
-                    entry.tail.push(segment.to_string());
-                    if entry.tail.len() > BUILD_TAIL_LIMIT {
-                        entry.tail.remove(0);
-                    }
+            if let Some(entry) = state.builds.get_mut(package)
+                && let Some(segment) = line.rsplit('\r').next()
+                && !crate::color::ansi_strip(segment).trim().is_empty()
+            {
+                entry.tail.push(segment.to_string());
+                if entry.tail.len() > BUILD_TAIL_LIMIT {
+                    entry.tail.remove(0);
                 }
             }
         }
@@ -583,38 +539,23 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant)
         _ => {}
     }
     match stage {
-        Some(AurStage::Install) => match ev {
-            PackageOperation { .. } => apply_install(&mut state.install, ev),
-            Progress { phase, .. } if is_install_phase(phase) => {
-                apply_install(&mut state.install, ev)
-            }
-            RetrievingPackages { .. }
-            | DownloadInit { .. }
-            | DownloadProgress { .. }
-            | DownloadRetry { .. }
-            | DownloadCompleted { .. } => apply_download(&mut state.download, ev, now),
+        Some(AurStage::Install) => match event_stage(ev) {
+            Some(RepoStage::Install) => apply_install(&mut state.install, ev),
+            Some(RepoStage::Download) => apply_download(&mut state.download, ev, now),
             _ => {}
         },
         Some(AurStage::Finalize) => apply_finalize(&mut state.finalize, ev),
-        Some(AurStage::Resolve) | Some(AurStage::Build) | None => {}
+        _ => {}
     }
     if !state.build_order.is_empty()
         && state.build_ended.is_none()
-        && state
-            .builds
-            .values()
-            .all(|entry| matches!(entry.status, BuildStatus::Done | BuildStatus::Failed))
+        && state.builds.values().all(|entry| !entry.status.in_flight())
     {
         state.build_ended = Some(now);
     }
 }
 
-pub fn finish_aur(
-    state: &mut AurState,
-    outcome: &crate::dispatch::exec::ChildOutcome,
-    now: Instant,
-) {
-    use crate::dispatch::exec::ChildOutcome;
+pub fn finish_aur(state: &mut AurState, outcome: &ChildOutcome, now: Instant) {
     if matches!(outcome, ChildOutcome::Success) {
         return;
     }
@@ -622,9 +563,10 @@ pub fn finish_aur(
         .build_order
         .iter()
         .find(|name| {
-            state.builds.get(*name).is_some_and(|entry| {
-                matches!(entry.status, BuildStatus::Fetching | BuildStatus::Building)
-            })
+            state
+                .builds
+                .get(*name)
+                .is_some_and(|e| e.status.in_flight())
         })
         .cloned();
     if let Some(name) = failed
@@ -634,17 +576,13 @@ pub fn finish_aur(
         entry.elapsed = Some(now.saturating_duration_since(entry.started));
     }
 }
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::dispatch::exec::ChildOutcome;
-    use crate::events::{
-        DownloadResult, InstallEvent, LogLevel, PackageOp, ProgressPhase, TransactionSummary,
-    };
+    use std::time::Duration;
 
-    fn fresh_repo_state() -> RepoState {
-        RepoState::default()
-    }
+    use super::*;
+    use crate::events::DownloadResult;
 
     fn apply_repo_event(state: &mut RepoState, ev: &InstallEvent) {
         apply_repo_counters(state, ev, Instant::now());
@@ -657,126 +595,154 @@ mod tests {
         }
     }
 
+    fn aur_dep(package: &str) -> InstallEvent {
+        InstallEvent::AurDepResolved {
+            package: package.to_string(),
+            repo: None,
+            version: Some("1.0-1".to_string()),
+        }
+    }
+
+    fn retrieving(num: usize, total_bytes: i64) -> InstallEvent {
+        InstallEvent::RetrievingPackages { num, total_bytes }
+    }
+
+    fn init(name: &str) -> InstallEvent {
+        InstallEvent::DownloadInit {
+            filename: name.to_string(),
+            optional: false,
+        }
+    }
+
+    fn file_progress(name: &str, downloaded: i64, total: i64) -> InstallEvent {
+        InstallEvent::DownloadProgress {
+            filename: name.to_string(),
+            downloaded,
+            total,
+        }
+    }
+
+    fn file_retry(name: &str, resume: bool) -> InstallEvent {
+        InstallEvent::DownloadRetry {
+            filename: name.to_string(),
+            resume,
+        }
+    }
+
+    fn file_done(name: &str, total: i64) -> InstallEvent {
+        InstallEvent::DownloadCompleted {
+            filename: name.to_string(),
+            total,
+            result: DownloadResult::Success,
+        }
+    }
+
+    fn pkg_added(name: &str) -> InstallEvent {
+        InstallEvent::PackageOperation {
+            operation: PackageOp::Install,
+            package: name.to_string(),
+            new_version: Some("6.1".to_string()),
+            old_version: None,
+        }
+    }
+
+    fn pkg_progress(name: &str, percent: i32) -> InstallEvent {
+        InstallEvent::Progress {
+            phase: ProgressPhase::Add,
+            package: name.to_string(),
+            percent,
+            current: 1,
+            total: 1,
+        }
+    }
+
+    fn hook(position: usize, total: usize, label: &str) -> InstallEvent {
+        InstallEvent::HookRun {
+            position,
+            total,
+            name: "hook".to_string(),
+            desc: Some(label.to_string()),
+        }
+    }
+
+    fn spawn_build(state: &mut AurState, name: &str, now: Instant) {
+        apply_aur_counters(
+            state,
+            &InstallEvent::CloningRepo {
+                package: name.to_string(),
+            },
+            now,
+        );
+    }
+
+    fn build_line(state: &mut AurState, name: &str, line: &str, now: Instant) {
+        apply_aur_counters(
+            state,
+            &InstallEvent::BuildOutput {
+                package: name.to_string(),
+                line: line.to_string(),
+            },
+            now,
+        );
+    }
+
+    fn build_started(package: &str) -> InstallEvent {
+        InstallEvent::BuildStarted {
+            package: package.to_string(),
+        }
+    }
+
+    fn build_completed(package: &str) -> InstallEvent {
+        InstallEvent::BuildCompleted {
+            package: package.to_string(),
+            artifacts: Vec::new(),
+            version: None,
+        }
+    }
+
+    fn build<'a>(state: &'a AurState, name: &str) -> &'a BuildPackage {
+        state.builds.get(name).expect(name)
+    }
+
     #[test]
     fn aur_dep_resolved_drives_repo_resolve_to_checking() {
-        let mut state = fresh_repo_state();
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::AurDepResolved {
-                package: "yay".to_string(),
-                repo: None,
-                version: Some("1.0-1".to_string()),
-            },
-        );
+        let mut state = RepoState::default();
+        apply_repo_event(&mut state, &aur_dep("yay"));
         assert_eq!(state.resolve_step(), 2);
     }
 
     #[test]
     fn apply_repo_download_lifecycle_tracks_progress_retry_and_reset() {
-        let mut state = fresh_repo_state();
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::RetrievingPackages {
-                num: 2,
-                total_bytes: 1000,
-            },
-        );
+        let mut state = RepoState::default();
+        apply_repo_event(&mut state, &retrieving(2, 1000));
         assert_eq!(state.download.total, 2);
         assert_eq!(state.download.bytes_total, 1000);
         assert_eq!(state.download.queued(), 2);
 
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::DownloadInit {
-                filename: "pkg-a".to_string(),
-                optional: false,
-            },
-        );
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::DownloadInit {
-                filename: "pkg-b".to_string(),
-                optional: false,
-            },
-        );
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::DownloadInit {
-                filename: "pkg-a".to_string(),
-                optional: false,
-            },
-        );
-        assert_eq!(
-            state.download.order,
-            vec!["pkg-a".to_string(), "pkg-b".to_string()]
-        );
+        for name in ["pkg-a", "pkg-b", "pkg-a"] {
+            apply_repo_event(&mut state, &init(name));
+        }
+        assert_eq!(state.download.order, ["pkg-a", "pkg-b"]);
 
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::DownloadProgress {
-                filename: "pkg-a".to_string(),
-                downloaded: 400,
-                total: 400,
-            },
-        );
+        apply_repo_event(&mut state, &file_progress("pkg-a", 400, 400));
         assert_eq!(state.download.bytes_done, 400);
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::DownloadCompleted {
-                filename: "pkg-a".to_string(),
-                total: 400,
-                result: DownloadResult::Success,
-            },
-        );
+        apply_repo_event(&mut state, &file_done("pkg-a", 400));
         assert_eq!(state.download.done, 1);
 
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::DownloadProgress {
-                filename: "pkg-b".to_string(),
-                downloaded: 300,
-                total: 600,
-            },
-        );
+        apply_repo_event(&mut state, &file_progress("pkg-b", 300, 600));
         assert_eq!(state.download.bytes_done, 700);
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::DownloadRetry {
-                filename: "pkg-b".to_string(),
-                resume: true,
-            },
-        );
+        apply_repo_event(&mut state, &file_retry("pkg-b", true));
         assert_eq!(state.download.bytes_done, 700);
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::DownloadRetry {
-                filename: "pkg-b".to_string(),
-                resume: false,
-            },
-        );
+        apply_repo_event(&mut state, &file_retry("pkg-b", false));
         assert_eq!(state.download.bytes_done, 400);
-        let pkg_b = state.download.files.get("pkg-b").expect("pkg-b present");
-        assert_eq!(pkg_b.downloaded, 0);
+        assert_eq!(state.download.files["pkg-b"].downloaded, 0);
 
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::DownloadCompleted {
-                filename: "pkg-b".to_string(),
-                total: 600,
-                result: DownloadResult::Success,
-            },
-        );
+        apply_repo_event(&mut state, &file_done("pkg-b", 600));
         assert_eq!(state.download.done, 2);
         assert_eq!(state.download.bytes_done, 1000);
         assert_eq!(state.download.queued(), 0);
 
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::RetrievingPackages {
-                num: 1,
-                total_bytes: 10,
-            },
-        );
+        apply_repo_event(&mut state, &retrieving(1, 10));
         assert_eq!(state.download.total, 1);
         assert_eq!(state.download.done, 0);
         assert_eq!(state.download.bytes_done, 0);
@@ -786,7 +752,7 @@ mod tests {
 
     #[test]
     fn apply_repo_counters_drives_full_transaction() {
-        let mut state = fresh_repo_state();
+        let mut state = RepoState::default();
         assert_eq!(state.resolve_step(), 0);
         apply_repo_event(&mut state, &InstallEvent::ResolvingDependencies);
         assert_eq!(state.resolve_step(), 1);
@@ -795,45 +761,12 @@ mod tests {
         apply_repo_event(&mut state, &InstallEvent::CheckingDiskSpace);
         assert_eq!(state.validate.count(), 2);
 
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::PackageOperation {
-                operation: PackageOp::Install,
-                package: "pacman".to_string(),
-                new_version: Some("6.1".to_string()),
-                old_version: None,
-            },
-        );
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::Progress {
-                phase: ProgressPhase::Add,
-                package: "pacman".to_string(),
-                percent: 100,
-                current: 1,
-                total: 1,
-            },
-        );
-        let pkg = state
-            .install
-            .packages
-            .get("pacman")
-            .expect("pacman present");
-        assert!(pkg.completed);
+        apply_repo_event(&mut state, &pkg_added("pacman"));
+        apply_repo_event(&mut state, &pkg_progress("pacman", 100));
+        assert!(state.install.packages["pacman"].completed);
 
-        apply_repo_event(
-            &mut state,
-            &InstallEvent::HookRun {
-                position: 1,
-                total: 1,
-                name: "hook".to_string(),
-                desc: Some("Updating font cache...".to_string()),
-            },
-        );
-        assert_eq!(
-            state.finalize.lines,
-            vec!["(1/1) Updating font cache...".to_string()]
-        );
+        apply_repo_event(&mut state, &hook(1, 1, "Updating font cache..."));
+        assert_eq!(state.finalize.lines, ["(1/1) Updating font cache..."]);
 
         apply_repo_event(
             &mut state,
@@ -850,7 +783,7 @@ mod tests {
 
     #[test]
     fn apply_repo_counters_collects_log_alerts() {
-        let mut state = fresh_repo_state();
+        let mut state = RepoState::default();
         apply_repo_event(&mut state, &log(LogLevel::Warning, "dep cycle\n"));
         apply_repo_event(&mut state, &log(LogLevel::Debug, "noise\n"));
         apply_repo_event(&mut state, &log(LogLevel::Error, "  \n"));
@@ -867,119 +800,56 @@ mod tests {
 
     #[test]
     fn build_tail_caps_at_limit() {
-        let mut state = AurState::default();
         let now = Instant::now();
-        apply_aur_counters(
-            &mut state,
-            &InstallEvent::CloningRepo {
-                package: "yay".to_string(),
-            },
-            now,
-        );
+        let mut state = AurState::default();
+        spawn_build(&mut state, "yay", now);
         for i in 1..=205 {
-            apply_aur_counters(
-                &mut state,
-                &InstallEvent::BuildOutput {
-                    package: "yay".to_string(),
-                    line: format!("line {i}"),
-                },
-                now,
-            );
+            build_line(&mut state, "yay", &format!("line {i}"), now);
         }
-        let entry = state.builds.get("yay").expect("yay present");
-        assert_eq!(entry.tail.len(), BUILD_TAIL_LIMIT);
-        assert_eq!(entry.tail[0], "line 6");
-        apply_aur_counters(
-            &mut state,
-            &InstallEvent::BuildOutput {
-                package: "yay".to_string(),
-                line: "1%\r2%\r3%\r 100%".to_string(),
-            },
-            now,
+        assert_eq!(build(&state, "yay").tail.len(), BUILD_TAIL_LIMIT);
+        assert_eq!(build(&state, "yay").tail[0], "line 6");
+        build_line(&mut state, "yay", "1%\r2%\r3%\r 100%", now);
+        assert_eq!(
+            build(&state, "yay").tail.last().map(String::as_str),
+            Some(" 100%")
         );
-        let entry = state.builds.get("yay").expect("yay present");
-        assert_eq!(entry.tail.last().expect("tail nonempty"), " 100%");
     }
 
     #[test]
     fn build_tail_stores_raw_ansi_verbatim() {
         let mut state = AurState::default();
-        let now = Instant::now();
-        apply_aur_counters(
-            &mut state,
-            &InstallEvent::CloningRepo {
-                package: "yay".to_string(),
-            },
-            now,
-        );
+        spawn_build(&mut state, "yay", Instant::now());
         let raw = "\x1b[1m==>\x1b[0m pkg";
-        apply_aur_counters(
-            &mut state,
-            &InstallEvent::BuildOutput {
-                package: "yay".to_string(),
-                line: raw.to_string(),
-            },
-            now,
-        );
-        let entry = state.builds.get("yay").expect("yay present");
-        assert_eq!(entry.tail, vec![raw.to_string()]);
+        build_line(&mut state, "yay", raw, Instant::now());
+        assert_eq!(build(&state, "yay").tail, [raw]);
+    }
+
+    #[test]
+    fn finish_aur_success_leaves_state_untouched() {
+        let now = Instant::now();
+        let mut state = AurState::default();
+        spawn_build(&mut state, "pkg-a", now);
+        finish_aur(&mut state, &ChildOutcome::Success, now);
+        assert_eq!(build(&state, "pkg-a").status, BuildStatus::Fetching);
+        assert!(build(&state, "pkg-a").elapsed.is_none());
+        assert_eq!(state.build_ended, None);
     }
 
     #[test]
     fn finish_aur_flips_first_in_flight_card() {
         let now = Instant::now();
         let mut state = AurState::default();
-        for name in ["done-pkg", "live-pkg"] {
-            state.build_order.push(name.to_string());
-            state.builds.insert(
-                name.to_string(),
-                BuildPackage {
-                    status: BuildStatus::Fetching,
-                    tail: Vec::new(),
-                    started: now,
-                    elapsed: None,
-                },
-            );
-        }
-        state
-            .builds
-            .get_mut("done-pkg")
-            .expect("done-pkg present")
-            .status = BuildStatus::Done;
-        state
-            .builds
-            .get_mut("live-pkg")
-            .expect("live-pkg present")
-            .status = BuildStatus::Building;
+        spawn_build(&mut state, "done-pkg", now);
+        spawn_build(&mut state, "live-pkg", now);
+        state.builds.get_mut("done-pkg").unwrap().status = BuildStatus::Done;
         finish_aur(
             &mut state,
             &ChildOutcome::Failed("makepkg failed".to_string()),
             now,
         );
-        assert_eq!(
-            state
-                .builds
-                .get("done-pkg")
-                .expect("done-pkg present")
-                .status,
-            BuildStatus::Done
-        );
-        assert_eq!(
-            state
-                .builds
-                .get("live-pkg")
-                .expect("live-pkg present")
-                .status,
-            BuildStatus::Failed
-        );
-        assert!(
-            state
-                .builds
-                .get("live-pkg")
-                .expect("live-pkg present")
-                .elapsed
-                .is_some()
-        );
+        assert_eq!(build(&state, "done-pkg").status, BuildStatus::Done);
+        assert_eq!(build(&state, "live-pkg").status, BuildStatus::Failed);
+        assert!(build(&state, "live-pkg").elapsed.is_some());
     }
 
     #[test]
@@ -987,56 +857,36 @@ mod tests {
         let base = Instant::now();
         let mut state = AurState::default();
         for package in ["pkg-a", "pkg-b"] {
-            apply_aur_counters(
-                &mut state,
-                &InstallEvent::CloningRepo {
-                    package: package.to_string(),
-                },
-                base,
-            );
+            spawn_build(&mut state, package, base);
         }
-        let started = base + std::time::Duration::from_secs(10);
         apply_aur_counters(
             &mut state,
-            &InstallEvent::BuildStarted {
-                package: "pkg-a".to_string(),
-            },
-            started,
+            &build_started("pkg-a"),
+            base + Duration::from_secs(10),
         );
-        let first = base + std::time::Duration::from_secs(30);
         apply_aur_counters(
             &mut state,
-            &InstallEvent::BuildCompleted {
-                package: "pkg-a".to_string(),
-                artifacts: Vec::new(),
-                version: None,
-            },
-            first,
+            &build_completed("pkg-a"),
+            base + Duration::from_secs(30),
         );
-        let entry = state.builds.get("pkg-a").expect("pkg-a present");
-        assert_eq!(entry.elapsed, Some(std::time::Duration::from_secs(30)));
+        assert_eq!(
+            build(&state, "pkg-a").elapsed,
+            Some(Duration::from_secs(30))
+        );
         assert_eq!(state.build_ended, None);
-        let last = base + std::time::Duration::from_secs(90);
-        apply_aur_counters(
-            &mut state,
-            &InstallEvent::BuildCompleted {
-                package: "pkg-b".to_string(),
-                artifacts: Vec::new(),
-                version: None,
-            },
-            last,
+        let last = base + Duration::from_secs(90);
+        apply_aur_counters(&mut state, &build_completed("pkg-b"), last);
+        assert_eq!(
+            build(&state, "pkg-b").elapsed,
+            Some(Duration::from_secs(90))
         );
-        let entry = state.builds.get("pkg-b").expect("pkg-b present");
-        assert_eq!(entry.elapsed, Some(std::time::Duration::from_secs(90)));
         assert_eq!(state.build_ended, Some(last));
     }
 
     #[test]
     fn rate_sampler_blends_first_eligible_chunk() {
-        use std::time::Duration;
-
         let base = Instant::now();
-        let t = |ms| base + Duration::from_millis(ms);
+        let at = |ms: u64| base + Duration::from_millis(ms);
         let mut sampler = RateSampler::default();
 
         sampler.sample(base, 1000);
@@ -1049,7 +899,7 @@ mod tests {
             }
         );
 
-        sampler.sample(t(100), 1500);
+        sampler.sample(at(100), 1500);
         assert_eq!(
             sampler,
             RateSampler {
@@ -1058,11 +908,12 @@ mod tests {
                 rate: 0.0,
             }
         );
-        sampler.sample(t(500), 2500);
+
+        sampler.sample(at(500), 2500);
         assert_eq!(
             sampler,
             RateSampler {
-                sync_time: Some(t(500)),
+                sync_time: Some(at(500)),
                 sync_done: 2500,
                 rate: 1000.0,
             }
