@@ -10,15 +10,38 @@ use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::divider;
 use cosmic::widget::{Column, Row, button, container, scrollable, space, text};
 
-pub(super) fn action_footer() -> Element<'static> {
-    let header_divider = divider::horizontal::default();
-    let close =
-        button::standard("Close").on_press(crate::Message::Transaction(TransactionMessage::Close));
-    Column::new()
-        .spacing(12)
-        .push(header_divider)
-        .push(Row::new().push(space::horizontal()).push(close))
+pub(super) fn close_button() -> Element<'static> {
+    let icon = cosmic::widget::icon(icons::x())
+        .size(16)
+        .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
+            move |theme: &cosmic::Theme| cosmic::widget::svg::Style {
+                color: Some(muted_color(theme)),
+            },
+        )));
+    button::custom(icon)
+        .padding(8.0)
+        .class(cosmic::theme::Button::Custom {
+            active: Box::new(|_, _| button::Style::new()),
+            disabled: Box::new(|_| button::Style::new()),
+            hovered: Box::new(|_, theme| close_button_style(theme, false)),
+            pressed: Box::new(|_, theme| close_button_style(theme, true)),
+        })
+        .on_press(crate::Message::Transaction(TransactionMessage::Close))
         .into()
+}
+
+fn close_button_style(theme: &cosmic::Theme, pressed: bool) -> button::Style {
+    let component = &theme.cosmic().background(false).component;
+    let tint = if pressed {
+        component.pressed
+    } else {
+        component.hover
+    };
+    button::Style {
+        background: Some(Background::Color(Color::from(tint))),
+        border_radius: Radius::from(16.0),
+        ..button::Style::new()
+    }
 }
 
 pub(super) struct Section<'a> {
@@ -70,15 +93,24 @@ pub(super) fn sections_view(
             i + 1 < count,
         ));
     }
-    let mut col = Column::new()
-        .spacing(16)
+    let mut header = Row::new()
+        .align_y(Vertical::Center)
         .padding([16.0, 20.0])
-        .push(text(title))
-        .push(panels);
+        .push(text::title3(title))
+        .push(space::horizontal());
     if finished || !is_sysupgrade {
-        col = col.push(action_footer());
+        header = header.push(close_button());
     }
-    scrollable(col).into()
+    let body = scrollable(container(panels).padding([16.0, 20.0, 24.0, 20.0]))
+        .width(Length::Fill)
+        .height(Length::Fill);
+    Column::new()
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .push(header)
+        .push(divider::horizontal::default())
+        .push(body)
+        .into()
 }
 
 pub(super) fn stage_row(

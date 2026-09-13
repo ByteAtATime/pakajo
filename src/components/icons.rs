@@ -31,3 +31,4 @@ icon!(arrow_right, "arrow-right.svg");
 icon!(external_link, "external-link.svg");
 icon!(chevron_down, "chevron-down.svg");
 icon!(chevron_right, "chevron-right.svg");
+icon!(x, "x.svg");
