@@ -155,18 +155,17 @@ impl crate::PakajoApp {
         let (label, color_fn): (String, fn(&cosmic::Theme) -> Color) = match &self.updates_state {
             UpdatesState::Loading => ("Checking updates...".into(), theme::muted_color),
             UpdatesState::Error(_) => ("Update check failed".into(), theme::destructive_color),
-            UpdatesState::Idle if self.pending_count > 0 => (
-                format!("{} updates", self.pending_count),
-                theme::accent_color,
-            ),
+            UpdatesState::Idle if self.pending_count > 0 => {
+                (format!("{} updates", self.pending_count), theme::on_color)
+            }
             UpdatesState::Idle => ("Up to date".into(), theme::muted_color),
         };
         button::custom(text(label))
             .class(cosmic::theme::Button::Custom {
-                active: theme::tinted_button(color_fn, 0.7),
+                active: theme::tinted_button(color_fn, 0.8),
                 hovered: theme::tinted_button(color_fn, 1.0),
                 pressed: theme::tinted_button(color_fn, 1.0),
-                disabled: theme::tinted_button_disabled(color_fn, 0.7),
+                disabled: theme::tinted_button_disabled(color_fn, 0.8),
             })
             .on_press(crate::Message::Navigate(crate::Page::Updates))
             .into()
