@@ -315,7 +315,10 @@ impl Application for PakajoApp {
         Column::new()
             .push(container(page).width(Length::Fill).height(Length::Fill))
             .push(divider::horizontal::default())
-            .push(footer::footer(self.transaction.as_ref()))
+            .push(footer::footer(
+                self.transaction.as_ref(),
+                self.updates_badge(),
+            ))
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
@@ -341,14 +344,12 @@ impl PakajoApp {
             .map(|t| t.name());
         let spacing = cosmic::theme::spacing();
         let page_padding = spacing.space_s as f32;
-        let header = container(
-            Row::new()
-                .spacing(8)
-                .align_y(iced::Alignment::Center)
-                .push(search_bar(&self.query))
-                .push(self.updates_badge()),
-        )
-        .padding([spacing.space_xs as f32, page_padding, 0.0, page_padding]);
+        let header = container(search_bar(&self.query)).padding([
+            spacing.space_xs as f32,
+            page_padding,
+            0.0,
+            page_padding,
+        ]);
         let content = Column::new()
             .spacing(spacing.space_xs as f32)
             .push(header)

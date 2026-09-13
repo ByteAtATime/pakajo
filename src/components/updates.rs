@@ -7,6 +7,7 @@ use pakajo::upgrade::AurUpgradeCandidate;
 
 use crate::Element;
 use crate::components::sysupgrade::SysupgradeMessage;
+use crate::components::theme;
 use crate::components::theme::{muted_mono, muted_text as muted, themed_mono_text, themed_text};
 
 #[derive(Clone, Debug)]
@@ -63,6 +64,32 @@ pub fn success_text_style(theme: &cosmic::Theme) -> cosmic::iced::widget::text::
         color: Some(theme.cosmic().success_text_color().into()),
         ..Default::default()
     }
+}
+
+fn tinted_button(
+    color_fn: fn(&cosmic::Theme) -> Color,
+    alpha: f32,
+) -> Box<dyn Fn(bool, &cosmic::Theme) -> button::Style> {
+    Box::new(move |_, theme| button::Style {
+        text_color: Some(Color {
+            a: alpha,
+            ..color_fn(theme)
+        }),
+        ..Default::default()
+    })
+}
+
+fn tinted_button_disabled(
+    color_fn: fn(&cosmic::Theme) -> Color,
+    alpha: f32,
+) -> Box<dyn Fn(&cosmic::Theme) -> button::Style> {
+    Box::new(move |theme| button::Style {
+        text_color: Some(Color {
+            a: alpha,
+            ..color_fn(theme)
+        }),
+        ..Default::default()
+    })
 }
 
 pub fn destructive<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
@@ -150,28 +177,24 @@ pub fn updates_section_header(title: &str) -> Element<'static> {
 }
 
 impl crate::PakajoApp {
-    pub(crate) fn updates_badge(&self) -> Element<'_> {
-        let (label, class) = match &self.updates_state {
-            UpdatesState::Loading => ("...".to_string(), cosmic::theme::Button::Standard),
-            UpdatesState::Error(_) => ("!".to_string(), cosmic::theme::Button::Destructive),
-            UpdatesState::Idle => {
-                if self.pending_count > 0 {
-                    (
-                        self.pending_count.to_string(),
-                        cosmic::theme::Button::Suggested,
-                    )
-                } else {
-                    (
-                        self.pending_count.to_string(),
-                        cosmic::theme::Button::Standard,
-                    )
-                }
-            }
+    pub(crate) fn updates_badge(&self) -> Element<'static> {
+        let (label, color_fn): (String, fn(&cosmic::Theme) -> Color) = match &self.updates_state {
+            UpdatesState::Loading => ("Checking updates...".into(), theme::muted_color),
+            UpdatesState::Error(_) => ("Update check failed".into(), theme::destructive_color),
+            UpdatesState::Idle if self.pending_count > 0 => (
+                format!("{} updates", self.pending_count),
+                theme::accent_color,
+            ),
+            UpdatesState::Idle => ("Up to date".into(), theme::muted_color),
         };
-
-        button::standard(label)
+        button::custom(text(label))
+            .class(cosmic::theme::Button::Custom {
+                active: tinted_button(color_fn, 0.8),
+                hovered: tinted_button(color_fn, 1.0),
+                pressed: tinted_button(color_fn, 1.0),
+                disabled: tinted_button_disabled(color_fn, 0.8),
+            })
             .on_press(crate::Message::Navigate(crate::Page::Updates))
-            .class(class)
             .into()
     }
 
