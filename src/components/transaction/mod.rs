@@ -355,7 +355,7 @@ impl Transaction {
     }
 
     pub(crate) fn start_sysupgrade_repo(
-        fingerprint_file: String,
+        fingerprint: pakajo::dispatch::approvals::ApprovalsFile,
         approvals_b64: Option<String>,
     ) -> (Self, Task<crate::Message>) {
         let mut transaction = Self {
@@ -378,7 +378,7 @@ impl Transaction {
                 exe,
                 false,
                 vec![],
-                Some(fingerprint_file),
+                Some(fingerprint),
                 approvals_b64,
                 tx,
             );

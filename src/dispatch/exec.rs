@@ -1,6 +1,5 @@
-use std::io::{self, BufReader, Write as _};
-use std::os::unix::fs::OpenOptionsExt as _;
-use std::path::{Path, PathBuf};
+use std::io::{self, BufReader};
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
 use anyhow::Context as _;
@@ -9,6 +8,7 @@ use futures::SinkExt as _;
 
 use crate::cli::privs::{is_root, stdin_is_tty};
 use crate::cli::{ConsoleSink, JsonSink};
+use crate::dispatch::approvals::ApprovalsFile;
 use crate::dispatch::operation::{MARKER, Operation};
 use crate::dispatch::protocol::{AutomaticDecider, Placement, TerminalDecider, place};
 use crate::events::{InstallEvent, InstallSink, read_event_stream};
@@ -119,42 +119,11 @@ fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
     }
 }
 
-struct ApprovalsFile {
-    path: PathBuf,
-}
-
-impl ApprovalsFile {
-    fn write(json: &[u8]) -> io::Result<ApprovalsFile> {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("pakajo-approvals-{}-{id}.json", std::process::id()));
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)?;
-        let guard = ApprovalsFile { path };
-        file.write_all(json)?;
-        Ok(guard)
-    }
-
-    fn write_b64(b64: &str) -> anyhow::Result<ApprovalsFile> {
-        let json = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .context("--approvals is not valid base64")?;
-        ApprovalsFile::write(&json).context("failed to write approvals file")
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for ApprovalsFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
+fn write_b64(b64: &str) -> anyhow::Result<ApprovalsFile> {
+    let json = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .context("--approvals is not valid base64")?;
+    ApprovalsFile::write(&json).context("failed to write approvals file")
 }
 
 fn operation_command(operation: &Operation, exe: &str, graphical: bool) -> Command {
@@ -182,7 +151,7 @@ fn channel_approvals(
     approvals_b64: Option<&str>,
     tx: &mut futures::channel::mpsc::Sender<StreamItem>,
 ) -> Option<Option<ApprovalsFile>> {
-    match approvals_b64.map(ApprovalsFile::write_b64).transpose() {
+    match approvals_b64.map(write_b64).transpose() {
         Ok(approvals) => Some(approvals),
         Err(err) => {
             send_item(
@@ -307,7 +276,7 @@ pub(crate) fn run_install_result(
     json: bool,
     approvals_b64: Option<&str>,
 ) -> anyhow::Result<i32> {
-    let approvals = approvals_b64.map(ApprovalsFile::write_b64).transpose()?;
+    let approvals = approvals_b64.map(write_b64).transpose()?;
     let operation = install_operation(targets, as_deps, approvals.as_ref());
     let child = spawn_cli_child(&operation, "install")?;
     let mut sink = parent_sink(json);
@@ -321,7 +290,7 @@ pub fn run_install_to_sink<S: crate::events::InstallSink + ?Sized>(
     approvals_b64: Option<&str>,
     sink: &mut S,
 ) -> anyhow::Result<()> {
-    let approvals = approvals_b64.map(ApprovalsFile::write_b64).transpose()?;
+    let approvals = approvals_b64.map(write_b64).transpose()?;
     let operation = install_operation(targets, as_deps, approvals.as_ref());
     let child = spawn_cli_child(&operation, "install")?;
     let status = stream_child(child, sink).context("install child did not complete")?;
@@ -385,7 +354,7 @@ pub fn run_upgrade_repo_to_channel(
     exe: PathBuf,
     no_refresh: bool,
     ignores: Vec<String>,
-    fingerprint_path: Option<String>,
+    fingerprint: Option<ApprovalsFile>,
     approvals_b64: Option<String>,
     mut tx: futures::channel::mpsc::Sender<StreamItem>,
 ) {
@@ -395,7 +364,10 @@ pub fn run_upgrade_repo_to_channel(
     let operation = upgrade_repo_operation(
         no_refresh,
         &ignores,
-        fingerprint_path.as_deref(),
+        fingerprint
+            .as_ref()
+            .map(|file| file.path().to_string_lossy().into_owned())
+            .as_deref(),
         approvals.as_ref(),
     );
     let Some(child) = spawn_channel_child(&operation, &exe.to_string_lossy(), &mut tx) else {
@@ -534,45 +506,6 @@ mod tests {
     }
 
     #[test]
-    fn approvals_file_has_restrictive_permissions() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let payload = br#"{"approved_conflicts":[]}"#;
-        let file = ApprovalsFile::write(payload).expect("write approvals file");
-        let mode = std::fs::metadata(file.path())
-            .expect("stat approvals file")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o600);
-    }
-
-    #[test]
-    fn approvals_file_path_is_absolute() {
-        let file = ApprovalsFile::write(br#"{"approved_conflicts":[]}"#).expect("write file");
-        assert!(file.path().is_absolute());
-    }
-
-    #[test]
-    fn install_argv_carries_path_not_payload() {
-        let payload = r#"{"approved_conflicts":[{"incoming":"cava-git","removable":"cava"}]}"#;
-        let file = ApprovalsFile::write(payload.as_bytes()).expect("write file");
-        let operation = Operation::Install {
-            targets: vec!["sl".to_string()],
-            as_deps: false,
-            approvals_path: Some(file.path().to_string_lossy().into_owned()),
-            stream: true,
-        };
-        let argv = operation.encode();
-        assert!(argv.contains(&file.path().to_string_lossy().into_owned()));
-        for arg in &argv {
-            assert!(
-                !arg.contains("approved_conflicts"),
-                "argv must not contain approvals payload: {arg:?}"
-            );
-        }
-    }
-
-    #[test]
     fn parented_operations_always_stream() {
         let operations = [
             remove_operation(&["sl".to_string()]),
@@ -582,18 +515,6 @@ mod tests {
         for operation in &operations {
             assert!(operation.encode().contains(&"--stream".to_string()));
         }
-    }
-
-    #[test]
-    fn approvals_file_deleted_after_normal_exit() {
-        let path = {
-            let file = ApprovalsFile::write(br#"{"approved_conflicts":[]}"#).expect("write file");
-            let path = file.path().to_path_buf();
-            assert!(path.exists());
-            drop(file);
-            path
-        };
-        assert!(!path.exists());
     }
 
     #[test]

@@ -129,11 +129,17 @@ impl crate::PakajoApp {
         if preview.prepare_error.is_some() {
             return Task::none();
         }
-        let summary_bytes = serde_json::to_vec(&preview.summary).unwrap_or_default();
-        let fingerprint_file = match pakajo::upgrade::write_fingerprint_file(&summary_bytes) {
-            Ok(p) => p.to_string_lossy().into_owned(),
+        let summary_bytes = match serde_json::to_vec(&preview.summary) {
             Err(e) => {
-                eprintln!("[pakajo] fingerprint write failed: {e}");
+                eprintln!("[pakajo] fingerprint serialization failed: {e:#}");
+                return Task::none();
+            }
+            Ok(bytes) => bytes,
+        };
+        let fingerprint = match pakajo::dispatch::approvals::ApprovalsFile::write(&summary_bytes) {
+            Ok(file) => file,
+            Err(e) => {
+                eprintln!("[pakajo] fingerprint write failed: {e:#}");
                 return Task::none();
             }
         };
@@ -157,8 +163,7 @@ impl crate::PakajoApp {
                 }
             }
         };
-        let (transaction, task) =
-            Transaction::start_sysupgrade_repo(fingerprint_file, approvals_b64);
+        let (transaction, task) = Transaction::start_sysupgrade_repo(fingerprint, approvals_b64);
         self.transaction = Some(transaction);
         self.active_sysupgrade_phase = Some(pakajo::progress::SysupgradePhase::Repo);
         eprintln!("[pakajo] sysupgrade repo apply started");

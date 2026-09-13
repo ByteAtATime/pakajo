@@ -9,18 +9,8 @@ use crate::events::{InstallEvent, InstallSink, LogLevel, TransactionSummary, sum
 use crate::install::{QuestionState, build_summary, register_callbacks};
 use crate::resolve::AurQuery;
 
-pub fn write_fingerprint_file(summary_bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
-    let path = std::env::temp_dir().join(format!(
-        "pakajo-sysupgrade-fingerprint-{}.json",
-        std::process::id()
-    ));
-    std::fs::write(&path, summary_bytes)?;
-    Ok(path)
-}
-
 fn read_fingerprint_file(path: &str) -> anyhow::Result<TransactionSummary> {
     let bytes = std::fs::read(path).context("failed to read fingerprint file")?;
-    let _ = std::fs::remove_file(path);
     serde_json::from_slice(&bytes).context("fingerprint file is not valid json")
 }
 
@@ -269,21 +259,6 @@ mod tests {
             total_installed_size: 0,
             total_removed_size: 0,
         }
-    }
-
-    #[test]
-    fn fingerprint_round_trips() {
-        let original = TransactionSummary {
-            packages: vec![phantom_pkg("ghost")],
-            total_download_size: 0,
-            total_installed_size: 0,
-            total_removed_size: 0,
-        };
-        let path =
-            write_fingerprint_file(&serde_json::to_vec(&original).unwrap()).expect("write file");
-        let decoded =
-            read_fingerprint_file(path.to_str().expect("utf8 path")).expect("read should succeed");
-        assert!(summaries_match(&original, &decoded));
     }
 
     #[test]
