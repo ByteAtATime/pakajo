@@ -66,32 +66,6 @@ pub fn success_text_style(theme: &cosmic::Theme) -> cosmic::iced::widget::text::
     }
 }
 
-fn tinted_button(
-    color_fn: fn(&cosmic::Theme) -> Color,
-    alpha: f32,
-) -> Box<dyn Fn(bool, &cosmic::Theme) -> button::Style> {
-    Box::new(move |_, theme| button::Style {
-        text_color: Some(Color {
-            a: alpha,
-            ..color_fn(theme)
-        }),
-        ..Default::default()
-    })
-}
-
-fn tinted_button_disabled(
-    color_fn: fn(&cosmic::Theme) -> Color,
-    alpha: f32,
-) -> Box<dyn Fn(&cosmic::Theme) -> button::Style> {
-    Box::new(move |theme| button::Style {
-        text_color: Some(Color {
-            a: alpha,
-            ..color_fn(theme)
-        }),
-        ..Default::default()
-    })
-}
-
 pub fn destructive<'a>(content: impl Into<std::borrow::Cow<'a, str>> + 'a) -> Element<'a> {
     themed_text(content, destructive_text_style)
 }
@@ -189,10 +163,10 @@ impl crate::PakajoApp {
         };
         button::custom(text(label))
             .class(cosmic::theme::Button::Custom {
-                active: tinted_button(color_fn, 0.8),
-                hovered: tinted_button(color_fn, 1.0),
-                pressed: tinted_button(color_fn, 1.0),
-                disabled: tinted_button_disabled(color_fn, 0.8),
+                active: theme::tinted_button(color_fn, 0.7),
+                hovered: theme::tinted_button(color_fn, 1.0),
+                pressed: theme::tinted_button(color_fn, 1.0),
+                disabled: theme::tinted_button_disabled(color_fn, 0.7),
             })
             .on_press(crate::Message::Navigate(crate::Page::Updates))
             .into()

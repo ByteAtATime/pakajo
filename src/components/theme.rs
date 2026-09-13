@@ -1,8 +1,36 @@
 use cosmic::iced::widget::progress_bar;
 use cosmic::iced::{Background, Border, Color, Length};
-use cosmic::widget::{container, text};
+use cosmic::widget::{button, container, text};
 
 use crate::Element;
+
+type Tint = fn(&cosmic::Theme) -> Color;
+
+pub(crate) fn tinted_button(
+    tint: Tint,
+    alpha: f32,
+) -> Box<dyn Fn(bool, &cosmic::Theme) -> button::Style> {
+    Box::new(move |_, theme| button::Style {
+        text_color: Some(Color {
+            a: alpha,
+            ..tint(theme)
+        }),
+        ..Default::default()
+    })
+}
+
+pub(crate) fn tinted_button_disabled(
+    tint: Tint,
+    alpha: f32,
+) -> Box<dyn Fn(&cosmic::Theme) -> button::Style> {
+    Box::new(move |theme| button::Style {
+        text_color: Some(Color {
+            a: alpha,
+            ..tint(theme)
+        }),
+        ..Default::default()
+    })
+}
 
 pub(crate) fn mono_text(name: &str) -> Element<'static> {
     tinted(text::monotext(name.to_string()), on_color)

@@ -59,23 +59,19 @@ pub(crate) fn footer(
     };
     let (bar, tint) = bar_and_tint(active);
     let label = text(summary(active.kind(), active.name(), active.status()));
-    let label = match active.status() {
-        TransactionStatus::Done(_) => theme::tinted(label, tint),
-        TransactionStatus::Checking | TransactionStatus::Running => label.into(),
-    };
     Row::new()
         .align_y(Vertical::Center)
         .width(Length::Fill)
         .push(container(badge).padding([6.0, 12.0]))
         .push(
-            button::custom(cluster_row(label, bar))
+            button::custom(cluster_row(label.into(), bar))
                 .padding([6.0, 12.0])
                 .width(Length::Fill)
                 .class(cosmic::theme::Button::Custom {
-                    active: Box::new(|_, _| button::Style::new()),
-                    disabled: Box::new(|_| button::Style::new()),
-                    hovered: Box::new(|_, _| button::Style::new()),
-                    pressed: Box::new(|_, _| button::Style::new()),
+                    active: theme::tinted_button(tint, 0.8),
+                    hovered: theme::tinted_button(tint, 1.0),
+                    pressed: theme::tinted_button(tint, 1.0),
+                    disabled: theme::tinted_button_disabled(tint, 0.8),
                 })
                 .on_press(crate::Message::OpenTransaction),
         )
