@@ -235,6 +235,10 @@ impl TransactionModel {
         matches!(self.source, PackageSource::Aur) && self.kind != InstallKind::Remove
     }
 
+    pub(crate) fn is_sysupgrade(&self) -> bool {
+        self.kind == InstallKind::Upgrade
+    }
+
     fn aur_failed_at(&self, stage: AurStage) -> bool {
         matches!(self.status, TransactionStatus::Done(_))
             && !matches!(self.status, TransactionStatus::Done(ChildOutcome::Success))

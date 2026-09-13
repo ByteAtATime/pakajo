@@ -452,11 +452,7 @@ impl crate::PakajoApp {
                 Task::none()
             }
             SearchMessage::SelectDelta(delta) => {
-                if !matches!(self.page, crate::Page::Search)
-                    || self
-                        .transaction
-                        .as_ref()
-                        .is_some_and(|t| t.is_sysupgrade() && !t.is_checking())
+                if !matches!(self.page, crate::Page::Search) || self.overlay_transaction().is_some()
                 {
                     return Task::none();
                 }

@@ -54,6 +54,7 @@ pub(super) fn sections_view(
     title: String,
     sections: Vec<(Section<'_>, bool)>,
     finished: bool,
+    is_sysupgrade: bool,
 ) -> Element<'_> {
     let count = sections.len();
     let states: Vec<StageState> = sections.iter().map(|(s, _)| s.state).collect();
@@ -74,7 +75,7 @@ pub(super) fn sections_view(
         .padding([16.0, 20.0])
         .push(text(title))
         .push(panels);
-    if finished {
+    if finished || !is_sysupgrade {
         col = col.push(action_footer());
     }
     scrollable(col).into()

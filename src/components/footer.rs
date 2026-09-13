@@ -1,7 +1,10 @@
+use cosmic::iced::Background;
+use cosmic::iced::Color;
 use cosmic::iced::Length;
 use cosmic::iced::alignment::Vertical;
+use cosmic::iced::border::Radius;
 use cosmic::iced::widget::progress_bar;
-use cosmic::widget::{Row, container, space, text};
+use cosmic::widget::{Row, button, container, space, text};
 
 use pakajo::dispatch::exec::ChildOutcome;
 use pakajo::progress::InstallKind;
@@ -57,10 +60,31 @@ pub(crate) fn footer(transaction: Option<&Transaction>) -> Element<'static> {
         TransactionStatus::Done(_) => theme::tinted(label, tint),
         TransactionStatus::Checking | TransactionStatus::Running => label.into(),
     };
-    container(cluster_row(label, bar))
+    button::custom(cluster_row(label, bar))
         .padding([6.0, 12.0])
         .width(Length::Fill)
+        .class(cosmic::theme::Button::Custom {
+            active: Box::new(|_, _| button::Style::new()),
+            disabled: Box::new(|_| button::Style::new()),
+            hovered: Box::new(|_, theme| footer_button_style(theme, false)),
+            pressed: Box::new(|_, theme| footer_button_style(theme, true)),
+        })
+        .on_press(crate::Message::OpenTransaction)
         .into()
+}
+
+fn footer_button_style(theme: &cosmic::Theme, pressed: bool) -> button::Style {
+    let component = &theme.cosmic().background(false).component;
+    let tint = if pressed {
+        component.pressed
+    } else {
+        component.hover
+    };
+    button::Style {
+        background: Some(Background::Color(Color::from(tint))),
+        border_radius: Radius::from(0.0),
+        ..button::Style::new()
+    }
 }
 
 fn cluster_row(label: Element<'static>, bar: f32) -> Element<'static> {

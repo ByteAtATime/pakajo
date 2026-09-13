@@ -64,6 +64,7 @@ pub struct PakajoApp {
     pub(crate) detail_seq: u64,
     pub(crate) detail_pending: Option<u64>,
     pub(crate) transaction: Option<Transaction>,
+    pub(crate) show_transaction: bool,
     pub(crate) updates_state: UpdatesState,
     pub(crate) pending_updates: pakajo::updates::PendingUpdates,
     pub(crate) pending_count: u32,
@@ -155,6 +156,7 @@ impl Application for PakajoApp {
             detail_seq: 0,
             detail_pending: None,
             transaction: None,
+            show_transaction: false,
             updates_state: UpdatesState::Idle,
             pending_updates: pakajo::updates::PendingUpdates {
                 repo: Vec::new(),
@@ -239,6 +241,10 @@ impl Application for PakajoApp {
             Message::Updates(m) => self.handle_updates(m),
             Message::Sysupgrade(m) => self.handle_sysupgrade(m),
             Message::Navigate(page) => self.goto_page(page),
+            Message::OpenTransaction => {
+                self.show_transaction = true;
+                Task::none()
+            }
             Message::OpenUrl(url) => {
                 std::thread::spawn(move || {
                     if let Err(e) = std::process::Command::new("xdg-open").arg(&url).spawn() {
@@ -293,10 +299,7 @@ impl Application for PakajoApp {
     }
 
     fn view(&self) -> Element<'_> {
-        if let Some(t) = self.transaction.as_ref()
-            && t.is_sysupgrade()
-            && !t.is_checking()
-        {
+        if let Some(t) = self.overlay_transaction() {
             return container(t.view())
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -392,6 +395,7 @@ impl PakajoApp {
                 };
                 let (txn, task) = Transaction::start(name, source);
                 self.transaction = Some(txn);
+                self.show_transaction = false;
                 task
             }
             TransactionMessage::StartRemove => {
@@ -409,6 +413,7 @@ impl PakajoApp {
                 };
                 let (txn, task) = Transaction::start_remove(name, source);
                 self.transaction = Some(txn);
+                self.show_transaction = false;
                 task
             }
             other => {
@@ -436,6 +441,10 @@ impl PakajoApp {
                         let (transaction, task) = Transaction::start_sysupgrade_aur(targets);
                         self.transaction = Some(transaction);
                         Task::batch([refresh, task])
+                    }
+                    Action::ViewClosed => {
+                        self.show_transaction = false;
+                        Task::none()
                     }
                     Action::Finished => {
                         self.transaction = None;
@@ -504,6 +513,12 @@ impl PakajoApp {
         self.scroller.reset_offset();
         scroll_to_top()
     }
+
+    fn overlay_transaction(&self) -> Option<&Transaction> {
+        self.transaction.as_ref().filter(|t| {
+            (t.is_sysupgrade() && !t.is_checking()) || (self.show_transaction && !t.is_sysupgrade())
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -514,6 +529,7 @@ pub enum Message {
     Updates(UpdatesMessage),
     Sysupgrade(SysupgradeMessage),
     Navigate(Page),
+    OpenTransaction,
     OpenUrl(String),
     DbLockReleased,
 }

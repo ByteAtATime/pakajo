@@ -39,7 +39,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
         sections.push((section, expanded));
     }
     let finished = matches!(model.status, TransactionStatus::Done(_));
-    sections_view(title, sections, finished)
+    sections_view(title, sections, finished, model.is_sysupgrade())
 }
 
 fn prepare_state(model: &TransactionModel) -> StageState {

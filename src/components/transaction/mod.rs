@@ -68,6 +68,7 @@ pub(crate) enum Action {
     None,
     Run(Task<crate::Message>),
     Finished,
+    ViewClosed,
     InstallSucceeded,
     ContinueAur(Vec<String>),
 }
@@ -274,7 +275,13 @@ impl Transaction {
                 self.launch_subprocess(approvals)
             }
             TransactionMessage::CancelPkgbuild => Action::Finished,
-            TransactionMessage::Close => Action::Finished,
+            TransactionMessage::Close => {
+                if self.model.is_sysupgrade() {
+                    Action::Finished
+                } else {
+                    Action::ViewClosed
+                }
+            }
             TransactionMessage::StartRemove => Action::None,
         }
     }
@@ -424,7 +431,7 @@ impl Transaction {
     }
 
     pub(crate) fn is_sysupgrade(&self) -> bool {
-        self.model.kind == InstallKind::Upgrade
+        self.model.is_sysupgrade()
     }
 
     pub(crate) fn status(&self) -> &TransactionStatus {
