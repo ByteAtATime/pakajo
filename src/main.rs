@@ -23,6 +23,7 @@ use pakajo::search::engine::SearchEngine;
 
 use background::begin_aur_sync_in_background;
 use components::detail::{DetailData, DetailMessage, detail_view};
+use components::footer;
 use components::search::{
     ListRect, SearchMessage, SearchState, SelectionScroller, results_scroller, search_bar,
     search_input_id, search_status_bar,
@@ -249,7 +250,7 @@ impl Application for PakajoApp {
             Message::DbLockReleased => {
                 eprintln!("[pakajo] db.lck released, refreshing installed state");
                 self.refresh_installed_state();
-                if self.transaction.is_none() {
+                if self.transaction.as_ref().is_none_or(|t| !t.is_active()) {
                     eprintln!("[pakajo] db.lck released, forcing updates recheck");
                     self.start_updates_check(RefreshKind::ExternalChange)
                 } else {
@@ -293,6 +294,7 @@ impl Application for PakajoApp {
 
     fn view(&self) -> Element<'_> {
         if let Some(t) = self.transaction.as_ref()
+            && t.is_sysupgrade()
             && !t.is_checking()
         {
             return container(t.view())
@@ -300,13 +302,20 @@ impl Application for PakajoApp {
                 .height(Length::Fill)
                 .into();
         }
-        match self.page {
+        let page = match self.page {
             Page::Search => self.search_page(),
             Page::Updates => self.updates_page(),
             Page::Resolve => self.resolve_page(),
             Page::PkgbuildReview => self.pkgbuild_review_page(),
             Page::Confirm => self.confirm_page(),
-        }
+        };
+        Column::new()
+            .push(container(page).width(Length::Fill).height(Length::Fill))
+            .push(divider::horizontal::default())
+            .push(footer::footer(self.transaction.as_ref()))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
     fn dialog(&self) -> Option<Element<'_>> {
@@ -322,7 +331,11 @@ impl Application for PakajoApp {
 
 impl PakajoApp {
     fn search_page(&self) -> Element<'_> {
-        let checking = self.transaction.as_ref().map(|t| t.name());
+        let active_target = self
+            .transaction
+            .as_ref()
+            .filter(|t| t.is_active())
+            .map(|t| t.name());
         let spacing = cosmic::theme::spacing();
         let page_padding = spacing.space_s as f32;
         let header = container(
@@ -353,7 +366,7 @@ impl PakajoApp {
                         .push(divider::vertical::default())
                         .push(detail_view(
                             &self.detail,
-                            checking,
+                            active_target,
                             self.detail_pending.is_some(),
                         )),
                 ),

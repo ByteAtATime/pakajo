@@ -423,6 +423,22 @@ impl Transaction {
         matches!(self.model.status, TransactionStatus::Checking)
     }
 
+    pub(crate) fn is_sysupgrade(&self) -> bool {
+        self.model.kind == InstallKind::Upgrade
+    }
+
+    pub(crate) fn status(&self) -> &TransactionStatus {
+        &self.model.status
+    }
+
+    pub(crate) fn overall_progress(&self) -> f32 {
+        self.model.overall_progress()
+    }
+
+    pub(crate) fn kind(&self) -> InstallKind {
+        self.model.kind
+    }
+
     pub(crate) fn name(&self) -> &str {
         &self.model.name
     }

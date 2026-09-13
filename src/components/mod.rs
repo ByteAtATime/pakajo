@@ -1,5 +1,6 @@
 pub(crate) mod ansi;
 pub mod detail;
+pub(crate) mod footer;
 pub mod icons;
 pub mod search;
 pub mod sysupgrade;
