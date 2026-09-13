@@ -1,8 +1,10 @@
 use cosmic::app::Task;
 use cosmic::iced::core::text::Wrapping;
 use cosmic::iced::stream::channel;
-use cosmic::iced::{Alignment, Background, Border, Color, Length};
-use cosmic::widget::{Column, Row, Space, button, container, icon, responsive, scrollable, text};
+use cosmic::iced::{Alignment, Background, Border, Color, Length, Padding};
+use cosmic::widget::{
+    Column, Row, Space, button, container, flex_row, icon, responsive, row, scrollable, text,
+};
 use futures::SinkExt as _;
 use pakajo::package::{self, Package, PackageSource};
 use pakajo::utils::format_bytes;
@@ -218,13 +220,23 @@ fn render_header<'a>(
 
     actions = actions.push(action);
 
-    let title_row = Row::new()
+    let mut children: Vec<Element<'a>> = vec![
+        row![
+            text::title3(formatted_name),
+            row![muted_mono(&pkg.version)].padding(Padding::ZERO.bottom(4))
+        ]
+        .spacing(8)
+        .align_y(Alignment::End)
+        .into(),
+        Space::new().width(Length::Fill).into(),
+    ];
+
+    children.push(actions.into());
+
+    let title_row = flex_row(children)
         .spacing(12)
-        .align_y(Alignment::Center)
-        .push(text::title3(formatted_name))
-        .push(muted_mono(&pkg.version))
-        .push(Space::new().width(Length::Fill))
-        .push(actions);
+        .align_items(Alignment::Center)
+        .width(Length::Fill);
 
     let mut col = Column::new().spacing(12).push(title_row);
 
@@ -274,7 +286,7 @@ fn render_info_bar<'a>(pkg: &'a Package) -> Element<'a> {
         }
     }
 
-    container(info_row)
+    container(info_row.wrap())
         .padding([10.0, 14.0])
         .width(Length::Fill)
         .style(|theme: &cosmic::Theme| card_style(theme))
