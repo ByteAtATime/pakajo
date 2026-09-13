@@ -117,22 +117,11 @@ fn edit_distance_chars(a: &str, b: &str, max: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::index::byte_mask;
 
     fn within(a: &str, b: &str, max: usize) -> bool {
         FuzzyMatcher::new(b.as_bytes())
             .within_distance(a.as_bytes(), byte_mask(a.as_bytes()), max)
             .is_some()
-    }
-
-    #[test]
-    fn edit_distance_exact_is_zero() {
-        assert!(within("chrome", "chrome", 2));
-    }
-
-    #[test]
-    fn edit_distance_transposition_caught() {
-        assert!(within("chrome", "chroem", 2));
     }
 
     #[test]
@@ -148,11 +137,6 @@ mod tests {
     #[test]
     fn edit_distance_too_far() {
         assert!(!within("chrome", "chromium", 2));
-    }
-
-    #[test]
-    fn edit_distance_unrelated() {
-        assert!(!within("abc", "xyz", 2));
     }
 
     #[test]

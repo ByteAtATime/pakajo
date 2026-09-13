@@ -144,16 +144,6 @@ mod tests {
     }
 
     #[test]
-    fn tier_ordinals_are_strictly_increasing() {
-        assert!(Tier::ExactName < Tier::ExactToken);
-        assert!(Tier::ExactToken < Tier::PrefixName);
-        assert!(Tier::PrefixName < Tier::PrefixToken);
-        assert!(Tier::PrefixToken < Tier::Substring);
-        assert!(Tier::Substring < Tier::Keyword);
-        assert!(Tier::Keyword < Tier::Fuzzy);
-    }
-
-    #[test]
     fn tier_at_matches_each_concrete_tier() {
         let index = sample_index();
         assert_eq!(

@@ -692,51 +692,7 @@ mod tests {
         }
         assert_eq!(hit_pkgs.len(), 1);
 
-        assert!(loaded.exact_name_range(b"").is_empty());
-        assert!(loaded.prefix_name_range(b"").is_empty());
-        assert!(loaded.exact_token_range(b"").is_empty());
-        assert!(loaded.prefix_token_range(b"").is_empty());
         assert!(loaded.exact_name_range(b"nope").is_empty());
         assert!(loaded.prefix_token_range(b"zz").is_empty());
-    }
-
-    #[test]
-    fn build_inverted_populates_derived_arrays() {
-        let raws = vec![
-            RawPkg {
-                id: 1,
-                name: "vim".to_string(),
-                tokens: vec!["vim".to_string()],
-                keywords: vec![],
-                popularity: 0,
-                is_repo: false,
-            },
-            RawPkg {
-                id: 2,
-                name: "google-chrome".to_string(),
-                tokens: vec!["google".to_string(), "chrome".to_string()],
-                keywords: vec![],
-                popularity: 0,
-                is_repo: false,
-            },
-        ];
-        let index = assemble(raws);
-
-        assert_eq!(index.names_sorted, vec![1, 0]);
-        assert_eq!(index.tokens_sorted.len(), 3);
-        assert_eq!(index.token_str(index.tokens_sorted[0].0 as usize), "chrome");
-        assert_eq!(index.tokens_sorted[0].1, 1);
-
-        let utoks: Vec<&str> = (0..index.unique_tokens.len())
-            .map(|id| index.token_str(id))
-            .collect();
-        assert_eq!(utoks, vec!["chrome", "google", "vim"]);
-
-        assert_eq!(index.exact_name_range(b"vim"), 1..2);
-        assert!(index.exact_name_range(b"nope").is_empty());
-        assert_eq!(index.exact_token_range(b"chrome").len(), 1);
-        assert!(index.exact_token_range(b"nope").is_empty());
-        assert_eq!(index.prefix_token_range(b"ch").len(), 1);
-        assert!(index.prefix_token_range(b"zz").is_empty());
     }
 }

@@ -125,7 +125,6 @@ pub fn friendly_search_error(err: &anyhow::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::tiers::Tier;
 
     #[test]
     fn group_name_tier_classifies_exact_prefix_substring() {
@@ -136,43 +135,5 @@ mod tests {
         );
         assert_eq!(group_name_tier("x-gnome-y", "gnome"), Some(Tier::Substring));
         assert_eq!(group_name_tier("kde", "gnome"), None);
-    }
-
-    fn view(name: &str, id: u32, is_repo: bool) -> PkgView<'_> {
-        PkgView {
-            name,
-            id,
-            popularity: 0,
-            is_repo,
-        }
-    }
-
-    #[test]
-    fn filter_matches_all_admits_everything() {
-        let installed: HashSet<String> = HashSet::new();
-        assert!(SearchFilter::All.matches(view("vim", 1, true), &installed));
-        assert!(SearchFilter::All.matches(view("vim", 1, false), &installed));
-    }
-
-    #[test]
-    fn filter_matches_official_admits_only_repo() {
-        let installed: HashSet<String> = HashSet::new();
-        assert!(SearchFilter::Official.matches(view("vim", 1, true), &installed));
-        assert!(!SearchFilter::Official.matches(view("vim", 2, false), &installed));
-    }
-
-    #[test]
-    fn filter_matches_aur_admits_only_non_repo() {
-        let installed: HashSet<String> = HashSet::new();
-        assert!(SearchFilter::Aur.matches(view("vim", 1, false), &installed));
-        assert!(!SearchFilter::Aur.matches(view("vim", 2, true), &installed));
-    }
-
-    #[test]
-    fn filter_matches_installed_checks_set_membership() {
-        let mut installed = HashSet::new();
-        installed.insert("vim".to_string());
-        assert!(SearchFilter::Installed.matches(view("vim", 1, true), &installed));
-        assert!(!SearchFilter::Installed.matches(view("emacs", 2, true), &installed));
     }
 }

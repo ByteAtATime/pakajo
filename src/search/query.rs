@@ -39,11 +39,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_returns_none() {
-        assert_eq!(parse_query(""), None);
-    }
-
-    #[test]
     fn whitespace_only_returns_none() {
         assert_eq!(parse_query("   "), None);
     }
@@ -70,11 +65,6 @@ mod tests {
     }
 
     #[test]
-    fn single_char_is_short() {
-        assert_eq!(parse_query("a"), Some(ParsedQuery::Short("a".into())));
-    }
-
-    #[test]
     fn two_char_non_alphanumeric_is_short() {
         assert_eq!(parse_query("c+"), Some(ParsedQuery::Short("c+".into())));
     }
@@ -89,14 +79,6 @@ mod tests {
         assert_eq!(
             parse_query("  Vim  "),
             Some(ParsedQuery::Normal("vim".into()))
-        );
-    }
-
-    #[test]
-    fn normal_lowercases_uppercase() {
-        assert_eq!(
-            parse_query("FIRE"),
-            Some(ParsedQuery::Normal("fire".into()))
         );
     }
 

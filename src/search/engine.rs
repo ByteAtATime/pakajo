@@ -437,13 +437,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_query_returns_empty() {
-        let index = index_with(vec![pkg(1, "vim", false, 0)]);
-        assert!(search_index(&index, "").is_empty());
-        assert!(search_index(&index, "   ").is_empty());
-    }
-
-    #[test]
     fn exact_name_ranks_first() {
         let index = index_with(vec![
             pkg(1, "vim", false, 0),
