@@ -34,7 +34,6 @@ libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "dc1cf9f00cbe29
 criterion = "0.8.2"
 
 [features]
-default = ["debug"]
 debug = ["libcosmic/debug"]
 
 [[bench]]
