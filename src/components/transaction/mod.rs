@@ -232,7 +232,7 @@ impl Transaction {
                 )
                 .and_then(|approvals| encode_approvals(&approvals))
                 {
-                    Ok(b64) => Some(b64),
+                    Ok(payload) => Some(payload),
                     Err(e) => {
                         eprintln!("[pakajo] approval encoding failed: {e}");
                         None
@@ -307,28 +307,40 @@ impl Transaction {
         }
     }
 
-    fn launch_subprocess(&mut self, approvals_b64: Option<String>) -> Action {
+    fn launch_subprocess(&mut self, approvals: Option<String>) -> Action {
         if self.model.is_aur() {
-            return self.launch_aur_in_process(approvals_b64);
+            return self.launch_aur_in_process(approvals);
         }
+        let sealed = match approvals
+            .as_deref()
+            .map(|payload| pakajo::dispatch::approvals::ApprovalsFile::write(payload.as_bytes()))
+            .transpose()
+        {
+            Ok(sealed) => sealed,
+            Err(e) => {
+                eprintln!("[pakajo] approvals write failed: {e:#}");
+                self.model.finish(ChildOutcome::Failed(format!("{e:#}")));
+                return Action::None;
+            }
+        };
         let name = self.model.name.clone();
         self.model.status = TransactionStatus::Running;
         let operation = PrivilegedOperation::Install {
             targets: vec![name],
             as_deps: false,
-            approvals: approvals_b64,
+            approvals: sealed,
         };
         Action::Run(stream_privileged(operation))
     }
 
-    fn launch_aur_in_process(&mut self, approvals_b64: Option<String>) -> Action {
+    fn launch_aur_in_process(&mut self, approvals: Option<String>) -> Action {
         let name = self.model.name.clone();
         self.model.status = TransactionStatus::Running;
         let operation = BuildOperation {
             targets: vec![name],
             as_deps: false,
         };
-        Action::Run(stream_build(operation, approvals_b64))
+        Action::Run(stream_build(operation, approvals))
     }
 
     fn launch_remove_subprocess(&mut self) -> Action {
@@ -342,7 +354,7 @@ impl Transaction {
 
     pub(crate) fn start_sysupgrade_repo(
         fingerprint: pakajo::dispatch::approvals::ApprovalsFile,
-        approvals_b64: Option<String>,
+        approvals: Option<String>,
     ) -> (Self, Task<crate::Message>) {
         let mut transaction = Self {
             model: TransactionModel::new(
@@ -351,12 +363,26 @@ impl Transaction {
                 InstallKind::Upgrade,
             ),
         };
+        let sealed = match approvals
+            .as_deref()
+            .map(|payload| pakajo::dispatch::approvals::ApprovalsFile::write(payload.as_bytes()))
+            .transpose()
+        {
+            Ok(sealed) => sealed,
+            Err(e) => {
+                eprintln!("[pakajo] approvals write failed: {e:#}");
+                transaction
+                    .model
+                    .finish(ChildOutcome::Failed(format!("{e:#}")));
+                return (transaction, Task::none());
+            }
+        };
         transaction.model.status = TransactionStatus::Running;
         let operation = PrivilegedOperation::UpgradeRepo {
             no_refresh: false,
             ignores: vec![],
             fingerprint: Some(fingerprint),
-            approvals: approvals_b64,
+            approvals: sealed,
         };
         (transaction, stream_privileged(operation))
     }

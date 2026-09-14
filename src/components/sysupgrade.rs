@@ -143,7 +143,7 @@ impl crate::PakajoApp {
                 return Task::none();
             }
         };
-        let approvals_b64 = {
+        let approvals = {
             let collected = if let Some(r) = &self.sysupgrade_review {
                 collect_approvals(&r.qs, &r.conflict_checks, &r.provider_choices)
             } else {
@@ -151,7 +151,7 @@ impl crate::PakajoApp {
             };
             match collected {
                 Ok(approvals) => match encode_approvals(&approvals) {
-                    Ok(b64) => Some(b64),
+                    Ok(payload) => Some(payload),
                     Err(e) => {
                         eprintln!("[pakajo] approval encoding failed: {e}");
                         None
@@ -163,7 +163,7 @@ impl crate::PakajoApp {
                 }
             }
         };
-        let (transaction, task) = Transaction::start_sysupgrade_repo(fingerprint, approvals_b64);
+        let (transaction, task) = Transaction::start_sysupgrade_repo(fingerprint, approvals);
         self.transaction = Some(transaction);
         self.active_sysupgrade_phase = Some(pakajo::progress::SysupgradePhase::Repo);
         eprintln!("[pakajo] sysupgrade repo apply started");

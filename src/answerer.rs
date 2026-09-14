@@ -249,8 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn approvals_base64_round_trips_and_replays() {
-        use base64::Engine as _;
+    fn approvals_json_round_trips_and_replays() {
         let original = Approvals {
             approved_conflicts: vec![Conflict {
                 incoming: "cava-git".into(),
@@ -259,11 +258,7 @@ mod tests {
             approved_providers: vec![],
         };
         let json = serde_json::to_vec(&original).expect("serialize");
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&json);
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&b64)
-            .expect("decode");
-        let decoded: Approvals = serde_json::from_slice(&bytes).expect("deserialize");
+        let decoded: Approvals = serde_json::from_slice(&json).expect("deserialize");
         let a = ApprovalsAnswerer::new(decoded);
         assert!(matches!(
             a.answer_conflict("cava-git", "", "cava", ""),

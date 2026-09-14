@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use anyhow::{Context as _, bail};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -127,8 +126,7 @@ pub fn collect_approvals(
 }
 
 pub fn encode_approvals(approvals: &Approvals) -> anyhow::Result<String> {
-    let bytes = serde_json::to_vec(approvals).context("failed to serialize approvals")?;
-    Ok(STANDARD.encode(&bytes))
+    serde_json::to_string(approvals).context("failed to serialize approvals")
 }
 
 #[cfg(test)]
@@ -176,9 +174,8 @@ mod tests {
         let qs = sample_question_set();
         let approvals = qs.approve(&[0], &[(0, 1), (1, 0)]).expect("approve");
 
-        let b64 = encode_approvals(&approvals).expect("encode");
-        let bytes = STANDARD.decode(&b64).expect("decode");
-        let decoded: Approvals = serde_json::from_slice(&bytes).expect("deserialize");
+        let json = encode_approvals(&approvals).expect("encode");
+        let decoded: Approvals = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(decoded, approvals);
         assert_eq!(

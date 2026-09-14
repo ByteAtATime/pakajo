@@ -32,7 +32,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
     user_as_deps: bool,
     sink: &mut S,
     decider: &dyn Decider,
-    approvals_b64: Option<&str>,
+    approvals: Option<&str>,
     tty: bool,
 ) -> anyhow::Result<()> {
     let (alpm, plan) = resolve_and_report(targets, no_check, sink)?;
@@ -65,7 +65,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
                 as_deps,
                 tty,
             };
-            build_and_install_aur(info, &dir, config, approvals_b64, arch, sink)?;
+            build_and_install_aur(info, &dir, config, approvals, arch, sink)?;
         }
     }
 
@@ -180,7 +180,7 @@ fn build_and_install_aur<S: InstallSink + ?Sized>(
     info: &AurInfo,
     dir: &Path,
     config: AurBuildConfig,
-    approvals_b64: Option<&str>,
+    approvals: Option<&str>,
     arch: Option<&str>,
     sink: &mut S,
 ) -> anyhow::Result<()> {
@@ -208,7 +208,7 @@ fn build_and_install_aur<S: InstallSink + ?Sized>(
         );
     }
 
-    run_install_child(&artifacts, config.as_deps, sink, approvals_b64, config.tty)?;
+    run_install_child(&artifacts, config.as_deps, sink, approvals, config.tty)?;
     Ok(())
 }
 
@@ -348,14 +348,18 @@ fn run_install_child<S: InstallSink + ?Sized>(
     targets: &[String],
     as_deps: bool,
     sink: &mut S,
-    approvals_b64: Option<&str>,
+    approvals: Option<&str>,
     tty: bool,
 ) -> anyhow::Result<()> {
     use futures::StreamExt as _;
+    let sealed = approvals
+        .map(|payload| crate::dispatch::approvals::ApprovalsFile::write(payload.as_bytes()))
+        .transpose()
+        .context("failed to write approvals file")?;
     let operation = crate::dispatch::operation::PrivilegedOperation::Install {
         targets: targets.to_vec(),
         as_deps,
-        approvals: approvals_b64.map(str::to_string),
+        approvals: sealed,
     };
     let mut stream = operation.dispatch(tty);
     while let Some(item) = futures::executor::block_on(stream.next()) {

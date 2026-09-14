@@ -1,12 +1,9 @@
 use std::io::{self, BufReader};
 use std::process::{Child, Command, ExitStatus, Stdio};
 
-use anyhow::Context as _;
-use base64::Engine as _;
 use futures::SinkExt as _;
 
 use crate::cli::privs::is_root;
-use crate::dispatch::approvals::ApprovalsFile;
 use crate::dispatch::operation::{BuildOperation, MARKER, PrivilegedOperation};
 use crate::dispatch::protocol::Decider;
 use crate::events::{InstallEvent, InstallSink, read_event_stream};
@@ -126,13 +123,6 @@ fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
     }
 }
 
-fn write_b64(b64: &str) -> anyhow::Result<ApprovalsFile> {
-    let json = base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .context("--approvals is not valid base64")?;
-    ApprovalsFile::write(&json).context("failed to write approvals file")
-}
-
 fn spawn_privileged_child(
     argv: &[String],
     exe: &str,
@@ -168,30 +158,21 @@ fn run_privileged(
     tty: bool,
     tx: &mut futures::channel::mpsc::Sender<StreamItem>,
 ) {
-    let approvals_b64 = match &operation {
-        PrivilegedOperation::Remove { .. } => None,
-        PrivilegedOperation::Install { approvals, .. } => approvals.as_deref(),
-        PrivilegedOperation::UpgradeRepo { approvals, .. } => approvals.as_deref(),
-    };
-    let sealed = match approvals_b64.map(write_b64).transpose() {
-        Ok(sealed) => sealed,
-        Err(err) => {
-            send_item(
-                tx,
-                StreamItem::Done(ChildOutcome::Failed(format!("{err:#}"))),
-            );
-            return;
-        }
-    };
     let fingerprint_path = match &operation {
         PrivilegedOperation::UpgradeRepo { fingerprint, .. } => fingerprint
             .as_ref()
             .map(|file| file.path().to_string_lossy().into_owned()),
         _ => None,
     };
-    let approvals_path = sealed
-        .as_ref()
-        .map(|file| file.path().to_string_lossy().into_owned());
+    let approvals_path = match &operation {
+        PrivilegedOperation::Remove { .. } => None,
+        PrivilegedOperation::Install { approvals, .. } => approvals
+            .as_ref()
+            .map(|file| file.path().to_string_lossy().into_owned()),
+        PrivilegedOperation::UpgradeRepo { approvals, .. } => approvals
+            .as_ref()
+            .map(|file| file.path().to_string_lossy().into_owned()),
+    };
     let argv = operation.wire_args(approvals_path.as_deref(), fingerprint_path.as_deref());
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,

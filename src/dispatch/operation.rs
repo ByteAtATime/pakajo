@@ -17,13 +17,13 @@ pub enum PrivilegedOperation {
     Install {
         targets: Vec<String>,
         as_deps: bool,
-        approvals: Option<String>,
+        approvals: Option<crate::dispatch::approvals::ApprovalsFile>,
     },
     UpgradeRepo {
         no_refresh: bool,
         ignores: Vec<String>,
         fingerprint: Option<crate::dispatch::approvals::ApprovalsFile>,
-        approvals: Option<String>,
+        approvals: Option<crate::dispatch::approvals::ApprovalsFile>,
     },
 }
 
