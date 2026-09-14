@@ -1,6 +1,12 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Context as _;
+
+#[derive(Clone, Debug, Default)]
+pub struct OptdepEntry {
+    pub name: String,
+    pub requesters: Vec<(String, String)>,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct DashboardSnapshot {
@@ -10,6 +16,8 @@ pub struct DashboardSnapshot {
     pub total_bytes: i64,
     pub repo_bytes: i64,
     pub aur_bytes: i64,
+    pub optdeps: Vec<OptdepEntry>,
+    pub optdep_total: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -30,6 +38,8 @@ pub fn compute_dashboard_snapshot(
     foreign: &HashSet<String>,
 ) -> DashboardSnapshot {
     let mut snapshot = DashboardSnapshot::default();
+    let mut installed: HashSet<String> = HashSet::new();
+    let mut optdep_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
     for pkg in handle.localdb().pkgs().iter() {
         let size = pkg.isize();
         snapshot.installed_total += 1;
@@ -41,7 +51,39 @@ pub fn compute_dashboard_snapshot(
             snapshot.repo_count += 1;
             snapshot.repo_bytes += size;
         }
+        let requester = pkg.name().to_string();
+        installed.insert(requester.clone());
+        for opt in pkg.optdepends().iter() {
+            let dep_name = opt.name();
+            if dep_name.is_empty() {
+                continue;
+            }
+            let reason = opt
+                .desc()
+                .filter(|d| !d.is_empty())
+                .unwrap_or("")
+                .to_string();
+            let requesters = optdep_map.entry(dep_name.to_string()).or_default();
+            if requesters
+                .iter()
+                .any(|(existing, _)| *existing == requester)
+            {
+                continue;
+            }
+            requesters.push((requester.clone(), reason));
+        }
     }
+    let mut optdeps: Vec<(String, Vec<(String, String)>)> = optdep_map
+        .into_iter()
+        .filter(|(name, _)| !installed.contains(name))
+        .collect();
+    optdeps.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+    snapshot.optdep_total = optdeps.len();
+    snapshot.optdeps = optdeps
+        .into_iter()
+        .take(5)
+        .map(|(name, requesters)| OptdepEntry { name, requesters })
+        .collect();
     snapshot
 }
 

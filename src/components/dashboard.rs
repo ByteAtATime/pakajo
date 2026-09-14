@@ -1,7 +1,7 @@
 use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{Column, Row, Space, container, divider, scrollable, text};
+use cosmic::widget::{Column, Row, Space, container, divider, scrollable, text, tooltip};
 
-use pakajo::dashboard::DashboardSnapshot;
+use pakajo::dashboard::{DashboardSnapshot, OptdepEntry};
 use pakajo::utils::{format_bytes, group_thousands};
 
 use crate::Element;
@@ -12,6 +12,8 @@ const BAND_CELL_WIDTH: f32 = 200.0;
 const BAND_SKELETON_HEIGHT: f32 = 100.0;
 const PACKAGE_SKELETON_HEIGHT: f32 = 250.0;
 const NEWS_SKELETON_HEIGHT: f32 = 150.0;
+const OPTDEP_COUNT_WIDTH: f32 = 90.0;
+const OPTDEP_TOOLTIP_ROWS: usize = 8;
 
 fn skeleton_card(height: f32) -> Element<'static> {
     container(
@@ -71,6 +73,82 @@ fn live_band(snapshot: &DashboardSnapshot) -> Element<'static> {
         .into()
 }
 
+fn optdep_popup(entry: &OptdepEntry) -> Element<'static> {
+    let mut column = Column::new()
+        .spacing(4.0)
+        .push(text::body(entry.name.clone()).font(cosmic::font::bold()));
+    for (requester, reason) in entry.requesters.iter().take(OPTDEP_TOOLTIP_ROWS) {
+        let label = if reason.is_empty() {
+            requester.clone()
+        } else {
+            format!("{requester}: {reason}")
+        };
+        column = column.push(text::caption(label));
+    }
+    let hidden = entry.requesters.len().saturating_sub(OPTDEP_TOOLTIP_ROWS);
+    if hidden > 0 {
+        column = column.push(muted(text::caption(format!("...and {hidden} more"))));
+    }
+    container(column).into()
+}
+
+fn optdep_row(entry: &OptdepEntry) -> Element<'static> {
+    let count = entry.requesters.len();
+    let count_label = if count == 1 {
+        String::from("1 package")
+    } else {
+        format!("{count} packages")
+    };
+    let row = Row::new()
+        .align_y(Alignment::Center)
+        .spacing(12.0)
+        .push(container(text::body(entry.name.clone())).width(Length::Fill))
+        .push(
+            container(muted(text::caption(count_label)))
+                .width(Length::Fixed(OPTDEP_COUNT_WIDTH))
+                .align_x(Alignment::End),
+        );
+    tooltip(row, optdep_popup(entry), tooltip::Position::FollowCursor)
+        .snap_within_viewport(true)
+        .class(cosmic::theme::Container::custom(|theme| {
+            let mut style = <cosmic::Theme as cosmic::iced::widget::container::Catalog>::style(
+                theme,
+                &cosmic::theme::Container::Card,
+            );
+            style.border.width = 1.0;
+            style.border.color = theme.cosmic().bg_component_divider().into();
+            style.shadow = cosmic::iced::Shadow {
+                color: theme.cosmic().shade.into(),
+                offset: cosmic::iced::Vector::new(0.0, 4.0),
+                blur_radius: 16.0,
+            };
+            style
+        }))
+        .into()
+}
+
+fn optdep_card(top: &[OptdepEntry], pad: f32) -> Element<'static> {
+    let content: Element<'static> = if top.is_empty() {
+        muted(text::caption(String::from("No suggestions")))
+    } else {
+        let mut list = Column::new().spacing(8.0);
+        for entry in top {
+            list = list.push(optdep_row(entry));
+        }
+        list.into()
+    };
+    container(
+        Column::new()
+            .spacing(8.0)
+            .push(text::heading(String::from("Optional dependencies")))
+            .push(content),
+    )
+    .style(card_style)
+    .padding(pad)
+    .width(Length::Fill)
+    .into()
+}
+
 pub fn dashboard_view(snapshot: Option<&DashboardSnapshot>) -> Element<'static> {
     let spacing = cosmic::theme::spacing();
     let gap = spacing.space_xs as f32;
@@ -79,10 +157,18 @@ pub fn dashboard_view(snapshot: Option<&DashboardSnapshot>) -> Element<'static> 
         Some(data) => live_band(data),
         None => skeleton_card(BAND_SKELETON_HEIGHT),
     };
-    let pair = Row::new()
-        .spacing(gap)
-        .push(skeleton_card(PACKAGE_SKELETON_HEIGHT))
-        .push(skeleton_card(PACKAGE_SKELETON_HEIGHT));
+    let pad = spacing.space_m as f32;
+    let pair = match snapshot {
+        Some(data) => Row::new()
+            .align_y(Alignment::Start)
+            .spacing(gap)
+            .push(skeleton_card(PACKAGE_SKELETON_HEIGHT))
+            .push(optdep_card(&data.optdeps, pad)),
+        None => Row::new()
+            .spacing(gap)
+            .push(skeleton_card(PACKAGE_SKELETON_HEIGHT))
+            .push(skeleton_card(PACKAGE_SKELETON_HEIGHT)),
+    };
     let column = Column::new()
         .spacing(gap)
         .width(Length::Fixed(MAX_CONTENT_WIDTH))
