@@ -87,7 +87,7 @@ pub struct PakajoApp {
     pub(crate) sysupgrade_preview: Option<pakajo::dry_run::SysupgradePreview>,
     pub(crate) sysupgrade_preview_error: Option<String>,
     pub(crate) sysupgrade_preview_in_flight: bool,
-    initial_focus_done: bool,
+    search_focus_pending: bool,
     pub(crate) sysupgrade_aur_targets: Vec<String>,
     pub(crate) sysupgrade_review: Option<ReviewModel>,
     pub(crate) pkgbuild_review_index: usize,
@@ -188,7 +188,7 @@ impl Application for PakajoApp {
             sysupgrade_preview: None,
             sysupgrade_preview_error: None,
             sysupgrade_preview_in_flight: false,
-            initial_focus_done: false,
+            search_focus_pending: true,
             sysupgrade_aur_targets: Vec::new(),
             sysupgrade_review: None,
             pkgbuild_review_index: 0,
@@ -249,12 +249,7 @@ impl Application for PakajoApp {
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
-        let focus = if self.initial_focus_done {
-            Task::none()
-        } else {
-            self.initial_focus_done = true;
-            text_input::focus(search_input_id())
-        };
+        let focus = self.ensure_search_focus();
         let task = match message {
             Message::Search(m) => self.handle_search(m),
             Message::Dashboard(m) => self.handle_dashboard(m),
@@ -263,6 +258,10 @@ impl Application for PakajoApp {
             Message::Updates(m) => self.handle_updates(m),
             Message::Sysupgrade(m) => self.handle_sysupgrade(m),
             Message::Navigate(page) => self.goto_page(page),
+            Message::SearchFocus(focused) => {
+                self.search_focus_pending &= !focused;
+                Task::none()
+            }
             Message::OpenTransaction => {
                 self.show_transaction = true;
                 Task::none()
@@ -612,8 +611,24 @@ impl PakajoApp {
 
     pub(crate) fn goto_page(&mut self, page: Page) -> Task<Message> {
         self.page = page;
+        self.search_focus_pending = matches!(page, Page::Search);
         self.scroller.reset_offset();
         scroll_to_top()
+    }
+
+    fn ensure_search_focus(&self) -> Task<Message> {
+        if !self.search_focus_pending
+            || !matches!(self.page, Page::Search)
+            || self.overlay_transaction().is_some()
+        {
+            return Task::none();
+        }
+        cosmic::iced::runtime::widget::operation::is_focused(search_input_id())
+            .then(|focused| match focused {
+                true => cosmic::iced::Task::done(true),
+                false => text_input::focus(search_input_id()).map(|_: ()| false),
+            })
+            .map(|focused| cosmic::Action::App(Message::SearchFocus(focused)))
     }
 
     fn overlay_transaction(&self) -> Option<&Transaction> {
@@ -635,6 +650,7 @@ pub enum Message {
     OpenTransaction,
     OpenUrl(String),
     DbLockReleased,
+    SearchFocus(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
