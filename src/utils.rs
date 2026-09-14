@@ -113,11 +113,19 @@ pub fn format_eta(seconds: u64) -> String {
 
 pub fn humanize_age(secs: u64) -> String {
     if secs < 60 {
-        "just now".to_string()
+        "now".to_string()
     } else if secs < 3600 {
-        format!("{} min ago", secs / 60)
+        format!("{}m", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h", secs / 3600)
+    } else if secs < 604800 {
+        format!("{}d", secs / 86400)
+    } else if secs < 2592000 {
+        format!("{}w", secs / 604800)
+    } else if secs < 31536000 {
+        format!("{}mo", secs / 2592000)
     } else {
-        format!("{} h ago", secs / 3600)
+        format!("{}yr", secs / 31536000)
     }
 }
 
@@ -203,12 +211,22 @@ mod tests {
 
     #[test]
     fn humanize_age_boundaries() {
-        assert_eq!(humanize_age(0), "just now");
-        assert_eq!(humanize_age(59), "just now");
-        assert_eq!(humanize_age(60), "1 min ago");
-        assert_eq!(humanize_age(3540), "59 min ago");
-        assert_eq!(humanize_age(3600), "1 h ago");
-        assert_eq!(humanize_age(86400), "24 h ago");
+        assert_eq!(humanize_age(0), "now");
+        assert_eq!(humanize_age(59), "now");
+        assert_eq!(humanize_age(60), "1m");
+        assert_eq!(humanize_age(300), "5m");
+        assert_eq!(humanize_age(3540), "59m");
+        assert_eq!(humanize_age(3600), "1h");
+        assert_eq!(humanize_age(7200), "2h");
+        assert_eq!(humanize_age(86399), "23h");
+        assert_eq!(humanize_age(86400), "1d");
+        assert_eq!(humanize_age(604700), "6d");
+        assert_eq!(humanize_age(604800), "1w");
+        assert_eq!(humanize_age(2563200), "4w");
+        assert_eq!(humanize_age(2592000), "1mo");
+        assert_eq!(humanize_age(3024000), "1mo");
+        assert_eq!(humanize_age(25920000), "10mo");
+        assert_eq!(humanize_age(157680000), "5yr");
     }
 
     #[test]
