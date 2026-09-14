@@ -6,10 +6,9 @@ use crate::Element;
 
 type Tint = fn(&cosmic::Theme) -> Color;
 
-pub(crate) fn tinted_button(
-    tint: Tint,
-    alpha: f32,
-) -> Box<dyn Fn(bool, &cosmic::Theme) -> button::Style> {
+type ButtonStyleFn = Box<dyn Fn(bool, &cosmic::Theme) -> button::Style>;
+
+pub(crate) fn tinted_button(tint: Tint, alpha: f32) -> ButtonStyleFn {
     Box::new(move |_, theme| button::Style {
         text_color: Some(Color {
             a: alpha,
