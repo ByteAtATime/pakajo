@@ -13,7 +13,6 @@ pub mod dry_run;
 pub mod events;
 pub mod git;
 pub mod install;
-pub mod news;
 pub mod package;
 pub mod pacman;
 pub mod pacman_watch;
