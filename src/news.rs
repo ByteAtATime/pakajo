@@ -246,4 +246,43 @@ mod tests {
         assert!(items[1].published > items[2].published);
         assert!(items.iter().all(|item| item.published > 0));
     }
+
+    #[test]
+    fn skips_item_without_link() {
+        let feed = r#"<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0">
+<channel>
+<item>
+<title>Linkless headline</title>
+<pubDate>Mon, 01 Sep 2025 10:00:00 +0000</pubDate>
+</item>
+<item>
+<title>Linked headline</title>
+<link>https://archlinux.org/news/linked-headline/</link>
+<pubDate>Mon, 01 Sep 2025 10:00:00 +0000</pubDate>
+</item>
+</channel>
+</rss>"#;
+        let items = parse_news_rss(feed);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Linked headline");
+        assert_eq!(items[0].url, "https://archlinux.org/news/linked-headline/");
+    }
+
+    #[test]
+    fn unknown_named_entity_passes_through_literally() {
+        let feed = r#"<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0">
+<channel>
+<item>
+<title>Headline &foobar; here</title>
+<link>https://archlinux.org/news/entity-headline/</link>
+<pubDate>Mon, 01 Sep 2025 10:00:00 +0000</pubDate>
+</item>
+</channel>
+</rss>"#;
+        let items = parse_news_rss(feed);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Headline &foobar; here");
+    }
 }

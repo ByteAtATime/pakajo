@@ -12,7 +12,7 @@ use crate::components::theme::{card_style, muted, skeleton_bar_style};
 const MAX_CONTENT_WIDTH: f32 = 840.0;
 const BAND_CELL_WIDTH: f32 = 200.0;
 const BAND_SKELETON_HEIGHT: f32 = 100.0;
-const PACKAGE_SKELETON_HEIGHT: f32 = 250.0;
+const PAIR_SKELETON_HEIGHT: f32 = 250.0;
 const OPTDEP_COUNT_WIDTH: f32 = 90.0;
 const AGE_COLUMN_WIDTH: f32 = 90.0;
 const OPTDEP_TOOLTIP_ROWS: usize = 8;
@@ -327,8 +327,8 @@ pub fn dashboard_view(snapshot: Option<&DashboardSnapshot>, news: &NewsState) ->
             .push(optdep_card(&data.optdeps, pad)),
         None => Row::new()
             .spacing(gap)
-            .push(skeleton_card(PACKAGE_SKELETON_HEIGHT))
-            .push(skeleton_card(PACKAGE_SKELETON_HEIGHT)),
+            .push(skeleton_card(PAIR_SKELETON_HEIGHT))
+            .push(skeleton_card(PAIR_SKELETON_HEIGHT)),
     };
     let live_news = match news {
         NewsState::Loading => news_skeleton_card(pad),

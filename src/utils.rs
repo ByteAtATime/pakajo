@@ -17,6 +17,13 @@ pub fn cache_root() -> anyhow::Result<PathBuf> {
     Ok(cache_base()?.join("pakajo"))
 }
 
+pub fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 pub fn format_bytes(bytes: i64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     if bytes < 1024 {

@@ -128,10 +128,7 @@ pub fn gather_dashboard() -> anyhow::Result<(HashSet<String>, DashboardSnapshot)
         }
     };
     let foreign: HashSet<String> = crate::package::foreign_names(&handle).into_iter().collect();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let now = crate::utils::unix_now();
     let snapshot = compute_dashboard_snapshot(&handle, &foreign, now);
     Ok((foreign, snapshot))
 }
