@@ -28,7 +28,7 @@ fn summary(kind: InstallKind, name: &str, status: &TransactionStatus) -> String 
         TransactionStatus::Done(ChildOutcome::Success) => format!("{done_verb} {name}"),
         TransactionStatus::Done(ChildOutcome::Failed(_)) => format!("Failed - {name}"),
         TransactionStatus::Done(ChildOutcome::Dismissed) => "Canceled authentication".to_string(),
-        TransactionStatus::Done(ChildOutcome::NotFound(_)) => format!("Not found - {name}"),
+        TransactionStatus::Done(ChildOutcome::NotFound(message)) => message.clone(),
     }
 }
 

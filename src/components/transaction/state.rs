@@ -101,7 +101,7 @@ impl TransactionModel {
         if self.is_aur() {
             finish_aur(&mut self.aur, &outcome, std::time::Instant::now());
         }
-        if let ChildOutcome::Failed(message) = &outcome {
+        if let ChildOutcome::Failed(message) | ChildOutcome::NotFound(message) = &outcome {
             self.failure_message = Some(message.clone());
         }
         if matches!(outcome, ChildOutcome::Success) {
