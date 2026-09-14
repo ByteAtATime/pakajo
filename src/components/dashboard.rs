@@ -1,5 +1,5 @@
-use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{Column, Row, Space, button, container, divider, scrollable, text, tooltip};
+use cosmic::iced::{Alignment, Color, Length};
+use cosmic::widget::{Column, Row, button, container, divider, scrollable, text, tooltip};
 
 use pakajo::dashboard::{DashboardSnapshot, OptdepEntry, RecentPkg};
 use pakajo::utils::{format_bytes, group_thousands};
@@ -10,21 +10,18 @@ use crate::components::theme::{card_style, muted};
 
 const MAX_CONTENT_WIDTH: f32 = 840.0;
 const BAND_CELL_WIDTH: f32 = 200.0;
-const BAND_SKELETON_HEIGHT: f32 = 100.0;
-const PAIR_SKELETON_HEIGHT: f32 = 250.0;
 const OPTDEP_COUNT_WIDTH: f32 = 90.0;
 const AGE_COLUMN_WIDTH: f32 = 90.0;
 const OPTDEP_TOOLTIP_ROWS: usize = 8;
+const CARD_ROWS: usize = 5;
 
-fn skeleton_card(height: f32) -> Element<'static> {
-    container(
-        Space::new()
-            .width(Length::Fill)
-            .height(Length::Fixed(height)),
-    )
-    .width(Length::Fill)
-    .style(card_style)
-    .into()
+fn hidden<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
+    container(content)
+        .style(|_: &cosmic::Theme| container::Style {
+            text_color: Some(Color::TRANSPARENT),
+            ..Default::default()
+        })
+        .into()
 }
 
 fn band_stat(label: String, value: String, sub: String) -> Element<'static> {
@@ -77,6 +74,15 @@ fn live_band(snapshot: &DashboardSnapshot) -> Element<'static> {
     container(row)
         .width(Length::Fill)
         .align_x(Alignment::Center)
+        .into()
+}
+
+fn skeleton_band() -> Element<'static> {
+    Column::new()
+        .spacing(2.0)
+        .push(hidden(text::caption(String::from("Packages"))))
+        .push(hidden(text::title3(String::from("0"))))
+        .push(hidden(text::caption(String::from("0 repo \u{b7} 0 AUR"))))
         .into()
 }
 
@@ -203,13 +209,30 @@ fn recent_card(recent: &[RecentPkg], pad: f32) -> Element<'static> {
     .into()
 }
 
+fn skeleton_card(pad: f32) -> Element<'static> {
+    let mut rows = Column::new().spacing(8.0);
+    for _ in 0..CARD_ROWS {
+        rows = rows.push(hidden(text::body(String::from("package-name"))));
+    }
+    container(
+        Column::new()
+            .spacing(8.0)
+            .push(hidden(text::heading(String::from("Placeholder"))))
+            .push(rows),
+    )
+    .style(card_style)
+    .padding(pad)
+    .width(Length::Fill)
+    .into()
+}
+
 pub fn dashboard_view(snapshot: Option<&DashboardSnapshot>) -> Element<'static> {
     let spacing = cosmic::theme::spacing();
     let gap = spacing.space_xs as f32;
     let side = spacing.space_m as f32;
     let band = match snapshot {
         Some(data) => live_band(data),
-        None => skeleton_card(BAND_SKELETON_HEIGHT),
+        None => skeleton_band(),
     };
     let pad = spacing.space_m as f32;
     let pair = match snapshot {
@@ -220,8 +243,8 @@ pub fn dashboard_view(snapshot: Option<&DashboardSnapshot>) -> Element<'static> 
             .push(optdep_card(&data.optdeps, pad)),
         None => Row::new()
             .spacing(gap)
-            .push(skeleton_card(PAIR_SKELETON_HEIGHT))
-            .push(skeleton_card(PAIR_SKELETON_HEIGHT)),
+            .push(skeleton_card(pad))
+            .push(skeleton_card(pad)),
     };
     let column = Column::new()
         .spacing(gap)
