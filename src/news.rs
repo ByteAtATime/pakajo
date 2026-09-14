@@ -162,7 +162,10 @@ pub fn parse_news_rss(xml: &str) -> Vec<NewsItem> {
             },
             Ok(quick_xml::events::Event::Eof) => break,
             Ok(_) => {}
-            Err(_) => break,
+            Err(e) => {
+                eprintln!("[pakajo] news feed parse error: {e}");
+                break;
+            }
         }
         buf.clear();
     }

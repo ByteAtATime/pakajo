@@ -62,7 +62,6 @@ pub struct PakajoApp {
     pub(crate) dashboard: Option<DashboardSnapshot>,
     pub(crate) dashboard_seq: u64,
     pub(crate) news: pakajo::news::NewsState,
-    pub(crate) news_fetch_started: bool,
     pub(crate) group_index: Arc<Vec<(String, String)>>,
     pub(crate) query: String,
     pub(crate) results: Vec<SearchResult>,
@@ -161,7 +160,6 @@ impl Application for PakajoApp {
             dashboard: None,
             dashboard_seq: 0,
             news: pakajo::news::NewsState::Loading,
-            news_fetch_started: false,
             group_index,
             query: String::new(),
             results: Vec::new(),
@@ -572,11 +570,7 @@ impl PakajoApp {
         )
     }
 
-    fn start_news_fetch(&mut self) -> Task<Message> {
-        if self.news_fetch_started {
-            return Task::none();
-        }
-        self.news_fetch_started = true;
+    fn start_news_fetch(&self) -> Task<Message> {
         crate::components::task::blocking_task(
             || {
                 pakajo::news::fetch_news().inspect_err(|e| {

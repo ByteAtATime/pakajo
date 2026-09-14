@@ -245,6 +245,19 @@ fn news_card(items: &[NewsRow], pad: f32) -> Element<'static> {
         .into()
 }
 
+fn news_unavailable_card(pad: f32) -> Element<'static> {
+    container(
+        Column::new()
+            .spacing(8.0)
+            .push(news_header())
+            .push(muted(text::caption(String::from("News unavailable")))),
+    )
+    .style(card_style)
+    .padding(pad)
+    .width(Length::Fill)
+    .into()
+}
+
 fn invisible_text_style(_: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
     cosmic::iced::widget::text::Style {
         color: Some(cosmic::iced::Color::TRANSPARENT),
@@ -314,7 +327,7 @@ pub fn dashboard_view(snapshot: Option<&DashboardSnapshot>, news: &NewsState) ->
     let live_news = match news {
         NewsState::Loading => news_skeleton_card(pad),
         NewsState::Ready(items) => news_card(items, pad),
-        NewsState::Unavailable => news_card(&[], pad),
+        NewsState::Unavailable => news_unavailable_card(pad),
     };
     let column = Column::new()
         .spacing(gap)
