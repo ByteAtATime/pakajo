@@ -22,6 +22,7 @@ use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
 
 use background::begin_aur_sync_in_background;
+use components::dashboard::dashboard_view;
 use components::detail::{DetailData, DetailMessage, detail_view};
 use components::footer;
 use components::search::{
@@ -362,6 +363,13 @@ impl PakajoApp {
             0.0,
             page_padding,
         ]);
+        if self.query.trim().is_empty() {
+            let content = Column::new()
+                .spacing(spacing.space_xs as f32)
+                .push(header)
+                .push(dashboard_view());
+            return container(content).into();
+        }
         let content = Column::new()
             .spacing(spacing.space_xs as f32)
             .push(header)

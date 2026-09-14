@@ -206,8 +206,6 @@ pub fn search_status_bar<'a>(
 ) -> Element<'a> {
     let header_text = if state == SearchState::Searching {
         "Searching...".to_string()
-    } else if query.trim().is_empty() {
-        "Search the repositories".to_string()
     } else {
         format!("{count} results for \"{query}\"")
     };

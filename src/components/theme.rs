@@ -109,6 +109,22 @@ pub(crate) fn pill(
         .into()
 }
 
+pub(crate) fn card_style(theme: &cosmic::Theme) -> container::Style {
+    let cosmic = theme.cosmic();
+    container::Style {
+        text_color: Some(Color::from(cosmic.background(false).on)),
+        background: Some(Background::Color(Color::from(
+            cosmic.background(false).component.base,
+        ))),
+        border: Border {
+            radius: cosmic.corner_radii.radius_s.into(),
+            width: 1.0,
+            color: Color::from(cosmic.background(false).divider),
+        },
+        ..Default::default()
+    }
+}
+
 pub(crate) fn muted_text_style(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
     let mut on = Color::from(theme.cosmic().background(false).on);
     on.a = 0.7;

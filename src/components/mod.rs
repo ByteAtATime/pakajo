@@ -1,4 +1,5 @@
 pub(crate) mod ansi;
+pub mod dashboard;
 pub mod detail;
 pub(crate) mod footer;
 pub mod icons;
