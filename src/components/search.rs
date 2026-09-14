@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use cosmic::Apply;
 use cosmic::app::Task;
 use cosmic::iced::core::text::EllipsizeHeightLimit;
 use cosmic::iced::widget::Id;
@@ -170,6 +171,13 @@ pub fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Op
 pub fn search_bar(query: &str) -> Element<'_> {
     search_input("Search packages", query)
         .id(search_input_id())
+        .leading_icon(
+            cosmic::widget::icon(super::icons::search())
+                .size(16)
+                .apply(container)
+                .padding([8, 0, 8, 4])
+                .into(),
+        )
         .on_input(|s| crate::Message::Search(SearchMessage::QueryChanged(s)))
         .into()
 }
