@@ -3888,7 +3888,6 @@ dependencies = [
  "alpm",
  "alpm-utils",
  "anyhow",
- "base64",
  "bincode 2.0.1",
  "chrono",
  "clap",
