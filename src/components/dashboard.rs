@@ -42,6 +42,12 @@ fn band_stat(label: String, value: String, sub: String) -> Element<'static> {
     .into()
 }
 
+fn clipped_body(label: String) -> Element<'static> {
+    text::body(label)
+        .wrapping(cosmic::iced::widget::text::Wrapping::None)
+        .into()
+}
+
 fn live_band(snapshot: &DashboardSnapshot) -> Element<'static> {
     let gap = cosmic::theme::spacing().space_xs as f32;
     let packages_sub = format!(
@@ -104,7 +110,7 @@ fn optdep_row(entry: &OptdepEntry) -> Element<'static> {
     let row = Row::new()
         .align_y(Alignment::Center)
         .spacing(12.0)
-        .push(container(text::body(entry.name.clone())).width(Length::Fill))
+        .push(container(clipped_body(entry.name.clone())).width(Length::Fill))
         .push(
             container(muted(text::caption(count_label)))
                 .width(Length::Fixed(OPTDEP_COUNT_WIDTH))
@@ -202,7 +208,7 @@ fn news_row(item: &NewsRow) -> Element<'static> {
     let inner = Row::new()
         .align_y(Alignment::Center)
         .spacing(12.0)
-        .push(container(text::body(item.title.clone())).width(Length::Fill))
+        .push(container(clipped_body(item.title.clone())).width(Length::Fill))
         .push(
             container(muted(text::caption(item.age.clone())))
                 .width(Length::Fixed(AGE_COLUMN_WIDTH))

@@ -7,6 +7,7 @@ pub const NEWS_FEED_URL: &str = "https://archlinux.org/feeds/news/";
 pub const NEWS_ITEMS: usize = 3;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const NEWS_TITLE_CHARS: usize = 90;
 
 #[derive(Clone, Debug)]
 pub struct NewsItem {
@@ -35,12 +36,20 @@ pub fn build_news_rows(items: Vec<NewsItem>, now: i64) -> Vec<NewsRow> {
         .map(|item| {
             let elapsed = now.saturating_sub(item.published).max(0) as u64;
             NewsRow {
-                title: item.title,
+                title: clip_title(&item.title),
                 url: item.url,
                 age: crate::utils::humanize_age(elapsed),
             }
         })
         .collect()
+}
+
+fn clip_title(title: &str) -> String {
+    if title.chars().count() <= NEWS_TITLE_CHARS {
+        return title.to_string();
+    }
+    let clipped: String = title.chars().take(NEWS_TITLE_CHARS).collect();
+    format!("{clipped}\u{2026}")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
