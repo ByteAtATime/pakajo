@@ -31,6 +31,7 @@ pub enum PrivilegedOperation {
 pub struct BuildOperation {
     pub targets: Vec<String>,
     pub as_deps: bool,
+    pub no_check: bool,
 }
 
 #[derive(Debug, PartialEq)]

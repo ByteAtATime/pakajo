@@ -6,7 +6,6 @@ use futures::StreamExt as _;
 use pakajo::dispatch::exec::{ChildOutcome, StreamItem};
 use pakajo::dispatch::operation::{BuildOperation, PrivilegedOperation};
 use pakajo::dispatch::protocol::{AutomaticDecider, Completion, classify_completion};
-use pakajo::dry_run::{dry_run_for_repo_targets, dry_run_for_target};
 use pakajo::events::InstallEvent;
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
@@ -121,14 +120,19 @@ impl Transaction {
     pub(crate) fn start(name: String, source: PackageSource) -> (Self, Task<crate::Message>) {
         let model = TransactionModel::new(name.clone(), source, InstallKind::Install);
         let name_for_dry = name.clone();
-        let is_repo = matches!(source, PackageSource::Repo);
         let task = crate::components::task::blocking_task(
             move || {
-                if is_repo {
-                    dry_run_for_repo_targets(std::slice::from_ref(&name_for_dry))
-                } else {
-                    dry_run_for_target(&name_for_dry)
-                }
+                let request = pakajo::dispatch::InstallRequest {
+                    targets: vec![name_for_dry],
+                    as_deps: false,
+                    ignores: vec![],
+                    prefer_aur: matches!(source, PackageSource::Aur),
+                    decider: Box::new(AutomaticDecider),
+                    approvals: None,
+                    tty: false,
+                    json: false,
+                };
+                pakajo::dispatch::install_preview(&request).map(|preview| preview.questions)
             },
             "dry-run channel closed",
             |result| crate::Message::Transaction(TransactionMessage::DryRunResult(result)).into(),
@@ -308,39 +312,19 @@ impl Transaction {
     }
 
     fn launch_subprocess(&mut self, approvals: Option<String>) -> Action {
-        if self.model.is_aur() {
-            return self.launch_aur_in_process(approvals);
-        }
-        let sealed = match approvals
-            .as_deref()
-            .map(|payload| pakajo::dispatch::approvals::ApprovalsFile::write(payload.as_bytes()))
-            .transpose()
-        {
-            Ok(sealed) => sealed,
-            Err(e) => {
-                eprintln!("[pakajo] approvals write failed: {e:#}");
-                self.model.finish(ChildOutcome::Failed(format!("{e:#}")));
-                return Action::None;
-            }
-        };
         let name = self.model.name.clone();
         self.model.status = TransactionStatus::Running;
-        let operation = PrivilegedOperation::Install {
+        let request = pakajo::dispatch::InstallRequest {
             targets: vec![name],
             as_deps: false,
-            approvals: sealed,
+            ignores: vec![],
+            prefer_aur: matches!(self.model.source, PackageSource::Aur),
+            decider: Box::new(AutomaticDecider),
+            approvals,
+            tty: false,
+            json: false,
         };
-        Action::Run(stream_privileged(operation))
-    }
-
-    fn launch_aur_in_process(&mut self, approvals: Option<String>) -> Action {
-        let name = self.model.name.clone();
-        self.model.status = TransactionStatus::Running;
-        let operation = BuildOperation {
-            targets: vec![name],
-            as_deps: false,
-        };
-        Action::Run(stream_build(operation, approvals))
+        Action::Run(stream_items(pakajo::dispatch::install(request)))
     }
 
     fn launch_remove_subprocess(&mut self) -> Action {
@@ -399,6 +383,7 @@ impl Transaction {
         let operation = BuildOperation {
             targets,
             as_deps: false,
+            no_check: false,
         };
         (Self { model }, stream_build(operation, None))
     }

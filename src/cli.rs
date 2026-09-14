@@ -1,7 +1,6 @@
-use crate::color;
-use crate::dispatch::child::{Presentation, code_from};
+use crate::dispatch::child::Presentation;
 use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem};
-use crate::dispatch::operation::{BuildOperation, ChildOperation, PrivilegedOperation};
+use crate::dispatch::operation::{BuildOperation, PrivilegedOperation};
 use crate::dispatch::protocol::TerminalDecider;
 use crate::events::{InstallEvent, InstallSink};
 use crate::install::InstallTarget;
@@ -31,7 +30,7 @@ pub use self::sinks::ConsoleSink;
 pub(crate) use self::sinks::{EscalatedSink, JsonSink};
 
 pub(crate) mod privs;
-use self::privs::{is_root, stdin_is_tty};
+use self::privs::stdin_is_tty;
 
 mod commands;
 pub(crate) use self::commands::{alpm_handle, answerer_for};
@@ -94,6 +93,7 @@ fn drain_build(targets: &[String], as_deps: bool, json: bool, skip_review: bool)
     let operation = BuildOperation {
         targets: targets.to_vec(),
         as_deps,
+        no_check: false,
     };
     let decider = Box::new(TerminalDecider::new(json, skip_review));
     drain(operation.dispatch(decider, None, stdin_is_tty()), json)
@@ -106,86 +106,17 @@ fn install_subcommand(args: InstallArgs) -> i32 {
         usage_error();
     }
 
-    let handle = alpm_handle_or_exit();
-    let positionals = expand_groups(&handle, &positionals, stdin_is_tty() && !args.json);
-
-    if is_root() {
-        let operation = ChildOperation::Install {
-            targets: positionals,
-            as_deps: args.as_deps,
-            approvals_path: None,
-            stream: args.json,
-        };
-        return code_from(operation.execute());
-    }
-
-    let (repo_or_file, aur) = split_install_targets(&handle, &positionals);
-
-    if aur.is_empty() {
-        install_repo_only(&handle, &positionals, args.as_deps, args.json)
-    } else if repo_or_file.is_empty() {
-        install_aur_only(&aur, args.as_deps, args.json, args.skip_review)
-    } else {
-        install_mixed(
-            &handle,
-            &repo_or_file,
-            &aur,
-            args.as_deps,
-            args.json,
-            args.skip_review,
-        )
-    }
-}
-
-fn install_repo_only(
-    handle: &alpm::Alpm,
-    positionals: &[String],
-    as_deps: bool,
-    json: bool,
-) -> i32 {
-    if !json {
-        print_sync_preamble(handle, positionals);
-    }
-    let operation = PrivilegedOperation::Install {
-        targets: positionals.to_vec(),
-        as_deps,
+    let request = crate::dispatch::InstallRequest {
+        targets: positionals,
+        as_deps: args.as_deps,
+        ignores: vec![],
+        prefer_aur: false,
+        decider: Box::new(TerminalDecider::new(args.json, args.skip_review)),
         approvals: None,
+        tty: stdin_is_tty() && !args.json,
+        json: args.json,
     };
-    outcome_code(&drain_privileged(operation, json))
-}
-
-fn install_aur_only(aur: &[String], as_deps: bool, json: bool, skip_review: bool) -> i32 {
-    outcome_code(&drain_build(aur, as_deps, json, skip_review))
-}
-
-fn install_mixed(
-    handle: &alpm::Alpm,
-    repo_or_file: &[String],
-    aur: &[String],
-    as_deps: bool,
-    json: bool,
-    skip_review: bool,
-) -> i32 {
-    if !json {
-        print_sync_preamble(handle, repo_or_file);
-    }
-    let operation = PrivilegedOperation::Install {
-        targets: repo_or_file.to_vec(),
-        as_deps,
-        approvals: None,
-    };
-    let repo_outcome = drain_privileged(operation, json);
-    if !matches!(repo_outcome, ChildOutcome::Success) {
-        return outcome_code(&repo_outcome);
-    }
-    match drain_build(aur, as_deps, json, skip_review) {
-        ChildOutcome::Success => 0,
-        outcome => {
-            let reason = outcome.reason();
-            eprintln!("warning: repo packages installed; AUR phase failed: {reason}");
-            1
-        }
-    }
+    outcome_code(&drain(crate::dispatch::install(request), args.json))
 }
 
 fn search_subcommand(args: SearchArgs) -> ! {
@@ -310,41 +241,6 @@ fn sink_for(json: bool) -> Box<dyn InstallSink> {
     }
 }
 
-fn expand_groups(handle: &alpm::Alpm, positionals: &[String], interactive: bool) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for s in positionals {
-        if crate::package::repo_exists(handle, s) {
-            if seen.insert(s.clone()) {
-                out.push(s.clone());
-            }
-            continue;
-        }
-        let groups = crate::package::find_groups(handle, s);
-        if groups.is_empty() {
-            if seen.insert(s.clone()) {
-                out.push(s.clone());
-            }
-            continue;
-        }
-        let members: Vec<String> = if interactive {
-            self::prompts::select_group_members(s, &groups)
-        } else {
-            groups
-                .iter()
-                .flat_map(|g| g.members.iter())
-                .map(|m| m.name.clone())
-                .collect()
-        };
-        for name in members {
-            if seen.insert(name.clone()) {
-                out.push(name);
-            }
-        }
-    }
-    out
-}
-
 pub(crate) fn classify_target(s: &str) -> InstallTarget {
     const FILE_SUFFIXES: &[&str] = &[".pkg.tar", ".pkg.tar.gz", ".pkg.tar.zst", ".pkg.tar.xz"];
     if FILE_SUFFIXES.iter().any(|suffix| s.ends_with(suffix)) {
@@ -352,47 +248,6 @@ pub(crate) fn classify_target(s: &str) -> InstallTarget {
     } else {
         InstallTarget::Repo(s.into())
     }
-}
-
-fn split_install_targets(
-    handle: &alpm::Alpm,
-    positionals: &[String],
-) -> (Vec<String>, Vec<String>) {
-    let mut repo_or_file: Vec<String> = Vec::new();
-    let mut aur: Vec<String> = Vec::new();
-    for s in positionals {
-        match classify_target(s) {
-            InstallTarget::File(_) => repo_or_file.push(s.clone()),
-            InstallTarget::Repo(ref name) => {
-                if crate::package::repo_exists(handle, name) {
-                    repo_or_file.push(s.clone());
-                } else {
-                    aur.push(s.clone());
-                }
-            }
-        }
-    }
-    (repo_or_file, aur)
-}
-
-fn print_sync_preamble(handle: &alpm::Alpm, targets: &[String]) {
-    let labeled: Vec<String> = targets
-        .iter()
-        .map(|name| match crate::package::find(handle, name) {
-            Some(pkg) => format!("{name}-{}", pkg.version),
-            None => name.clone(),
-        })
-        .collect();
-    let c = color::stdout_color();
-    println!(
-        "{} {}",
-        color::paint(
-            c,
-            color::BOLD,
-            &format!("Sync Explicit ({}):", targets.len())
-        ),
-        color::paint(c, color::CYAN, &labeled.join(", "))
-    );
 }
 
 fn dedup_positionals(positionals: Vec<String>) -> Vec<String> {

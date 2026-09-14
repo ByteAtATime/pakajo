@@ -5,3 +5,6 @@ pub mod operation;
 pub mod protocol;
 mod remove;
 pub use remove::{Preview, RemoveRequest, preview, remove};
+pub(crate) mod install;
+pub use install::{InstallRequest, install, install_preview};
+pub(crate) mod session;

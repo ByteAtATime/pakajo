@@ -644,7 +644,17 @@ mod tests {
             }],
         };
 
-        let qs = crate::dry_run::dry_run(&mut handle, &plan).expect("dry_run should succeed");
+        let state = crate::dry_run::attach_recorder(&mut handle);
+        handle
+            .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
+            .expect("failed to init stub preview transaction");
+        crate::dispatch::install::queue_stub_targets(&mut handle, &Some(plan))
+            .expect("stub queueing should succeed");
+        handle
+            .trans_prepare()
+            .expect("stub transaction should prepare");
+        let qs = crate::dry_run::snapshot(&state);
+        let _ = handle.trans_release();
         assert!(
             qs.conflicts
                 .iter()
@@ -702,13 +712,28 @@ mod tests {
             .pkg("cava-git")
             .expect("cava-git should be installed in localdb after seeding");
 
-        let qs = crate::dry_run::repo_dry_run(&mut handle, &["cava".to_string()])
-            .expect("repo dry-run should succeed");
+        let request = crate::dispatch::InstallRequest {
+            targets: vec!["cava".to_string()],
+            as_deps: false,
+            ignores: vec![],
+            prefer_aur: false,
+            decider: Box::new(crate::dispatch::protocol::AutomaticDecider),
+            approvals: None,
+            tty: false,
+            json: false,
+        };
+        let state = crate::dry_run::attach_recorder(&mut handle);
+        let preview = crate::dispatch::install::run_install_preview(&mut handle, &request, &state)
+            .expect("install preview should succeed");
+        let _ = handle.trans_release();
         assert!(
-            qs.conflicts
+            preview
+                .questions
+                .conflicts
                 .iter()
                 .any(|c| c.incoming == "cava" && c.removable == "cava-git"),
-            "should capture the cava vs cava-git conflict; got {qs:?}"
+            "should capture the cava vs cava-git conflict; got {:?}",
+            preview.questions
         );
     }
 

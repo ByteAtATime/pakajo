@@ -5,8 +5,6 @@ use anyhow::Context as _;
 
 use crate::events::TransactionSummary;
 use crate::question::{Conflict, ProviderCandidate, ProviderPrompt, QuestionSet};
-use crate::resolve::BuildPlan;
-use crate::stub_pkg::build_stub_pkg;
 
 #[derive(Default)]
 pub(crate) struct RecorderState {
@@ -14,32 +12,6 @@ pub(crate) struct RecorderState {
     providers: Vec<ProviderPrompt>,
     had_unsupported: bool,
     unsupported_summary: String,
-}
-
-pub fn dry_run_for_target(target: &str) -> anyhow::Result<QuestionSet> {
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let mut alpm = crate::pacman::init_alpm(&config)?;
-    let aur = crate::aur::AurClient::new();
-    let plan = crate::resolve::resolve(
-        &crate::resolve::AlpmDb(&alpm),
-        &aur,
-        &[target.to_string()],
-        false,
-    )?;
-    dry_run(&mut alpm, &plan)
-}
-
-pub fn dry_run_for_repo_targets(targets: &[String]) -> anyhow::Result<QuestionSet> {
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let mut alpm = crate::pacman::init_alpm(&config)?;
-    repo_dry_run(&mut alpm, targets)
-}
-
-pub fn repo_dry_run(handle: &mut alpm::Alpm, targets: &[String]) -> anyhow::Result<QuestionSet> {
-    let state = attach_recorder(handle);
-    let outcome = run_repo_dry_run_transaction(handle, targets, &state);
-    let _ = handle.trans_release();
-    outcome
 }
 
 #[derive(Debug, Clone)]
@@ -197,70 +169,6 @@ pub(crate) fn attach_recorder(handle: &mut alpm::Alpm) -> Rc<RefCell<RecorderSta
     state
 }
 
-pub fn dry_run(handle: &mut alpm::Alpm, plan: &BuildPlan) -> anyhow::Result<QuestionSet> {
-    let state = attach_recorder(handle);
-    let outcome = run_dry_run_transaction(handle, plan, &state);
-    let _ = handle.trans_release();
-    outcome
-}
-
-fn run_dry_run_transaction(
-    handle: &mut alpm::Alpm,
-    plan: &BuildPlan,
-    state: &Rc<RefCell<RecorderState>>,
-) -> anyhow::Result<QuestionSet> {
-    handle
-        .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
-        .context("failed to init dry-run transaction")?;
-
-    let stub_dir = tempfile::tempdir().context("failed to create stub work dir")?;
-    for layer in &plan.layers {
-        for info in &layer.aur {
-            let path = build_stub_pkg(info, stub_dir.path())
-                .with_context(|| format!("failed to build stub for {}", info.name))?;
-            let loaded = handle
-                .pkg_load(path.to_string_lossy().as_ref(), false, alpm::SigLevel::NONE)
-                .with_context(|| format!("failed to load stub for {}", info.name))?;
-            handle
-                .trans_add_pkg(loaded)
-                .map_err(alpm::Error::from)
-                .with_context(|| format!("failed to queue stub for {}", info.name))?;
-        }
-    }
-
-    let prepare_result = handle.trans_prepare();
-    let snapshot = snapshot(state);
-
-    match prepare_result {
-        Ok(()) => Ok(snapshot),
-        Err(err) => Err(classify_prepare_error(err)),
-    }
-}
-
-fn run_repo_dry_run_transaction(
-    handle: &mut alpm::Alpm,
-    targets: &[String],
-    state: &Rc<RefCell<RecorderState>>,
-) -> anyhow::Result<QuestionSet> {
-    handle
-        .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
-        .context("failed to init dry-run transaction")?;
-    for target in targets {
-        let pkg = crate::pacman::find_pkg(handle, target)
-            .ok_or_else(|| anyhow::anyhow!("package '{target}' not found in any repository"))?;
-        handle
-            .trans_add_pkg(pkg)
-            .map_err(alpm::Error::from)
-            .with_context(|| format!("failed to queue package for dry-run: {target}"))?;
-    }
-    let prepare_result = handle.trans_prepare();
-    let snapshot = snapshot(state);
-    match prepare_result {
-        Ok(()) => Ok(snapshot),
-        Err(err) => Err(classify_prepare_error(err)),
-    }
-}
-
 pub(crate) fn snapshot(state: &Rc<RefCell<RecorderState>>) -> QuestionSet {
     let s = state.borrow();
     QuestionSet {
@@ -268,21 +176,6 @@ pub(crate) fn snapshot(state: &Rc<RefCell<RecorderState>>) -> QuestionSet {
         providers: s.providers.clone(),
         had_unsupported_question: s.had_unsupported,
         unsupported_summary: s.unsupported_summary.clone(),
-    }
-}
-
-fn classify_prepare_error(err: alpm::PrepareError) -> anyhow::Error {
-    match err.data() {
-        Some(alpm::PrepareData::ConflictingDeps(list)) => {
-            let detail = list
-                .iter()
-                .map(|c| format!("{} vs {}", c.package1().name(), c.package2().name()))
-                .collect::<Vec<_>>()
-                .join(", ");
-            anyhow::anyhow!("unresolvable conflict(s): {detail}")
-        }
-        Some(other) => anyhow::anyhow!("dry_run trans_prepare failed: {other:?}"),
-        None => anyhow::anyhow!("dry_run trans_prepare failed: {}", err.error()),
     }
 }
 

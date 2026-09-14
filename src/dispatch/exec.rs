@@ -237,7 +237,7 @@ impl BuildOperation {
             let mut sink = ChannelSink::new(tx.clone());
             let result = crate::build::run_build(
                 &self.targets,
-                false,
+                self.no_check,
                 self.as_deps,
                 &mut sink,
                 decider.as_ref(),

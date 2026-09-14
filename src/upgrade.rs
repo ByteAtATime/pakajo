@@ -36,13 +36,19 @@ pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
 
 pub fn apply_ignores(handle: &mut alpm::Alpm, config: &pacmanconf::Config, extra: &[String]) {
     for name in &config.ignore_pkg {
-        let _ = handle.add_ignorepkg(name.as_str());
+        if handle.add_ignorepkg(name.as_str()).is_err() {
+            eprintln!("warning: failed to ignore package {name}");
+        }
     }
     for group in &config.ignore_group {
-        let _ = handle.add_ignoregroup(group.as_str());
+        if handle.add_ignoregroup(group.as_str()).is_err() {
+            eprintln!("warning: failed to ignore group {group}");
+        }
     }
     for name in extra {
-        let _ = handle.add_ignorepkg(name.as_str());
+        if handle.add_ignorepkg(name.as_str()).is_err() {
+            eprintln!("warning: failed to ignore package {name}");
+        }
     }
 }
 
