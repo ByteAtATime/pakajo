@@ -1,10 +1,11 @@
 use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{Column, Row, Space, container, divider, scrollable, text, tooltip};
+use cosmic::widget::{Column, Row, Space, button, container, divider, scrollable, text, tooltip};
 
-use pakajo::dashboard::{DashboardSnapshot, OptdepEntry};
+use pakajo::dashboard::{DashboardSnapshot, OptdepEntry, RecentPkg};
 use pakajo::utils::{format_bytes, group_thousands};
 
 use crate::Element;
+use crate::components::search::SearchMessage;
 use crate::components::theme::{card_style, muted};
 
 const MAX_CONTENT_WIDTH: f32 = 840.0;
@@ -13,6 +14,7 @@ const BAND_SKELETON_HEIGHT: f32 = 100.0;
 const PACKAGE_SKELETON_HEIGHT: f32 = 250.0;
 const NEWS_SKELETON_HEIGHT: f32 = 150.0;
 const OPTDEP_COUNT_WIDTH: f32 = 90.0;
+const AGE_COLUMN_WIDTH: f32 = 90.0;
 const OPTDEP_TOOLTIP_ROWS: usize = 8;
 
 fn skeleton_card(height: f32) -> Element<'static> {
@@ -149,6 +151,53 @@ fn optdep_card(top: &[OptdepEntry], pad: f32) -> Element<'static> {
     .into()
 }
 
+fn recent_row(pkg: &RecentPkg) -> Element<'static> {
+    let label = Row::new()
+        .align_y(Alignment::Center)
+        .spacing(8.0)
+        .push(text::body(pkg.name.clone()))
+        .push(muted(text::caption(format!("({})", pkg.version))));
+    let inner = Row::new()
+        .align_y(Alignment::Center)
+        .spacing(12.0)
+        .push(container(label).width(Length::Fill))
+        .push(
+            container(muted(text::caption(pkg.age.clone())))
+                .width(Length::Fixed(AGE_COLUMN_WIDTH))
+                .align_x(Alignment::End),
+        );
+    button::custom(inner)
+        .on_press(crate::Message::Search(SearchMessage::QueryChanged(
+            pkg.name.clone(),
+        )))
+        .class(cosmic::theme::Button::ListItem([0.0; 4]))
+        .padding(0)
+        .width(Length::Fill)
+        .into()
+}
+
+fn recent_card(recent: &[RecentPkg], pad: f32) -> Element<'static> {
+    let content: Element<'static> = if recent.is_empty() {
+        muted(text::caption(String::from("No recent activity")))
+    } else {
+        let mut list = Column::new().spacing(8.0);
+        for pkg in recent {
+            list = list.push(recent_row(pkg));
+        }
+        list.into()
+    };
+    container(
+        Column::new()
+            .spacing(8.0)
+            .push(text::heading(String::from("Recently updated")))
+            .push(content),
+    )
+    .style(card_style)
+    .padding(pad)
+    .width(Length::Fill)
+    .into()
+}
+
 pub fn dashboard_view(snapshot: Option<&DashboardSnapshot>) -> Element<'static> {
     let spacing = cosmic::theme::spacing();
     let gap = spacing.space_xs as f32;
@@ -162,7 +211,7 @@ pub fn dashboard_view(snapshot: Option<&DashboardSnapshot>) -> Element<'static> 
         Some(data) => Row::new()
             .align_y(Alignment::Start)
             .spacing(gap)
-            .push(skeleton_card(PACKAGE_SKELETON_HEIGHT))
+            .push(recent_card(&data.recent, pad))
             .push(optdep_card(&data.optdeps, pad)),
         None => Row::new()
             .spacing(gap)

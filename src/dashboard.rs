@@ -9,6 +9,13 @@ pub struct OptdepEntry {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct RecentPkg {
+    pub name: String,
+    pub version: String,
+    pub age: String,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct DashboardSnapshot {
     pub installed_total: u64,
     pub repo_count: u64,
@@ -18,6 +25,7 @@ pub struct DashboardSnapshot {
     pub aur_bytes: i64,
     pub optdeps: Vec<OptdepEntry>,
     pub optdep_total: usize,
+    pub recent: Vec<RecentPkg>,
 }
 
 #[derive(Clone, Debug)]
@@ -36,10 +44,12 @@ pub enum DashboardMessage {
 pub fn compute_dashboard_snapshot(
     handle: &alpm::Alpm,
     foreign: &HashSet<String>,
+    now: i64,
 ) -> DashboardSnapshot {
     let mut snapshot = DashboardSnapshot::default();
     let mut installed: HashSet<String> = HashSet::new();
     let mut optdep_map: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut dated: Vec<(String, String, i64)> = Vec::new();
     for pkg in handle.localdb().pkgs().iter() {
         let size = pkg.isize();
         snapshot.installed_total += 1;
@@ -72,6 +82,9 @@ pub fn compute_dashboard_snapshot(
             }
             requesters.push((requester.clone(), reason));
         }
+        if let Some(date) = pkg.install_date().filter(|date| *date != 0) {
+            dated.push((requester.clone(), pkg.version().as_str().to_string(), date));
+        }
     }
     let mut optdeps: Vec<(String, Vec<(String, String)>)> = optdep_map
         .into_iter()
@@ -83,6 +96,19 @@ pub fn compute_dashboard_snapshot(
         .into_iter()
         .take(5)
         .map(|(name, requesters)| OptdepEntry { name, requesters })
+        .collect();
+    dated.sort_by_key(|entry| std::cmp::Reverse(entry.2));
+    snapshot.recent = dated
+        .into_iter()
+        .take(5)
+        .map(|(name, version, installed_at)| {
+            let elapsed = now.saturating_sub(installed_at).max(0) as u64;
+            RecentPkg {
+                name,
+                version,
+                age: crate::utils::humanize_age(elapsed),
+            }
+        })
         .collect();
     snapshot
 }
@@ -99,6 +125,10 @@ pub fn gather_dashboard() -> anyhow::Result<(HashSet<String>, DashboardSnapshot)
         }
     };
     let foreign: HashSet<String> = crate::package::foreign_names(&handle).into_iter().collect();
-    let snapshot = compute_dashboard_snapshot(&handle, &foreign);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let snapshot = compute_dashboard_snapshot(&handle, &foreign, now);
     Ok((foreign, snapshot))
 }
