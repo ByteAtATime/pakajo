@@ -2,8 +2,8 @@ use cosmic::app::Task;
 use cosmic::iced::{Alignment, Background, Border, Color, Length};
 use cosmic::widget::{Column, Row, button, container, scrollable, space, text};
 
-use anyhow::Context as _;
-use pakajo::dry_run::{PrepareFailure, SysupgradePreview};
+use pakajo::dispatch::Preview;
+use pakajo::dry_run::PrepareFailure;
 use pakajo::events::{SummaryPackage, TransactionSummary};
 use pakajo::question::{collect_approvals, default_approve, encode_approvals};
 
@@ -70,10 +70,9 @@ use crate::components::updates::aur_upgrade_row;
 use cosmic::widget::divider;
 
 #[derive(Clone, Debug)]
-#[allow(clippy::large_enum_variant)]
 pub enum SysupgradeMessage {
     StartPreview,
-    PreviewFetched(Result<SysupgradePreview, String>),
+    PreviewFetched(Result<Box<Preview>, String>),
     ToggleConflict(usize),
     SelectProvider { depend: String, idx: usize },
     Continue,
@@ -99,20 +98,12 @@ impl crate::PakajoApp {
         self.sysupgrade_preview_in_flight = true;
         eprintln!("[pakajo] starting sysupgrade preview");
         crate::components::task::blocking_task(
-            move || -> anyhow::Result<SysupgradePreview> {
-                let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-                let mut handle = pakajo::pacman::init_alpm_rootless(&config)?;
-                pakajo::pacman::refresh_sync_dbs_rootless(&mut handle)?;
-                let mut preview =
-                    pakajo::dry_run::compute_sysupgrade_preview(&mut handle, &config)?;
-                let aur_names: Vec<String> = preview.aur.iter().map(|c| c.name.clone()).collect();
-                if !aur_names.is_empty() {
-                    match pakajo::pkgbuild::prepare_pkgbuild_diffs(&aur_names) {
-                        Ok(diffs) => preview.pkgbuild_diffs = diffs,
-                        Err(e) => eprintln!("[pakajo] pkgbuild diff computation failed: {e:#}"),
-                    }
-                }
-                Ok(preview)
+            move || -> anyhow::Result<Box<Preview>> {
+                let request = pakajo::dispatch::SysupgradePreviewRequest {
+                    no_refresh: false,
+                    ignores: Vec::new(),
+                };
+                pakajo::dispatch::sysupgrade_preview(&request).map(Box::new)
             },
             "sysupgrade preview cancelled",
             |result| crate::Message::Sysupgrade(SysupgradeMessage::PreviewFetched(result)).into(),
@@ -163,11 +154,29 @@ impl crate::PakajoApp {
                 }
             }
         };
-        let (transaction, task) = Transaction::start_sysupgrade_repo(fingerprint, approvals);
+        let (transaction, task) =
+            Transaction::start_sysupgrade(pakajo::dispatch::SysupgradeRequest {
+                no_refresh: false,
+                repo_only: false,
+                ignores: Vec::new(),
+                decider: Box::new(pakajo::dispatch::protocol::AutomaticDecider),
+                aur_targets: Some(preview.aur.iter().map(|c| c.name.clone()).collect()),
+                fingerprint: Some(fingerprint),
+                approvals,
+                tty: false,
+                json: false,
+            });
         self.transaction = Some(transaction);
-        self.active_sysupgrade_phase = Some(pakajo::progress::SysupgradePhase::Repo);
         eprintln!("[pakajo] sysupgrade repo apply started");
         task
+    }
+
+    pub(crate) fn clear_sysupgrade_state(&mut self) {
+        self.sysupgrade_preview = None;
+        self.sysupgrade_review = None;
+        self.sysupgrade_preview_error = None;
+        self.sysupgrade_preview_in_flight = false;
+        self.pkgbuild_review_index = 0;
     }
 
     pub(crate) fn handle_sysupgrade(&mut self, message: SysupgradeMessage) -> Task<crate::Message> {
@@ -178,10 +187,8 @@ impl crate::PakajoApp {
                 self.sysupgrade_preview_in_flight = false;
                 match result {
                     Ok(preview) => {
-                        self.sysupgrade_aur_targets =
-                            preview.aur.iter().map(|c| c.name.clone()).collect();
-                        self.sysupgrade_preview = Some(preview.clone());
-                        self.sysupgrade_preview_error = None;
+                        let preview = *preview;
+                        let aur_count = preview.aur.len();
                         let has_resolve = !preview.questions.conflicts.is_empty()
                             || !preview.questions.providers.is_empty();
                         let has_diffs = !preview.pkgbuild_diffs.is_empty();
@@ -202,11 +209,13 @@ impl crate::PakajoApp {
                         eprintln!(
                             "[pakajo] sysupgrade preview ready (repo={} aur={} resolve={} diffs={}) -> {:?}",
                             preview.summary.packages.len(),
-                            self.sysupgrade_aur_targets.len(),
+                            aur_count,
                             has_resolve,
                             has_diffs,
                             next
                         );
+                        self.sysupgrade_preview = Some(preview);
+                        self.sysupgrade_preview_error = None;
                         self.goto_page(next)
                     }
                     Err(msg) => {

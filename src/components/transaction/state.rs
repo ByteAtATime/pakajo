@@ -71,6 +71,9 @@ impl TransactionModel {
             apply_aur_counters(&mut self.aur, ev, std::time::Instant::now());
             return;
         }
+        if self.is_sysupgrade() {
+            apply_aur_counters(&mut self.aur, ev, std::time::Instant::now());
+        }
         apply_repo_counters(&mut self.repo_state, ev, std::time::Instant::now());
         if matches!(ev, InstallEvent::TransactionSummary(_)) {
             self.leave_resolve();
@@ -98,7 +101,7 @@ impl TransactionModel {
     }
 
     pub(crate) fn finish(&mut self, outcome: ChildOutcome) {
-        if self.is_aur() {
+        if self.is_aur() || self.is_sysupgrade() {
             finish_aur(&mut self.aur, &outcome, std::time::Instant::now());
         }
         if let ChildOutcome::Failed(message) | ChildOutcome::NotFound(message) = &outcome {
@@ -110,6 +113,12 @@ impl TransactionModel {
         self.status = TransactionStatus::Done(outcome);
     }
 
+    pub(crate) fn build_owns_failure(&self) -> bool {
+        self.is_sysupgrade()
+            && !self.aur.build_order.is_empty()
+            && self.aur_stage_state(AurStage::Build) == StageState::Failed
+    }
+
     pub(crate) fn stage_state(&self, i: usize) -> StageState {
         if i < self.current_idx {
             StageState::Done
@@ -118,6 +127,7 @@ impl TransactionModel {
                 TransactionStatus::Checking => StageState::Pending,
                 TransactionStatus::Running => StageState::Active,
                 TransactionStatus::Done(ChildOutcome::Success) => StageState::Done,
+                TransactionStatus::Done(_) if self.build_owns_failure() => StageState::Done,
                 TransactionStatus::Done(_) => StageState::Failed,
             }
         } else {
@@ -130,6 +140,8 @@ impl TransactionModel {
             ordered_aur_stages()
                 .get(i)
                 .is_some_and(|stage| self.aur_stage_state(*stage) == StageState::Done)
+        } else if self.is_sysupgrade() && i == self.stages.len() {
+            self.aur_stage_state(AurStage::Build) == StageState::Done
         } else {
             self.stage_state(i) == StageState::Done
         };
@@ -149,6 +161,9 @@ impl TransactionModel {
     }
 
     pub(crate) fn building(&self) -> bool {
+        if self.is_sysupgrade() {
+            return self.aur.building();
+        }
         self.is_aur() && self.aur.building()
     }
 
@@ -387,6 +402,50 @@ mod tests {
         );
         assert_eq!(
             model.aur.builds.get("yay").expect("yay present").status,
+            BuildStatus::Failed
+        );
+    }
+
+    #[test]
+    fn sysupgrade_build_failure_attributed_to_build() {
+        use pakajo::events::TransactionSummary;
+        let mut model = TransactionModel::new(
+            "system".to_string(),
+            PackageSource::Repo,
+            InstallKind::Upgrade,
+        );
+        model.status = TransactionStatus::Running;
+        model.apply_event(&InstallEvent::TransactionSummary(TransactionSummary {
+            packages: Vec::new(),
+            total_download_size: 0,
+            total_installed_size: 0,
+            total_removed_size: 0,
+        }));
+        model.apply_event(&InstallEvent::PackageOperation {
+            operation: PackageOp::Install,
+            package: "foo".to_string(),
+            new_version: Some("1.0-1".to_string()),
+            old_version: None,
+        });
+        model.apply_event(&InstallEvent::HookRun {
+            position: 1,
+            total: 1,
+            name: "update-desktop-database".to_string(),
+            desc: None,
+        });
+        model.apply_event(&InstallEvent::CloningRepo {
+            package: "bar".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildStarted {
+            package: "bar".to_string(),
+        });
+        model.finish(ChildOutcome::Failed("makepkg failed".to_string()));
+        assert_eq!(model.failure_message.as_deref(), Some("makepkg failed"));
+        assert_eq!(model.stage_state(4), StageState::Done);
+        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Failed);
+        assert!(model.build_owns_failure());
+        assert_eq!(
+            model.aur.builds.get("bar").expect("bar present").status,
             BuildStatus::Failed
         );
     }

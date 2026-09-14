@@ -83,14 +83,12 @@ pub struct PakajoApp {
     pub(crate) updates_refresh_error: Option<String>,
     pub(crate) pending_force_refresh: Option<RefreshKind>,
     pub(crate) page: Page,
-    pub(crate) sysupgrade_preview: Option<pakajo::dry_run::SysupgradePreview>,
+    pub(crate) sysupgrade_preview: Option<pakajo::dispatch::Preview>,
     pub(crate) sysupgrade_preview_error: Option<String>,
     pub(crate) sysupgrade_preview_in_flight: bool,
     search_focus_pending: bool,
-    pub(crate) sysupgrade_aur_targets: Vec<String>,
     pub(crate) sysupgrade_review: Option<ReviewModel>,
     pub(crate) pkgbuild_review_index: usize,
-    pub(crate) active_sysupgrade_phase: Option<pakajo::progress::SysupgradePhase>,
 }
 
 impl Application for PakajoApp {
@@ -187,10 +185,8 @@ impl Application for PakajoApp {
             sysupgrade_preview_error: None,
             sysupgrade_preview_in_flight: false,
             search_focus_pending: true,
-            sysupgrade_aur_targets: Vec::new(),
             sysupgrade_review: None,
             pkgbuild_review_index: 0,
-            active_sysupgrade_phase: None,
         };
         let task = match pakajo::updates::load_cached() {
             Some(cache) => {
@@ -449,45 +445,24 @@ impl PakajoApp {
             }
             other => {
                 let action = match self.transaction.as_mut() {
-                    Some(t) => t.update(
-                        other,
-                        self.active_sysupgrade_phase,
-                        &self.sysupgrade_aur_targets,
-                    ),
+                    Some(t) => t.update(other),
                     None => Action::None,
                 };
                 match action {
                     Action::None => Task::none(),
                     Action::Run(task) => task,
-                    Action::ContinueAur(targets) => {
-                        self.active_sysupgrade_phase = Some(pakajo::progress::SysupgradePhase::Aur);
-                        eprintln!(
-                            "[pakajo] sysupgrade continuing to aur phase: {} targets",
-                            targets.len()
-                        );
-                        self.refresh_installed_state();
-                        let dashboard = self.start_dashboard_refresh();
-                        let refresh = Task::done(
-                            crate::Message::Updates(UpdatesMessage::RefreshUpdates).into(),
-                        );
-                        let (transaction, task) = Transaction::start_sysupgrade_aur(targets);
-                        self.transaction = Some(transaction);
-                        Task::batch([dashboard, refresh, task])
-                    }
                     Action::ViewClosed => {
                         self.show_transaction = false;
                         Task::none()
                     }
                     Action::Finished => {
+                        let was_sysupgrade = self
+                            .transaction
+                            .as_ref()
+                            .is_some_and(Transaction::is_sysupgrade);
                         self.transaction = None;
-                        if self.active_sysupgrade_phase.is_some() {
-                            self.sysupgrade_preview = None;
-                            self.sysupgrade_review = None;
-                            self.sysupgrade_preview_error = None;
-                            self.sysupgrade_preview_in_flight = false;
-                            self.sysupgrade_aur_targets.clear();
-                            self.pkgbuild_review_index = 0;
-                            self.active_sysupgrade_phase = None;
+                        if was_sysupgrade {
+                            self.clear_sysupgrade_state();
                             return Task::batch([self.goto_page(crate::Page::Updates)]);
                         }
                         Task::none()
@@ -497,14 +472,12 @@ impl PakajoApp {
                         let refresh = Task::done(
                             crate::Message::Updates(UpdatesMessage::RefreshUpdates).into(),
                         );
-                        if self.active_sysupgrade_phase.is_some() {
-                            self.sysupgrade_preview = None;
-                            self.sysupgrade_review = None;
-                            self.sysupgrade_preview_error = None;
-                            self.sysupgrade_preview_in_flight = false;
-                            self.sysupgrade_aur_targets.clear();
-                            self.pkgbuild_review_index = 0;
-                            self.active_sysupgrade_phase = None;
+                        if self
+                            .transaction
+                            .as_ref()
+                            .is_some_and(Transaction::is_sysupgrade)
+                        {
+                            self.clear_sysupgrade_state();
                             self.transaction = None;
                             return Task::batch([refresh, self.goto_page(crate::Page::Updates)]);
                         }

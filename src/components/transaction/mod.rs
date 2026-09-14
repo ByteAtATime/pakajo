@@ -4,12 +4,11 @@ use cosmic::widget::container;
 use futures::StreamExt as _;
 
 use pakajo::dispatch::exec::{ChildOutcome, StreamItem};
-use pakajo::dispatch::operation::{BuildOperation, PrivilegedOperation};
-use pakajo::dispatch::protocol::{AutomaticDecider, Completion, classify_completion};
+use pakajo::dispatch::protocol::AutomaticDecider;
 use pakajo::events::InstallEvent;
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
-use pakajo::progress::{InstallKind, SysupgradePhase};
+use pakajo::progress::InstallKind;
 use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
 
 use crate::Element;
@@ -68,16 +67,6 @@ pub(crate) enum Action {
     Finished,
     ViewClosed,
     InstallSucceeded,
-    ContinueAur(Vec<String>),
-}
-
-fn stream_privileged(operation: PrivilegedOperation) -> Task<crate::Message> {
-    stream_items(operation.dispatch(false))
-}
-
-fn stream_build(operation: BuildOperation, approvals: Option<String>) -> Task<crate::Message> {
-    let decider = Box::new(AutomaticDecider);
-    stream_items(operation.dispatch(decider, approvals, false))
 }
 
 fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::Message> {
@@ -85,6 +74,7 @@ fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::M
         256,
         move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
             use futures::SinkExt as _;
+            let mut done_seen = false;
             while let Some(item) = rx.next().await {
                 match item {
                     StreamItem::Event(ev) => {
@@ -96,6 +86,7 @@ fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::M
                             .await;
                     }
                     StreamItem::Done(outcome) => {
+                        done_seen = true;
                         let _ = tx
                             .send(
                                 crate::Message::Transaction(TransactionMessage::InstallDone(
@@ -107,6 +98,16 @@ fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::M
                         break;
                     }
                 }
+            }
+            if !done_seen {
+                let _ = tx
+                    .send(
+                        crate::Message::Transaction(TransactionMessage::InstallDone(
+                            ChildOutcome::Failed("stream ended".into()),
+                        ))
+                        .into(),
+                    )
+                    .await;
             }
         },
     ))
@@ -156,12 +157,7 @@ impl Transaction {
         (transaction, task)
     }
 
-    pub(crate) fn update(
-        &mut self,
-        message: TransactionMessage,
-        active_phase: Option<SysupgradePhase>,
-        aur_targets: &[String],
-    ) -> Action {
+    pub(crate) fn update(&mut self, message: TransactionMessage) -> Action {
         match message {
             TransactionMessage::StartInstall => Action::None,
             TransactionMessage::InstallEvent(ev) => {
@@ -170,17 +166,12 @@ impl Transaction {
             }
             TransactionMessage::InstallDone(outcome) => {
                 eprintln!("[pakajo] install outcome: {outcome:?}");
-                let next = classify_completion(&outcome, active_phase, aur_targets);
-                match next {
-                    Completion::ContinueAur { targets } => Action::ContinueAur(targets),
-                    Completion::Completed => {
-                        self.model.finish(outcome);
-                        Action::InstallSucceeded
-                    }
-                    _ => {
-                        self.model.finish(outcome);
-                        Action::None
-                    }
+                let succeeded = matches!(outcome, ChildOutcome::Success);
+                self.model.finish(outcome);
+                if succeeded {
+                    Action::InstallSucceeded
+                } else {
+                    Action::None
                 }
             }
             TransactionMessage::DryRunResult(result) => match result {
@@ -338,9 +329,8 @@ impl Transaction {
         Action::Run(stream_items(pakajo::dispatch::remove(request)))
     }
 
-    pub(crate) fn start_sysupgrade_repo(
-        fingerprint: pakajo::dispatch::approvals::ApprovalsFile,
-        approvals: Option<String>,
+    pub(crate) fn start_sysupgrade(
+        request: pakajo::dispatch::SysupgradeRequest,
     ) -> (Self, Task<crate::Message>) {
         let mut transaction = Self {
             model: TransactionModel::new(
@@ -349,43 +339,11 @@ impl Transaction {
                 InstallKind::Upgrade,
             ),
         };
-        let sealed = match approvals
-            .as_deref()
-            .map(|payload| pakajo::dispatch::approvals::ApprovalsFile::write(payload.as_bytes()))
-            .transpose()
-        {
-            Ok(sealed) => sealed,
-            Err(e) => {
-                eprintln!("[pakajo] approvals write failed: {e:#}");
-                transaction
-                    .model
-                    .finish(ChildOutcome::Failed(format!("{e:#}")));
-                return (transaction, Task::none());
-            }
-        };
         transaction.model.status = TransactionStatus::Running;
-        let operation = PrivilegedOperation::UpgradeRepo {
-            no_refresh: false,
-            ignores: vec![],
-            fingerprint: Some(fingerprint),
-            approvals: sealed,
-        };
-        (transaction, stream_privileged(operation))
-    }
-
-    pub(crate) fn start_sysupgrade_aur(targets: Vec<String>) -> (Self, Task<crate::Message>) {
-        let mut model = TransactionModel::new(
-            SYSTEM_AUR_NAME.to_string(),
-            PackageSource::Aur,
-            InstallKind::Upgrade,
-        );
-        model.status = TransactionStatus::Running;
-        let operation = BuildOperation {
-            targets,
-            as_deps: false,
-            no_check: false,
-        };
-        (Self { model }, stream_build(operation, None))
+        (
+            transaction,
+            stream_items(pakajo::dispatch::sysupgrade(request)),
+        )
     }
 
     pub(crate) fn view(&self) -> Element<'_> {

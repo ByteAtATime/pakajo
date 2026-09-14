@@ -34,6 +34,10 @@ pub enum StreamItem {
 
 pub type DispatchStream = futures::channel::mpsc::Receiver<StreamItem>;
 
+pub fn send_done(tx: &mut futures::channel::mpsc::Sender<StreamItem>, outcome: ChildOutcome) {
+    send_item(tx, StreamItem::Done(outcome));
+}
+
 fn send_item(tx: &mut futures::channel::mpsc::Sender<StreamItem>, item: StreamItem) {
     if let Err(error) = futures::executor::block_on(tx.send(item)) {
         eprintln!("warning: dispatch stream closed: {error}");

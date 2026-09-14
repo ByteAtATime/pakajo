@@ -12,12 +12,6 @@ pub enum InstallKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SysupgradePhase {
-    Repo,
-    Aur,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepoStage {
     Resolve,
     Validate,

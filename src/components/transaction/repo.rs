@@ -1,3 +1,4 @@
+use super::aur::{build_section, failure_note};
 use super::finalize::finalize_section;
 use super::install::install_section;
 use super::resolve::prepare_section;
@@ -5,7 +6,8 @@ use super::shared::{counter_suffix, download_view, percent};
 use super::state::{StageState, TransactionModel, TransactionStatus};
 use super::stepper::{Section, sections_view};
 use crate::Element;
-use pakajo::progress::{InstallKind, RepoStage, RepoState};
+use cosmic::widget::Column;
+use pakajo::progress::{AurStage, InstallKind, RepoStage, RepoState};
 
 pub(super) fn view(model: &TransactionModel) -> Element<'_> {
     let title = match model.kind {
@@ -18,7 +20,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
         if *stage == RepoStage::Validate {
             continue;
         }
-        let section = if *stage == RepoStage::Resolve {
+        let mut section = if *stage == RepoStage::Resolve {
             prepare_section(&model.repo_state, prepare_state(model)).with_toggle_index(1)
         } else {
             let state = model.stage_state(i);
@@ -31,12 +33,37 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
             };
             section.with_toggle_index(i)
         };
+        if section.state == StageState::Failed
+            && !model.build_owns_failure()
+            && let Some(message) = model.failure_message.as_deref()
+        {
+            let note = failure_note(message);
+            section.content = Some(match section.content {
+                Some(existing) => Column::new().spacing(10).push(note).push(existing).into(),
+                None => note,
+            });
+        }
         let expanded = if *stage == RepoStage::Resolve {
             model.expanded.contains(&1)
         } else {
             model.expanded.contains(&i)
         };
         sections.push((section, expanded));
+    }
+    if model.is_sysupgrade() && !model.aur.build_order.is_empty() {
+        let build_index = model.stages.len();
+        let mut section = build_section(model, model.aur_stage_state(AurStage::Build))
+            .with_toggle_index(build_index);
+        if section.state == StageState::Failed
+            && let Some(message) = model.failure_message.as_deref()
+        {
+            let note = failure_note(message);
+            section.content = Some(match section.content {
+                Some(existing) => Column::new().spacing(10).push(note).push(existing).into(),
+                None => note,
+            });
+        }
+        sections.push((section, model.expanded.contains(&build_index)));
     }
     let finished = matches!(model.status, TransactionStatus::Done(_));
     sections_view(title, sections, finished, model.is_sysupgrade())

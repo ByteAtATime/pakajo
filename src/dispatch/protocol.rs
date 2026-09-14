@@ -1,7 +1,5 @@
 use crate::build::BuildDecision;
-use crate::dispatch::exec::ChildOutcome;
 use crate::pkgbuild::PkgbuildInfo;
-use crate::progress::SysupgradePhase;
 use crate::resolve::BuildPlan;
 
 pub trait Decider {
@@ -52,40 +50,9 @@ impl Decider for AutomaticDecider {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Completion {
-    ContinueAur { targets: Vec<String> },
-    Completed,
-    Cancelled,
-    Failed { message: String },
-}
-
-pub fn classify_completion(
-    outcome: &ChildOutcome,
-    active_phase: Option<SysupgradePhase>,
-    aur_targets: &[String],
-) -> Completion {
-    if matches!(outcome, ChildOutcome::Success)
-        && active_phase == Some(SysupgradePhase::Repo)
-        && !aur_targets.is_empty()
-    {
-        return Completion::ContinueAur {
-            targets: aur_targets.to_vec(),
-        };
-    }
-    match outcome {
-        ChildOutcome::Success => Completion::Completed,
-        ChildOutcome::Dismissed => Completion::Cancelled,
-        ChildOutcome::NotFound(message) | ChildOutcome::Failed(message) => Completion::Failed {
-            message: message.clone(),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dispatch::exec::ChildOutcome;
     use crate::resolve::{BuildLayer, BuildPlan};
 
     fn empty_plan() -> BuildPlan {
@@ -111,63 +78,6 @@ mod tests {
         for (decider, expected_confirm, expected_review) in cases {
             assert_eq!(decider.confirm_build(&plan), expected_confirm);
             assert_eq!(decider.review_pkgbuilds(&[]), expected_review);
-        }
-    }
-
-    #[test]
-    fn completion_routes_child_results() {
-        use crate::progress::SysupgradePhase;
-        let aur_targets = vec!["aur-pkg".to_string()];
-        let cases = [
-            (
-                ChildOutcome::Success,
-                Some(SysupgradePhase::Repo),
-                aur_targets.clone(),
-                Completion::ContinueAur {
-                    targets: aur_targets.clone(),
-                },
-            ),
-            (
-                ChildOutcome::Success,
-                Some(SysupgradePhase::Repo),
-                Vec::new(),
-                Completion::Completed,
-            ),
-            (
-                ChildOutcome::Success,
-                None,
-                Vec::new(),
-                Completion::Completed,
-            ),
-            (
-                ChildOutcome::Dismissed,
-                None,
-                Vec::new(),
-                Completion::Cancelled,
-            ),
-            (
-                ChildOutcome::NotFound("pkexec not found".to_string()),
-                None,
-                Vec::new(),
-                Completion::Failed {
-                    message: "pkexec not found".to_string(),
-                },
-            ),
-            (
-                ChildOutcome::Failed("err".to_string()),
-                None,
-                Vec::new(),
-                Completion::Failed {
-                    message: "err".to_string(),
-                },
-            ),
-        ];
-        for (outcome, phase, targets, expected) in cases {
-            assert_eq!(
-                classify_completion(&outcome, phase, &targets),
-                expected,
-                "outcome {outcome:?} phase {phase:?} targets {targets:?}"
-            );
         }
     }
 }

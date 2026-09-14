@@ -1,9 +1,8 @@
-use crate::dispatch::child::Presentation;
 use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem};
-use crate::dispatch::operation::{BuildOperation, PrivilegedOperation};
 use crate::dispatch::protocol::TerminalDecider;
-use crate::events::{InstallEvent, InstallSink};
+use crate::events::InstallSink;
 use crate::install::InstallTarget;
+use anyhow::Context as _;
 use clap::Parser;
 use futures::StreamExt as _;
 
@@ -84,19 +83,33 @@ fn outcome_code(outcome: &ChildOutcome) -> i32 {
     1
 }
 
-fn drain_privileged(operation: PrivilegedOperation, json: bool) -> ChildOutcome {
-    let tty = stdin_is_tty();
-    drain(operation.dispatch(tty), json)
+fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
+    let fingerprint = match args.fingerprint_file.as_deref().map(seal_fingerprint_file) {
+        Some(Ok(file)) => Some(file),
+        Some(Err(error)) => {
+            eprintln!("{error:#}");
+            return 1;
+        }
+        None => None,
+    };
+    let request = crate::dispatch::SysupgradeRequest {
+        no_refresh: args.no_refresh,
+        repo_only: args.repo_only,
+        ignores: args.ignores.clone(),
+        decider: Box::new(TerminalDecider::new(args.json, args.skip_review)),
+        aur_targets: None,
+        fingerprint,
+        approvals: None,
+        tty: stdin_is_tty() && !args.json,
+        json: args.json,
+    };
+    outcome_code(&drain(crate::dispatch::sysupgrade(request), args.json))
 }
 
-fn drain_build(targets: &[String], as_deps: bool, json: bool, skip_review: bool) -> ChildOutcome {
-    let operation = BuildOperation {
-        targets: targets.to_vec(),
-        as_deps,
-        no_check: false,
-    };
-    let decider = Box::new(TerminalDecider::new(json, skip_review));
-    drain(operation.dispatch(decider, None, stdin_is_tty()), json)
+fn seal_fingerprint_file(path: &str) -> anyhow::Result<crate::dispatch::approvals::ApprovalsFile> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("failed to read fingerprint file {path}"))?;
+    crate::dispatch::approvals::ApprovalsFile::write(&bytes)
 }
 
 fn install_subcommand(args: InstallArgs) -> i32 {
@@ -162,75 +175,6 @@ fn remove_subcommand(args: RemoveArgs) -> i32 {
         json: args.json,
     };
     outcome_code(&drain(crate::dispatch::remove(request), args.json))
-}
-
-fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
-    if args.repo_only {
-        let answerer = answerer_for(None);
-        match crate::dispatch::child::select_upgrade_repo_presentation(args.json) {
-            Presentation::SilentStream => {
-                exit_with_result(crate::upgrade::run_repo_sysupgrade(
-                    args.no_refresh,
-                    &args.ignores,
-                    JsonSink::new(),
-                    answerer,
-                    args.fingerprint_file.as_deref(),
-                ));
-            }
-            Presentation::Console | Presentation::InteractiveStream => {
-                exit_with_result(crate::upgrade::run_repo_sysupgrade(
-                    args.no_refresh,
-                    &args.ignores,
-                    ConsoleSink::new(),
-                    answerer,
-                    args.fingerprint_file.as_deref(),
-                ));
-            }
-        }
-    }
-
-    let handle = alpm_handle_or_exit();
-    let aur = crate::aur::AurClient::new();
-    let mut aur_targets = match crate::upgrade::compute_aur_upgrades(
-        &handle,
-        &aur,
-        crate::upgrade::DevelSource::Live,
-    ) {
-        Ok((candidates, _)) => candidates,
-        Err(e) => {
-            eprintln!("warning: AUR upgrade detection failed: {e:#}");
-            vec![]
-        }
-    };
-    aur_targets.retain(|c| !args.ignores.contains(&c.name));
-    let mut sink = sink_for(args.json);
-    sink.event(InstallEvent::SysupgradeAurCandidates {
-        candidates: aur_targets.clone(),
-    });
-
-    let operation = PrivilegedOperation::UpgradeRepo {
-        no_refresh: args.no_refresh,
-        ignores: args.ignores.clone(),
-        fingerprint: None,
-        approvals: None,
-    };
-    let repo_outcome = drain_privileged(operation, args.json);
-    if !matches!(repo_outcome, ChildOutcome::Success) {
-        return outcome_code(&repo_outcome);
-    }
-    if !aur_targets.is_empty() {
-        let aur_names: Vec<String> = aur_targets.iter().map(|c| c.name.clone()).collect();
-        match drain_build(&aur_names, false, args.json, args.skip_review) {
-            ChildOutcome::Success => 0,
-            outcome => {
-                let reason = outcome.reason();
-                eprintln!("warning: repo packages upgraded; AUR phase failed: {reason}");
-                1
-            }
-        }
-    } else {
-        0
-    }
 }
 
 fn sink_for(json: bool) -> Box<dyn InstallSink> {

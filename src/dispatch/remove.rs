@@ -2,7 +2,7 @@ use anyhow::Context as _;
 use futures::SinkExt as _;
 use futures::StreamExt as _;
 
-use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem};
+use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem, send_done};
 use crate::dispatch::operation::{ChildOperation, PrivilegedOperation};
 
 pub struct RemoveRequest {
@@ -151,10 +151,4 @@ fn expand_remove_groups(
         }
     }
     out
-}
-
-fn send_done(tx: &mut futures::channel::mpsc::Sender<StreamItem>, outcome: ChildOutcome) {
-    if let Err(error) = futures::executor::block_on(tx.send(StreamItem::Done(outcome))) {
-        eprintln!("warning: dispatch stream closed: {error}");
-    }
 }

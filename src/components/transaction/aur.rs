@@ -133,7 +133,7 @@ fn resolve_list_view(ordered: &[(&String, &ResolvedDep)]) -> Element<'static> {
     col.into()
 }
 
-fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
+pub(super) fn build_section(model: &TransactionModel, state: StageState) -> Section<'_> {
     let mut section = Section::new("Build", state);
     let ordered: Vec<(&String, &BuildPackage)> = model
         .aur
@@ -301,6 +301,6 @@ fn aur_install_section(model: &TransactionModel, state: StageState) -> Section<'
     section
 }
 
-fn failure_note(message: &str) -> Element<'static> {
+pub(super) fn failure_note(message: &str) -> Element<'static> {
     tinted(text::monotext(message.to_string()), destructive_color)
 }

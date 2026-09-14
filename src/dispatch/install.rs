@@ -1,8 +1,7 @@
 use anyhow::Context as _;
-use futures::SinkExt as _;
 
-use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem};
-use crate::dispatch::operation::ChildOperation;
+use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem, send_done};
+use crate::dispatch::operation::{ChildOperation, PrivilegedOperation};
 use crate::dispatch::protocol::Decider;
 use crate::dispatch::remove::Preview;
 use crate::dispatch::session::{PhasePlan, run_phases};
@@ -25,8 +24,8 @@ pub fn install(request: InstallRequest) -> DispatchStream {
 }
 
 pub fn install_preview(request: &InstallRequest) -> anyhow::Result<Preview> {
-    let mut handle = crate::cli::alpm_handle()?;
     let config = pacmanconf::Config::new().context("failed to read pacman config")?;
+    let mut handle = crate::pacman::init_alpm(&config)?;
     crate::upgrade::apply_ignores(&mut handle, &config, &request.ignores);
     let state = crate::dry_run::attach_recorder(&mut handle);
     let outcome = run_install_preview(&mut handle, request, &state);
@@ -151,12 +150,21 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
             return;
         }
     };
-    run_phases(
-        PhasePlan {
-            repo_targets: resolved.repo_or_file,
-            aur_targets: resolved.aur,
+    let privileged = if resolved.repo_or_file.is_empty() {
+        None
+    } else {
+        Some(PrivilegedOperation::Install {
+            targets: resolved.repo_or_file,
             as_deps: request.as_deps,
             approvals: sealed,
+        })
+    };
+    run_phases(
+        PhasePlan {
+            privileged,
+            aur_targets: resolved.aur,
+            as_deps: request.as_deps,
+            repo_verb: "installed",
             approvals_payload: request.approvals,
             decider: request.decider,
             tty: request.tty,
@@ -326,10 +334,4 @@ fn print_sync_preamble(handle: &alpm::Alpm, targets: &[String]) {
         ),
         crate::color::paint(c, crate::color::CYAN, &labeled.join(", "))
     );
-}
-
-fn send_done(tx: &mut futures::channel::mpsc::Sender<StreamItem>, outcome: ChildOutcome) {
-    if let Err(error) = futures::executor::block_on(tx.send(StreamItem::Done(outcome))) {
-        eprintln!("warning: dispatch stream closed: {error}");
-    }
 }

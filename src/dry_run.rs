@@ -14,13 +14,35 @@ pub(crate) struct RecorderState {
     unsupported_summary: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct SysupgradePreview {
+pub(crate) struct SysupgradeDryRun {
     pub summary: TransactionSummary,
     pub questions: QuestionSet,
     pub prepare_error: Option<PrepareFailure>,
-    pub aur: Vec<crate::upgrade::AurUpgradeCandidate>,
-    pub pkgbuild_diffs: Vec<crate::pkgbuild::PkgbuildDiff>,
+}
+
+pub(crate) fn dry_sysupgrade(handle: &mut alpm::Alpm) -> anyhow::Result<SysupgradeDryRun> {
+    let state = attach_recorder(handle);
+    handle
+        .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
+        .context("failed to init sysupgrade preview transaction")?;
+    handle
+        .sync_sysupgrade(false)
+        .context("sync_sysupgrade failed to resolve upgrade targets")?;
+    let prepare_error = handle.trans_prepare().err().map(extract_prepare_failure);
+    let questions = snapshot(&state);
+    let summary = crate::install::build_summary(handle);
+    let _ = handle.trans_release();
+    Ok(SysupgradeDryRun {
+        summary,
+        questions,
+        prepare_error,
+    })
+}
+
+pub fn default_repo_summary(
+    handle: &mut alpm::Alpm,
+) -> anyhow::Result<crate::events::TransactionSummary> {
+    dry_sysupgrade(handle).map(|dry| dry.summary)
 }
 
 #[derive(Debug, Clone)]
@@ -33,65 +55,6 @@ pub enum PrepareFailure {
 pub struct UnsatisfiedDep {
     pub depend: String,
     pub target: String,
-}
-
-pub fn compute_sysupgrade_preview(
-    handle: &mut alpm::Alpm,
-    config: &pacmanconf::Config,
-) -> anyhow::Result<SysupgradePreview> {
-    let aur_client = crate::aur::AurClient::new();
-    let aur = match crate::upgrade::compute_aur_upgrades(
-        handle,
-        &aur_client,
-        crate::upgrade::DevelSource::Live,
-    ) {
-        Ok((v, _)) => v,
-        Err(e) => {
-            eprintln!(
-                "[pakajo] aur upgrade check failed, sysupgrade preview shows repo only: {e:#}"
-            );
-            Vec::new()
-        }
-    };
-    crate::upgrade::apply_ignores(handle, config, &[]);
-    let state = attach_recorder(handle);
-    let mut preview = run_sysupgrade_preview(handle, &state);
-    let _ = handle.trans_release();
-    if let Ok(p) = &mut preview {
-        p.aur = aur;
-    }
-    preview
-}
-
-fn run_sysupgrade_preview(
-    handle: &mut alpm::Alpm,
-    state: &Rc<RefCell<RecorderState>>,
-) -> anyhow::Result<SysupgradePreview> {
-    handle
-        .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
-        .context("failed to init sysupgrade preview transaction")?;
-    handle
-        .sync_sysupgrade(false)
-        .context("sync_sysupgrade failed to resolve upgrade targets")?;
-    let prepare_error = handle.trans_prepare().err().map(extract_prepare_failure);
-    let questions = snapshot(state);
-    let summary = crate::install::build_summary(handle);
-    Ok(SysupgradePreview {
-        summary,
-        questions,
-        prepare_error,
-        aur: Vec::new(),
-        pkgbuild_diffs: Vec::new(),
-    })
-}
-
-pub fn default_repo_summary(
-    handle: &mut alpm::Alpm,
-) -> anyhow::Result<crate::events::TransactionSummary> {
-    let state = attach_recorder(handle);
-    let preview = run_sysupgrade_preview(handle, &state);
-    let _ = handle.trans_release();
-    preview.map(|p| p.summary)
 }
 
 pub(crate) fn extract_prepare_failure(err: alpm::PrepareError) -> PrepareFailure {
@@ -276,8 +239,8 @@ mod tests {
              rootless sync_sysupgrade. missing from spike: {missing:?}"
         );
 
-        let preview = crate::dry_run::compute_sysupgrade_preview(&mut handle, &config)
-            .expect("compute_sysupgrade_preview should succeed");
+        let preview =
+            crate::dry_run::dry_sysupgrade(&mut handle).expect("dry_sysupgrade should succeed");
         assert!(
             !preview.summary.packages.is_empty(),
             "preview summary must list the direct upgrade set"
