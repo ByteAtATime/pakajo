@@ -2,17 +2,17 @@ use cosmic::iced::{Alignment, Length};
 use cosmic::widget::{Column, Row, Space, button, container, divider, scrollable, text, tooltip};
 
 use pakajo::dashboard::{DashboardSnapshot, OptdepEntry, RecentPkg};
+use pakajo::news::{NEWS_ITEMS, NewsRow, NewsState};
 use pakajo::utils::{format_bytes, group_thousands};
 
 use crate::Element;
 use crate::components::search::SearchMessage;
-use crate::components::theme::{card_style, muted};
+use crate::components::theme::{card_style, muted, skeleton_bar_style};
 
 const MAX_CONTENT_WIDTH: f32 = 840.0;
 const BAND_CELL_WIDTH: f32 = 200.0;
 const BAND_SKELETON_HEIGHT: f32 = 100.0;
 const PACKAGE_SKELETON_HEIGHT: f32 = 250.0;
-const NEWS_SKELETON_HEIGHT: f32 = 150.0;
 const OPTDEP_COUNT_WIDTH: f32 = 90.0;
 const AGE_COLUMN_WIDTH: f32 = 90.0;
 const OPTDEP_TOOLTIP_ROWS: usize = 8;
@@ -198,7 +198,100 @@ fn recent_card(recent: &[RecentPkg], pad: f32) -> Element<'static> {
     .into()
 }
 
-pub fn dashboard_view(snapshot: Option<&DashboardSnapshot>) -> Element<'static> {
+fn news_row(item: &NewsRow) -> Element<'static> {
+    let inner = Row::new()
+        .align_y(Alignment::Center)
+        .spacing(12.0)
+        .push(container(text::body(item.title.clone())).width(Length::Fill))
+        .push(
+            container(muted(text::caption(item.age.clone())))
+                .width(Length::Fixed(AGE_COLUMN_WIDTH))
+                .align_x(Alignment::End),
+        );
+    button::custom(inner)
+        .on_press(crate::Message::OpenUrl(item.url.clone()))
+        .class(cosmic::theme::Button::ListItem([0.0; 4]))
+        .padding(0)
+        .width(Length::Fill)
+        .into()
+}
+
+fn news_header() -> Element<'static> {
+    Row::new()
+        .align_y(Alignment::Center)
+        .push(container(text::heading(String::from("News"))).width(Length::Fill))
+        .push(
+            button::text("archlinux.org/news").on_press(crate::Message::OpenUrl(String::from(
+                "https://archlinux.org/news/",
+            ))),
+        )
+        .into()
+}
+
+fn news_card(items: &[NewsRow], pad: f32) -> Element<'static> {
+    let content: Element<'static> = if items.is_empty() {
+        muted(text::caption(String::from("News unavailable")))
+    } else {
+        let mut list = Column::new().spacing(8.0);
+        for item in items.iter().take(NEWS_ITEMS) {
+            list = list.push(news_row(item));
+        }
+        list.into()
+    };
+    container(Column::new().spacing(8.0).push(news_header()).push(content))
+        .style(card_style)
+        .padding(pad)
+        .width(Length::Fill)
+        .into()
+}
+
+fn invisible_text_style(_: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
+    cosmic::iced::widget::text::Style {
+        color: Some(cosmic::iced::Color::TRANSPARENT),
+        ..Default::default()
+    }
+}
+
+fn invisible_body(label: &str) -> Element<'static> {
+    text::body(label.to_string())
+        .class(cosmic::theme::Text::Custom(invisible_text_style))
+        .into()
+}
+
+macro_rules! repeat_char {
+    ($c:expr, $len:expr) => {{
+        const BYTES: &[u8; $len] = &[$c; $len];
+        match core::str::from_utf8(BYTES) {
+            Ok(s) => s,
+            Err(_) => unreachable!(),
+        }
+    }};
+}
+
+const NEWS_SKELETON_TITLES: [&str; 3] = [
+    repeat_char!(b'x', 70),
+    repeat_char!(b'x', 50),
+    repeat_char!(b'x', 60),
+];
+
+fn news_skeleton_card(pad: f32) -> Element<'static> {
+    let mut list = Column::new().spacing(8.0);
+    for title in NEWS_SKELETON_TITLES {
+        list = list.push(
+            container(container(invisible_body(title)).style(skeleton_bar_style))
+                .width(Length::Fill)
+                .align_x(Alignment::Start),
+        );
+    }
+    let content: Element<'static> = list.into();
+    container(Column::new().spacing(8.0).push(news_header()).push(content))
+        .style(card_style)
+        .padding(pad)
+        .width(Length::Fill)
+        .into()
+}
+
+pub fn dashboard_view(snapshot: Option<&DashboardSnapshot>, news: &NewsState) -> Element<'static> {
     let spacing = cosmic::theme::spacing();
     let gap = spacing.space_xs as f32;
     let side = spacing.space_m as f32;
@@ -218,12 +311,17 @@ pub fn dashboard_view(snapshot: Option<&DashboardSnapshot>) -> Element<'static> 
             .push(skeleton_card(PACKAGE_SKELETON_HEIGHT))
             .push(skeleton_card(PACKAGE_SKELETON_HEIGHT)),
     };
+    let live_news = match news {
+        NewsState::Loading => news_skeleton_card(pad),
+        NewsState::Ready(items) => news_card(items, pad),
+        NewsState::Unavailable => news_card(&[], pad),
+    };
     let column = Column::new()
         .spacing(gap)
         .width(Length::Fixed(MAX_CONTENT_WIDTH))
         .push(band)
         .push(pair)
-        .push(skeleton_card(NEWS_SKELETON_HEIGHT));
+        .push(live_news);
     let padded = container(column)
         .width(Length::Fill)
         .center_x(Length::Fill)

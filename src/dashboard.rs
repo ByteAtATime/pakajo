@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Context as _;
 
+use crate::news::NewsItem;
+
 #[derive(Clone, Debug, Default)]
 pub struct OptdepEntry {
     pub name: String,
@@ -39,6 +41,7 @@ pub enum DashboardMessage {
         seq: u64,
         error: String,
     },
+    NewsLoaded(Result<Vec<NewsItem>, String>),
 }
 
 pub fn compute_dashboard_snapshot(

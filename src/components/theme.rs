@@ -125,6 +125,23 @@ pub(crate) fn card_style(theme: &cosmic::Theme) -> container::Style {
     }
 }
 
+pub(crate) fn skeleton_bar_style(theme: &cosmic::Theme) -> container::Style {
+    let cosmic = theme.cosmic();
+    let base = if cosmic.is_dark {
+        cosmic.palette.neutral_6
+    } else {
+        cosmic.palette.neutral_5
+    };
+    container::Style {
+        background: Some(Background::Color(Color::from(base))),
+        border: Border {
+            radius: cosmic.corner_radii.radius_s.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 pub(crate) fn muted_text_style(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
     let mut on = Color::from(theme.cosmic().background(false).on);
     on.a = 0.7;

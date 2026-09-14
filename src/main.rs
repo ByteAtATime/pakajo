@@ -61,6 +61,8 @@ pub struct PakajoApp {
     pub(crate) foreign_names: Arc<HashSet<String>>,
     pub(crate) dashboard: Option<DashboardSnapshot>,
     pub(crate) dashboard_seq: u64,
+    pub(crate) news: pakajo::news::NewsState,
+    pub(crate) news_fetch_started: bool,
     pub(crate) group_index: Arc<Vec<(String, String)>>,
     pub(crate) query: String,
     pub(crate) results: Vec<SearchResult>,
@@ -158,6 +160,8 @@ impl Application for PakajoApp {
             foreign_names: Arc::new(HashSet::new()),
             dashboard: None,
             dashboard_seq: 0,
+            news: pakajo::news::NewsState::Loading,
+            news_fetch_started: false,
             group_index,
             query: String::new(),
             results: Vec::new(),
@@ -239,7 +243,11 @@ impl Application for PakajoApp {
             |index| Message::Search(SearchMessage::GroupsLoaded(index)).into(),
         );
         let dashboard_task = app.start_dashboard_refresh();
-        (app, Task::batch([task, groups_task, dashboard_task]))
+        let news_task = app.start_news_fetch();
+        (
+            app,
+            Task::batch([task, groups_task, dashboard_task, news_task]),
+        )
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
@@ -378,7 +386,7 @@ impl PakajoApp {
             let content = Column::new()
                 .spacing(spacing.space_xs as f32)
                 .push(header)
-                .push(dashboard_view(self.dashboard.as_ref()));
+                .push(dashboard_view(self.dashboard.as_ref(), &self.news));
             return container(content).into();
         }
         let content = Column::new()
@@ -564,6 +572,22 @@ impl PakajoApp {
         )
     }
 
+    fn start_news_fetch(&mut self) -> Task<Message> {
+        if self.news_fetch_started {
+            return Task::none();
+        }
+        self.news_fetch_started = true;
+        crate::components::task::blocking_task(
+            || {
+                pakajo::news::fetch_news().inspect_err(|e| {
+                    eprintln!("[pakajo] news fetch failed: {e:#}");
+                })
+            },
+            "news fetch cancelled",
+            |result| crate::Message::Dashboard(DashboardMessage::NewsLoaded(result)).into(),
+        )
+    }
+
     fn handle_dashboard(&mut self, message: DashboardMessage) -> Task<Message> {
         match message {
             DashboardMessage::SnapshotReady {
@@ -579,6 +603,19 @@ impl PakajoApp {
                 Task::none()
             }
             DashboardMessage::LoadFailed { .. } => Task::none(),
+            DashboardMessage::NewsLoaded(result) => {
+                self.news = match result {
+                    Ok(items) => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0);
+                        pakajo::news::NewsState::Ready(pakajo::news::build_news_rows(items, now))
+                    }
+                    Err(_) => pakajo::news::NewsState::Unavailable,
+                };
+                Task::none()
+            }
         }
     }
 
