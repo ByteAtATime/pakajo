@@ -15,6 +15,7 @@ use cosmic::{
 };
 use pakajo::aur::AurClient;
 use pakajo::cli;
+use pakajo::dashboard::{DashboardMessage, DashboardSnapshot};
 use pakajo::db::PackageDb;
 use pakajo::pacman::init_alpm;
 use pakajo::search::SearchFilter;
@@ -57,6 +58,9 @@ pub struct PakajoApp {
     pub(crate) alpm: Option<alpm::Alpm>,
     pub(crate) aur_client: Option<Arc<AurClient>>,
     pub(crate) installed_names: Arc<HashSet<String>>,
+    pub(crate) foreign_names: Arc<HashSet<String>>,
+    pub(crate) dashboard: Option<DashboardSnapshot>,
+    pub(crate) dashboard_seq: u64,
     pub(crate) group_index: Arc<Vec<(String, String)>>,
     pub(crate) query: String,
     pub(crate) results: Vec<SearchResult>,
@@ -151,6 +155,9 @@ impl Application for PakajoApp {
             alpm,
             aur_client,
             installed_names,
+            foreign_names: Arc::new(HashSet::new()),
+            dashboard: None,
+            dashboard_seq: 0,
             group_index,
             query: String::new(),
             results: Vec::new(),
@@ -231,7 +238,8 @@ impl Application for PakajoApp {
             },
             |index| Message::Search(SearchMessage::GroupsLoaded(index)).into(),
         );
-        (app, Task::batch([task, groups_task]))
+        let dashboard_task = app.start_dashboard_refresh();
+        (app, Task::batch([task, groups_task, dashboard_task]))
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
@@ -243,6 +251,7 @@ impl Application for PakajoApp {
         };
         let task = match message {
             Message::Search(m) => self.handle_search(m),
+            Message::Dashboard(m) => self.handle_dashboard(m),
             Message::Detail(m) => self.handle_detail(m),
             Message::Transaction(m) => self.handle_transaction(m),
             Message::Updates(m) => self.handle_updates(m),
@@ -263,12 +272,14 @@ impl Application for PakajoApp {
             Message::DbLockReleased => {
                 eprintln!("[pakajo] db.lck released, refreshing installed state");
                 self.refresh_installed_state();
-                if self.transaction.as_ref().is_none_or(|t| !t.is_active()) {
+                let dashboard = self.start_dashboard_refresh();
+                let updates = if self.transaction.as_ref().is_none_or(|t| !t.is_active()) {
                     eprintln!("[pakajo] db.lck released, forcing updates recheck");
                     self.start_updates_check(RefreshKind::ExternalChange)
                 } else {
                     Task::none()
-                }
+                };
+                Task::batch([dashboard, updates])
             }
         };
         Task::batch([focus, task])
@@ -367,7 +378,7 @@ impl PakajoApp {
             let content = Column::new()
                 .spacing(spacing.space_xs as f32)
                 .push(header)
-                .push(dashboard_view());
+                .push(dashboard_view(self.dashboard.as_ref()));
             return container(content).into();
         }
         let content = Column::new()
@@ -456,12 +467,13 @@ impl PakajoApp {
                             targets.len()
                         );
                         self.refresh_installed_state();
+                        let dashboard = self.start_dashboard_refresh();
                         let refresh = Task::done(
                             crate::Message::Updates(UpdatesMessage::RefreshUpdates).into(),
                         );
                         let (transaction, task) = Transaction::start_sysupgrade_aur(targets);
                         self.transaction = Some(transaction);
-                        Task::batch([refresh, task])
+                        Task::batch([dashboard, refresh, task])
                     }
                     Action::ViewClosed => {
                         self.show_transaction = false;
@@ -497,7 +509,8 @@ impl PakajoApp {
                             self.transaction = None;
                             return Task::batch([refresh, self.goto_page(crate::Page::Updates)]);
                         }
-                        refresh
+                        let dashboard = self.start_dashboard_refresh();
+                        Task::batch([dashboard, refresh])
                     }
                 }
             }
@@ -529,6 +542,46 @@ impl PakajoApp {
         }
     }
 
+    fn start_dashboard_refresh(&mut self) -> Task<Message> {
+        self.dashboard_seq = self.dashboard_seq.wrapping_add(1);
+        let seq = self.dashboard_seq;
+        crate::components::task::blocking_task(
+            pakajo::dashboard::gather_dashboard,
+            "dashboard refresh cancelled",
+            move |result| match result {
+                Ok((foreign, snapshot)) => {
+                    crate::Message::Dashboard(DashboardMessage::SnapshotReady {
+                        seq,
+                        foreign,
+                        snapshot,
+                    })
+                    .into()
+                }
+                Err(error) => {
+                    crate::Message::Dashboard(DashboardMessage::LoadFailed { seq, error }).into()
+                }
+            },
+        )
+    }
+
+    fn handle_dashboard(&mut self, message: DashboardMessage) -> Task<Message> {
+        match message {
+            DashboardMessage::SnapshotReady {
+                seq,
+                foreign,
+                snapshot,
+            } => {
+                if seq != self.dashboard_seq {
+                    return Task::none();
+                }
+                self.foreign_names = Arc::new(foreign);
+                self.dashboard = Some(snapshot);
+                Task::none()
+            }
+            DashboardMessage::LoadFailed { .. } => Task::none(),
+        }
+    }
+
     pub(crate) fn goto_page(&mut self, page: Page) -> Task<Message> {
         self.page = page;
         self.scroller.reset_offset();
@@ -545,6 +598,7 @@ impl PakajoApp {
 #[derive(Clone, Debug)]
 pub enum Message {
     Search(SearchMessage),
+    Dashboard(DashboardMessage),
     Detail(DetailMessage),
     Transaction(TransactionMessage),
     Updates(UpdatesMessage),

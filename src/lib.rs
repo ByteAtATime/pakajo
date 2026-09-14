@@ -5,6 +5,7 @@ pub mod build;
 pub mod clean;
 pub mod cli;
 pub mod color;
+pub mod dashboard;
 pub mod db;
 pub mod devel;
 pub mod dispatch;
