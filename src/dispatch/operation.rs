@@ -124,6 +124,8 @@ fn decode_remove(argv: &[String]) -> Option<ChildOperation> {
     for arg in argv {
         if arg.as_str() == STREAM {
             stream = true;
+        } else if arg.starts_with('-') {
+            return None;
         } else {
             targets.push(arg.clone());
         }
@@ -142,7 +144,12 @@ fn decode_install(argv: &[String]) -> Option<ChildOperation> {
             STREAM => stream = true,
             AS_DEPS => as_deps = true,
             APPROVALS_FILE => approvals_path = Some(parts.next()?.clone()),
-            _ => targets.push(arg.clone()),
+            _ => {
+                if arg.starts_with('-') {
+                    return None;
+                }
+                targets.push(arg.clone());
+            }
         }
     }
     Some(ChildOperation::Install {
@@ -333,5 +340,31 @@ mod tests {
     fn decode_rejects_foreign_head() {
         assert_eq!(ChildOperation::decode(&["upgrade".to_string()]), None);
         assert_eq!(ChildOperation::decode(&[]), None);
+    }
+
+    #[test]
+    fn remove_rejects_unknown_dash_flag() {
+        for flag in ["--asdep", "-x"] {
+            let argv = vec![
+                "remove".to_string(),
+                "--stream".to_string(),
+                flag.to_string(),
+                "sl".to_string(),
+            ];
+            assert_eq!(ChildOperation::decode(&argv), None, "flag {flag}");
+        }
+    }
+
+    #[test]
+    fn install_rejects_unknown_dash_flag() {
+        for flag in ["--asdep", "-x"] {
+            let argv = vec![
+                "install".to_string(),
+                "--stream".to_string(),
+                flag.to_string(),
+                "sl".to_string(),
+            ];
+            assert_eq!(ChildOperation::decode(&argv), None, "flag {flag}");
+        }
     }
 }
