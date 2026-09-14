@@ -225,21 +225,12 @@ fn remove_subcommand(args: RemoveArgs) -> i32 {
         std::process::exit(2);
     }
 
-    let handle = alpm_handle_or_exit();
-    let positionals = expand_remove_groups(&handle, &positionals, stdin_is_tty() && !args.json);
-
-    if is_root() {
-        let operation = ChildOperation::Remove {
-            targets: positionals,
-            stream: args.json,
-        };
-        return code_from(operation.execute());
-    }
-
-    let operation = PrivilegedOperation::Remove {
+    let request = crate::dispatch::RemoveRequest {
         targets: positionals,
+        tty: stdin_is_tty() && !args.json,
+        json: args.json,
     };
-    outcome_code(&drain_privileged(operation, args.json))
+    outcome_code(&drain(crate::dispatch::remove(request), args.json))
 }
 
 fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
@@ -349,40 +340,6 @@ fn expand_groups(handle: &alpm::Alpm, positionals: &[String], interactive: bool)
             if seen.insert(name.clone()) {
                 out.push(name);
             }
-        }
-    }
-    out
-}
-
-fn expand_remove_groups(
-    handle: &alpm::Alpm,
-    positionals: &[String],
-    interactive: bool,
-) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for s in positionals {
-        if crate::package::is_installed(handle, s) {
-            if seen.insert(s.clone()) {
-                out.push(s.clone());
-            }
-            continue;
-        }
-        if let Some(group) = crate::package::local_group(handle, s) {
-            let members: Vec<String> = if interactive {
-                self::prompts::select_group_members(s, std::slice::from_ref(&group))
-            } else {
-                group.members.iter().map(|m| m.name.clone()).collect()
-            };
-            for name in members {
-                if seen.insert(name.clone()) {
-                    out.push(name);
-                }
-            }
-            continue;
-        }
-        if seen.insert(s.clone()) {
-            out.push(s.clone());
         }
     }
     out

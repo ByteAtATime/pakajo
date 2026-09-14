@@ -346,10 +346,12 @@ impl Transaction {
     fn launch_remove_subprocess(&mut self) -> Action {
         let name = self.model.name.clone();
         self.model.status = TransactionStatus::Running;
-        let operation = PrivilegedOperation::Remove {
+        let request = pakajo::dispatch::RemoveRequest {
             targets: vec![name],
+            tty: false,
+            json: false,
         };
-        Action::Run(stream_privileged(operation))
+        Action::Run(stream_items(pakajo::dispatch::remove(request)))
     }
 
     pub(crate) fn start_sysupgrade_repo(

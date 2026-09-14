@@ -9,7 +9,7 @@ use crate::resolve::BuildPlan;
 use crate::stub_pkg::build_stub_pkg;
 
 #[derive(Default)]
-struct RecorderState {
+pub(crate) struct RecorderState {
     conflicts: Vec<Conflict>,
     providers: Vec<ProviderPrompt>,
     had_unsupported: bool,
@@ -122,7 +122,7 @@ pub fn default_repo_summary(
     preview.map(|p| p.summary)
 }
 
-fn extract_prepare_failure(err: alpm::PrepareError) -> PrepareFailure {
+pub(crate) fn extract_prepare_failure(err: alpm::PrepareError) -> PrepareFailure {
     match err.data() {
         Some(alpm::PrepareData::UnsatisfiedDeps(list)) => PrepareFailure::Unsatisfied(
             list.iter()
@@ -137,7 +137,7 @@ fn extract_prepare_failure(err: alpm::PrepareError) -> PrepareFailure {
     }
 }
 
-fn attach_recorder(handle: &mut alpm::Alpm) -> Rc<RefCell<RecorderState>> {
+pub(crate) fn attach_recorder(handle: &mut alpm::Alpm) -> Rc<RefCell<RecorderState>> {
     let state = Rc::new(RefCell::new(RecorderState::default()));
     handle.set_question_cb(
         state.clone(),
@@ -261,7 +261,7 @@ fn run_repo_dry_run_transaction(
     }
 }
 
-fn snapshot(state: &Rc<RefCell<RecorderState>>) -> QuestionSet {
+pub(crate) fn snapshot(state: &Rc<RefCell<RecorderState>>) -> QuestionSet {
     let s = state.borrow();
     QuestionSet {
         conflicts: s.conflicts.clone(),
