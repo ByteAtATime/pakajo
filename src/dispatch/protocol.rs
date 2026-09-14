@@ -76,10 +76,7 @@ pub fn classify_completion(
     match outcome {
         ChildOutcome::Success => Completion::Completed,
         ChildOutcome::Dismissed => Completion::Cancelled,
-        ChildOutcome::NotFound => Completion::Failed {
-            message: "pkexec not found".to_string(),
-        },
-        ChildOutcome::Failed(message) => Completion::Failed {
+        ChildOutcome::NotFound(message) | ChildOutcome::Failed(message) => Completion::Failed {
             message: message.clone(),
         },
     }
@@ -149,7 +146,7 @@ mod tests {
                 Completion::Cancelled,
             ),
             (
-                ChildOutcome::NotFound,
+                ChildOutcome::NotFound("pkexec not found".to_string()),
                 None,
                 Vec::new(),
                 Completion::Failed {

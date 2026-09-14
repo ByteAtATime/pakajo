@@ -4,6 +4,7 @@ use crate::cli::{
 };
 use crate::dispatch::operation::ChildOperation;
 use crate::install::InstallTarget;
+use anyhow::Context as _;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Presentation {
@@ -48,9 +49,10 @@ fn read_approvals(
 ) -> anyhow::Result<Option<crate::question::Approvals>> {
     approvals_path
         .map(|path| {
-            let bytes =
-                std::fs::read(path).map_err(|_| anyhow::anyhow!("malformed dispatch argv"))?;
-            serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("malformed dispatch argv"))
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("failed to read approvals file {path}"))?;
+            serde_json::from_slice(&bytes)
+                .with_context(|| format!("failed to parse approvals file {path}"))
         })
         .transpose()
 }
@@ -161,23 +163,26 @@ impl ChildOperation {
             } => {
                 let approvals = read_approvals(approvals_path.as_deref())?;
                 let answerer = answerer_for(approvals);
-                match select_upgrade_repo_presentation(*stream) {
-                    Presentation::SilentStream => crate::upgrade::run_repo_sysupgrade(
+                let silent = matches!(
+                    select_upgrade_repo_presentation(*stream),
+                    Presentation::SilentStream
+                );
+                if silent {
+                    crate::upgrade::run_repo_sysupgrade(
                         *no_refresh,
                         ignores,
                         JsonSink::new(),
                         answerer,
                         fingerprint_path.as_deref(),
-                    ),
-                    Presentation::Console | Presentation::InteractiveStream => {
-                        crate::upgrade::run_repo_sysupgrade(
-                            *no_refresh,
-                            ignores,
-                            ConsoleSink::new(),
-                            answerer,
-                            fingerprint_path.as_deref(),
-                        )
-                    }
+                    )
+                } else {
+                    crate::upgrade::run_repo_sysupgrade(
+                        *no_refresh,
+                        ignores,
+                        ConsoleSink::new(),
+                        answerer,
+                        fingerprint_path.as_deref(),
+                    )
                 }
             }
         }

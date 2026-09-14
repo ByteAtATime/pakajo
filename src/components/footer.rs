@@ -28,7 +28,7 @@ fn summary(kind: InstallKind, name: &str, status: &TransactionStatus) -> String 
         TransactionStatus::Done(ChildOutcome::Success) => format!("{done_verb} {name}"),
         TransactionStatus::Done(ChildOutcome::Failed(_)) => format!("Failed - {name}"),
         TransactionStatus::Done(ChildOutcome::Dismissed) => "Canceled authentication".to_string(),
-        TransactionStatus::Done(ChildOutcome::NotFound) => format!("Not found - {name}"),
+        TransactionStatus::Done(ChildOutcome::NotFound(_)) => format!("Not found - {name}"),
     }
 }
 
@@ -37,7 +37,7 @@ fn tint(transaction: &Transaction) -> Tint {
         TransactionStatus::Checking | TransactionStatus::Running => theme::on_color,
         TransactionStatus::Done(ChildOutcome::Success) => theme::success_color,
         TransactionStatus::Done(ChildOutcome::Failed(_)) => theme::destructive_color,
-        TransactionStatus::Done(ChildOutcome::NotFound) => theme::destructive_color,
+        TransactionStatus::Done(ChildOutcome::NotFound(_)) => theme::destructive_color,
         TransactionStatus::Done(ChildOutcome::Dismissed) => theme::warning_color,
     }
 }

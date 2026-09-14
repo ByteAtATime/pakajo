@@ -12,7 +12,7 @@ use crate::events::{InstallEvent, InstallSink, read_event_stream};
 pub enum ChildOutcome {
     Success,
     Dismissed,
-    NotFound,
+    NotFound(String),
     Failed(String),
 }
 
@@ -21,7 +21,7 @@ impl ChildOutcome {
         match self {
             ChildOutcome::Success => "succeeded",
             ChildOutcome::Dismissed => "privilege prompt dismissed",
-            ChildOutcome::NotFound => "pkexec not found",
+            ChildOutcome::NotFound(message) => message.as_str(),
             ChildOutcome::Failed(message) => message.as_str(),
         }
     }
@@ -35,7 +35,9 @@ pub enum StreamItem {
 pub type DispatchStream = futures::channel::mpsc::Receiver<StreamItem>;
 
 fn send_item(tx: &mut futures::channel::mpsc::Sender<StreamItem>, item: StreamItem) {
-    futures::executor::block_on(tx.send(item)).ok();
+    if let Err(error) = futures::executor::block_on(tx.send(item)) {
+        eprintln!("warning: dispatch stream closed: {error}");
+    }
 }
 
 pub struct ChannelSink {
@@ -65,6 +67,7 @@ fn stream_child<S: InstallSink + ?Sized>(
 
 pub trait PrivilegeEscalator {
     fn build_command(&self, exe: &str) -> Command;
+    fn name(&self) -> &'static str;
 }
 
 struct Direct;
@@ -72,6 +75,10 @@ struct Direct;
 impl PrivilegeEscalator for Direct {
     fn build_command(&self, exe: &str) -> Command {
         Command::new(exe)
+    }
+
+    fn name(&self) -> &'static str {
+        "direct"
     }
 }
 
@@ -83,6 +90,10 @@ impl PrivilegeEscalator for Pkexec {
         command.arg(exe);
         command
     }
+
+    fn name(&self) -> &'static str {
+        "pkexec"
+    }
 }
 
 struct Sudo;
@@ -92,6 +103,10 @@ impl PrivilegeEscalator for Sudo {
         let mut command = Command::new("sudo");
         command.arg(exe);
         command
+    }
+
+    fn name(&self) -> &'static str {
+        "sudo"
     }
 }
 
@@ -105,11 +120,13 @@ fn select_privilege_escalator(root: bool, tty: bool) -> Box<dyn PrivilegeEscalat
     }
 }
 
-fn escalation(exe: &str, tty: bool) -> Command {
-    select_privilege_escalator(is_root(), tty).build_command(exe)
+fn escalation(exe: &str, tty: bool) -> (Command, &'static str) {
+    let escalator = select_privilege_escalator(is_root(), tty);
+    let name = escalator.name();
+    (escalator.build_command(exe), name)
 }
 
-fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
+fn map_outcome(status: io::Result<ExitStatus>, escalator: &str) -> ChildOutcome {
     let code = match status {
         Err(error) => return ChildOutcome::Failed(error.to_string()),
         Ok(status) => status.code(),
@@ -117,7 +134,7 @@ fn map_outcome(status: io::Result<ExitStatus>) -> ChildOutcome {
     match code {
         Some(0) => ChildOutcome::Success,
         Some(126) => ChildOutcome::Dismissed,
-        Some(127) => ChildOutcome::NotFound,
+        Some(127) => ChildOutcome::NotFound(format!("{escalator} not found")),
         Some(exit) => ChildOutcome::Failed(format!("operation failed (exit {exit})")),
         None => ChildOutcome::Failed("install killed by signal".to_string()),
     }
@@ -128,8 +145,8 @@ fn spawn_privileged_child(
     exe: &str,
     tty: bool,
     tx: &mut futures::channel::mpsc::Sender<StreamItem>,
-) -> Option<Child> {
-    let mut cmd = escalation(exe, tty);
+) -> Option<(Child, &'static str)> {
+    let (mut cmd, escalator) = escalation(exe, tty);
     cmd.arg(MARKER);
     for arg in argv {
         cmd.arg(arg);
@@ -141,9 +158,12 @@ fn spawn_privileged_child(
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::inherit());
     match cmd.spawn() {
-        Ok(child) => Some(child),
+        Ok(child) => Some((child, escalator)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            send_item(tx, StreamItem::Done(ChildOutcome::NotFound));
+            send_item(
+                tx,
+                StreamItem::Done(ChildOutcome::NotFound(format!("{escalator} not found"))),
+            );
             None
         }
         Err(err) => {
@@ -184,12 +204,13 @@ fn run_privileged(
             return;
         }
     };
-    let Some(child) = spawn_privileged_child(&argv, &exe.to_string_lossy(), tty, tx) else {
+    let Some((child, escalator)) = spawn_privileged_child(&argv, &exe.to_string_lossy(), tty, tx)
+    else {
         return;
     };
     let mut sink = ChannelSink::new(tx.clone());
     let status = stream_child(child, &mut sink);
-    send_item(tx, StreamItem::Done(map_outcome(status)));
+    send_item(tx, StreamItem::Done(map_outcome(status, escalator)));
 }
 
 impl PrivilegedOperation {
@@ -278,7 +299,7 @@ mod tests {
             ),
             (
                 Ok(ExitStatusExt::from_raw(127 << 8)),
-                ChildOutcome::NotFound,
+                ChildOutcome::NotFound("sudo not found".to_string()),
             ),
             (
                 Ok(ExitStatusExt::from_raw(1 << 8)),
@@ -294,12 +315,18 @@ mod tests {
             ),
         ];
         for (status, expected) in cases {
-            let actual = map_outcome(status);
+            let actual = map_outcome(status, "sudo");
             assert_eq!(
                 format!("{actual:?}"),
                 format!("{expected:?}"),
                 "map_outcome"
             );
         }
+    }
+
+    #[test]
+    fn missing_escalator_names_selected_backend() {
+        let actual = map_outcome(Ok(ExitStatusExt::from_raw(127 << 8)), "pkexec");
+        assert_eq!(actual.reason(), "pkexec not found");
     }
 }
