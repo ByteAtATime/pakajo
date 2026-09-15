@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use crate::Element;
 use crate::components::icons;
+use crate::components::search::SearchMessage;
 use crate::components::theme::{accent_color, destructive_color, muted_mono, muted_text as muted};
 use crate::components::transaction::TransactionMessage;
 use cosmic::widget::divider;
@@ -555,6 +556,13 @@ fn render_opt_dependencies<'a>(
     let mut list = Column::new().spacing(6);
 
     for dep in &pkg.opt_dependencies {
+        let name: Element<'a> = button::custom(crate::components::row_title(dep.name.clone()))
+            .class(cosmic::theme::Button::ListItem([0.0; 4]))
+            .padding(0)
+            .on_press(crate::Message::Search(SearchMessage::QueryChanged(
+                dep.name.clone(),
+            )))
+            .into();
         let row = Row::new()
             .align_y(Alignment::Center)
             .width(Length::Fill)
@@ -570,7 +578,7 @@ fn render_opt_dependencies<'a>(
                 dep.installed
                     .then(|| Space::new().width(Length::Fixed(OPTDEP_INSTALLED_SPACER_WIDTH))),
             )
-            .push(crate::components::row_title(dep.name.clone()))
+            .push(name)
             .push_maybe(
                 dep.version
                     .is_some()
