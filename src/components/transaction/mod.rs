@@ -119,15 +119,31 @@ pub(crate) struct Transaction {
 
 impl Transaction {
     pub(crate) fn start(name: String, source: PackageSource) -> (Self, Task<crate::Message>) {
-        let model = TransactionModel::new(name.clone(), source, InstallKind::Install);
-        let name_for_dry = name.clone();
+        let targets = vec![name.clone()];
+        let aur_names = match source {
+            PackageSource::Aur => vec![name.clone()],
+            _ => Vec::new(),
+        };
+        let prefer_aur = matches!(source, PackageSource::Aur);
+        Self::start_batch(targets, aur_names, prefer_aur)
+    }
+
+    pub(crate) fn start_batch(
+        names: Vec<String>,
+        aur_names: Vec<String>,
+        prefer_aur: bool,
+    ) -> (Self, Task<crate::Message>) {
+        let first = names.first().cloned().expect("start_batch needs a target");
+        let dry_targets = names.clone();
+        let model =
+            TransactionModel::batch(first, names, aur_names, prefer_aur, InstallKind::Install);
         let task = crate::components::task::blocking_task(
             move || {
                 let request = pakajo::dispatch::InstallRequest {
-                    targets: vec![name_for_dry],
+                    targets: dry_targets,
                     as_deps: false,
                     ignores: vec![],
-                    prefer_aur: matches!(source, PackageSource::Aur),
+                    prefer_aur,
                     decider: Box::new(AutomaticDecider),
                     approvals: None,
                     tty: false,
@@ -286,10 +302,10 @@ impl Transaction {
 
     fn proceed_after_conflicts(&mut self, approvals: Option<String>) -> Action {
         self.model.pending_approvals = approvals;
-        if matches!(self.model.source, PackageSource::Aur) {
-            let target = self.model.name.clone();
+        if !self.model.aur_names.is_empty() {
+            let targets = self.model.aur_names.clone();
             let task = crate::components::task::blocking_task(
-                move || prepare_pkgbuild_diffs(std::slice::from_ref(&target)),
+                move || prepare_pkgbuild_diffs(&targets),
                 "pkgbuild fetch channel closed",
                 |result| {
                     crate::Message::Transaction(TransactionMessage::PkgbuildResult(result)).into()
@@ -303,13 +319,14 @@ impl Transaction {
     }
 
     fn launch_subprocess(&mut self, approvals: Option<String>) -> Action {
-        let name = self.model.name.clone();
+        let targets = self.model.targets.clone();
+        let prefer_aur = self.model.prefer_aur;
         self.model.status = TransactionStatus::Running;
         let request = pakajo::dispatch::InstallRequest {
-            targets: vec![name],
+            targets,
             as_deps: false,
             ignores: vec![],
-            prefer_aur: matches!(self.model.source, PackageSource::Aur),
+            prefer_aur,
             decider: Box::new(AutomaticDecider),
             approvals,
             tty: false,

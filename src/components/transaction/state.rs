@@ -21,6 +21,9 @@ pub(crate) enum TransactionStatus {
 
 pub(crate) struct TransactionModel {
     pub(crate) name: String,
+    pub(crate) targets: Vec<String>,
+    pub(crate) aur_names: Vec<String>,
+    pub(crate) prefer_aur: bool,
     pub(crate) stages: &'static [RepoStage],
     pub(crate) current_idx: usize,
     pub(crate) repo_state: RepoState,
@@ -46,9 +49,23 @@ pub(crate) enum StageState {
 }
 
 impl TransactionModel {
-    pub(crate) fn new(name: String, source: PackageSource, kind: InstallKind) -> Self {
+    pub(crate) fn batch(
+        name: String,
+        targets: Vec<String>,
+        aur_names: Vec<String>,
+        prefer_aur: bool,
+        kind: InstallKind,
+    ) -> Self {
+        let source = if aur_names.is_empty() {
+            PackageSource::Repo
+        } else {
+            PackageSource::Aur
+        };
         Self {
             name,
+            targets,
+            aur_names,
+            prefer_aur,
             stages: ordered_stages(kind),
             current_idx: 0,
             repo_state: RepoState::default(),
@@ -64,6 +81,16 @@ impl TransactionModel {
             pkgbuild_review: None,
             failure_message: None,
         }
+    }
+
+    pub(crate) fn new(name: String, source: PackageSource, kind: InstallKind) -> Self {
+        let targets = vec![name.clone()];
+        let aur_names = match source {
+            PackageSource::Aur => vec![name.clone()],
+            _ => Vec::new(),
+        };
+        let prefer_aur = matches!(source, PackageSource::Aur);
+        Self::batch(name, targets, aur_names, prefer_aur, kind)
     }
 
     pub(crate) fn apply_event(&mut self, ev: &InstallEvent) {
@@ -698,5 +725,89 @@ mod tests {
         );
         assert_eq!(model.aur.finalize.alerts.len(), 1);
         assert!(!model.aur.finalize.is_empty());
+    }
+
+    #[test]
+    fn constructor_seeds_single_target_fields() {
+        let aur =
+            TransactionModel::new("yay".to_string(), PackageSource::Aur, InstallKind::Install);
+        assert_eq!(aur.targets, vec!["yay".to_string()]);
+        assert_eq!(aur.aur_names, vec!["yay".to_string()]);
+        assert!(aur.prefer_aur);
+        let repo = TransactionModel::new(
+            "firefox".to_string(),
+            PackageSource::Repo,
+            InstallKind::Install,
+        );
+        assert_eq!(repo.targets, vec!["firefox".to_string()]);
+        assert!(repo.aur_names.is_empty());
+        assert!(!repo.prefer_aur);
+        let remove = TransactionModel::new(
+            "firefox".to_string(),
+            PackageSource::Repo,
+            InstallKind::Remove,
+        );
+        assert_eq!(remove.targets, vec!["firefox".to_string()]);
+        assert!(remove.aur_names.is_empty());
+        assert!(!remove.prefer_aur);
+        let upgrade = TransactionModel::new(
+            "system".to_string(),
+            PackageSource::Repo,
+            InstallKind::Upgrade,
+        );
+        assert_eq!(upgrade.targets, vec!["system".to_string()]);
+        assert!(upgrade.aur_names.is_empty());
+        assert!(!upgrade.prefer_aur);
+    }
+
+    #[test]
+    fn batch_seeds_mixed_targets_without_overwrite() {
+        let model = TransactionModel::batch(
+            "firefox".to_string(),
+            vec!["firefox".to_string(), "yay".to_string()],
+            vec!["yay".to_string()],
+            false,
+            InstallKind::Install,
+        );
+        assert_eq!(model.source, PackageSource::Aur);
+        assert_eq!(model.name, "firefox");
+        assert_eq!(
+            model.targets,
+            vec!["firefox".to_string(), "yay".to_string()]
+        );
+        assert_eq!(model.aur_names, vec!["yay".to_string()]);
+        assert!(!model.prefer_aur);
+    }
+
+    #[test]
+    fn batch_with_empty_aur_bucket_derives_repo_source() {
+        let model = TransactionModel::batch(
+            "firefox".to_string(),
+            vec!["firefox".to_string()],
+            Vec::new(),
+            false,
+            InstallKind::Install,
+        );
+        assert_eq!(model.source, PackageSource::Repo);
+        assert!(!model.prefer_aur);
+    }
+
+    #[test]
+    fn new_delegates_to_batch_for_single_target() {
+        let from_new =
+            TransactionModel::new("yay".to_string(), PackageSource::Aur, InstallKind::Install);
+        let from_batch = TransactionModel::batch(
+            "yay".to_string(),
+            vec!["yay".to_string()],
+            vec!["yay".to_string()],
+            true,
+            InstallKind::Install,
+        );
+        assert_eq!(from_new.name, from_batch.name);
+        assert_eq!(from_new.targets, from_batch.targets);
+        assert_eq!(from_new.aur_names, from_batch.aur_names);
+        assert_eq!(from_new.prefer_aur, from_batch.prefer_aur);
+        assert_eq!(from_new.source, from_batch.source);
+        assert_eq!(from_new.kind, from_batch.kind);
     }
 }
