@@ -184,17 +184,19 @@ impl ConsoleSink {
             InstallEvent::PkgbuildReviewStarted { .. }
             | InstallEvent::PkgbuildReviewAccepted { .. } => {}
             InstallEvent::PkgbuildAllUpToDate { packages } => {
-                let c = crate::color::stdout_color();
                 if packages.len() == 1 {
                     println!(
                         "{}",
-                        color::colon(c, &format!("{}: already reviewed, no changes", packages[0]))
+                        color::colon(
+                            self.color,
+                            &format!("{}: already reviewed, no changes", packages[0])
+                        )
                     );
                 } else {
                     println!(
                         "{}",
                         color::colon(
-                            c,
+                            self.color,
                             &format!("{} packages already reviewed, no changes", packages.len())
                         )
                     );

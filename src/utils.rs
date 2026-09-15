@@ -24,18 +24,23 @@ pub fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-pub fn format_bytes(bytes: i64) -> String {
+pub fn humanize_size(bytes: i64) -> (f64, &'static str) {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    if bytes < 1024 {
-        return format!("{bytes} {}", UNITS[0]);
-    }
     let mut value = bytes as f64;
     let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
+    while value.abs() >= 1024.0 && unit < UNITS.len() - 1 {
         value /= 1024.0;
         unit += 1;
     }
-    format!("{value:.1} {}", UNITS[unit])
+    (value, UNITS[unit])
+}
+
+pub fn format_bytes(bytes: i64) -> String {
+    if bytes.unsigned_abs() < 1024 {
+        return format!("{bytes} B");
+    }
+    let (value, unit) = humanize_size(bytes);
+    format!("{value:.1} {unit}")
 }
 
 pub fn group_thousands(value: i64) -> String {
@@ -52,14 +57,6 @@ pub fn group_thousands(value: i64) -> String {
     } else {
         grouped
     }
-}
-
-pub fn format_mib(bytes: i64) -> String {
-    let mut val = bytes as f64 / 1048576.0;
-    if val < 0.0 && val > -0.005 {
-        val = 0.0;
-    }
-    format!("{val:.2} MiB")
 }
 
 pub fn terminal_winsize() -> libc::winsize {
@@ -83,17 +80,6 @@ pub fn terminal_cols() -> usize {
     terminal_winsize().ws_col as usize
 }
 
-pub fn humanize_size(bytes: i64) -> (f64, &'static str) {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut idx = 0;
-    while value >= 1024.0 && idx < UNITS.len() - 1 {
-        value /= 1024.0;
-        idx += 1;
-    }
-    (value, UNITS[idx])
-}
-
 pub fn format_rate(value: f64) -> String {
     if value < 9.995 {
         format!("{value:>4.2}")
@@ -104,11 +90,12 @@ pub fn format_rate(value: f64) -> String {
     }
 }
 
+fn split_hms(total: u64) -> (u64, u64, u64) {
+    (total / 3600, total % 3600 / 60, total % 60)
+}
+
 pub fn format_eta(seconds: u64) -> String {
-    let eta_h = seconds / 3600;
-    let rem = seconds % 3600;
-    let eta_m = rem / 60;
-    let eta_s = rem % 60;
+    let (eta_h, eta_m, eta_s) = split_hms(seconds);
     if eta_h == 0 {
         format!("{eta_m:02}:{eta_s:02}")
     } else if eta_h == 1 && eta_m < 40 {
@@ -137,10 +124,7 @@ pub fn humanize_age(secs: u64) -> String {
 }
 
 pub fn format_elapsed(duration: std::time::Duration) -> String {
-    let total = duration.as_secs();
-    let hours = total / 3600;
-    let minutes = total % 3600 / 60;
-    let seconds = total % 60;
+    let (hours, minutes, seconds) = split_hms(duration.as_secs());
     if hours == 0 {
         format!("{minutes:02}:{seconds:02}")
     } else {

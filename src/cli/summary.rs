@@ -1,7 +1,7 @@
 use crate::{
     color,
     events::{SummaryPackage, TransactionSummary},
-    utils::format_mib,
+    utils::format_bytes,
 };
 
 pub fn print_summary(summary: &TransactionSummary) {
@@ -86,7 +86,7 @@ fn build_columns(rows: &[SummaryRow], count: usize) -> Vec<SummaryColumn> {
     columns.push(SummaryColumn {
         header: "Net Change".to_string(),
         align: Align::Right,
-        cells: rows.iter().map(|r| format_mib(r.net_bytes)).collect(),
+        cells: rows.iter().map(|r| format_bytes(r.net_bytes)).collect(),
     });
     if has_dl {
         columns.push(SummaryColumn {
@@ -96,7 +96,7 @@ fn build_columns(rows: &[SummaryRow], count: usize) -> Vec<SummaryColumn> {
                 .iter()
                 .map(|r| {
                     if r.download_bytes > 0 {
-                        format_mib(r.download_bytes)
+                        format_bytes(r.download_bytes)
                     } else {
                         String::new()
                     }
@@ -180,16 +180,16 @@ fn footer_rows(summary: &TransactionSummary) -> Vec<(String, String)> {
     let rsize = summary.total_removed_size;
     let mut rows: Vec<(String, String)> = Vec::new();
     if dlsize > 0 {
-        rows.push(("Total Download Size:".to_string(), format_mib(dlsize)));
+        rows.push(("Total Download Size:".to_string(), format_bytes(dlsize)));
     }
     if isize > 0 {
-        rows.push(("Total Installed Size:".to_string(), format_mib(isize)));
+        rows.push(("Total Installed Size:".to_string(), format_bytes(isize)));
     }
     if rsize > 0 && isize == 0 {
-        rows.push(("Total Removed Size:".to_string(), format_mib(rsize)));
+        rows.push(("Total Removed Size:".to_string(), format_bytes(rsize)));
     }
     if isize > 0 && rsize > 0 {
-        rows.push(("Net Upgrade Size:".to_string(), format_mib(isize - rsize)));
+        rows.push(("Net Upgrade Size:".to_string(), format_bytes(isize - rsize)));
     }
     rows
 }
@@ -334,11 +334,11 @@ mod tests {
             "",
             "Package (2)  Old Version      New Version  Net Change",
             "",
-            "cava-git     r1162.4b12c2b-1                -0.23 MiB",
-            "extra/cava                    0.10.7-1       0.19 MiB",
+            "cava-git     r1162.4b12c2b-1               -235.9 KiB",
+            "extra/cava                    0.10.7-1      194.6 KiB",
             "",
-            "Total Installed Size:   0.19 MiB",
-            "Net Upgrade Size:      -0.04 MiB",
+            "Total Installed Size:  194.6 KiB",
+            "Net Upgrade Size:      -41.4 KiB",
         ]
         .join("\n")
             + "\n";
@@ -371,10 +371,10 @@ mod tests {
             "",
             "Package (1)  Old Version  New Version  Net Change",
             "",
-            "extra/foo    1.0-1        2.0-1          0.25 MiB",
+            "extra/foo    1.0-1        2.0-1         256.0 KiB",
             "",
-            "Total Installed Size:  1.00 MiB",
-            "Net Upgrade Size:      0.25 MiB",
+            "Total Installed Size:    1.0 MiB",
+            "Net Upgrade Size:      256.0 KiB",
         ]
         .join("\n")
             + "\n";
@@ -405,10 +405,10 @@ mod tests {
             "",
             "Package (1)  New Version  Net Change  Download Size",
             "",
-            "extra/foo    2.0-1          1.00 MiB       0.50 MiB",
+            "extra/foo    2.0-1           1.0 MiB      512.0 KiB",
             "",
-            "Total Download Size:   0.50 MiB",
-            "Total Installed Size:  1.00 MiB",
+            "Total Download Size:   512.0 KiB",
+            "Total Installed Size:    1.0 MiB",
         ]
         .join("\n")
             + "\n";
@@ -434,7 +434,7 @@ mod tests {
             total_installed_size: 1048576,
             total_removed_size: 786432,
         };
-        let expected = "\n\x1b[0;1mPackage (1)            \x1b[0m  \x1b[0;1mOld Version\x1b[0m  \x1b[0;1mNew Version\x1b[0m  \x1b[0;1mNet Change\x1b[0m\n\nextra/something-longpkg  1.0-1        2.0-1          0.25 MiB\n\n\x1b[0;1mTotal Installed Size:\x1b[0m  1.00 MiB\n\x1b[0;1mNet Upgrade Size:    \x1b[0m  0.25 MiB\n";
+        let expected = "\n\x1b[0;1mPackage (1)            \x1b[0m  \x1b[0;1mOld Version\x1b[0m  \x1b[0;1mNew Version\x1b[0m  \x1b[0;1mNet Change\x1b[0m\n\nextra/something-longpkg  1.0-1        2.0-1         256.0 KiB\n\n\x1b[0;1mTotal Installed Size:\x1b[0m    1.0 MiB\n\x1b[0;1mNet Upgrade Size:    \x1b[0m  256.0 KiB\n";
         let actual = render_summary(&summary, true);
         assert_eq!(actual, expected, "rendered summary table mismatch");
     }
@@ -456,7 +456,7 @@ mod tests {
             total_installed_size: 1048576,
             total_removed_size: 0,
         };
-        let expected = "\n\x1b[0;1mPackage (1)\x1b[0m  \x1b[0;1mNew Version\x1b[0m  \x1b[0;1mNet Change\x1b[0m  \x1b[0;1mDownload Size\x1b[0m\n\nextra/foo    2.0-1          1.00 MiB       0.50 MiB\n\n\x1b[0;1mTotal Download Size: \x1b[0m  0.50 MiB\n\x1b[0;1mTotal Installed Size:\x1b[0m  1.00 MiB\n";
+        let expected = "\n\x1b[0;1mPackage (1)\x1b[0m  \x1b[0;1mNew Version\x1b[0m  \x1b[0;1mNet Change\x1b[0m  \x1b[0;1mDownload Size\x1b[0m\n\nextra/foo    2.0-1           1.0 MiB      512.0 KiB\n\n\x1b[0;1mTotal Download Size: \x1b[0m  512.0 KiB\n\x1b[0;1mTotal Installed Size:\x1b[0m    1.0 MiB\n";
         let actual = render_summary(&summary, true);
         assert_eq!(actual, expected, "rendered summary table mismatch");
     }
@@ -482,9 +482,9 @@ mod tests {
             "",
             "Package (1)  Old Version  Net Change",
             "",
-            "old          1.0-1         -0.23 MiB",
+            "old          1.0-1        -235.9 KiB",
             "",
-            "Total Removed Size:  0.23 MiB",
+            "Total Removed Size:  235.9 KiB",
         ]
         .join("\n")
             + "\n";
