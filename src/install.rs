@@ -55,8 +55,7 @@ pub fn run_install<S: InstallSink + 'static, F: FnOnce() -> bool>(
     confirm: F,
     answerer: Box<dyn crate::answerer::QuestionAnswerer>,
 ) -> anyhow::Result<()> {
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let mut handle = crate::pacman::init_alpm(&config)?;
+    let mut handle = crate::pacman::handle()?;
     install_into(&mut handle, targets, as_deps, sink, confirm, answerer)
 }
 
@@ -475,7 +474,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&db).unwrap();
         fs::create_dir_all(&cache).unwrap();
-        let config = pacmanconf::Config::new().unwrap();
+        let config = crate::pacman::config().unwrap();
         let mut handle = crate::pacman::init_alpm_at(
             &config,
             &root.to_string_lossy(),

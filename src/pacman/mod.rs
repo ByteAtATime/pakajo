@@ -42,7 +42,22 @@ fn parse_siglevel(sig_strings: &[String]) -> SigLevel {
     }
 }
 
-pub fn init_alpm(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
+pub fn config() -> anyhow::Result<pacmanconf::Config> {
+    pacmanconf::Config::new().context("failed to read pacman config")
+}
+
+pub fn db_path() -> std::path::PathBuf {
+    config().map_or_else(
+        |_| std::path::PathBuf::from("/var/lib/pacman"),
+        |config| std::path::PathBuf::from(config.db_path),
+    )
+}
+
+pub fn handle() -> anyhow::Result<Alpm> {
+    handle_with_config(&config()?)
+}
+
+pub fn handle_with_config(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
     let mut handle = Alpm::new(config.root_dir.as_str(), config.db_path.as_str())
         .context("failed to initialize alpm")?;
     alpm_utils::configure_alpm(&mut handle, config)
@@ -50,7 +65,11 @@ pub fn init_alpm(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
     Ok(handle)
 }
 
-pub fn init_alpm_at(
+pub fn handle_rootless() -> anyhow::Result<Alpm> {
+    handle_rootless_with_config(&config()?)
+}
+
+pub(crate) fn init_alpm_at(
     config: &pacmanconf::Config,
     root: &str,
     db_path: &str,
@@ -80,7 +99,7 @@ pub fn init_alpm_at(
     Ok(handle)
 }
 
-pub fn init_alpm_rootless(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
+pub fn handle_rootless_with_config(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
     let checkdb = crate::utils::cache_root()?.join("checkdb");
     std::fs::create_dir_all(&checkdb).context("creating checkdb dir")?;
     let local_link = checkdb.join("local");

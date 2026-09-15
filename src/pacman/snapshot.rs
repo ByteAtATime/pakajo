@@ -129,13 +129,14 @@ fn save(path: &Path, file: &SnapshotFile) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn get(config: &pacmanconf::Config) -> anyhow::Result<AlpmSnapshot> {
+pub fn get() -> anyhow::Result<AlpmSnapshot> {
+    let config = crate::pacman::config()?;
     let path = snapshot_path()?;
     let key = freshness_key(Path::new("/etc/pacman.conf"), &config.db_path);
     if let Some(snapshot) = load(&path, &key) {
         return Ok(snapshot);
     }
-    let handle = crate::pacman::init_alpm(config)?;
+    let handle = crate::pacman::handle_with_config(&config)?;
     let installed = crate::package::installed_names(&handle)
         .into_iter()
         .collect::<Vec<String>>();

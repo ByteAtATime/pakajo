@@ -1,16 +1,9 @@
-use anyhow::Context as _;
-
 use super::privs::stdin_is_tty;
 use crate::package::PackageSource;
 use crate::search::SearchResult;
 
-pub fn alpm_handle() -> anyhow::Result<alpm::Alpm> {
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    crate::pacman::init_alpm(&config)
-}
-
 pub fn run_aur_sync() -> anyhow::Result<()> {
-    let handle = alpm_handle()?;
+    let handle = crate::pacman::handle()?;
     let index = crate::db::PackageDb::open(&crate::db::PackageDb::db_path()?)?;
     match index.refresh(&handle)? {
         crate::db::RefreshOutcome::NotModified => println!("index up to date"),
@@ -26,7 +19,7 @@ pub fn run_aur_sync() -> anyhow::Result<()> {
 }
 
 pub fn run_gendb() -> anyhow::Result<()> {
-    let handle = alpm_handle()?;
+    let handle = crate::pacman::handle()?;
     let aur = crate::aur::AurClient::new();
     match crate::devel::generate_db(&handle, &aur)? {
         crate::devel::GendbOutcome::NoForeign => {
@@ -49,8 +42,7 @@ pub fn run_search(query: &str) -> anyhow::Result<()> {
     let local = crate::db::PackageDb::open(&sqlite_path)?;
     refresh_index_if_stale(&local);
     let engine = crate::search::engine::SearchEngine::new(sqlite_path)?;
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let snapshot = crate::pacman::snapshot::get(&config)?;
+    let snapshot = crate::pacman::snapshot::get()?;
     let installed: std::collections::HashSet<String> = snapshot.installed.into_iter().collect();
     let results = crate::search::dispatch_search(
         &engine,
@@ -70,7 +62,7 @@ fn refresh_index_if_stale(local: &crate::db::PackageDb) {
     {
         return;
     }
-    let handle = match alpm_handle() {
+    let handle = match crate::pacman::handle() {
         Ok(h) => h,
         Err(e) => {
             eprintln!("warning: skipping index refresh: {e:#}");

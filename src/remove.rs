@@ -12,8 +12,7 @@ pub fn run_remove<S: InstallSink + 'static, F: FnOnce() -> bool>(
     confirm: F,
     answerer: Box<dyn crate::answerer::QuestionAnswerer>,
 ) -> anyhow::Result<()> {
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let mut handle = crate::pacman::init_alpm(&config)?;
+    let mut handle = crate::pacman::handle()?;
     remove_into(&mut handle, targets, sink, confirm, answerer)
 }
 

@@ -185,13 +185,13 @@ mod tests {
         );
         let mtimes_before = sync_db_mtimes();
 
-        let config = pacmanconf::Config::new().expect("failed to read pacman config");
+        let config = crate::pacman::config().expect("pacman config");
         let checkdb_lock = crate::utils::cache_root()
             .expect("cache root")
             .join("checkdb")
             .join("db.lck");
 
-        let mut handle = crate::pacman::init_alpm_rootless(&config)
+        let mut handle = crate::pacman::handle_rootless_with_config(&config)
             .expect("failed to build rootless alpm handle (Phase 1.1 primitive)");
         handle
             .syncdbs_mut()

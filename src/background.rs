@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context as _;
 use futures::FutureExt as _;
 use futures::SinkExt as _;
 use futures::StreamExt as _;
@@ -9,7 +8,7 @@ use futures::StreamExt as _;
 use cosmic::iced::Subscription;
 use cosmic::iced::stream::channel;
 use pakajo::db::{AUR_SYNC_MIN_INTERVAL, PackageDb, RefreshOutcome};
-use pakajo::pacman::init_alpm;
+use pakajo::pacman::handle;
 use pakajo::search::engine::SearchEngine;
 
 pub const LOCK_DEBOUNCE: Duration = Duration::from_millis(300);
@@ -34,10 +33,7 @@ pub fn begin_aur_sync_in_background(db: Arc<PackageDb>, search_engine: Option<Ar
             return;
         }
 
-        let handle = match pacmanconf::Config::new()
-            .context("failed to read pacman config")
-            .and_then(|cfg| init_alpm(&cfg))
-        {
+        let handle = match handle() {
             Ok(h) => h,
             Err(e) => {
                 eprintln!("[pakajo] aur background sync failed to init alpm: {e:#}");
@@ -77,10 +73,7 @@ pub(crate) fn db_lock_watcher_subscription() -> Subscription<crate::Message> {
             |mut tx: futures::channel::mpsc::Sender<crate::Message>| async move {
                 let (wtx, mut wrx) = futures::channel::mpsc::channel::<()>(16);
 
-                let db_dir = pacmanconf::Config::new()
-                    .ok()
-                    .map(|c| std::path::PathBuf::from(c.db_path))
-                    .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/pacman"));
+                let db_dir = pakajo::pacman::db_path();
 
                 pakajo::pacman_watch::spawn_db_lock_watcher(db_dir, wtx);
 

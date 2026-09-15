@@ -83,8 +83,7 @@ fn resolve_and_report<S: InstallSink + ?Sized>(
         });
     }
 
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let alpm = crate::pacman::init_alpm(&config)?;
+    let alpm = crate::pacman::handle()?;
     let aur = crate::aur::AurClient::new();
     let plan = crate::resolve::resolve(&crate::resolve::AlpmDb(&alpm), &aur, targets, no_check)?;
 

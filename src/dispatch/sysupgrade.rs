@@ -1,4 +1,3 @@
-use anyhow::Context as _;
 use futures::SinkExt as _;
 
 use crate::dispatch::approvals::ApprovalsFile;
@@ -33,8 +32,8 @@ pub struct SysupgradePreviewRequest {
 }
 
 pub fn sysupgrade_preview(request: &SysupgradePreviewRequest) -> anyhow::Result<Preview> {
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let mut handle = crate::pacman::init_alpm_rootless(&config)?;
+    let config = crate::pacman::config()?;
+    let mut handle = crate::pacman::handle_rootless_with_config(&config)?;
     if !request.no_refresh {
         crate::pacman::refresh_sync_dbs_rootless(&mut handle)?;
     }
@@ -189,19 +188,21 @@ fn resolve_aur_targets(
     if let Some(targets) = &request.aur_targets {
         return Some(targets.clone());
     }
-    let mut handle = match crate::cli::alpm_handle() {
+    let config = match crate::pacman::config() {
+        Ok(config) => config,
+        Err(error) => {
+            send_done(tx, ChildOutcome::Failed(format!("{error:#}")));
+            return None;
+        }
+    };
+    let mut handle = match crate::pacman::handle_with_config(&config) {
         Ok(handle) => handle,
         Err(error) => {
             send_done(tx, ChildOutcome::Failed(format!("{error:#}")));
             return None;
         }
     };
-    match pacmanconf::Config::new() {
-        Ok(config) => crate::upgrade::apply_ignores(&mut handle, &config, &request.ignores),
-        Err(error) => {
-            eprintln!("warning: failed to read pacman config, skipping ignore filters: {error:#}")
-        }
-    }
+    crate::upgrade::apply_ignores(&mut handle, &config, &request.ignores);
     let mut candidates = match detect_aur_upgrades(&handle) {
         Ok(candidates) => candidates,
         Err(error) => {

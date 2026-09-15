@@ -94,7 +94,7 @@ pub fn load_cached() -> Option<UpdatesCache> {
 }
 
 pub fn localdb_unchanged_since(checked_at: u64) -> bool {
-    let Ok(config) = pacmanconf::Config::new() else {
+    let Ok(config) = pacman::config() else {
         return false;
     };
     let db_path = std::path::PathBuf::from(config.db_path);
@@ -168,8 +168,8 @@ pub fn compute_repo_upgrades(
 
 pub fn pending_updates(devel: DevelSource) -> anyhow::Result<UpdatesFetch> {
     let devel_live = matches!(devel, DevelSource::Live);
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let mut handle = pacman::init_alpm_rootless(&config)?;
+    let config = pacman::config()?;
+    let mut handle = pacman::handle_rootless_with_config(&config)?;
     pacman::refresh_sync_dbs_rootless(&mut handle)?;
     let repo = compute_repo_upgrades(&handle, &config)?;
     let aur_client = crate::aur::AurClient::new();

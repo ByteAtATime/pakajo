@@ -32,7 +32,7 @@ pub(crate) mod privs;
 use self::privs::stdin_is_tty;
 
 mod commands;
-pub(crate) use self::commands::{alpm_handle, answerer_for};
+pub(crate) use self::commands::answerer_for;
 use self::commands::{run_aur_sync, run_gendb, run_search};
 
 mod complete;
@@ -208,7 +208,7 @@ fn usage_error() -> ! {
 }
 
 fn alpm_handle_or_exit() -> alpm::Alpm {
-    match alpm_handle() {
+    match crate::pacman::handle() {
         Ok(h) => h,
         Err(e) => {
             eprintln!("{e:#}");

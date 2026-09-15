@@ -24,8 +24,8 @@ pub fn install(request: InstallRequest) -> DispatchStream {
 }
 
 pub fn install_preview(request: &InstallRequest) -> anyhow::Result<Preview> {
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let mut handle = crate::pacman::init_alpm(&config)?;
+    let config = crate::pacman::config()?;
+    let mut handle = crate::pacman::handle_with_config(&config)?;
     crate::upgrade::apply_ignores(&mut handle, &config, &request.ignores);
     let state = crate::dry_run::attach_recorder(&mut handle);
     let outcome = run_install_preview(&mut handle, request, &state);
@@ -123,7 +123,7 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
         run_root_install(request, &mut tx);
         return;
     }
-    let mut handle = match crate::cli::alpm_handle() {
+    let mut handle = match crate::pacman::handle() {
         Ok(handle) => handle,
         Err(error) => {
             send_done(&mut tx, ChildOutcome::Failed(format!("{error:#}")));
@@ -174,7 +174,7 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
 }
 
 fn run_root_install(request: InstallRequest, tx: &mut futures::channel::mpsc::Sender<StreamItem>) {
-    let mut handle = match crate::cli::alpm_handle() {
+    let mut handle = match crate::pacman::handle() {
         Ok(handle) => handle,
         Err(error) => {
             send_done(tx, ChildOutcome::Failed(format!("{error:#}")));
@@ -234,7 +234,7 @@ fn resolve_for_dispatch(
     handle: &mut alpm::Alpm,
     request: &InstallRequest,
 ) -> anyhow::Result<ResolvedTargets> {
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
+    let config = crate::pacman::config()?;
     crate::upgrade::apply_ignores(handle, &config, &request.ignores);
     let expanded = expand_install_groups(handle, &request.targets, request.tty);
     let (repo_or_file, aur) = split_install_targets(handle, &expanded, request.prefer_aur);

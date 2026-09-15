@@ -27,8 +27,7 @@ pub fn remove(request: RemoveRequest) -> DispatchStream {
 }
 
 pub fn preview(request: &RemoveRequest) -> anyhow::Result<Preview> {
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let mut handle = crate::pacman::init_alpm_rootless(&config)?;
+    let mut handle = crate::pacman::handle_rootless()?;
     preview_with_handle(&mut handle, request)
 }
 
@@ -80,7 +79,7 @@ fn run_remove(request: RemoveRequest, mut tx: futures::channel::mpsc::Sender<Str
         run_root_remove(request, &mut tx);
         return;
     }
-    let handle = match crate::cli::alpm_handle() {
+    let handle = match crate::pacman::handle() {
         Ok(handle) => handle,
         Err(error) => {
             send_done(&mut tx, ChildOutcome::Failed(format!("{error:#}")));
@@ -99,7 +98,7 @@ fn run_remove(request: RemoveRequest, mut tx: futures::channel::mpsc::Sender<Str
 }
 
 fn run_root_remove(request: RemoveRequest, tx: &mut futures::channel::mpsc::Sender<StreamItem>) {
-    let handle = match crate::cli::alpm_handle() {
+    let handle = match crate::pacman::handle() {
         Ok(handle) => handle,
         Err(error) => {
             send_done(tx, ChildOutcome::Failed(format!("{error:#}")));

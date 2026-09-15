@@ -597,8 +597,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_google_chrome() {
-        let config = pacmanconf::Config::new().unwrap();
-        let handle = crate::pacman::init_alpm(&config).unwrap();
+        let handle = crate::pacman::handle().unwrap();
         let plan = resolve(
             &AlpmDb(&handle),
             &AurClient::new(),

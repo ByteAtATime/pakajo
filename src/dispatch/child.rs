@@ -107,7 +107,7 @@ impl ChildOperation {
                 stream,
             } => {
                 let approvals = read_approvals(approvals_path.as_deref())?;
-                let handle = crate::cli::alpm_handle()?;
+                let handle = crate::pacman::handle()?;
                 let targets = targets
                     .iter()
                     .map(|s| classify_target(s))

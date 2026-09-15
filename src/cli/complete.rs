@@ -1,5 +1,3 @@
-use super::commands::alpm_handle;
-
 const NAME_LIMIT: usize = 500;
 
 pub fn run(args: &[String]) -> anyhow::Result<()> {
@@ -29,7 +27,7 @@ fn print_any(prefix: &str) -> anyhow::Result<()> {
 }
 
 fn installed_names(prefix: &str) -> anyhow::Result<Vec<String>> {
-    let handle = alpm_handle()?;
+    let handle = crate::pacman::handle()?;
     Ok(handle
         .localdb()
         .pkgs()
@@ -70,7 +68,7 @@ fn indexed_names_with_prefix(prefix: &str) -> Option<Vec<String>> {
 }
 
 fn repo_names_with_prefix(prefix: &str) -> anyhow::Result<Vec<String>> {
-    let handle = alpm_handle()?;
+    let handle = crate::pacman::handle()?;
     let mut names: Vec<String> = handle
         .syncdbs()
         .iter()

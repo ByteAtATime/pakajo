@@ -4,7 +4,6 @@ mod components;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use anyhow::Context as _;
 use cosmic::iced::widget::{Id, scrollable};
 use cosmic::widget::{Column, Row, container, popover, rectangle_tracker, text_input};
 use cosmic::{
@@ -17,7 +16,7 @@ use pakajo::aur::AurClient;
 use pakajo::cli;
 use pakajo::dashboard::{DashboardMessage, DashboardSnapshot};
 use pakajo::db::PackageDb;
-use pakajo::pacman::init_alpm;
+use pakajo::pacman::handle;
 use pakajo::search::SearchFilter;
 use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
@@ -126,10 +125,7 @@ impl Application for PakajoApp {
             .map(Arc::new);
 
         let group_index = Arc::new(Vec::new());
-        let (alpm, installed_names) = match pacmanconf::Config::new()
-            .context("failed to read pacman config")
-            .and_then(|cfg| init_alpm(&cfg))
-        {
+        let (alpm, installed_names) = match handle() {
             Ok(handle) => {
                 let installed = Arc::new(pakajo::package::installed_names(&handle));
                 (Some(handle), installed)
@@ -223,9 +219,7 @@ impl Application for PakajoApp {
         };
         let groups_task = Task::perform(
             async {
-                pacmanconf::Config::new()
-                    .map_err(anyhow::Error::new)
-                    .and_then(|cfg| init_alpm(&cfg))
+                handle()
                     .map(|handle| Arc::new(pakajo::package::group_index(&handle)))
                     .unwrap_or_else(|e| {
                         eprintln!("[pakajo] failed to index package groups: {e:#}");
@@ -490,9 +484,7 @@ impl PakajoApp {
     }
 
     fn refresh_installed_state(&mut self) {
-        if let Ok(config) = pacmanconf::Config::new()
-            && let Ok(handle) = init_alpm(&config)
-        {
+        if let Ok(handle) = handle() {
             self.alpm = Some(handle);
         }
         if let Some(alpm) = &self.alpm {

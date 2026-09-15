@@ -1,7 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::Context as _;
-
 #[derive(Clone, Debug, Default)]
 pub struct OptdepEntry {
     pub name: String,
@@ -114,10 +112,7 @@ pub fn compute_dashboard_snapshot(
 }
 
 pub fn gather_dashboard() -> anyhow::Result<(HashSet<String>, DashboardSnapshot)> {
-    let handle = match pacmanconf::Config::new()
-        .context("failed to read pacman config")
-        .and_then(|cfg| crate::pacman::init_alpm(&cfg))
-    {
+    let handle = match crate::pacman::handle() {
         Ok(handle) => handle,
         Err(e) => {
             eprintln!("[pakajo] dashboard refresh failed: {e:#}");

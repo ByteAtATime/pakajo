@@ -22,8 +22,8 @@ pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
     fingerprint_file: Option<&str>,
 ) -> anyhow::Result<()> {
     let preview = fingerprint_file.map(read_fingerprint_file).transpose()?;
-    let config = pacmanconf::Config::new().context("failed to read pacman config")?;
-    let mut handle = crate::pacman::init_alpm(&config)?;
+    let config = crate::pacman::config()?;
+    let mut handle = crate::pacman::handle_with_config(&config)?;
     apply_ignores(&mut handle, &config, extra_ignores);
     if !no_refresh {
         handle
@@ -453,8 +453,7 @@ mod tests {
     #[test]
     #[ignore]
     fn compute_aur_upgrades_live() {
-        let config = pacmanconf::Config::new().expect("pacman config");
-        let handle = crate::pacman::init_alpm(&config).expect("alpm");
+        let handle = crate::pacman::handle().expect("alpm");
         let aur = crate::aur::AurClient::new();
         let candidates = compute_aur_upgrades(&handle, &aur, DevelSource::Live)
             .expect("rpc succeeds")
@@ -548,8 +547,8 @@ mod tests {
         }
         let mtimes_before = sync_db_mtimes();
 
-        let config = pacmanconf::Config::new().expect("failed to read pacman config");
-        let mut handle = crate::pacman::init_alpm_rootless(&config)
+        let config = crate::pacman::config().expect("pacman config");
+        let mut handle = crate::pacman::handle_rootless_with_config(&config)
             .expect("failed to build rootless alpm handle");
         handle
             .syncdbs_mut()
