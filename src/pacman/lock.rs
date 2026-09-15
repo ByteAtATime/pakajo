@@ -20,9 +20,8 @@ pub fn install_lock_cleanup_on_signal(handle: &alpm::Alpm) {
 }
 
 #[cfg(not(test))]
-#[allow(clippy::never_loop)]
 fn install_lock_cleanup_on_signal_inner(lock_path: PathBuf) {
-    use std::io::Write;
+    use std::io::Write as _;
 
     let mut signals = match signal_hook::iterator::Signals::new([
         signal_hook::consts::signal::SIGINT,
@@ -37,19 +36,20 @@ fn install_lock_cleanup_on_signal_inner(lock_path: PathBuf) {
     };
 
     std::thread::spawn(move || {
-        for sig in signals.forever() {
-            match std::fs::remove_file(&lock_path) {
-                Ok(()) => eprintln!("[pakajo] interrupted by signal {sig}; removed db.lck"),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    eprintln!("[pakajo] interrupted by signal {sig}; no db.lck to remove")
-                }
-                Err(e) => {
-                    eprintln!("[pakajo] interrupted by signal {sig}; db.lck cleanup failed: {e}")
-                }
+        let Some(sig) = signals.forever().next() else {
+            return;
+        };
+        match std::fs::remove_file(&lock_path) {
+            Ok(()) => eprintln!("[pakajo] interrupted by signal {sig}; removed db.lck"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("[pakajo] interrupted by signal {sig}; no db.lck to remove")
             }
-            let _ = std::io::stdout().flush();
-            std::process::exit(128 + sig);
+            Err(e) => {
+                eprintln!("[pakajo] interrupted by signal {sig}; db.lck cleanup failed: {e}")
+            }
         }
+        let _ = std::io::stdout().flush();
+        std::process::exit(128 + sig);
     });
 }
 

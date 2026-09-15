@@ -6,5 +6,6 @@ mod types;
 
 pub use engine::resolve;
 pub use sources::{AlpmDb, AurQuery};
-#[allow(unused_imports)]
-pub use types::{BuildLayer, BuildPlan};
+#[cfg(test)]
+pub use types::BuildLayer;
+pub use types::BuildPlan;

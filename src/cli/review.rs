@@ -28,7 +28,7 @@ pub fn review_pkgbuilds(pkgbuilds: &[PkgbuildInfo]) -> bool {
     if combined.is_empty() {
         println!(
             "{}",
-            color::colon(use_color, "Nothing new to review — all PKGBUILDs unchanged")
+            color::colon(use_color, "Nothing new to review - all PKGBUILDs unchanged")
         );
         return true;
     }
