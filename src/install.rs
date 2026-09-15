@@ -228,7 +228,11 @@ fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
             }
             InstallTarget::File(path) => {
                 let loaded = handle
-                    .pkg_load(path.to_string_lossy().as_ref(), true, alpm::SigLevel::NONE)
+                    .pkg_load(
+                        path.to_string_lossy().as_ref(),
+                        true,
+                        crate::pacman::local_file_siglevel(handle),
+                    )
                     .context("failed to load package file")?;
                 added_names.push(loaded.name().to_string());
                 handle

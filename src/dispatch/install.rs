@@ -76,7 +76,7 @@ fn queue_repo_targets(handle: &mut alpm::Alpm, repo_or_file: &[String]) -> anyho
     for target in repo_or_file {
         if let Some(path) = file_suffix_path(target) {
             let loaded = handle
-                .pkg_load(path, true, alpm::SigLevel::NONE)
+                .pkg_load(path, true, crate::pacman::local_file_siglevel(handle))
                 .context("failed to load package file")?;
             handle
                 .trans_add_pkg(loaded)
