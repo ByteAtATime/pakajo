@@ -419,14 +419,44 @@ impl PakajoApp {
                 {
                     return Task::none();
                 }
-                let (name, source) = match &self.detail {
-                    DetailData::Ready { pkg, .. } => (pkg.name.clone(), pkg.source()),
+                let (name, source, with_deps) = match &self.detail {
+                    DetailData::Ready { pkg, .. } => (
+                        pkg.name.clone(),
+                        pkg.source(),
+                        selectable_optdeps(pkg, &self.selected_optdeps),
+                    ),
                     _ => return Task::none(),
                 };
-                let (txn, task) = Transaction::start(name, source);
-                self.transaction = Some(txn);
-                self.show_transaction = false;
-                task
+                if with_deps.is_empty() {
+                    let (txn, task) = Transaction::start(name, source);
+                    self.transaction = Some(txn);
+                    self.show_transaction = false;
+                    return task;
+                }
+                let wanted = std::iter::once((name, String::new()))
+                    .chain(with_deps)
+                    .collect();
+                self.start_optdep_batch(wanted)
+            }
+            TransactionMessage::StartBatchInstall => {
+                if self
+                    .transaction
+                    .as_ref()
+                    .is_some_and(Transaction::is_active)
+                    || self.detail_pending.is_some()
+                {
+                    return Task::none();
+                }
+                let wanted = match &self.detail {
+                    DetailData::Ready { pkg, .. } => {
+                        selectable_optdeps(pkg, &self.selected_optdeps)
+                    }
+                    _ => return Task::none(),
+                };
+                if wanted.is_empty() {
+                    return Task::none();
+                }
+                self.start_optdep_batch(wanted)
             }
             TransactionMessage::StartRemove => {
                 if self
@@ -490,6 +520,22 @@ impl PakajoApp {
                 }
             }
         }
+    }
+
+    fn start_optdep_batch(&mut self, wanted: Vec<(String, String)>) -> Task<Message> {
+        let resolve = |dep: &str, constraint: &str| {
+            self.alpm
+                .as_ref()
+                .and_then(|h| h.syncdbs().find_satisfier(format!("{dep}{constraint}")))
+                .map(|p| p.name().to_string())
+        };
+        let (targets, aur_bucket) =
+            components::transaction::partition_batch_targets(&wanted, resolve);
+        let (txn, task) = Transaction::start_batch(targets, aur_bucket, false);
+        self.selected_optdeps.clear();
+        self.transaction = Some(txn);
+        self.show_transaction = false;
+        task
     }
 
     fn refresh_installed_state(&mut self) {
@@ -606,6 +652,21 @@ pub enum Page {
 
 pub(crate) fn page_scroll_id() -> Id {
     Id::new("page-scroll")
+}
+
+pub(crate) fn selectable_optdeps(
+    pkg: &pakajo::package::Package,
+    selection: &[String],
+) -> Vec<(String, String)> {
+    selection
+        .iter()
+        .filter_map(|name| {
+            pkg.opt_dependencies
+                .iter()
+                .find(|dep| &dep.name == name && !dep.installed)
+                .map(|dep| (name.clone(), dep.version.clone().unwrap_or_default()))
+        })
+        .collect()
 }
 
 pub(crate) fn scroll_to_top() -> Task<Message> {

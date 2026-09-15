@@ -165,10 +165,11 @@ fn render_package<'a>(
     disabled: bool,
     hovered: Option<&'a str>,
 ) -> Element<'a> {
-    let header = render_header(pkg, installed, checking, pending);
+    let selected = crate::selectable_optdeps(pkg, selection).len();
+    let header = render_header(pkg, installed, checking, pending, selected);
     let details = render_details(pkg);
     let dependencies = render_dependencies(pkg);
-    let opt_dependencies = render_opt_dependencies(pkg, selection, disabled, hovered);
+    let opt_dependencies = render_opt_dependencies(pkg, selection, disabled, hovered, installed);
 
     let mut col = Column::new()
         .spacing(20)
@@ -193,6 +194,7 @@ fn render_header<'a>(
     installed: bool,
     checking: Option<&'a str>,
     pending: bool,
+    selected: usize,
 ) -> Element<'a> {
     let formatted_name = if let Some(repo) = pkg.repo() {
         format!("{repo}/{}", pkg.name)
@@ -213,12 +215,23 @@ fn render_header<'a>(
     };
 
     let busy = pending || checking == Some(pkg.name.as_str());
-    let action = if busy {
-        button::standard("Loading...")
+    let action: Element<'a> = if busy {
+        button::standard("Loading...").into()
     } else if installed {
-        button::destructive(label).on_press(intent)
+        button::destructive(label).on_press(intent).into()
+    } else if selected > 0 {
+        button::custom(
+            Row::new()
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .push(text("Install"))
+                .push(install_count_badge(selected)),
+        )
+        .class(cosmic::theme::Button::Suggested)
+        .on_press(intent)
+        .into()
     } else {
-        button::suggested(label).on_press(intent)
+        button::suggested(label).on_press(intent).into()
     };
 
     let mut actions = Row::new().spacing(8).align_y(Alignment::Center);
@@ -430,6 +443,20 @@ fn optdep_box_style(
     }
 }
 
+fn optdep_zone_style(theme: &cosmic::Theme, alpha: f32) -> cosmic::widget::button::Style {
+    let background = (alpha > 0.0).then(|| {
+        Background::Color(Color {
+            a: alpha,
+            ..accent_color(theme)
+        })
+    });
+    cosmic::widget::button::Style {
+        background,
+        border_radius: theme.cosmic().corner_radii.radius_xs.into(),
+        ..Default::default()
+    }
+}
+
 fn optdep_checkbox<'a>(name: &'a str, checked: bool, disabled: bool, hovered: bool) -> Element<'a> {
     let glyph: Element<'a> = if checked {
         icon(icons::check())
@@ -464,16 +491,66 @@ fn optdep_checkbox<'a>(name: &'a str, checked: bool, disabled: bool, hovered: bo
         .into()
 }
 
+fn optdep_install_label<'a>(label: String) -> Element<'a> {
+    Row::new()
+        .spacing(4)
+        .align_y(Alignment::Center)
+        .push(
+            icon(icons::download())
+                .size(12)
+                .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
+                    |theme: &cosmic::Theme| cosmic::widget::svg::Style {
+                        color: Some(accent_color(theme)),
+                    },
+                ))),
+        )
+        .push(
+            text(label)
+                .size(12.0)
+                .line_height(cosmic::iced::core::text::LineHeight::Absolute(17.0.into()))
+                .font(cosmic::font::default())
+                .class(cosmic::theme::Text::Accent),
+        )
+        .into()
+}
+
 fn render_opt_dependencies<'a>(
     pkg: &'a Package,
     selection: &'a [String],
     disabled: bool,
     hovered: Option<&'a str>,
+    installed: bool,
 ) -> Element<'a> {
-    let col = Column::new().spacing(8).push(section_header(format!(
-        "Optional Dependencies ({})",
-        pkg.opt_dependencies.len()
-    )));
+    let selected = crate::selectable_optdeps(pkg, selection).len();
+    let install_link = (installed && selected > 0).then(|| {
+        button::custom(optdep_install_label(format!("Install {selected}")))
+            .class(cosmic::theme::Button::Custom {
+                active: Box::new(|_, theme| optdep_zone_style(theme, 0.0)),
+                disabled: Box::new(|theme| optdep_zone_style(theme, 0.0)),
+                hovered: Box::new(|_, theme| optdep_zone_style(theme, 0.10)),
+                pressed: Box::new(|_, theme| optdep_zone_style(theme, 0.16)),
+            })
+            .padding([2.0, 8.0])
+            .on_press_maybe(
+                (!disabled)
+                    .then(|| crate::Message::Transaction(TransactionMessage::StartBatchInstall)),
+            )
+    });
+    let header: Element<'a> = Column::new()
+        .spacing(4)
+        .push(
+            Row::new()
+                .align_y(Alignment::Center)
+                .push(text::heading(format!(
+                    "Optional Dependencies ({})",
+                    pkg.opt_dependencies.len()
+                )))
+                .push(Space::new().width(Length::Fill))
+                .push_maybe(install_link),
+        )
+        .push(divider::horizontal::default())
+        .into();
+    let col = Column::new().spacing(8).push(header);
 
     let mut list = Column::new().spacing(6);
 
@@ -552,6 +629,24 @@ fn info_item<'a>(icon: Element<'a>, label: String) -> Element<'a> {
         .align_y(Alignment::Center)
         .push(icon)
         .push(muted(label))
+        .into()
+}
+
+fn install_count_badge<'a>(selected: usize) -> Element<'a> {
+    container(text::caption(format!("+{selected}")))
+        .padding([2.0, 8.0])
+        .style(|theme: &cosmic::Theme| {
+            let on = Color::from(theme.cosmic().accent.on);
+            container::Style {
+                text_color: Some(on),
+                background: Some(Background::Color(Color { a: 0.22, ..on })),
+                border: Border {
+                    radius: theme.cosmic().corner_radii.radius_xl.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        })
         .into()
 }
 

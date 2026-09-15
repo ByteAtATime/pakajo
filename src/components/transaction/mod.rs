@@ -44,6 +44,7 @@ use review::{ReviewMessage, ReviewModel};
 #[derive(Clone, Debug)]
 pub enum TransactionMessage {
     StartInstall,
+    StartBatchInstall,
     StartRemove,
     InstallEvent(InstallEvent),
     InstallDone(ChildOutcome),
@@ -113,6 +114,24 @@ fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::M
     ))
 }
 
+pub(crate) fn partition_batch_targets(
+    targets: &[(String, String)],
+    resolve: impl Fn(&str, &str) -> Option<String>,
+) -> (Vec<String>, Vec<String>) {
+    let mut merged = Vec::with_capacity(targets.len());
+    let mut aur = Vec::new();
+    for (name, constraint) in targets {
+        match resolve(name, constraint) {
+            Some(real) => merged.push(real),
+            None => {
+                merged.push(name.clone());
+                aur.push(name.clone());
+            }
+        }
+    }
+    (merged, aur)
+}
+
 pub(crate) struct Transaction {
     model: TransactionModel,
 }
@@ -176,6 +195,7 @@ impl Transaction {
     pub(crate) fn update(&mut self, message: TransactionMessage) -> Action {
         match message {
             TransactionMessage::StartInstall => Action::None,
+            TransactionMessage::StartBatchInstall => Action::None,
             TransactionMessage::InstallEvent(ev) => {
                 self.model.apply_event(&ev);
                 Action::None

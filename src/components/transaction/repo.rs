@@ -11,6 +11,9 @@ use pakajo::progress::{AurStage, InstallKind, RepoStage, RepoState};
 
 pub(super) fn view(model: &TransactionModel) -> Element<'_> {
     let title = match model.kind {
+        InstallKind::Install if model.targets.len() > 1 => {
+            format!("Installing {} packages", model.targets.len())
+        }
         InstallKind::Install => format!("Installing {}", model.name),
         InstallKind::Remove => format!("Removing {}", model.name),
         InstallKind::Upgrade => format!("Upgrading {}", model.name),
