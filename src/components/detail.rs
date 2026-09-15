@@ -398,7 +398,6 @@ fn render_dependencies<'a>(pkg: &'a Package) -> Element<'a> {
 
 const OPTDEP_BOX_SIZE: f32 = 16.0;
 const OPTDEP_HIT_PADDING: f32 = 8.0;
-const OPTDEP_INSTALLED_SPACER_WIDTH: f32 = OPTDEP_BOX_SIZE + 2.0 * OPTDEP_HIT_PADDING - 12.0;
 
 fn optdep_box_style(
     theme: &cosmic::Theme,
@@ -492,6 +491,20 @@ fn optdep_checkbox<'a>(name: &'a str, checked: bool, disabled: bool, hovered: bo
         .into()
 }
 
+fn optdep_installed_marker<'a>() -> Element<'a> {
+    container(
+        icon(icons::circle_check())
+            .size(OPTDEP_BOX_SIZE as u16)
+            .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
+                |theme: &cosmic::Theme| cosmic::widget::svg::Style {
+                    color: Some(theme.cosmic().success.base.into()),
+                },
+            ))),
+    )
+    .padding(OPTDEP_HIT_PADDING)
+    .into()
+}
+
 fn optdep_install_label<'a>(label: String) -> Element<'a> {
     Row::new()
         .spacing(4)
@@ -574,10 +587,7 @@ fn render_opt_dependencies<'a>(
                     hovered == Some(dep.name.as_str()),
                 )
             }))
-            .push_maybe(
-                dep.installed
-                    .then(|| Space::new().width(Length::Fixed(OPTDEP_INSTALLED_SPACER_WIDTH))),
-            )
+            .push_maybe(dep.installed.then(optdep_installed_marker))
             .push(name)
             .push_maybe(
                 dep.version
@@ -587,29 +597,10 @@ fn render_opt_dependencies<'a>(
             .push_maybe(dep.version.as_deref().map(muted_mono))
             .push(Space::new().width(Length::Fill))
             .push_maybe(dep.reason.as_ref().map(|r| muted(r.clone())))
-            .push(Space::new().width(Length::Fixed(8.0)))
-            .push(if dep.installed {
-                Element::from(
-                    icon(icons::circle_check())
-                        .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
-                            |theme: &cosmic::Theme| cosmic::widget::svg::Style {
-                                color: Some(theme.cosmic().success.base.into()),
-                            },
-                        )))
-                        .size(16),
-                )
-            } else {
-                Element::from(Space::new().width(Length::Fixed(16.0)))
-            });
-
-        let item_padding = if dep.installed {
-            [8.0, 12.0, 8.0, 12.0]
-        } else {
-            [0.0, 12.0, 0.0, 0.0]
-        };
+            .push(Space::new().width(Length::Fixed(16.0)));
 
         let item = container(row)
-            .padding(item_padding)
+            .padding([0.0, 12.0, 0.0, 0.0])
             .width(Length::Fill)
             .style(|theme: &cosmic::Theme| {
                 let cosmic = theme.cosmic();
