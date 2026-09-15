@@ -383,8 +383,28 @@ fn render_opt_dependencies<'a>(pkg: &'a Package) -> Element<'a> {
             .align_y(Alignment::Center)
             .width(Length::Fill)
             .push(crate::components::row_title(dep.name.clone()))
+            .push_maybe(
+                dep.version
+                    .is_some()
+                    .then(|| Space::new().width(Length::Fixed(8.0))),
+            )
+            .push_maybe(dep.version.as_deref().map(muted_mono))
             .push(Space::new().width(Length::Fill))
-            .push_maybe(dep.reason.as_ref().map(|r| muted(r.clone())));
+            .push_maybe(dep.reason.as_ref().map(|r| muted(r.clone())))
+            .push(Space::new().width(Length::Fixed(8.0)))
+            .push(if dep.installed {
+                Element::from(
+                    icon(icons::circle_check())
+                        .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
+                            |theme: &cosmic::Theme| cosmic::widget::svg::Style {
+                                color: Some(theme.cosmic().success.base.into()),
+                            },
+                        )))
+                        .size(16),
+                )
+            } else {
+                Element::from(Space::new().width(Length::Fixed(16.0)))
+            });
 
         let item = container(row)
             .padding([8.0, 12.0])
@@ -629,13 +649,25 @@ impl crate::PakajoApp {
         }
     }
 
-    pub(crate) fn set_detail_pkg(&mut self, pkg: Package) {
+    pub(crate) fn set_detail_pkg(&mut self, mut pkg: Package) {
         let name = pkg.name.clone();
         let installed = self
             .alpm
             .as_ref()
             .map(|a| pakajo::package::is_installed(a, &name))
             .unwrap_or(false);
+        match self.alpm.as_ref() {
+            Some(alpm) => {
+                for dep in &mut pkg.opt_dependencies {
+                    dep.installed = package::opt_dep_installed(alpm, dep);
+                }
+            }
+            None => {
+                for dep in &mut pkg.opt_dependencies {
+                    dep.installed = false;
+                }
+            }
+        }
         self.detail = DetailData::Ready {
             pkg: Box::new(pkg),
             installed,

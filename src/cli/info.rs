@@ -20,17 +20,15 @@ fn installed_data(local: &alpm::Package) -> InstalledData {
     }
 }
 
-fn enrich(pkg: &mut Package, localdb: &alpm::Db, installed: &alpm::AlpmList<&alpm::Package>) {
+fn enrich(pkg: &mut Package, handle: &alpm::Alpm) {
+    let localdb = handle.localdb();
     if !matches!(&pkg.kind, PackageKind::Repo(data) if data.is_local())
         && let Ok(local) = localdb.pkg(pkg.name.as_str())
     {
         pkg.installed = Some(installed_data(local));
     }
     for dep in &mut pkg.opt_dependencies {
-        let constraint = dep.version.as_deref().unwrap_or_default();
-        dep.installed = installed
-            .find_satisfier(format!("{}{constraint}", dep.name))
-            .is_some();
+        dep.installed = crate::package::opt_dep_installed(handle, dep);
     }
 }
 
@@ -66,14 +64,12 @@ pub fn run(targets: Vec<String>) -> ! {
     }
     let mut rendered: Vec<String> = Vec::new();
     let mut missed: Vec<String> = Vec::new();
-    let localdb = handle.localdb();
-    let installed = localdb.pkgs();
     for (target, slot) in targets.iter().zip(resolved.iter_mut()) {
         let Some(pkg) = slot else {
             missed.push(target.clone());
             continue;
         };
-        enrich(pkg, localdb, &installed);
+        enrich(pkg, &handle);
         rendered.push(render(pkg, stdout_color))
     }
     if !rendered.is_empty() {

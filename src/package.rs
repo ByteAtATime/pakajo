@@ -106,26 +106,39 @@ impl Package {
     }
 }
 
+fn split_opt_constraint(raw: &str) -> (&str, Option<String>) {
+    let Some(pos) = raw.find(['=', '>', '<']) else {
+        return (raw, None);
+    };
+    if pos == 0 {
+        return (raw, None);
+    }
+    let (name, version) = raw.split_at(pos);
+    (name, Some(version.to_string()))
+}
+
 fn parse_opt_dependency(dependency: &str) -> Option<OptDependency> {
     if let Some((name, reason)) = dependency.split_once(": ") {
-        if name.is_empty() {
+        let (bare, version) = split_opt_constraint(name);
+        if bare.is_empty() {
             return None;
         }
 
         Some(OptDependency {
-            name: name.to_string(),
-            version: None,
+            name: bare.to_string(),
+            version,
             reason: (!reason.is_empty()).then(|| reason.to_string()),
             installed: false,
         })
     } else {
-        if dependency.is_empty() {
+        let (bare, version) = split_opt_constraint(dependency);
+        if bare.is_empty() {
             return None;
         }
 
         Some(OptDependency {
-            name: dependency.to_string(),
-            version: None,
+            name: bare.to_string(),
+            version,
             reason: None,
             installed: false,
         })
@@ -243,6 +256,18 @@ impl From<AurInfo> for Package {
     }
 }
 
+pub fn opt_dep_installed(handle: &alpm::Alpm, dep: &OptDependency) -> bool {
+    handle
+        .localdb()
+        .pkgs()
+        .find_satisfier(format!(
+            "{}{}",
+            dep.name,
+            dep.version.as_deref().unwrap_or("")
+        ))
+        .is_some()
+}
+
 pub fn is_installed(handle: &alpm::Alpm, name: &str) -> bool {
     handle.localdb().pkg(name).is_ok()
 }
@@ -344,6 +369,40 @@ pub fn foreign_names(handle: &alpm::Alpm) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::aur::AurInfo;
+
+    #[test]
+    fn parse_opt_dependency_cases() {
+        let dep = parse_opt_dependency("foo-bar2").expect("foo-bar2 must parse");
+        assert_eq!(dep.name, "foo-bar2");
+        assert_eq!(dep.version, None);
+        assert_eq!(dep.reason, None);
+
+        let dep = parse_opt_dependency("foo>=1:2.0-1").expect("epoch constraint must parse");
+        assert_eq!(dep.name, "foo");
+        assert_eq!(dep.version.as_deref(), Some(">=1:2.0-1"));
+        assert_eq!(dep.reason, None);
+
+        let dep = parse_opt_dependency("foo=1.2").expect("equality constraint must parse");
+        assert_eq!(dep.name, "foo");
+        assert_eq!(dep.version.as_deref(), Some("=1.2"));
+        assert_eq!(dep.reason, None);
+
+        let dep = parse_opt_dependency("foo>=1.2: some reason").expect("reason split must parse");
+        assert_eq!(dep.name, "foo");
+        assert_eq!(dep.version.as_deref(), Some(">=1.2"));
+        assert_eq!(dep.reason.as_deref(), Some("some reason"));
+
+        let dep = parse_opt_dependency("foo: reason").expect("legacy reason must parse");
+        assert_eq!(dep.name, "foo");
+        assert_eq!(dep.version, None);
+        assert_eq!(dep.reason.as_deref(), Some("reason"));
+
+        let dep = parse_opt_dependency("foo>=1:2.0-1: some reason")
+            .expect("epoch with reason must parse");
+        assert_eq!(dep.name, "foo");
+        assert_eq!(dep.version.as_deref(), Some(">=1:2.0-1"));
+        assert_eq!(dep.reason.as_deref(), Some("some reason"));
+    }
 
     #[test]
     fn validated_by_label_cases() {

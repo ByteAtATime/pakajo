@@ -495,15 +495,11 @@ impl PakajoApp {
     }
 
     fn refresh_detail_installed(&mut self) {
-        if let DetailData::Ready { pkg, .. } = &self.detail {
-            let installed = self
-                .alpm
-                .as_ref()
-                .map(|a| pakajo::package::is_installed(a, &pkg.name))
-                .unwrap_or(false);
-            let pkg = pkg.clone();
-            self.detail = DetailData::Ready { pkg, installed };
-        }
+        let pkg = match &self.detail {
+            DetailData::Ready { pkg, .. } => pkg.as_ref().clone(),
+            _ => return,
+        };
+        self.set_detail_pkg(pkg);
     }
 
     fn start_dashboard_refresh(&mut self) -> Task<Message> {
