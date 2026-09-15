@@ -225,9 +225,11 @@ fn render_header<'a>(
             Row::new()
                 .spacing(8)
                 .align_y(Alignment::Center)
+                .height(cosmic::theme::spacing().space_l)
                 .push(text("Install"))
                 .push(install_count_badge(selected)),
         )
+        .padding([0, cosmic::theme::spacing().space_s])
         .class(cosmic::theme::Button::Suggested)
         .on_press(intent)
         .into()
