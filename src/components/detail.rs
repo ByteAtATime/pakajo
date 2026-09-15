@@ -3,8 +3,8 @@ use cosmic::iced::core::text::Wrapping;
 use cosmic::iced::stream::channel;
 use cosmic::iced::{Alignment, Background, Border, Color, Length, Padding};
 use cosmic::widget::{
-    Column, Row, Space, button, container, flex_row, icon, responsive, row, scrollable, text,
-    tooltip,
+    Column, Row, Space, button, container, flex_row, icon, mouse_area, responsive, row, scrollable,
+    text, tooltip,
 };
 use futures::SinkExt as _;
 use pakajo::package::{self, Package, PackageSource};
@@ -47,6 +47,8 @@ pub enum DetailMessage {
     DetailReady { seq: u64, pkg: Box<Package> },
     DetailFailed { seq: u64, message: String },
     ShowLoading { seq: u64 },
+    ToggleOptDep(String),
+    OptDepHover(Option<String>),
 }
 
 impl std::fmt::Debug for DetailMessage {
@@ -61,6 +63,8 @@ impl std::fmt::Debug for DetailMessage {
                 .field("message", message)
                 .finish(),
             Self::ShowLoading { seq } => f.debug_struct("ShowLoading").field("seq", seq).finish(),
+            Self::ToggleOptDep(name) => f.debug_struct("ToggleOptDep").field("name", name).finish(),
+            Self::OptDepHover(name) => f.debug_struct("OptDepHover").field("name", name).finish(),
         }
     }
 }
@@ -69,6 +73,9 @@ pub fn detail_view<'a>(
     detail: &'a DetailData,
     checking: Option<&'a str>,
     pending: bool,
+    selection: &'a [String],
+    disabled: bool,
+    hovered: Option<&'a str>,
 ) -> Element<'a> {
     let content: Element<'a> = match detail {
         DetailData::None => container(muted("Select a package"))
@@ -91,7 +98,9 @@ pub fn detail_view<'a>(
             .align_y(Alignment::Center)
             .into(),
         DetailData::Group { name, members } => render_group(name, members),
-        DetailData::Ready { pkg, installed } => render_package(pkg, *installed, checking, pending),
+        DetailData::Ready { pkg, installed } => render_package(
+            pkg, *installed, checking, pending, selection, disabled, hovered,
+        ),
     };
 
     scrollable(content)
@@ -152,11 +161,14 @@ fn render_package<'a>(
     installed: bool,
     checking: Option<&'a str>,
     pending: bool,
+    selection: &'a [String],
+    disabled: bool,
+    hovered: Option<&'a str>,
 ) -> Element<'a> {
     let header = render_header(pkg, installed, checking, pending);
     let details = render_details(pkg);
     let dependencies = render_dependencies(pkg);
-    let opt_dependencies = render_opt_dependencies(pkg);
+    let opt_dependencies = render_opt_dependencies(pkg, selection, disabled, hovered);
 
     let mut col = Column::new()
         .spacing(20)
@@ -370,7 +382,94 @@ fn render_dependencies<'a>(pkg: &'a Package) -> Element<'a> {
     col.into()
 }
 
-fn render_opt_dependencies<'a>(pkg: &'a Package) -> Element<'a> {
+const OPTDEP_BOX_SIZE: f32 = 16.0;
+const OPTDEP_HIT_PADDING: f32 = 8.0;
+const OPTDEP_INSTALLED_SPACER_WIDTH: f32 = OPTDEP_BOX_SIZE + 2.0 * OPTDEP_HIT_PADDING - 12.0;
+
+fn optdep_box_style(
+    theme: &cosmic::Theme,
+    checked: bool,
+    lit: bool,
+    dimmed: bool,
+) -> container::Style {
+    let cosmic = theme.cosmic();
+    let accent = accent_color(theme);
+    let mut fill = if checked {
+        accent
+    } else {
+        cosmic.background(false).small_widget.into()
+    };
+    if lit && !checked {
+        fill = cosmic::cosmic_theme::composite::over(
+            Color {
+                a: 0.1,
+                ..cosmic.palette.neutral_0.into()
+            },
+            fill,
+        )
+        .into();
+    }
+    let alpha = if dimmed { 0.5 } else { 1.0 };
+    fill.a *= alpha;
+    let outline = if checked || lit {
+        accent
+    } else {
+        cosmic.palette.neutral_8.into()
+    };
+    container::Style {
+        background: Some(Background::Color(fill)),
+        border: Border {
+            radius: cosmic.corner_radii.radius_xs.into(),
+            width: if checked { 0.0 } else { 1.0 },
+            color: Color {
+                a: alpha,
+                ..outline
+            },
+        },
+        ..Default::default()
+    }
+}
+
+fn optdep_checkbox<'a>(name: &'a str, checked: bool, disabled: bool, hovered: bool) -> Element<'a> {
+    let glyph: Element<'a> = if checked {
+        icon(icons::check())
+            .size(12)
+            .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(move |t| {
+                cosmic::widget::svg::Style {
+                    color: Some(Color {
+                        a: if disabled { 0.5 } else { 1.0 },
+                        ..Color::from(t.cosmic().accent.on)
+                    }),
+                }
+            })))
+            .into()
+    } else {
+        Space::new().into()
+    };
+    let hit_zone = button::custom(
+        container(glyph)
+            .center(OPTDEP_BOX_SIZE)
+            .style(move |t| optdep_box_style(t, checked, hovered && !disabled, disabled)),
+    )
+    .padding(OPTDEP_HIT_PADDING)
+    .class(cosmic::theme::Button::Transparent)
+    .on_press_maybe(
+        (!disabled).then(|| crate::Message::Detail(DetailMessage::ToggleOptDep(name.to_string()))),
+    );
+    mouse_area(hit_zone)
+        .on_enter(crate::Message::Detail(DetailMessage::OptDepHover(Some(
+            name.to_string(),
+        ))))
+        .on_exit(crate::Message::Detail(DetailMessage::OptDepHover(None)))
+        .into()
+}
+
+fn render_opt_dependencies<'a>(
+    pkg: &'a Package,
+    selection: &'a [String],
+    disabled: bool,
+    hovered: Option<&'a str>,
+) -> Element<'a> {
     let col = Column::new().spacing(8).push(section_header(format!(
         "Optional Dependencies ({})",
         pkg.opt_dependencies.len()
@@ -382,6 +481,18 @@ fn render_opt_dependencies<'a>(pkg: &'a Package) -> Element<'a> {
         let row = Row::new()
             .align_y(Alignment::Center)
             .width(Length::Fill)
+            .push_maybe((!dep.installed).then(|| {
+                optdep_checkbox(
+                    &dep.name,
+                    selection.contains(&dep.name),
+                    disabled,
+                    hovered == Some(dep.name.as_str()),
+                )
+            }))
+            .push_maybe(
+                dep.installed
+                    .then(|| Space::new().width(Length::Fixed(OPTDEP_INSTALLED_SPACER_WIDTH))),
+            )
             .push(crate::components::row_title(dep.name.clone()))
             .push_maybe(
                 dep.version
@@ -406,8 +517,14 @@ fn render_opt_dependencies<'a>(pkg: &'a Package) -> Element<'a> {
                 Element::from(Space::new().width(Length::Fixed(16.0)))
             });
 
+        let item_padding = if dep.installed {
+            [8.0, 12.0, 8.0, 12.0]
+        } else {
+            [0.0, 12.0, 0.0, 0.0]
+        };
+
         let item = container(row)
-            .padding([8.0, 12.0])
+            .padding(item_padding)
             .width(Length::Fill)
             .style(|theme: &cosmic::Theme| {
                 let cosmic = theme.cosmic();
@@ -499,6 +616,26 @@ fn card_style(theme: &cosmic::Theme) -> container::Style {
         },
         ..Default::default()
     }
+}
+
+pub(crate) fn revalidate_selection(
+    prev_name: Option<&str>,
+    new_pkg: &Package,
+    selection: &[String],
+) -> Vec<String> {
+    if prev_name != Some(new_pkg.name.as_str()) {
+        return Vec::new();
+    }
+    selection
+        .iter()
+        .filter(|name| {
+            new_pkg
+                .opt_dependencies
+                .iter()
+                .any(|dep| &dep.name == *name && !dep.installed)
+        })
+        .cloned()
+        .collect()
 }
 
 impl crate::PakajoApp {
@@ -668,6 +805,12 @@ impl crate::PakajoApp {
                 }
             }
         }
+        self.selected_optdeps = revalidate_selection(
+            self.detail_pkg_name.as_deref(),
+            &pkg,
+            &self.selected_optdeps,
+        );
+        self.detail_pkg_name = Some(name);
         self.detail = DetailData::Ready {
             pkg: Box::new(pkg),
             installed,
@@ -693,6 +836,31 @@ impl crate::PakajoApp {
             DetailMessage::ShowLoading { seq } => {
                 if seq == self.detail_seq && self.detail_pending == Some(seq) {
                     self.detail = DetailData::Loading;
+                }
+                Task::none()
+            }
+            DetailMessage::OptDepHover(name) => {
+                self.optdep_hover = name;
+                Task::none()
+            }
+            DetailMessage::ToggleOptDep(name) => {
+                if self.transaction.as_ref().is_some_and(|t| t.is_active()) {
+                    return Task::none();
+                }
+                let DetailData::Ready { pkg, .. } = &self.detail else {
+                    return Task::none();
+                };
+                if !pkg
+                    .opt_dependencies
+                    .iter()
+                    .any(|d| d.name == name && !d.installed)
+                {
+                    return Task::none();
+                }
+                if let Some(index) = self.selected_optdeps.iter().position(|n| *n == name) {
+                    self.selected_optdeps.remove(index);
+                } else {
+                    self.selected_optdeps.push(name);
                 }
                 Task::none()
             }

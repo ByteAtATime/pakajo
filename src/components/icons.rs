@@ -23,6 +23,7 @@ icon!(hard_drive, "hard-drive.svg");
 icon!(star, "star.svg");
 icon!(package_check, "package-check.svg");
 icon!(circle_check, "circle-check.svg");
+icon!(check, "check.svg");
 icon!(circle, "circle.svg");
 icon!(circle_dot, "circle-dot.svg");
 icon!(circle_x, "circle-x.svg");
