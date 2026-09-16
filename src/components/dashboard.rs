@@ -1,3 +1,4 @@
+use cosmic::iced::core::text::EllipsizeHeightLimit;
 use cosmic::iced::{Alignment, Color, Length};
 use cosmic::widget::{Column, Row, button, container, divider, scrollable, text, tooltip};
 
@@ -40,7 +41,11 @@ fn band_stat(label: String, value: String, sub: String) -> Element<'static> {
 
 fn clipped_body(label: String) -> Element<'static> {
     text::body(label)
+        .width(Length::Fill)
         .wrapping(cosmic::iced::widget::text::Wrapping::None)
+        .ellipsize(cosmic::iced::widget::text::Ellipsize::End(
+            EllipsizeHeightLimit::Lines(1),
+        ))
         .into()
 }
 
@@ -166,7 +171,15 @@ fn recent_row(pkg: &RecentPkg) -> Element<'static> {
     let label = Row::new()
         .align_y(Alignment::Center)
         .spacing(8.0)
-        .push(text::body(pkg.name.clone()))
+        .width(Length::Shrink)
+        .push(
+            text::body(pkg.name.clone())
+                .width(Length::Shrink)
+                .wrapping(cosmic::iced::widget::text::Wrapping::None)
+                .ellipsize(cosmic::iced::widget::text::Ellipsize::End(
+                    EllipsizeHeightLimit::Lines(1),
+                )),
+        )
         .push(muted(text::caption(format!("({})", pkg.version))));
     let inner = Row::new()
         .align_y(Alignment::Center)
