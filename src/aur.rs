@@ -17,7 +17,7 @@ pub struct RpcResponse<T> {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct AurInfo {
     #[serde(rename = "ID")]
@@ -119,8 +119,8 @@ impl AurClient {
         Ok(parsed.results)
     }
 
-    pub fn search_by_provides(&self, name: &str) -> anyhow::Result<Vec<AurInfo>> {
-        self.rpc_search(&self.agent, name, "provides")
+    pub(crate) fn search_by(&self, name: &str, by: &str) -> anyhow::Result<Vec<AurInfo>> {
+        self.rpc_search(&self.agent, name, by)
     }
 }
 

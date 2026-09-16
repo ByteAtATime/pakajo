@@ -27,27 +27,10 @@ impl<'a> PackageDb for AlpmDb<'a> {
 
 pub trait AurQuery {
     fn info_many(&self, names: &[String]) -> Result<Vec<AurInfo>>;
-    fn search_by_provides(&self, dep: &str) -> Result<Vec<AurInfo>>;
-
-    fn find_providers(&self, dep: &str) -> Result<Vec<AurInfo>> {
-        let names: Vec<String> = self
-            .search_by_provides(dep)?
-            .into_iter()
-            .map(|p| p.name)
-            .collect();
-        if names.is_empty() {
-            return Ok(Vec::new());
-        }
-        self.info_many(&names)
-    }
 }
 
 impl AurQuery for AurClient {
     fn info_many(&self, names: &[String]) -> Result<Vec<AurInfo>> {
         AurClient::info_many(self, names)
-    }
-
-    fn search_by_provides(&self, dep: &str) -> Result<Vec<AurInfo>> {
-        AurClient::search_by_provides(self, dep)
     }
 }

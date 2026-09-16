@@ -1,39 +1,5 @@
 use crate::aur::AurInfo;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source {
-    Aur,
-    Repo,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reason {
-    Explicit,
-    Dep,
-    MakeDep,
-    CheckDep,
-}
-
-impl Reason {
-    pub fn precedence(&self) -> u8 {
-        match self {
-            Reason::Explicit => 0,
-            Reason::Dep => 1,
-            Reason::MakeDep => 2,
-            Reason::CheckDep => 3,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct InstallNode {
-    pub name: String,
-    pub source: Source,
-    pub reason: Reason,
-    pub version: String,
-    pub aur_info: Option<AurInfo>,
-}
-
 #[derive(Debug, Clone)]
 pub struct BuildLayer {
     pub aur: Vec<AurInfo>,
