@@ -1,29 +1,19 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+
+use alpm_sys::alpm_handle_t;
+
+static COMMIT_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static INTERRUPT_SIGNAL: AtomicI32 = AtomicI32::new(0);
 
 pub fn db_lck_path(dbpath: &str) -> PathBuf {
     Path::new(dbpath).join("db.lck")
 }
 
-pub fn install_lock_cleanup_on_signal(handle: &alpm::Alpm) {
+pub fn cleanup_on_signal(handle: &alpm::Alpm) {
+    let raw = raw_alpm_handle(handle);
     let lock_path = db_lck_path(handle.dbpath());
-
-    #[cfg(not(test))]
-    {
-        install_lock_cleanup_on_signal_inner(lock_path);
-    }
-
-    #[cfg(test)]
-    {
-        let _ = handle;
-        let _ = lock_path;
-    }
-}
-
-#[cfg(not(test))]
-fn install_lock_cleanup_on_signal_inner(lock_path: PathBuf) {
-    use std::io::Write as _;
-
-    let mut signals = match signal_hook::iterator::Signals::new([
+    let signals = match signal_hook::iterator::Signals::new([
         signal_hook::consts::signal::SIGINT,
         signal_hook::consts::signal::SIGTERM,
         signal_hook::consts::signal::SIGHUP,
@@ -34,11 +24,43 @@ fn install_lock_cleanup_on_signal_inner(lock_path: PathBuf) {
             return;
         }
     };
+    std::thread::spawn(move || signal_loop(signals, lock_path, raw));
+}
 
-    std::thread::spawn(move || {
-        let Some(sig) = signals.forever().next() else {
-            return;
-        };
+pub fn during_commit<T>(transaction: impl FnOnce() -> T) -> T {
+    COMMIT_IN_FLIGHT.store(true, Ordering::Relaxed);
+    let result = transaction();
+    COMMIT_IN_FLIGHT.store(false, Ordering::Relaxed);
+    result
+}
+
+pub fn finish_transaction(handle: &mut alpm::Alpm) {
+    let _ = handle.trans_release();
+    let sig = INTERRUPT_SIGNAL.load(Ordering::Relaxed);
+    if sig != 0 {
+        use std::io::Write as _;
+        eprintln!("[pakajo] transaction stopped cleanly after signal {sig}");
+        let _ = std::io::stdout().flush();
+        std::process::exit(128 + sig);
+    }
+}
+
+fn signal_loop(
+    mut signals: signal_hook::iterator::Signals,
+    lock_path: PathBuf,
+    raw: RawAlpmHandle,
+) {
+    use std::io::Write as _;
+
+    let RawAlpmHandle(raw) = raw;
+    for sig in signals.forever() {
+        let interrupting = COMMIT_IN_FLIGHT.load(Ordering::Relaxed)
+            && unsafe { alpm_sys::alpm_trans_interrupt(raw) } == 0;
+        if interrupting {
+            eprintln!("[pakajo] interrupted by signal {sig}");
+            INTERRUPT_SIGNAL.store(sig, Ordering::Relaxed);
+            continue;
+        }
         match std::fs::remove_file(&lock_path) {
             Ok(()) => eprintln!("[pakajo] interrupted by signal {sig}; removed db.lck"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -50,7 +72,23 @@ fn install_lock_cleanup_on_signal_inner(lock_path: PathBuf) {
         }
         let _ = std::io::stdout().flush();
         std::process::exit(128 + sig);
-    });
+    }
+}
+
+// TODO: i really dislike this, but it's what pacman does and idk how to make it safe
+struct RawAlpmHandle(*mut alpm_handle_t);
+
+unsafe impl Send for RawAlpmHandle {}
+
+fn raw_alpm_handle(handle: &alpm::Alpm) -> RawAlpmHandle {
+    let raw = unsafe { std::ptr::read(std::ptr::from_ref(handle).cast()) };
+    let dbpath = unsafe { std::ffi::CStr::from_ptr(alpm_sys::alpm_option_get_dbpath(raw)) };
+    assert_eq!(
+        dbpath.to_string_lossy(),
+        handle.dbpath(),
+        "handle dbpath mismatch"
+    );
+    RawAlpmHandle(raw)
 }
 
 #[cfg(test)]

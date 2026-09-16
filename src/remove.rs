@@ -27,7 +27,7 @@ fn remove_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
     let qstate = Rc::new(RefCell::new(QuestionState::new(answerer)));
     register_callbacks(handle, sink.clone(), qstate.clone());
     let result = run_remove_transaction(handle, targets, &sink, &qstate, confirm);
-    let _ = handle.trans_release();
+    crate::pacman::lock::finish_transaction(handle);
     result
 }
 
@@ -38,6 +38,8 @@ fn run_remove_transaction<S: InstallSink, F: FnOnce() -> bool>(
     qstate: &Rc<RefCell<QuestionState>>,
     confirm: F,
 ) -> anyhow::Result<()> {
+    crate::pacman::lock::cleanup_on_signal(handle);
+
     handle
         .trans_init(alpm::TransFlag::NONE)
         .context("failed to initialize transaction")?;
@@ -68,9 +70,8 @@ fn run_remove_transaction<S: InstallSink, F: FnOnce() -> bool>(
         return Ok(());
     }
 
-    handle
-        .trans_commit()
-        .context("failed to commit transaction")?;
+    let commit = crate::pacman::lock::during_commit(|| handle.trans_commit());
+    commit.context("failed to commit transaction")?;
     if qstate.borrow().deny_flag {
         anyhow::bail!("aborted: {}", qstate.borrow().detail);
     }

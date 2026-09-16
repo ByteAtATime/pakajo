@@ -3886,6 +3886,7 @@ name = "pakajo"
 version = "0.1.0"
 dependencies = [
  "alpm",
+ "alpm-sys",
  "alpm-utils",
  "anyhow",
  "bincode 2.0.1",
