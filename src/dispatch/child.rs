@@ -79,13 +79,23 @@ pub fn run(argv: &[String]) -> i32 {
 impl ChildOperation {
     pub fn execute(&self) -> anyhow::Result<()> {
         match self {
-            ChildOperation::Remove { targets, stream } => {
+            ChildOperation::Remove {
+                targets,
+                approvals_path,
+                stream,
+            } => {
+                let approvals = read_approvals(approvals_path.as_deref())?;
+                let approved_held: Vec<String> = approvals
+                    .as_ref()
+                    .map(|a| a.approved_held.clone())
+                    .unwrap_or_default();
                 match select_remove_presentation(*stream, privs::stdin_is_tty()) {
                     Presentation::InteractiveStream => crate::remove::run_remove(
                         targets,
                         EscalatedSink::new(),
                         confirm_remove_stderr,
                         answerer_for(None),
+                        &approved_held,
                         || confirm_hold_remove(PromptStream::Stderr),
                     ),
                     Presentation::SilentStream => crate::remove::run_remove(
@@ -93,6 +103,7 @@ impl ChildOperation {
                         JsonSink::new(),
                         || true,
                         answerer_for(None),
+                        &approved_held,
                         || false,
                     ),
                     Presentation::Console => crate::remove::run_remove(
@@ -100,6 +111,7 @@ impl ChildOperation {
                         ConsoleSink::new(),
                         confirm_remove,
                         answerer_for(None),
+                        &approved_held,
                         || confirm_hold_remove(PromptStream::Stdout),
                     ),
                 }

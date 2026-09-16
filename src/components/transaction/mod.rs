@@ -70,6 +70,23 @@ pub(crate) enum Action {
     InstallSucceeded,
 }
 
+fn review_approvals(review: &ReviewModel) -> Option<String> {
+    match collect_approvals(
+        &review.qs,
+        &review.conflict_checks,
+        &review.provider_choices,
+        &review.qs.held,
+    )
+    .and_then(|approvals| encode_approvals(&approvals))
+    {
+        Ok(payload) => Some(payload),
+        Err(e) => {
+            eprintln!("[pakajo] approval encoding failed: {e}");
+            None
+        }
+    }
+}
+
 fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::Message> {
     Task::stream(channel(
         256,
@@ -180,16 +197,22 @@ impl Transaction {
         name: String,
         source: PackageSource,
     ) -> (Self, Task<crate::Message>) {
-        let mut transaction = Transaction {
-            model: TransactionModel::new(name, source, InstallKind::Remove),
-        };
-        eprintln!("[pakajo] transaction: remove started");
-        let action = transaction.launch_remove_subprocess();
-        let task = match action {
-            Action::Run(task) => task,
-            _ => Task::none(),
-        };
-        (transaction, task)
+        let dry_name = name.clone();
+        let model = TransactionModel::new(name, source, InstallKind::Remove);
+        let task = crate::components::task::blocking_task(
+            move || {
+                let request = pakajo::dispatch::RemoveRequest {
+                    targets: vec![dry_name],
+                    tty: false,
+                    json: false,
+                    approvals: None,
+                };
+                pakajo::dispatch::preview(&request).map(|preview| preview.questions)
+            },
+            "dry-run channel closed",
+            |result| crate::Message::Transaction(TransactionMessage::DryRunResult(result)).into(),
+        );
+        (Self { model }, task)
     }
 
     pub(crate) fn update(&mut self, message: TransactionMessage) -> Action {
@@ -211,6 +234,20 @@ impl Transaction {
                 }
             }
             TransactionMessage::DryRunResult(result) => match result {
+                Err(e) if self.model.kind == InstallKind::Remove => {
+                    eprintln!("[pakajo] remove dry-run failed: {e}");
+                    self.model.finish(ChildOutcome::Failed(e));
+                    Action::None
+                }
+                Ok(qs) if self.model.kind == InstallKind::Remove => {
+                    if qs.held.is_empty() {
+                        return self.launch_remove_subprocess(None);
+                    }
+                    eprintln!("[pakajo] held review required ({} held)", qs.held.len(),);
+                    let review = ReviewModel::new(qs);
+                    self.model.review = Some(review);
+                    Action::None
+                }
                 Err(e) => {
                     eprintln!("[pakajo] dry-run failed, proceeding with install: {e}");
                     self.launch_subprocess(None)
@@ -252,23 +289,19 @@ impl Transaction {
             }
             TransactionMessage::CancelReview => Action::Finished,
             TransactionMessage::ApproveReview => {
+                if self.model.kind == InstallKind::Remove {
+                    let review = match self.model.review.take() {
+                        Some(r) => r,
+                        None => return Action::None,
+                    };
+                    let approvals = review_approvals(&review);
+                    return self.launch_remove_subprocess(approvals);
+                }
                 let mut review = match self.model.review.take() {
                     Some(r) => r,
                     None => return Action::None,
                 };
-                let approvals = match collect_approvals(
-                    &review.qs,
-                    &review.conflict_checks,
-                    &review.provider_choices,
-                )
-                .and_then(|approvals| encode_approvals(&approvals))
-                {
-                    Ok(payload) => Some(payload),
-                    Err(e) => {
-                        eprintln!("[pakajo] approval encoding failed: {e}");
-                        None
-                    }
-                };
+                let approvals = review_approvals(&review);
                 if matches!(self.model.source, PackageSource::Aur) {
                     review.approving = true;
                     self.model.review = Some(review);
@@ -355,13 +388,14 @@ impl Transaction {
         Action::Run(stream_items(pakajo::dispatch::install(request)))
     }
 
-    fn launch_remove_subprocess(&mut self) -> Action {
+    fn launch_remove_subprocess(&mut self, approvals: Option<String>) -> Action {
         let name = self.model.name.clone();
         self.model.status = TransactionStatus::Running;
         let request = pakajo::dispatch::RemoveRequest {
             targets: vec![name],
             tty: false,
             json: false,
+            approvals,
         };
         Action::Run(stream_items(pakajo::dispatch::remove(request)))
     }
@@ -392,7 +426,7 @@ impl Transaction {
 
     pub(crate) fn dialog(&self) -> Option<Element<'_>> {
         let content = if let Some(r) = self.model.review.as_ref() {
-            r.view(&self.model.name)
+            r.view(&self.model.name, self.model.kind)
         } else {
             self.model.pkgbuild_review.as_ref().map(|p| p.view())?
         };

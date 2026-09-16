@@ -625,6 +625,7 @@ mod tests {
             }],
             had_unsupported_question: false,
             unsupported_summary: String::new(),
+            held: vec![],
         };
         let approvals = default_approve(&qs).expect("default_approve");
         assert_eq!(approvals.approved_conflicts.len(), 1);

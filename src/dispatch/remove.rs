@@ -9,6 +9,7 @@ pub struct RemoveRequest {
     pub targets: Vec<String>,
     pub tty: bool,
     pub json: bool,
+    pub approvals: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +47,7 @@ fn run_remove_preview(
     request: &RemoveRequest,
     state: &std::rc::Rc<std::cell::RefCell<crate::dry_run::RecorderState>>,
 ) -> anyhow::Result<Preview> {
+    let config = crate::pacman::config()?;
     let targets = expand_remove_groups(handle, &request.targets, request.tty);
     handle
         .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
@@ -63,7 +65,16 @@ fn run_remove_preview(
         .trans_prepare()
         .err()
         .map(crate::dry_run::extract_prepare_failure);
-    let questions = crate::dry_run::snapshot(state);
+    let mut questions = crate::dry_run::snapshot(state);
+    if prepare_error.is_none() {
+        let patterns = &config.hold_pkg;
+        let names: Vec<String> = handle
+            .trans_remove()
+            .iter()
+            .map(|pkg| pkg.name().to_string())
+            .collect();
+        questions.held = crate::holdpkg::held_packages(&names, patterns);
+    }
     let summary = crate::install::build_summary(handle);
     Ok(Preview {
         summary,
@@ -72,6 +83,15 @@ fn run_remove_preview(
         aur: Vec::new(),
         pkgbuild_diffs: Vec::new(),
     })
+}
+
+fn seal_approvals(
+    approvals: &Option<String>,
+) -> anyhow::Result<Option<crate::dispatch::approvals::ApprovalsFile>> {
+    approvals
+        .as_deref()
+        .map(|payload| crate::dispatch::approvals::ApprovalsFile::write(payload.as_bytes()))
+        .transpose()
 }
 
 fn run_remove(request: RemoveRequest, mut tx: futures::channel::mpsc::Sender<StreamItem>) {
@@ -88,7 +108,18 @@ fn run_remove(request: RemoveRequest, mut tx: futures::channel::mpsc::Sender<Str
     };
     let targets = expand_remove_groups(&handle, &request.targets, request.tty);
     drop(handle);
-    let mut inner = PrivilegedOperation::Remove { targets }.dispatch(request.tty);
+    let sealed = match seal_approvals(&request.approvals) {
+        Ok(sealed) => sealed,
+        Err(error) => {
+            send_done(&mut tx, ChildOutcome::Failed(format!("{error:#}")));
+            return;
+        }
+    };
+    let mut inner = PrivilegedOperation::Remove {
+        targets,
+        approvals: sealed,
+    }
+    .dispatch(request.tty);
     while let Some(item) = futures::executor::block_on(inner.next()) {
         if let Err(error) = futures::executor::block_on(tx.send(item)) {
             eprintln!("warning: dispatch stream closed: {error}");
@@ -107,8 +138,18 @@ fn run_root_remove(request: RemoveRequest, tx: &mut futures::channel::mpsc::Send
     };
     let targets = expand_remove_groups(&handle, &request.targets, request.tty);
     drop(handle);
+    let sealed = match seal_approvals(&request.approvals) {
+        Ok(sealed) => sealed,
+        Err(error) => {
+            send_done(tx, ChildOutcome::Failed(format!("{error:#}")));
+            return;
+        }
+    };
     let operation = ChildOperation::Remove {
         targets,
+        approvals_path: sealed
+            .as_ref()
+            .map(|file| file.path().to_string_lossy().into_owned()),
         stream: request.json,
     };
     let outcome = match operation.execute() {

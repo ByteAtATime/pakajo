@@ -174,6 +174,7 @@ fn remove_subcommand(args: RemoveArgs) -> i32 {
         targets: positionals,
         tty: stdin_is_tty() && !args.json,
         json: args.json,
+        approvals: None,
     };
     outcome_code(&drain(crate::dispatch::remove(request), args.json))
 }

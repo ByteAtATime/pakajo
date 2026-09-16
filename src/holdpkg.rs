@@ -65,6 +65,31 @@ pub fn held_packages(names: &[String], patterns: &[String]) -> Vec<String> {
         .collect()
 }
 
+pub struct HoldGate {
+    patterns: Vec<String>,
+    approved: Vec<String>,
+}
+
+impl HoldGate {
+    pub fn new(patterns: &[String], approved: &[String]) -> Self {
+        Self {
+            patterns: patterns.to_vec(),
+            approved: approved.to_vec(),
+        }
+    }
+
+    pub fn held(&self, names: &[String]) -> Vec<String> {
+        held_packages(names, &self.patterns)
+    }
+
+    pub fn pending(&self, names: &[String]) -> Vec<String> {
+        held_packages(names, &self.patterns)
+            .into_iter()
+            .filter(|name| !self.approved.contains(name))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +134,15 @@ mod tests {
             held_packages(&names, &patterns),
             vec!["glibc".to_string(), "sl".to_string()]
         );
+    }
+
+    #[test]
+    fn hold_gate_pending_removes_approved_subset() {
+        let gate = HoldGate::new(
+            &["glibc".to_string(), "linux".to_string()],
+            &["glibc".to_string()],
+        );
+        let names = vec!["glibc".to_string(), "linux".to_string()];
+        assert_eq!(gate.pending(&names), vec!["linux".to_string()]);
     }
 }

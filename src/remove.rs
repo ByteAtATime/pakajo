@@ -4,7 +4,7 @@ use std::rc::Rc;
 use anyhow::{Context, anyhow, bail};
 
 use crate::events::{InstallEvent, InstallSink, LogLevel};
-use crate::holdpkg::held_packages;
+use crate::holdpkg::HoldGate;
 use crate::install::{QuestionState, register_callbacks};
 use crate::pacman;
 
@@ -13,9 +13,11 @@ pub fn run_remove<S: InstallSink + 'static, F: FnOnce() -> bool, G: FnOnce() -> 
     sink: S,
     confirm: F,
     answerer: Box<dyn crate::answerer::QuestionAnswerer>,
+    approved_held: &[String],
     confirm_hold: G,
 ) -> anyhow::Result<()> {
     let hold_patterns = pacman::config()?.hold_pkg;
+    let gate = HoldGate::new(&hold_patterns, approved_held);
     let mut handle = pacman::handle()?;
     remove_into(
         &mut handle,
@@ -23,7 +25,7 @@ pub fn run_remove<S: InstallSink + 'static, F: FnOnce() -> bool, G: FnOnce() -> 
         sink,
         confirm,
         answerer,
-        &hold_patterns,
+        &gate,
         confirm_hold,
     )
 }
@@ -34,21 +36,14 @@ fn remove_into<S: InstallSink + 'static, F: FnOnce() -> bool, G: FnOnce() -> boo
     sink: S,
     confirm: F,
     answerer: Box<dyn crate::answerer::QuestionAnswerer>,
-    hold_patterns: &[String],
+    gate: &HoldGate,
     confirm_hold: G,
 ) -> anyhow::Result<()> {
     let sink = Rc::new(RefCell::new(sink));
     let qstate = Rc::new(RefCell::new(QuestionState::new(answerer)));
     register_callbacks(handle, sink.clone(), qstate.clone());
-    let result = run_remove_transaction(
-        handle,
-        targets,
-        &sink,
-        &qstate,
-        confirm,
-        hold_patterns,
-        confirm_hold,
-    );
+    let result =
+        run_remove_transaction(handle, targets, &sink, &qstate, confirm, gate, confirm_hold);
     pacman::lock::finish_transaction(handle);
     result
 }
@@ -59,7 +54,7 @@ fn run_remove_transaction<S: InstallSink, F: FnOnce() -> bool, G: FnOnce() -> bo
     sink: &Rc<RefCell<S>>,
     qstate: &Rc<RefCell<QuestionState>>,
     confirm: F,
-    hold_patterns: &[String],
+    gate: &HoldGate,
     confirm_hold: G,
 ) -> anyhow::Result<()> {
     pacman::lock::cleanup_on_signal(handle);
@@ -86,7 +81,7 @@ fn run_remove_transaction<S: InstallSink, F: FnOnce() -> bool, G: FnOnce() -> bo
         bail!("aborted: {}", qstate.borrow().detail);
     }
 
-    enforce_hold_gate(handle, sink, hold_patterns, confirm_hold)?;
+    enforce_hold_gate(handle, sink, gate, confirm_hold)?;
 
     let summary = crate::install::build_summary(handle);
     sink.borrow_mut()
@@ -108,7 +103,7 @@ fn run_remove_transaction<S: InstallSink, F: FnOnce() -> bool, G: FnOnce() -> bo
 fn enforce_hold_gate<S: InstallSink, G: FnOnce() -> bool>(
     handle: &alpm::Alpm,
     sink: &Rc<RefCell<S>>,
-    hold_patterns: &[String],
+    gate: &HoldGate,
     confirm_hold: G,
 ) -> anyhow::Result<()> {
     let names: Vec<String> = handle
@@ -116,14 +111,14 @@ fn enforce_hold_gate<S: InstallSink, G: FnOnce() -> bool>(
         .iter()
         .map(|pkg| pkg.name().to_string())
         .collect();
-    let held = held_packages(&names, hold_patterns);
+    let held = gate.held(&names);
     for name in &held {
         sink.borrow_mut().event(InstallEvent::Log {
             level: LogLevel::Warning,
             message: format!("{name} is designated as a HoldPkg."),
         });
     }
-    if held.is_empty() || confirm_hold() {
+    if gate.pending(&names).is_empty() || confirm_hold() {
         return Ok(());
     }
     bail!("held package(s) require explicit override")
@@ -179,7 +174,7 @@ mod tests {
             ConsoleSink::new(),
             || true,
             Box::new(DenyAllAnswerer),
-            &[],
+            &HoldGate::new(&[], &[]),
             || true,
         )
         .expect("remove should succeed");
@@ -217,7 +212,7 @@ mod tests {
             ConsoleSink::new(),
             || true,
             Box::new(DenyAllAnswerer),
-            &[],
+            &HoldGate::new(&[], &[]),
             || true,
         )
         .expect("remove should succeed");
@@ -238,7 +233,7 @@ mod tests {
             ConsoleSink::new(),
             || true,
             Box::new(DenyAllAnswerer),
-            &[],
+            &HoldGate::new(&[], &[]),
             || true,
         );
         let err = format!("{}", result.unwrap_err());
@@ -272,7 +267,7 @@ mod tests {
             ConsoleSink::new(),
             || true,
             Box::new(DenyAllAnswerer),
-            &[],
+            &HoldGate::new(&[], &[]),
             || true,
         );
         let err = format!("{}", result.unwrap_err());
@@ -302,7 +297,7 @@ mod tests {
             ConsoleSink::new(),
             || true,
             Box::new(DenyAllAnswerer),
-            &patterns,
+            &HoldGate::new(&patterns, &[]),
             || false,
         );
         let err = format!("{}", result.unwrap_err());
@@ -336,7 +331,7 @@ mod tests {
             ConsoleSink::new(),
             || true,
             Box::new(DenyAllAnswerer),
-            &patterns,
+            &HoldGate::new(&patterns, &[]),
             || true,
         )
         .expect("prompt-accepted held remove should succeed");

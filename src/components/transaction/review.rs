@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, button, checkbox, container, dialog, radio, scrollable, text};
+
+use pakajo::progress::InstallKind;
 use pakajo::question::{ProviderCandidate, QuestionSet};
 
 use super::TransactionMessage;
@@ -25,6 +27,9 @@ pub(crate) fn review_body<'a>(
     choices: &'a HashMap<String, usize>,
 ) -> cosmic::Element<'a, ReviewSelection> {
     let mut body = Column::new().spacing(16);
+    if !qs.held.is_empty() {
+        body = body.push(held_block(&qs.held));
+    }
     if !qs.conflicts.is_empty() {
         body = body.push(text("Conflicts"));
         for (i, conflict) in qs.conflicts.iter().enumerate() {
@@ -104,7 +109,7 @@ impl ReviewModel {
         self.update(ReviewMessage::SelectProvider { depend, idx });
     }
 
-    pub(crate) fn view(&self, name: &str) -> Element<'_> {
+    pub(crate) fn view(&self, name: &str, kind: InstallKind) -> Element<'_> {
         let body =
             review_body(&self.qs, &self.conflict_checks, &self.provider_choices).map(|selection| {
                 crate::Message::Transaction(TransactionMessage::Review(match selection {
@@ -115,19 +120,33 @@ impl ReviewModel {
                 }))
             });
 
-        let confirm = if self.approving {
-            button::suggested("Loading...")
+        let is_protected_removal = matches!(kind, InstallKind::Remove) && !self.qs.held.is_empty();
+        let approve = crate::Message::Transaction(TransactionMessage::ApproveReview);
+        let confirm: Element<'_> = if self.approving {
+            button::suggested("Loading...").into()
+        } else if is_protected_removal {
+            button::destructive("Remove anyway")
+                .on_press(approve)
+                .into()
         } else {
-            button::suggested("Confirm").on_press(crate::Message::Transaction(
-                TransactionMessage::ApproveReview,
-            ))
+            let label = match kind {
+                InstallKind::Remove => "Confirm removal",
+                InstallKind::Install | InstallKind::Upgrade => "Confirm",
+            };
+            button::suggested(label).on_press(approve).into()
         };
         let cancel = button::standard("Cancel").on_press(crate::Message::Transaction(
             TransactionMessage::CancelReview,
         ));
 
+        let title = match kind {
+            InstallKind::Remove => format!("Review removal of {name}"),
+            InstallKind::Install | InstallKind::Upgrade => {
+                format!("Review installation of {name}")
+            }
+        };
         dialog()
-            .title(format!("Review installation of {name}"))
+            .title(title)
             .control(scrollable(body).height(Length::Fixed(400.0)))
             .primary_action(confirm)
             .secondary_action(cancel)
@@ -144,6 +163,23 @@ fn candidate_label(candidate: &ProviderCandidate) -> String {
         Some(version) => format!("{qualified}  {version}"),
         None => qualified,
     }
+}
+
+fn held_block(names: &[String]) -> cosmic::Element<'static, ReviewSelection> {
+    let mut content = Column::new().spacing(12);
+    let mut list = Column::new().spacing(8);
+    for held in names {
+        list = list.push(text::monotext(held.clone()).font(cosmic::font::bold()));
+    }
+    content = content.push(list);
+    content
+        .push(text::body(
+            "This package is protected by your system configuration (HeldPkgs) because it is critical to your system.",
+        ))
+        .push(text::body(
+            "Removing it may break your system completely. Unless you are sure you know what you are doing, this is probably not what you want.",
+        ))
+        .into()
 }
 
 fn unsupported_banner(summary: &str) -> cosmic::Element<'_, ReviewSelection> {

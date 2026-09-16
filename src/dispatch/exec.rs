@@ -189,7 +189,9 @@ fn run_privileged(
         _ => None,
     };
     let approvals_path = match &operation {
-        PrivilegedOperation::Remove { .. } => None,
+        PrivilegedOperation::Remove { approvals, .. } => approvals
+            .as_ref()
+            .map(|file| file.path().to_string_lossy().into_owned()),
         PrivilegedOperation::Install { approvals, .. } => approvals
             .as_ref()
             .map(|file| file.path().to_string_lossy().into_owned()),

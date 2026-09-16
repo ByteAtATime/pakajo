@@ -232,6 +232,7 @@ mod tests {
                 removable: "cava".into(),
             }],
             approved_providers: vec![],
+            approved_held: vec![],
         };
         let a = ApprovalsAnswerer::new(approvals);
         assert!(matches!(
@@ -256,6 +257,7 @@ mod tests {
                 removable: "cava".into(),
             }],
             approved_providers: vec![],
+            approved_held: vec![],
         };
         let json = serde_json::to_vec(&original).expect("serialize");
         let decoded: Approvals = serde_json::from_slice(&json).expect("deserialize");
@@ -331,6 +333,7 @@ mod tests {
                 provider_name: "B".into(),
                 provider_repo: None,
             }],
+            approved_held: vec![],
         };
         let a = ApprovalsAnswerer::new(approvals);
 
@@ -353,6 +356,7 @@ mod tests {
                 provider_name: "B".into(),
                 provider_repo: None,
             }],
+            approved_held: vec![],
         };
         let a = ApprovalsAnswerer::new(approvals);
 
@@ -372,6 +376,7 @@ mod tests {
                 provider_name: "A".into(),
                 provider_repo: None,
             }],
+            approved_held: vec![],
         };
         let a = ApprovalsAnswerer::new(approvals);
         assert!(matches!(
@@ -389,6 +394,7 @@ mod tests {
                 provider_name: "sdl12-compat".into(),
                 provider_repo: Some("extra".into()),
             }],
+            approved_held: vec![],
         };
         let a = ApprovalsAnswerer::new(approvals);
         let candidates = vec![

@@ -28,6 +28,8 @@ pub struct QuestionSet {
     pub providers: Vec<ProviderPrompt>,
     pub had_unsupported_question: bool,
     pub unsupported_summary: String,
+    #[serde(default)]
+    pub held: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +44,8 @@ pub struct Approvals {
     pub approved_conflicts: Vec<Conflict>,
     #[serde(default)]
     pub approved_providers: Vec<ProviderApproval>,
+    #[serde(default)]
+    pub approved_held: Vec<String>,
 }
 
 impl QuestionSet {
@@ -49,6 +53,7 @@ impl QuestionSet {
         &self,
         conflict_selections: &[usize],
         provider_choices: &[(usize, usize)],
+        held: &[String],
     ) -> anyhow::Result<Approvals> {
         for &i in conflict_selections {
             let Some(_) = self.conflicts.get(i) else {
@@ -74,6 +79,14 @@ impl QuestionSet {
             };
         }
 
+        for name in held {
+            if !self.held.contains(name) {
+                bail!(
+                    "held package \"{name}\" is not pending removal (have {})",
+                    self.held.len()
+                );
+            }
+        }
         let approved_conflicts = conflict_selections
             .iter()
             .map(|&i| self.conflicts[i].clone())
@@ -90,9 +103,11 @@ impl QuestionSet {
                 }
             })
             .collect();
+        let approved_held = held.to_vec();
         Ok(Approvals {
             approved_conflicts,
             approved_providers,
+            approved_held,
         })
     }
 }
@@ -100,13 +115,14 @@ impl QuestionSet {
 pub fn default_approve(qs: &QuestionSet) -> anyhow::Result<Approvals> {
     let conflicts: Vec<usize> = (0..qs.conflicts.len()).collect();
     let providers: Vec<(usize, usize)> = (0..qs.providers.len()).map(|i| (i, 0)).collect();
-    qs.approve(&conflicts, &providers)
+    qs.approve(&conflicts, &providers, &qs.held)
 }
 
 pub fn collect_approvals(
     qs: &QuestionSet,
     conflict_checks: &[bool],
     provider_choices: &HashMap<String, usize>,
+    held: &[String],
 ) -> anyhow::Result<Approvals> {
     let conflict_selections: Vec<usize> = conflict_checks
         .iter()
@@ -122,7 +138,7 @@ pub fn collect_approvals(
             Some((prompt_index, candidate_index))
         })
         .collect();
-    qs.approve(&conflict_selections, &provider_choices)
+    qs.approve(&conflict_selections, &provider_choices, held)
 }
 
 pub fn encode_approvals(approvals: &Approvals) -> anyhow::Result<String> {
@@ -166,13 +182,14 @@ mod tests {
             ],
             had_unsupported_question: false,
             unsupported_summary: String::new(),
+            held: vec![],
         }
     }
 
     #[test]
     fn approve_round_trips_conflicts_and_providers() {
         let qs = sample_question_set();
-        let approvals = qs.approve(&[0], &[(0, 1), (1, 0)]).expect("approve");
+        let approvals = qs.approve(&[0], &[(0, 1), (1, 0)], &[]).expect("approve");
 
         let json = encode_approvals(&approvals).expect("encode");
         let decoded: Approvals = serde_json::from_str(&json).expect("deserialize");
@@ -205,7 +222,7 @@ mod tests {
     #[test]
     fn approve_rejects_out_of_range_conflict() {
         let qs = sample_question_set();
-        let err = qs.approve(&[5], &[]).unwrap_err();
+        let err = qs.approve(&[5], &[], &[]).unwrap_err();
         assert!(
             format!("{err:#}").contains("out of range"),
             "expected out-of-range message, got: {err:#}"
@@ -215,7 +232,7 @@ mod tests {
     #[test]
     fn approve_rejects_out_of_range_candidate_index() {
         let qs = sample_question_set();
-        let err = qs.approve(&[], &[(0, 99)]).unwrap_err();
+        let err = qs.approve(&[], &[(0, 99)], &[]).unwrap_err();
         assert!(
             format!("{err:#}").contains("out of range"),
             "expected out-of-range message, got: {err:#}"
@@ -225,10 +242,20 @@ mod tests {
     #[test]
     fn approve_rejects_out_of_range_prompt_index() {
         let qs = sample_question_set();
-        let err = qs.approve(&[], &[(99, 0)]).unwrap_err();
+        let err = qs.approve(&[], &[(99, 0)], &[]).unwrap_err();
         assert!(
             format!("{err:#}").contains("out of range"),
             "expected out-of-range message, got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn approve_rejects_out_of_range_held() {
+        let qs = sample_question_set();
+        let err = qs.approve(&[], &[], &["glibc".to_string()]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("is not pending removal"),
+            "expected not-pending message, got: {err:#}"
         );
     }
 
@@ -238,6 +265,15 @@ mod tests {
         let decoded: Approvals = serde_json::from_str(legacy).expect("decode legacy");
         assert!(decoded.approved_providers.is_empty());
         assert_eq!(decoded.approved_conflicts.len(), 1);
+    }
+
+    #[test]
+    fn decode_legacy_approvals_without_held() {
+        let legacy = r#"{"approved_conflicts":[],"approved_providers":[]}"#;
+        let decoded: Approvals = serde_json::from_str(legacy).expect("decode legacy");
+        assert!(decoded.approved_held.is_empty());
+        assert!(decoded.approved_conflicts.is_empty());
+        assert!(decoded.approved_providers.is_empty());
     }
 
     #[test]
@@ -287,6 +323,7 @@ mod tests {
             ],
             had_unsupported_question: false,
             unsupported_summary: String::new(),
+            held: vec![],
         };
 
         let approvals = default_approve(&qs).expect("default_approve");
@@ -317,7 +354,7 @@ mod tests {
             .map(|prompt| (prompt.depend.clone(), 0))
             .collect();
 
-        let collected = collect_approvals(&qs, &conflict_checks, &provider_choices)
+        let collected = collect_approvals(&qs, &conflict_checks, &provider_choices, &[])
             .expect("collect_approvals with all checked");
         let defaulted = default_approve(&qs).expect("default_approve");
 
@@ -334,7 +371,7 @@ mod tests {
             .collect();
 
         let approvals =
-            collect_approvals(&qs, &[], &provider_choices).expect("collect_approvals empty");
+            collect_approvals(&qs, &[], &provider_choices, &[]).expect("collect_approvals empty");
 
         assert!(
             approvals.approved_conflicts.is_empty(),
@@ -357,7 +394,7 @@ mod tests {
             .collect();
         provider_choices.insert("sdl".to_string(), 1);
 
-        let approvals = collect_approvals(&qs, &[true], &provider_choices)
+        let approvals = collect_approvals(&qs, &[true], &provider_choices, &[])
             .expect("collect_approvals with candidate 1");
 
         let sdl_approval = approvals

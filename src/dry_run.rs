@@ -139,6 +139,7 @@ pub(crate) fn snapshot(state: &Rc<RefCell<RecorderState>>) -> QuestionSet {
         providers: s.providers.clone(),
         had_unsupported_question: s.had_unsupported,
         unsupported_summary: s.unsupported_summary.clone(),
+        held: vec![],
     }
 }
 

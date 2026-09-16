@@ -136,7 +136,7 @@ impl crate::PakajoApp {
         };
         let approvals = {
             let collected = if let Some(r) = &self.sysupgrade_review {
-                collect_approvals(&r.qs, &r.conflict_checks, &r.provider_choices)
+                collect_approvals(&r.qs, &r.conflict_checks, &r.provider_choices, &r.qs.held)
             } else {
                 default_approve(&preview.questions)
             };

@@ -13,6 +13,7 @@ const APPROVALS_FILE: &str = "--approvals-file";
 pub enum PrivilegedOperation {
     Remove {
         targets: Vec<String>,
+        approvals: Option<crate::dispatch::approvals::ApprovalsFile>,
     },
     Install {
         targets: Vec<String>,
@@ -38,6 +39,7 @@ pub struct BuildOperation {
 pub enum ChildOperation {
     Remove {
         targets: Vec<String>,
+        approvals_path: Option<String>,
         stream: bool,
     },
     Install {
@@ -62,8 +64,12 @@ impl PrivilegedOperation {
         fingerprint_path: Option<&str>,
     ) -> Vec<String> {
         match self {
-            PrivilegedOperation::Remove { targets } => {
+            PrivilegedOperation::Remove { targets, .. } => {
                 let mut argv = vec![REMOVE.to_string(), STREAM.to_string()];
+                if let Some(path) = approvals_path {
+                    argv.push(APPROVALS_FILE.to_string());
+                    argv.push(path.to_string());
+                }
                 argv.extend(targets.iter().cloned());
                 argv
             }
@@ -121,17 +127,26 @@ impl ChildOperation {
 
 fn decode_remove(argv: &[String]) -> Option<ChildOperation> {
     let mut stream = false;
+    let mut approvals_path = None;
     let mut targets = Vec::new();
-    for arg in argv {
-        if arg.as_str() == STREAM {
-            stream = true;
-        } else if arg.starts_with('-') {
-            return None;
-        } else {
-            targets.push(arg.clone());
+    let mut parts = argv.iter();
+    while let Some(arg) = parts.next() {
+        match arg.as_str() {
+            STREAM => stream = true,
+            APPROVALS_FILE => approvals_path = Some(parts.next()?.clone()),
+            _ => {
+                if arg.starts_with('-') {
+                    return None;
+                }
+                targets.push(arg.clone());
+            }
         }
     }
-    Some(ChildOperation::Remove { targets, stream })
+    Some(ChildOperation::Remove {
+        targets,
+        approvals_path,
+        stream,
+    })
 }
 
 fn decode_install(argv: &[String]) -> Option<ChildOperation> {
@@ -195,6 +210,7 @@ mod tests {
     fn remove_wire_round_trip() {
         let operation = PrivilegedOperation::Remove {
             targets: vec!["sl".to_string(), "figlet".to_string()],
+            approvals: None,
         };
         let argv = operation.wire_args(None, None);
         assert_eq!(argv, ["remove", "--stream", "sl", "figlet"]);
@@ -202,9 +218,43 @@ mod tests {
             ChildOperation::decode(&argv),
             Some(ChildOperation::Remove {
                 targets: vec!["sl".to_string(), "figlet".to_string()],
+                approvals_path: None,
                 stream: true,
             })
         );
+    }
+
+    #[test]
+    fn remove_approvals_wire_round_trip() {
+        let operation = PrivilegedOperation::Remove {
+            targets: vec!["sl".to_string()],
+            approvals: None,
+        };
+        let argv = operation.wire_args(Some("/tmp/pakajo-approvals-1.json"), None);
+        assert_eq!(
+            argv,
+            [
+                "remove",
+                "--stream",
+                "--approvals-file",
+                "/tmp/pakajo-approvals-1.json",
+                "sl"
+            ]
+        );
+        assert_eq!(
+            ChildOperation::decode(&argv),
+            Some(ChildOperation::Remove {
+                targets: vec!["sl".to_string()],
+                approvals_path: Some("/tmp/pakajo-approvals-1.json".to_string()),
+                stream: true,
+            })
+        );
+        let trailing = vec![
+            "remove".to_string(),
+            "--stream".to_string(),
+            "--approvals-file".to_string(),
+        ];
+        assert_eq!(ChildOperation::decode(&trailing), None);
     }
 
     #[test]
