@@ -2,20 +2,21 @@ use std::io::Write as _;
 
 use crate::{build::BuildDecision, color, resolve::BuildPlan};
 
-enum PromptStream {
+pub(crate) enum PromptStream {
     Stdout,
     Stderr,
 }
 
-fn read_confirmation(message: &str, stream: PromptStream) -> bool {
+fn read_confirmation(message: &str, stream: PromptStream, default_yes: bool) -> bool {
     let c = match stream {
         PromptStream::Stdout => color::stdout_color(),
         PromptStream::Stderr => color::stderr_color(),
     };
+    let hint = if default_yes { "[Y/n]" } else { "[y/N]" };
     let line = format!(
         "{} {} ",
         color::colon(c, message),
-        color::paint(c, color::BOLD, "[Y/n]")
+        color::paint(c, color::BOLD, hint)
     );
     match stream {
         PromptStream::Stdout => {
@@ -29,7 +30,11 @@ fn read_confirmation(message: &str, stream: PromptStream) -> bool {
     }
     let mut input = String::new();
     let _ = std::io::stdin().read_line(&mut input);
-    matches!(input.trim().to_lowercase().as_str(), "" | "y" | "yes")
+    match input.trim().to_lowercase().as_str() {
+        "" => default_yes,
+        "y" | "yes" => true,
+        _ => false,
+    }
 }
 
 pub fn select_group_members(
@@ -99,7 +104,7 @@ pub fn select_group_members(
 
 pub fn confirm_install() -> bool {
     println!();
-    read_confirmation("Proceed with installation?", PromptStream::Stdout)
+    read_confirmation("Proceed with installation?", PromptStream::Stdout, true)
 }
 
 pub fn confirm_remove() -> bool {
@@ -107,6 +112,7 @@ pub fn confirm_remove() -> bool {
     read_confirmation(
         "Do you want to remove these packages?",
         PromptStream::Stdout,
+        true,
     )
 }
 
@@ -196,7 +202,7 @@ pub fn confirm_build(plan: &BuildPlan) -> BuildDecision {
 
 pub fn confirm_proceed_to_review(plan: &BuildPlan) -> BuildDecision {
     print_plan_summary(plan);
-    if read_confirmation("Proceed to review?", PromptStream::Stdout) {
+    if read_confirmation("Proceed to review?", PromptStream::Stdout, true) {
         BuildDecision::Review
     } else {
         BuildDecision::Abort
@@ -205,7 +211,7 @@ pub fn confirm_proceed_to_review(plan: &BuildPlan) -> BuildDecision {
 
 pub fn confirm_install_stderr() -> bool {
     eprintln!();
-    read_confirmation("Proceed with installation?", PromptStream::Stderr)
+    read_confirmation("Proceed with installation?", PromptStream::Stderr, true)
 }
 
 pub fn confirm_remove_stderr() -> bool {
@@ -213,10 +219,19 @@ pub fn confirm_remove_stderr() -> bool {
     read_confirmation(
         "Do you want to remove these packages?",
         PromptStream::Stderr,
+        true,
+    )
+}
+
+pub fn confirm_hold_remove(stream: PromptStream) -> bool {
+    read_confirmation(
+        "HoldPkg was found in target list. Do you want to continue?",
+        stream,
+        false,
     )
 }
 
 pub fn confirm_review_accept() -> bool {
     println!();
-    read_confirmation("Accept changes?", PromptStream::Stdout)
+    read_confirmation("Accept changes?", PromptStream::Stdout, true)
 }

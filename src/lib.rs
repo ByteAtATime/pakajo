@@ -12,6 +12,7 @@ pub mod dispatch;
 pub mod dry_run;
 pub mod events;
 pub mod git;
+pub mod holdpkg;
 pub mod install;
 pub mod package;
 pub mod pacman;

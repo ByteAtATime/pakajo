@@ -147,13 +147,15 @@ impl ConsoleSink {
                 }
             }
             InstallEvent::Log { level, message } => match level {
-                LogLevel::Error => eprint!(
-                    "{} {message}",
-                    color::paint(self.stderr_color, color::RED, "error:")
+                LogLevel::Error => eprintln!(
+                    "{} {}",
+                    color::paint(self.stderr_color, color::RED, "error:"),
+                    message.trim_end()
                 ),
-                LogLevel::Warning => eprint!(
-                    "{} {message}",
-                    color::paint(self.stderr_color, color::YELLOW, "warning:")
+                LogLevel::Warning => eprintln!(
+                    "{} {}",
+                    color::paint(self.stderr_color, color::YELLOW, "warning:"),
+                    message.trim_end()
                 ),
                 LogLevel::Debug => {}
             },
@@ -318,6 +320,26 @@ impl InstallSink for EscalatedSink {
             }
             InstallEvent::CheckingDependencies => {
                 eprintln!("checking dependencies...");
+            }
+            InstallEvent::Log {
+                level: LogLevel::Warning,
+                message,
+            } => {
+                eprintln!(
+                    "{} {}",
+                    color::paint(color::stderr_color(), color::YELLOW, "warning:"),
+                    message.trim_end()
+                );
+            }
+            InstallEvent::Log {
+                level: LogLevel::Error,
+                message,
+            } => {
+                eprintln!(
+                    "{} {}",
+                    color::paint(color::stderr_color(), color::RED, "error:"),
+                    message.trim_end()
+                );
             }
             other => {
                 if let Ok(line) = serde_json::to_string(&other) {

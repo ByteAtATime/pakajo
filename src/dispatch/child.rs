@@ -1,6 +1,7 @@
 use crate::cli::{
-    ConsoleSink, EscalatedSink, JsonSink, answerer_for, classify_target, confirm_install,
-    confirm_install_stderr, confirm_remove, confirm_remove_stderr, privs,
+    ConsoleSink, EscalatedSink, JsonSink, PromptStream, answerer_for, classify_target,
+    confirm_hold_remove, confirm_install, confirm_install_stderr, confirm_remove,
+    confirm_remove_stderr, privs,
 };
 use crate::dispatch::operation::ChildOperation;
 use crate::install::InstallTarget;
@@ -85,18 +86,21 @@ impl ChildOperation {
                         EscalatedSink::new(),
                         confirm_remove_stderr,
                         answerer_for(None),
+                        || confirm_hold_remove(PromptStream::Stderr),
                     ),
                     Presentation::SilentStream => crate::remove::run_remove(
                         targets,
                         JsonSink::new(),
                         || true,
                         answerer_for(None),
+                        || false,
                     ),
                     Presentation::Console => crate::remove::run_remove(
                         targets,
                         ConsoleSink::new(),
                         confirm_remove,
                         answerer_for(None),
+                        || confirm_hold_remove(PromptStream::Stdout),
                     ),
                 }
             }

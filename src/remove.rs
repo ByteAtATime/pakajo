@@ -1,44 +1,68 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 
-use crate::events::InstallSink;
+use crate::events::{InstallEvent, InstallSink, LogLevel};
+use crate::holdpkg::held_packages;
 use crate::install::{QuestionState, register_callbacks};
+use crate::pacman;
 
-pub fn run_remove<S: InstallSink + 'static, F: FnOnce() -> bool>(
+pub fn run_remove<S: InstallSink + 'static, F: FnOnce() -> bool, G: FnOnce() -> bool>(
     targets: &[String],
     sink: S,
     confirm: F,
     answerer: Box<dyn crate::answerer::QuestionAnswerer>,
+    confirm_hold: G,
 ) -> anyhow::Result<()> {
-    let mut handle = crate::pacman::handle()?;
-    remove_into(&mut handle, targets, sink, confirm, answerer)
+    let hold_patterns = pacman::config()?.hold_pkg;
+    let mut handle = pacman::handle()?;
+    remove_into(
+        &mut handle,
+        targets,
+        sink,
+        confirm,
+        answerer,
+        &hold_patterns,
+        confirm_hold,
+    )
 }
 
-fn remove_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
+fn remove_into<S: InstallSink + 'static, F: FnOnce() -> bool, G: FnOnce() -> bool>(
     handle: &mut alpm::Alpm,
     targets: &[String],
     sink: S,
     confirm: F,
     answerer: Box<dyn crate::answerer::QuestionAnswerer>,
+    hold_patterns: &[String],
+    confirm_hold: G,
 ) -> anyhow::Result<()> {
     let sink = Rc::new(RefCell::new(sink));
     let qstate = Rc::new(RefCell::new(QuestionState::new(answerer)));
     register_callbacks(handle, sink.clone(), qstate.clone());
-    let result = run_remove_transaction(handle, targets, &sink, &qstate, confirm);
-    crate::pacman::lock::finish_transaction(handle);
+    let result = run_remove_transaction(
+        handle,
+        targets,
+        &sink,
+        &qstate,
+        confirm,
+        hold_patterns,
+        confirm_hold,
+    );
+    pacman::lock::finish_transaction(handle);
     result
 }
 
-fn run_remove_transaction<S: InstallSink, F: FnOnce() -> bool>(
+fn run_remove_transaction<S: InstallSink, F: FnOnce() -> bool, G: FnOnce() -> bool>(
     handle: &mut alpm::Alpm,
     targets: &[String],
     sink: &Rc<RefCell<S>>,
     qstate: &Rc<RefCell<QuestionState>>,
     confirm: F,
+    hold_patterns: &[String],
+    confirm_hold: G,
 ) -> anyhow::Result<()> {
-    crate::pacman::lock::cleanup_on_signal(handle);
+    pacman::lock::cleanup_on_signal(handle);
 
     handle
         .trans_init(alpm::TransFlag::NONE)
@@ -59,24 +83,50 @@ fn run_remove_transaction<S: InstallSink, F: FnOnce() -> bool>(
     }
 
     if qstate.borrow().deny_flag {
-        anyhow::bail!("aborted: {}", qstate.borrow().detail);
+        bail!("aborted: {}", qstate.borrow().detail);
     }
+
+    enforce_hold_gate(handle, sink, hold_patterns, confirm_hold)?;
 
     let summary = crate::install::build_summary(handle);
     sink.borrow_mut()
-        .event(crate::events::InstallEvent::TransactionSummary(summary));
+        .event(InstallEvent::TransactionSummary(summary));
 
     if !confirm() {
         return Ok(());
     }
 
-    let commit = crate::pacman::lock::during_commit(|| handle.trans_commit());
+    let commit = pacman::lock::during_commit(|| handle.trans_commit());
     commit.context("failed to commit transaction")?;
     if qstate.borrow().deny_flag {
-        anyhow::bail!("aborted: {}", qstate.borrow().detail);
+        bail!("aborted: {}", qstate.borrow().detail);
     }
 
     Ok(())
+}
+
+fn enforce_hold_gate<S: InstallSink, G: FnOnce() -> bool>(
+    handle: &alpm::Alpm,
+    sink: &Rc<RefCell<S>>,
+    hold_patterns: &[String],
+    confirm_hold: G,
+) -> anyhow::Result<()> {
+    let names: Vec<String> = handle
+        .trans_remove()
+        .iter()
+        .map(|pkg| pkg.name().to_string())
+        .collect();
+    let held = held_packages(&names, hold_patterns);
+    for name in &held {
+        sink.borrow_mut().event(InstallEvent::Log {
+            level: LogLevel::Warning,
+            message: format!("{name} is designated as a HoldPkg."),
+        });
+    }
+    if held.is_empty() || confirm_hold() {
+        return Ok(());
+    }
+    bail!("held package(s) require explicit override")
 }
 
 fn classify_prepare_error(err: alpm::PrepareError) -> anyhow::Error {
@@ -101,20 +151,21 @@ fn classify_prepare_error(err: alpm::PrepareError) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::answerer::DenyAllAnswerer;
     use crate::cli::ConsoleSink;
-    use crate::install::{InstallTarget, install_into};
+    use crate::install::{InstallTarget, install_into, setup_fake_root};
 
     #[test]
     #[ignore]
     fn test_remove() {
-        let mut handle = crate::install::setup_fake_root("remove");
+        let mut handle = setup_fake_root("remove");
         install_into(
             &mut handle,
             &[InstallTarget::Repo("sl".to_string())],
             false,
             ConsoleSink::new(),
             || true,
-            Box::new(crate::answerer::DenyAllAnswerer),
+            Box::new(DenyAllAnswerer),
         )
         .expect("sl should install first");
         assert!(
@@ -127,7 +178,9 @@ mod tests {
             &["sl".to_string()],
             ConsoleSink::new(),
             || true,
-            Box::new(crate::answerer::DenyAllAnswerer),
+            Box::new(DenyAllAnswerer),
+            &[],
+            || true,
         )
         .expect("remove should succeed");
         assert!(handle.localdb().pkg("sl").is_err(), "sl must be removed");
@@ -136,7 +189,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_remove_multiple() {
-        let mut handle = crate::install::setup_fake_root("remove_multiple");
+        let mut handle = setup_fake_root("remove_multiple");
         install_into(
             &mut handle,
             &[
@@ -146,7 +199,7 @@ mod tests {
             false,
             ConsoleSink::new(),
             || true,
-            Box::new(crate::answerer::DenyAllAnswerer),
+            Box::new(DenyAllAnswerer),
         )
         .expect("sl and figlet should install first");
         assert!(
@@ -163,7 +216,9 @@ mod tests {
             &["sl".to_string(), "figlet".to_string()],
             ConsoleSink::new(),
             || true,
-            Box::new(crate::answerer::DenyAllAnswerer),
+            Box::new(DenyAllAnswerer),
+            &[],
+            || true,
         )
         .expect("remove should succeed");
         assert!(handle.localdb().pkg("sl").is_err(), "sl must be removed");
@@ -176,13 +231,15 @@ mod tests {
     #[test]
     #[ignore]
     fn test_remove_uninstalled_errors() {
-        let mut handle = crate::install::setup_fake_root("remove_uninstalled");
+        let mut handle = setup_fake_root("remove_uninstalled");
         let result = remove_into(
             &mut handle,
             &["definitely-not-installed".to_string()],
             ConsoleSink::new(),
             || true,
-            Box::new(crate::answerer::DenyAllAnswerer),
+            Box::new(DenyAllAnswerer),
+            &[],
+            || true,
         );
         let err = format!("{}", result.unwrap_err());
         assert!(
@@ -194,14 +251,14 @@ mod tests {
     #[test]
     #[ignore]
     fn test_remove_needed_by_other_errors() {
-        let mut handle = crate::install::setup_fake_root("remove_needed");
+        let mut handle = setup_fake_root("remove_needed");
         install_into(
             &mut handle,
             &[InstallTarget::Repo("vlc".to_string())],
             false,
             ConsoleSink::new(),
             || true,
-            Box::new(crate::answerer::DenyAllAnswerer),
+            Box::new(DenyAllAnswerer),
         )
         .expect("vlc should install (pulls ffmpeg)");
         assert!(
@@ -214,12 +271,75 @@ mod tests {
             &["ffmpeg".to_string()],
             ConsoleSink::new(),
             || true,
-            Box::new(crate::answerer::DenyAllAnswerer),
+            Box::new(DenyAllAnswerer),
+            &[],
+            || true,
         );
         let err = format!("{}", result.unwrap_err());
         assert!(
             err.to_lowercase().contains("unsatisfied") || err.contains("vlc"),
             "expected 'unsatisfied' or 'vlc' in error, got: {err}"
         );
+    }
+
+    #[test]
+    #[ignore]
+    fn test_remove_held_declined_keeps_package() {
+        let mut handle = setup_fake_root("remove_held_declined");
+        install_into(
+            &mut handle,
+            &[InstallTarget::Repo("sl".to_string())],
+            false,
+            ConsoleSink::new(),
+            || true,
+            Box::new(DenyAllAnswerer),
+        )
+        .expect("sl should install first");
+        let patterns = ["sl".to_string()];
+        let result = remove_into(
+            &mut handle,
+            &["sl".to_string()],
+            ConsoleSink::new(),
+            || true,
+            Box::new(DenyAllAnswerer),
+            &patterns,
+            || false,
+        );
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("held package(s) require explicit override"),
+            "expected held error, got: {err}"
+        );
+        assert!(
+            handle.localdb().pkg("sl").is_ok(),
+            "sl must remain installed after declined hold gate"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn test_remove_held_prompt_accept_removes_package() {
+        let mut handle = setup_fake_root("remove_held_prompt_accept");
+        install_into(
+            &mut handle,
+            &[InstallTarget::Repo("sl".to_string())],
+            false,
+            ConsoleSink::new(),
+            || true,
+            Box::new(DenyAllAnswerer),
+        )
+        .expect("sl should install first");
+        let patterns = ["sl".to_string()];
+        remove_into(
+            &mut handle,
+            &["sl".to_string()],
+            ConsoleSink::new(),
+            || true,
+            Box::new(DenyAllAnswerer),
+            &patterns,
+            || true,
+        )
+        .expect("prompt-accepted held remove should succeed");
+        assert!(handle.localdb().pkg("sl").is_err(), "sl must be removed");
     }
 }
