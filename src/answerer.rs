@@ -412,7 +412,7 @@ mod tests {
         match a.answer_provider("sdl", &candidates) {
             ProviderDecision::Choose(i) => assert_eq!(
                 i, 1,
-                "must match by (name, repo) pair, not name alone — name-only would yield 0"
+                "must match by (name, repo) pair, not name alone: name-only would yield 0"
             ),
             other => panic!("expected Choose(1), got {other:?}"),
         }

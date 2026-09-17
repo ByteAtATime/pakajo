@@ -1,9 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::aur::AurInfo;
-
-use super::types::{BuildLayer, BuildPlan};
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     pub name: String,
@@ -256,96 +252,5 @@ pub(crate) fn plan_from_actions(
         },
         duplicates: actions.duplicate_targets(),
         questions,
-    }
-}
-
-fn member_to_aur_info(base: &str, member: &Member) -> AurInfo {
-    AurInfo {
-        name: member.name.clone(),
-        package_base: base.to_string(),
-        version: member.version.clone(),
-        ..Default::default()
-    }
-}
-
-pub(crate) fn build_plan_from_plan(plan: &Plan, targets: &[String]) -> BuildPlan {
-    let mut layers: Vec<BuildLayer> = (!plan.repo_installs.is_empty())
-        .then(|| BuildLayer {
-            aur: vec![],
-            repo_deps: plan
-                .repo_installs
-                .iter()
-                .map(|row| row.name.clone())
-                .collect(),
-        })
-        .into_iter()
-        .collect();
-    layers.extend(plan.aur_builds().filter_map(|(name, members)| {
-        members.first().map(|member| BuildLayer {
-            aur: vec![member_to_aur_info(name, member)],
-            repo_deps: vec![],
-        })
-    }));
-    BuildPlan {
-        targets: targets.to_vec(),
-        layers,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn member(name: &str, version: &str, make: bool, target: bool) -> Member {
-        Member {
-            name: name.to_string(),
-            version: version.to_string(),
-            make,
-            target,
-        }
-    }
-
-    fn sample_plan() -> Plan {
-        Plan {
-            bases: vec![
-                Base::Aur {
-                    base: "helper".to_string(),
-                    build: true,
-                    members: vec![member("helper", "2.0-1", false, false)],
-                },
-                Base::Aur {
-                    base: "top".to_string(),
-                    build: true,
-                    members: vec![member("top", "1.0-1", false, true)],
-                },
-            ],
-            repo_installs: vec![RepoInstall {
-                name: "glibc".to_string(),
-                version: "2.39-1".to_string(),
-                db: "core".to_string(),
-                make: false,
-                target: false,
-            }],
-            missing: vec![],
-            unneeded: vec![],
-            conflicts: ConflictReport {
-                local: vec![],
-                inner: vec![],
-            },
-            duplicates: vec![],
-            questions: vec![],
-        }
-    }
-
-    #[test]
-    fn conversion_orders_repo_installs_before_bases() {
-        let layers = build_plan_from_plan(&sample_plan(), &["top".to_string()]).layers;
-        assert_eq!(layers.len(), 3);
-        assert_eq!(layers[0].repo_deps, vec!["glibc".to_string()]);
-        assert!(layers[0].aur.is_empty());
-        assert_eq!(layers[1].aur[0].name, "helper");
-        assert_eq!(layers[1].aur[0].package_base, "helper");
-        assert_eq!(layers[2].aur[0].name, "top");
-        assert_eq!(layers[2].aur[0].version, "1.0-1");
     }
 }

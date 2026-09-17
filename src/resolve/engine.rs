@@ -6,11 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::aur::AurClient;
 
-use super::plan::{
-    GroupMember, Missing, OpenQuestion, Plan, build_plan_from_plan, plan_from_actions,
-};
+use super::plan::{GroupMember, Missing, OpenQuestion, Plan, plan_from_actions};
 use super::raur::{AurRaur, RaurError};
-use super::types::BuildPlan;
 
 #[derive(Debug)]
 pub enum ResolveError {
@@ -298,26 +295,4 @@ pub(crate) fn missing_message(missing: &Missing) -> String {
         "no AUR package found for {} (required by {chain})",
         missing.dep
     )
-}
-
-pub fn resolve(
-    _db: &alpm::Alpm,
-    _aur: &AurClient,
-    targets: &[String],
-    no_check: bool,
-) -> anyhow::Result<BuildPlan> {
-    if targets.is_empty() {
-        return Ok(BuildPlan {
-            targets: vec![],
-            layers: vec![],
-        });
-    }
-    let mut engine = Engine::new(no_check)?;
-    let plan = engine
-        .resolve(targets, Decisions::Default)
-        .map_err(|error| anyhow::anyhow!("resolution failed: {error}"))?;
-    if let Some(first) = plan.missing.first() {
-        anyhow::bail!("{}", missing_message(first));
-    }
-    Ok(build_plan_from_plan(&plan, targets))
 }
