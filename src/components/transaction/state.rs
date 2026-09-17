@@ -405,7 +405,6 @@ mod tests {
             version: Some("1.0-1".to_string()),
         });
         model.apply_event(&InstallEvent::ResolutionComplete {
-            layers: 1,
             aur_packages: 1,
             repo_deps: 0,
         });
@@ -489,7 +488,6 @@ mod tests {
             version: Some("1.0-1".to_string()),
         });
         model.apply_event(&InstallEvent::ResolutionComplete {
-            layers: 1,
             aur_packages: 1,
             repo_deps: 0,
         });
@@ -531,7 +529,6 @@ mod tests {
             version: Some("1.0-1".to_string()),
         });
         model.apply_event(&InstallEvent::ResolutionComplete {
-            layers: 1,
             aur_packages: 1,
             repo_deps: 1,
         });
@@ -617,7 +614,6 @@ mod tests {
             version: Some("1.0-1".to_string()),
         });
         model.apply_event(&InstallEvent::ResolutionComplete {
-            layers: 1,
             aur_packages: 1,
             repo_deps: 1,
         });

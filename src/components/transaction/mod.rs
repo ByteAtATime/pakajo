@@ -358,7 +358,7 @@ impl Transaction {
         if !self.model.aur_names.is_empty() {
             let targets = self.model.aur_names.clone();
             let task = crate::components::task::blocking_task(
-                move || prepare_pkgbuild_diffs(&targets),
+                move || prepare_pkgbuild_diffs(&targets, false),
                 "pkgbuild fetch channel closed",
                 |result| {
                     crate::Message::Transaction(TransactionMessage::PkgbuildResult(result)).into()

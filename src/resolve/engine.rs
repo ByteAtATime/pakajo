@@ -267,7 +267,7 @@ impl Ask for PinnedState {
     }
 }
 
-fn missing_message(missing: &Missing) -> String {
+pub(crate) fn missing_message(missing: &Missing) -> String {
     if missing.stack.is_empty() {
         return format!("target not found in AUR: {}", missing.dep);
     }

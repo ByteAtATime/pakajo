@@ -6,11 +6,12 @@ use std::process::Stdio;
 use anyhow::Context as _;
 
 use crate::aur::AurInfo;
+use crate::cli::prompts::CliAsk;
 use crate::dispatch::exec::{ChildOutcome, StreamItem};
 use crate::dispatch::protocol::Decider;
 use crate::events::{InstallEvent, InstallSink, PkgbuildReviewEntry};
 use crate::pkgbuild::PkgbuildInfo;
-use crate::resolve::BuildPlan;
+use crate::resolve::{Decisions, Engine, Plan};
 
 #[derive(Clone, Copy)]
 struct AurBuildConfig {
@@ -35,7 +36,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
     approvals: Option<&str>,
     tty: bool,
 ) -> anyhow::Result<()> {
-    let (alpm, plan) = resolve_and_report(targets, no_check, sink)?;
+    let (alpm, plan) = resolve_and_report(targets, no_check, sink, tty)?;
 
     let decision = decider.confirm_build(&plan);
     if matches!(decision, BuildDecision::Abort) {
@@ -45,30 +46,58 @@ pub fn run_build<S: InstallSink + ?Sized>(
     let pkgbuilds = crate::pkgbuild::collect_for_review(&plan, sink)?;
     review_if_requested(decision, &pkgbuilds, sink, decider)?;
 
-    let total_layers = plan.layers.len();
     let arch = alpm.architectures().first();
-    for (idx, layer) in plan.layers.iter().enumerate() {
-        sink.event(InstallEvent::LayerBoundary {
-            layer: idx,
-            total: total_layers,
-        });
+    install_repo_packages(&plan, sink, tty)?;
 
-        if !layer.repo_deps.is_empty() {
-            run_install_child(&layer.repo_deps, true, sink, None, tty)?;
-        }
-
-        for info in &layer.aur {
-            let dir = clone_dir(&info.package_base)?;
-            let as_deps = user_as_deps || !plan.targets.iter().any(|t| t == &info.name);
-            let config = AurBuildConfig {
-                no_check,
-                as_deps,
-                tty,
-            };
-            build_and_install_aur(info, &dir, config, approvals, arch, sink)?;
-        }
+    if let Some(label) = plan.bases.iter().find_map(|base| match base {
+        crate::resolve::Base::Pkgbuild { repo, base, .. } => Some(format!("{repo}/{base}")),
+        _ => None,
+    }) {
+        anyhow::bail!("pkgbuild repo builds are not supported: {label}");
+    }
+    for (pkgbase, members) in plan.aur_builds() {
+        let Some(first) = members.first() else {
+            anyhow::bail!("resolution produced an empty package base: {pkgbase}");
+        };
+        let dir = clone_dir(pkgbase)?;
+        let as_deps = user_as_deps || members.iter().all(|member| !member.target);
+        let info = AurInfo {
+            name: first.name.clone(),
+            package_base: pkgbase.to_string(),
+            version: first.version.clone(),
+            ..Default::default()
+        };
+        let config = AurBuildConfig {
+            no_check,
+            as_deps,
+            tty,
+        };
+        build_and_install_aur(&info, &dir, config, approvals, arch, sink)?;
     }
 
+    Ok(())
+}
+
+fn install_repo_packages<S: InstallSink + ?Sized>(
+    plan: &Plan,
+    sink: &mut S,
+    tty: bool,
+) -> anyhow::Result<()> {
+    let mut explicit = Vec::new();
+    let mut deps = Vec::new();
+    for row in &plan.repo_installs {
+        if row.target {
+            explicit.push(row.name.clone());
+        } else {
+            deps.push(row.name.clone());
+        }
+    }
+    if !explicit.is_empty() {
+        run_install_child(&explicit, false, sink, None, tty)?;
+    }
+    if !deps.is_empty() {
+        run_install_child(&deps, true, sink, None, tty)?;
+    }
     Ok(())
 }
 
@@ -76,7 +105,8 @@ fn resolve_and_report<S: InstallSink + ?Sized>(
     targets: &[String],
     no_check: bool,
     sink: &mut S,
-) -> anyhow::Result<(alpm::Alpm, BuildPlan)> {
+    tty: bool,
+) -> anyhow::Result<(alpm::Alpm, Plan)> {
     for target in targets {
         sink.event(InstallEvent::ResolvingAurDependencies {
             target: target.to_string(),
@@ -84,36 +114,39 @@ fn resolve_and_report<S: InstallSink + ?Sized>(
     }
 
     let alpm = crate::pacman::handle()?;
-    let aur = crate::aur::AurClient::new();
-    let plan = crate::resolve::resolve(&crate::resolve::AlpmDb(&alpm), &aur, targets, no_check)?;
+    let mut engine = Engine::new(no_check)?;
+    let decisions = if tty {
+        Decisions::Ask(Box::new(CliAsk))
+    } else {
+        Decisions::Default
+    };
+    let plan = engine
+        .resolve(targets, decisions)
+        .map_err(|error| anyhow::anyhow!("resolution failed: {error}"))?;
+    if let Some(first) = plan.missing.first() {
+        anyhow::bail!("{}", crate::resolve::missing_message(first));
+    }
+    if let Some(duplicate) = plan.duplicates.first() {
+        anyhow::bail!("duplicate targets: {duplicate}");
+    }
 
-    let aur_packages: usize = plan.layers.iter().map(|l| l.aur.len()).sum();
-    let repo_deps: usize = plan.layers.iter().map(|l| l.repo_deps.len()).sum();
-    for layer in &plan.layers {
-        for name in &layer.repo_deps {
-            let (repo, version) = match crate::pacman::find_pkg(&alpm, name) {
-                Some(pkg) => (
-                    pkg.db().map(|db| db.name().to_string()),
-                    Some(pkg.version().to_string()),
-                ),
-                None => (None, None),
-            };
-            sink.event(InstallEvent::AurDepResolved {
-                package: name.clone(),
-                repo,
-                version,
-            });
-        }
-        for info in &layer.aur {
-            sink.event(InstallEvent::AurDepResolved {
-                package: info.name.clone(),
-                repo: None,
-                version: Some(info.version.clone()),
-            });
-        }
+    let repo_deps = plan.repo_installs.len();
+    let aur_packages = plan.all_members().count();
+    for row in &plan.repo_installs {
+        sink.event(InstallEvent::AurDepResolved {
+            package: row.name.clone(),
+            repo: Some(row.db.clone()),
+            version: Some(row.version.clone()),
+        });
+    }
+    for member in plan.all_members() {
+        sink.event(InstallEvent::AurDepResolved {
+            package: member.name.clone(),
+            repo: None,
+            version: Some(member.version.clone()),
+        });
     }
     sink.event(InstallEvent::ResolutionComplete {
-        layers: plan.layers.len(),
         aur_packages,
         repo_deps,
     });

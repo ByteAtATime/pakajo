@@ -78,7 +78,6 @@ pub enum InstallEvent {
         version: Option<String>,
     },
     ResolutionComplete {
-        layers: usize,
         aur_packages: usize,
         repo_deps: usize,
     },
@@ -97,10 +96,6 @@ pub enum InstallEvent {
         artifacts: Vec<String>,
         #[serde(default)]
         version: Option<String>,
-    },
-    LayerBoundary {
-        layer: usize,
-        total: usize,
     },
     SysupgradeAurCandidates {
         candidates: Vec<crate::upgrade::AurUpgradeCandidate>,

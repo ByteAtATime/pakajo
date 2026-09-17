@@ -52,7 +52,7 @@ pub fn sysupgrade_preview(request: &SysupgradePreviewRequest) -> anyhow::Result<
     let pkgbuild_diffs = if aur_names.is_empty() {
         Vec::new()
     } else {
-        match crate::pkgbuild::prepare_pkgbuild_diffs(&aur_names) {
+        match crate::pkgbuild::prepare_pkgbuild_diffs(&aur_names, false) {
             Ok(diffs) => diffs,
             Err(error) => {
                 eprintln!("[pakajo] pkgbuild diff computation failed: {error:#}");

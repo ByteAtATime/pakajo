@@ -182,7 +182,6 @@ impl ConsoleSink {
                 }
             }
             InstallEvent::BuildCompleted { .. } => {}
-            InstallEvent::LayerBoundary { .. } => {}
             InstallEvent::PkgbuildReviewStarted { .. }
             | InstallEvent::PkgbuildReviewAccepted { .. } => {}
             InstallEvent::PkgbuildAllUpToDate { packages } => {

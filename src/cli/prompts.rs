@@ -1,6 +1,10 @@
 use std::io::Write as _;
 
-use crate::{build::BuildDecision, color, resolve::BuildPlan};
+use crate::answerer::{ProviderDecision, QuestionAnswerer, StdioAnswerer};
+use crate::package::PackageGroup;
+use crate::question::ProviderCandidate;
+use crate::resolve::{Ask, GroupMember, Plan};
+use crate::{build::BuildDecision, color};
 
 pub(crate) enum PromptStream {
     Stdout,
@@ -37,10 +41,7 @@ fn read_confirmation(message: &str, stream: PromptStream, default_yes: bool) -> 
     }
 }
 
-pub fn select_group_members(
-    group_name: &str,
-    groups: &[crate::package::PackageGroup],
-) -> Vec<String> {
+fn select_group_indices(group_name: &str, groups: &[crate::package::PackageGroup]) -> Vec<usize> {
     let c = color::stdout_color();
     let flat: Vec<&crate::package::GroupMember> =
         groups.iter().flat_map(|g| g.members.iter()).collect();
@@ -78,32 +79,98 @@ pub fn select_group_members(
         let _ = std::io::stdout().flush();
         let mut input = String::new();
         if std::io::stdin().read_line(&mut input).is_err() {
-            return flat.iter().map(|m| m.name.clone()).collect();
+            return Vec::new();
         }
         let trimmed = input.trim();
         if trimmed.is_empty() {
-            return flat.iter().map(|m| m.name.clone()).collect();
+            return (0..total).collect();
         }
-        let mut picks: Vec<usize> = Vec::new();
-        let mut had_error = false;
+        let mut picks = Vec::new();
+        let mut invalid: Option<&str> = None;
         for tok in trimmed.split_whitespace() {
             match tok.parse::<usize>() {
-                Ok(num) if num >= 1 && num <= total => picks.push(num - 1),
+                Ok(num) if (1..=total).contains(&num) => picks.push(num - 1),
                 _ => {
-                    println!("error: invalid number: {tok}");
-                    had_error = true;
+                    invalid = Some(tok);
+                    break;
                 }
             }
         }
-        if had_error {
+        if let Some(tok) = invalid {
+            println!("error: invalid number: {tok}");
             continue;
         }
-        return picks.into_iter().map(|i| flat[i].name.clone()).collect();
+        return picks;
+    }
+}
+
+pub fn select_group_members(
+    group_name: &str,
+    groups: &[crate::package::PackageGroup],
+) -> Vec<String> {
+    let flat: Vec<&crate::package::GroupMember> =
+        groups.iter().flat_map(|g| g.members.iter()).collect();
+    select_group_indices(group_name, groups)
+        .into_iter()
+        .filter_map(|i| flat.get(i).map(|m| m.name.clone()))
+        .collect()
+}
+
+pub(crate) struct CliAsk;
+
+fn group_packages(members: &[GroupMember]) -> Vec<PackageGroup> {
+    let mut groups: Vec<PackageGroup> = Vec::new();
+    for member in members {
+        if !groups.last().is_some_and(|last| last.repo == member.db) {
+            groups.push(PackageGroup {
+                repo: member.db.clone(),
+                members: Vec::new(),
+            });
+        }
+        groups
+            .last_mut()
+            .expect("group pushed above")
+            .members
+            .push(crate::package::GroupMember {
+                name: member.name.clone(),
+                description: None,
+            });
+    }
+    groups
+}
+
+impl Ask for CliAsk {
+    fn choose_provider(&mut self, depend: &str, candidates: &[String]) -> usize {
+        if candidates.is_empty() {
+            return 0;
+        }
+        let owned: Vec<ProviderCandidate> = candidates
+            .iter()
+            .map(|name| ProviderCandidate {
+                name: name.clone(),
+                repo: None,
+                version: None,
+            })
+            .collect();
+        let answerer = StdioAnswerer::new();
+        loop {
+            match answerer.answer_provider(depend, &owned) {
+                ProviderDecision::Choose(index) => return index,
+                ProviderDecision::CannotPrompt => return 0,
+                ProviderDecision::Decline => continue,
+            }
+        }
+    }
+
+    fn choose_group_members(&mut self, group: &str, members: &[GroupMember]) -> Vec<usize> {
+        if members.is_empty() {
+            return Vec::new();
+        }
+        select_group_indices(group, &group_packages(members))
     }
 }
 
 pub fn confirm_install() -> bool {
-    println!();
     read_confirmation("Proceed with installation?", PromptStream::Stdout, true)
 }
 
@@ -116,18 +183,23 @@ pub fn confirm_remove() -> bool {
     )
 }
 
-fn print_plan_summary(plan: &BuildPlan) {
+fn member_label(make: bool, target: bool) -> Option<&'static str> {
+    match (make, target) {
+        (_, true) => None,
+        (true, false) => Some("makedepend"),
+        (false, false) => Some("dependency"),
+    }
+}
+
+fn print_plan_summary(plan: &Plan) {
     let rows: Vec<(&str, &str, Option<&str>)> = plan
-        .layers
-        .iter()
-        .flat_map(|layer| layer.aur.iter())
-        .map(|info| {
-            let label = if plan.targets.iter().any(|t| t == &info.name) {
-                None
-            } else {
-                Some("dependency")
-            };
-            (info.name.as_str(), info.version.as_str(), label)
+        .all_members()
+        .map(|member| {
+            (
+                member.name.as_str(),
+                member.version.as_str(),
+                member_label(member.make, member.target),
+            )
         })
         .collect();
 
@@ -161,7 +233,7 @@ fn print_plan_summary(plan: &BuildPlan) {
     println!();
 
     let aur_count = rows.len();
-    let repo_dep_count: usize = plan.layers.iter().map(|l| l.repo_deps.len()).sum();
+    let repo_dep_count: usize = plan.repo_installs.len();
     let aur_word = if aur_count == 1 {
         "package"
     } else {
@@ -183,7 +255,7 @@ fn print_plan_summary(plan: &BuildPlan) {
     }
 }
 
-pub fn confirm_build(plan: &BuildPlan) -> BuildDecision {
+pub fn confirm_build(plan: &Plan) -> BuildDecision {
     print_plan_summary(plan);
     let c = color::stdout_color();
     print!(
@@ -200,7 +272,7 @@ pub fn confirm_build(plan: &BuildPlan) -> BuildDecision {
     }
 }
 
-pub fn confirm_proceed_to_review(plan: &BuildPlan) -> BuildDecision {
+pub fn confirm_proceed_to_review(plan: &Plan) -> BuildDecision {
     print_plan_summary(plan);
     if read_confirmation("Proceed to review?", PromptStream::Stdout, true) {
         BuildDecision::Review

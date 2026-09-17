@@ -26,10 +26,14 @@ impl crate::events::InstallSink for NullSink {
     fn event(&mut self, _event: crate::events::InstallEvent) {}
 }
 
-pub fn prepare_pkgbuild_diffs(targets: &[String]) -> anyhow::Result<Vec<PkgbuildDiff>> {
-    let alpm = crate::pacman::handle()?;
-    let aur = crate::aur::AurClient::new();
-    let plan = crate::resolve::resolve(&crate::resolve::AlpmDb(&alpm), &aur, targets, false)?;
+pub fn prepare_pkgbuild_diffs(
+    targets: &[String],
+    no_check: bool,
+) -> anyhow::Result<Vec<PkgbuildDiff>> {
+    let mut engine = crate::resolve::Engine::new(no_check)?;
+    let plan = engine
+        .resolve(targets, crate::resolve::Decisions::Default)
+        .map_err(|error| anyhow::anyhow!("resolution failed: {error}"))?;
     let mut sink = NullSink;
     let pkgbuilds = collect_for_review(&plan, &mut sink)?;
     let diffs: Vec<PkgbuildDiff> = pkgbuilds
@@ -111,21 +115,24 @@ pub fn mark_seen(dir: &Path) -> anyhow::Result<()> {
 }
 
 pub fn collect_for_review<S: crate::events::InstallSink + ?Sized>(
-    plan: &crate::resolve::BuildPlan,
+    plan: &crate::resolve::Plan,
     sink: &mut S,
 ) -> anyhow::Result<Vec<PkgbuildInfo>> {
     let mut result = Vec::new();
-    for info in plan.layers.iter().flat_map(|l| l.aur.iter()) {
-        let dir = crate::build::clone_dir(&info.package_base)?;
+    for (pkgbase, name) in plan
+        .aur_builds()
+        .filter_map(|(base, members)| members.first().map(|member| (base, member.name.as_str())))
+    {
+        let dir = crate::build::clone_dir(pkgbase)?;
         sink.event(crate::events::InstallEvent::CloningRepo {
-            package: info.name.clone(),
+            package: name.to_string(),
         });
-        crate::build::git_clone_or_pull(&dir, &info.package_base)?;
+        crate::build::git_clone_or_pull(&dir, pkgbase)?;
         let is_new = !has_seen_ref(&dir);
         let needs_review = has_diff(&dir);
         result.push(PkgbuildInfo {
-            name: info.name.clone(),
-            pkgbase: info.package_base.clone(),
+            name: name.to_string(),
+            pkgbase: pkgbase.to_string(),
             dir,
             is_new,
             needs_review,

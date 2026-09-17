@@ -1,9 +1,9 @@
 use crate::build::BuildDecision;
 use crate::pkgbuild::PkgbuildInfo;
-use crate::resolve::BuildPlan;
+use crate::resolve::Plan;
 
 pub trait Decider {
-    fn confirm_build(&self, plan: &BuildPlan) -> BuildDecision;
+    fn confirm_build(&self, plan: &Plan) -> BuildDecision;
     fn review_pkgbuilds(&self, pkgbuilds: &[PkgbuildInfo]) -> bool;
 }
 
@@ -19,7 +19,7 @@ impl TerminalDecider {
 }
 
 impl Decider for TerminalDecider {
-    fn confirm_build(&self, plan: &BuildPlan) -> BuildDecision {
+    fn confirm_build(&self, plan: &Plan) -> BuildDecision {
         if self.json {
             return BuildDecision::Review;
         }
@@ -41,7 +41,7 @@ impl Decider for TerminalDecider {
 pub struct AutomaticDecider;
 
 impl Decider for AutomaticDecider {
-    fn confirm_build(&self, _plan: &BuildPlan) -> BuildDecision {
+    fn confirm_build(&self, _plan: &Plan) -> BuildDecision {
         BuildDecision::Proceed
     }
 
@@ -53,15 +53,20 @@ impl Decider for AutomaticDecider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolve::{BuildLayer, BuildPlan};
+    use crate::resolve::{ConflictReport, Plan};
 
-    fn empty_plan() -> BuildPlan {
-        BuildPlan {
-            targets: vec!["cava-git".to_string()],
-            layers: vec![BuildLayer {
-                aur: vec![],
-                repo_deps: vec![],
-            }],
+    fn empty_plan() -> Plan {
+        Plan {
+            bases: Vec::new(),
+            repo_installs: Vec::new(),
+            missing: Vec::new(),
+            unneeded: Vec::new(),
+            conflicts: ConflictReport {
+                local: Vec::new(),
+                inner: Vec::new(),
+            },
+            duplicates: Vec::new(),
+            questions: Vec::new(),
         }
     }
 

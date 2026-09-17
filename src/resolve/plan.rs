@@ -104,6 +104,36 @@ pub struct Plan {
     pub questions: Vec<OpenQuestion>,
 }
 
+impl Base {
+    pub fn members(&self) -> &[Member] {
+        match self {
+            Base::Aur { members, .. } => members,
+            Base::Pkgbuild { members, .. } => members,
+        }
+    }
+
+    pub fn aur_build(&self) -> Option<(&str, &[Member])> {
+        match self {
+            Base::Aur {
+                base,
+                build: true,
+                members,
+            } => Some((base.as_str(), members.as_slice())),
+            _ => None,
+        }
+    }
+}
+
+impl Plan {
+    pub fn all_members(&self) -> impl Iterator<Item = &Member> {
+        self.bases.iter().flat_map(|base| base.members())
+    }
+
+    pub fn aur_builds(&self) -> impl Iterator<Item = (&str, &[Member])> {
+        self.bases.iter().filter_map(|base| base.aur_build())
+    }
+}
+
 impl From<&aur_depends::Conflict> for Conflict {
     fn from(conflict: &aur_depends::Conflict) -> Self {
         Self {
@@ -244,21 +274,7 @@ pub(crate) fn build_plan_from_plan(plan: &Plan, targets: &[String]) -> BuildPlan
         })
         .into_iter()
         .collect();
-    layers.extend(plan.bases.iter().filter_map(|base| {
-        let (name, members) = match base {
-            Base::Aur {
-                base,
-                build: true,
-                members,
-            } => (base.as_str(), members),
-            Base::Pkgbuild {
-                base,
-                build: true,
-                members,
-                ..
-            } => (base.as_str(), members),
-            _ => return None,
-        };
+    layers.extend(plan.aur_builds().filter_map(|(name, members)| {
         members.first().map(|member| BuildLayer {
             aur: vec![member_to_aur_info(name, member)],
             repo_deps: vec![],
