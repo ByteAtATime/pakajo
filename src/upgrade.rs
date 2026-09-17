@@ -16,7 +16,7 @@ fn read_fingerprint_file(path: &str) -> anyhow::Result<TransactionSummary> {
 pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
     no_refresh: bool,
     extra_ignores: &[String],
-    sink: S,
+    mut sink: S,
     answerer: Box<dyn crate::answerer::QuestionAnswerer>,
     fingerprint_file: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -25,10 +25,13 @@ pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
     let mut handle = crate::pacman::handle_with_config(&config)?;
     apply_ignores(&mut handle, &config, extra_ignores);
     if !no_refresh {
-        handle
-            .syncdbs_mut()
-            .update(false)
-            .context("failed to refresh sync DBs")?;
+        crate::pacman::lock::lock_retry(
+            || handle.syncdbs_mut().update(false).map(|_| ()),
+            || sink.event(InstallEvent::WaitingForDatabaseLock),
+            crate::pacman::lock::LOCK_POLL_INTERVAL,
+        )
+        .context("failed to refresh sync DBs")?;
+        return repo_sysupgrade_into(&mut handle, sink, answerer, preview.as_ref());
     }
     repo_sysupgrade_into(&mut handle, sink, answerer, preview.as_ref())
 }
@@ -193,9 +196,15 @@ fn run_sysupgrade_transaction<S: InstallSink>(
     sink: &Rc<RefCell<S>>,
     qstate: &Rc<RefCell<QuestionState>>,
 ) -> anyhow::Result<()> {
-    handle
-        .trans_init(alpm::TransFlag::NONE)
-        .context("failed to initialize transaction")?;
+    crate::pacman::lock::lock_retry(
+        || handle.trans_init(alpm::TransFlag::NONE),
+        || {
+            sink.borrow_mut()
+                .event(InstallEvent::WaitingForDatabaseLock);
+        },
+        crate::pacman::lock::LOCK_POLL_INTERVAL,
+    )
+    .context("failed to initialize transaction")?;
 
     handle
         .sync_sysupgrade(false)

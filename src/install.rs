@@ -206,9 +206,15 @@ fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
 ) -> anyhow::Result<()> {
     crate::pacman::lock::cleanup_on_signal(handle);
 
-    handle
-        .trans_init(alpm::TransFlag::NONE)
-        .context("failed to initialize transaction")?;
+    crate::pacman::lock::lock_retry(
+        || handle.trans_init(alpm::TransFlag::NONE),
+        || {
+            sink.borrow_mut()
+                .event(InstallEvent::WaitingForDatabaseLock);
+        },
+        crate::pacman::lock::LOCK_POLL_INTERVAL,
+    )
+    .context("failed to initialize transaction")?;
 
     if targets.iter().any(|t| matches!(t, InstallTarget::File(_))) {
         sink.borrow_mut().event(InstallEvent::LoadingPackages);

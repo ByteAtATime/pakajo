@@ -72,6 +72,12 @@ impl ConsoleSink {
                     color::colon(self.color, "Processing package changes...")
                 );
             }
+            InstallEvent::WaitingForDatabaseLock => {
+                println!(
+                    "{}",
+                    color::colon(self.color, "Pacman is currently in use, please wait...")
+                );
+            }
             InstallEvent::PackageOperation { .. } => {}
             InstallEvent::DownloadInit { filename, optional } => {
                 if *optional {
@@ -319,6 +325,15 @@ impl InstallSink for EscalatedSink {
             }
             InstallEvent::CheckingDependencies => {
                 eprintln!("checking dependencies...");
+            }
+            InstallEvent::WaitingForDatabaseLock => {
+                eprintln!(
+                    "{}",
+                    color::colon(
+                        color::stderr_color(),
+                        "Pacman is currently in use, please wait..."
+                    )
+                );
             }
             InstallEvent::Log {
                 level: LogLevel::Warning,

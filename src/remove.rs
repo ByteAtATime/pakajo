@@ -59,9 +59,15 @@ fn run_remove_transaction<S: InstallSink, F: FnOnce() -> bool, G: FnOnce() -> bo
 ) -> anyhow::Result<()> {
     pacman::lock::cleanup_on_signal(handle);
 
-    handle
-        .trans_init(alpm::TransFlag::NONE)
-        .context("failed to initialize transaction")?;
+    pacman::lock::lock_retry(
+        || handle.trans_init(alpm::TransFlag::NONE),
+        || {
+            sink.borrow_mut()
+                .event(InstallEvent::WaitingForDatabaseLock);
+        },
+        pacman::lock::LOCK_POLL_INTERVAL,
+    )
+    .context("failed to initialize transaction")?;
 
     for name in targets {
         let pkg = handle

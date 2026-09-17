@@ -109,6 +109,7 @@ pub enum InstallEvent {
     PkgbuildAllUpToDate {
         packages: Vec<String>,
     },
+    WaitingForDatabaseLock,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
