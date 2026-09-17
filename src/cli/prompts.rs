@@ -196,16 +196,24 @@ fn member_label(make: bool, target: bool) -> Option<&'static str> {
 }
 
 fn print_plan_summary(plan: &Plan) {
-    let rows: Vec<(&str, &str, Option<&str>)> = plan
-        .all_members()
-        .map(|member| {
+    let mut rows: Vec<(&str, &str, Option<&str>)> = plan
+        .repo_installs
+        .iter()
+        .map(|row| {
             (
-                member.name.as_str(),
-                member.version.as_str(),
-                member_label(member.make, member.target),
+                row.name.as_str(),
+                row.version.as_str(),
+                member_label(row.make, row.target),
             )
         })
         .collect();
+    rows.extend(plan.all_members().map(|member| {
+        (
+            member.name.as_str(),
+            member.version.as_str(),
+            member_label(member.make, member.target),
+        )
+    }));
 
     let name_width = rows
         .iter()
@@ -236,7 +244,7 @@ fn print_plan_summary(plan: &Plan) {
     }
     println!();
 
-    let aur_count = rows.len();
+    let aur_count = plan.all_members().count();
     let repo_dep_count: usize = plan.repo_installs.len();
     let aur_word = if aur_count == 1 {
         "package"
@@ -259,23 +267,6 @@ fn print_plan_summary(plan: &Plan) {
     }
 }
 
-pub fn confirm_build(plan: &Plan) -> BuildDecision {
-    print_plan_summary(plan);
-    let c = color::stdout_color();
-    print!(
-        "{} {} ",
-        color::colon(c, "Proceed with build?"),
-        color::paint(c, color::BOLD, "[Y/n]")
-    );
-    let _ = std::io::stdout().flush();
-    let mut input = String::new();
-    let _ = std::io::stdin().read_line(&mut input);
-    match input.trim().to_lowercase().as_str() {
-        "" | "y" | "yes" => BuildDecision::Proceed,
-        _ => BuildDecision::Abort,
-    }
-}
-
 pub fn confirm_proceed_to_review(plan: &Plan) -> BuildDecision {
     print_plan_summary(plan);
     if read_confirmation("Proceed to review?", PromptStream::Stdout, true) {
@@ -290,14 +281,50 @@ pub fn confirm_install_stderr() -> bool {
     read_confirmation("Proceed with installation?", PromptStream::Stderr, true)
 }
 
+pub fn announce_conflict_calculation() {
+    let c = color::stderr_color();
+    for message in ["Calculating conflicts...", "Calculating inner conflicts..."] {
+        eprintln!(
+            "{} {}",
+            color::paint(c, color::RED, "::"),
+            color::paint(c, color::BOLD, message)
+        );
+    }
+}
+
 pub fn print_conflicts(report: &ConflictReport) {
     eprintln!();
     print_conflict_section("Inner conflicts found:", &report.inner);
     print_conflict_section("Conflicts found:", &report.local);
 }
 
+pub fn confirm_proceed_install(plan: &Plan) -> BuildDecision {
+    print_plan_summary(plan);
+    if confirm_install() {
+        BuildDecision::Proceed
+    } else {
+        BuildDecision::Abort
+    }
+}
+
 pub fn confirm_conflicts(_report: &ConflictReport) -> bool {
     confirm_install()
+}
+
+pub fn confirm_conflict_warning(non_interactive: bool) {
+    if !non_interactive {
+        return;
+    }
+    let c = color::stderr_color();
+    eprintln!(
+        "{} {}",
+        color::paint(c, color::YELLOW, "::"),
+        color::paint(
+            c,
+            color::BOLD,
+            "Conflicting packages will have to be confirmed manually"
+        )
+    );
 }
 
 fn print_conflict_section(title: &str, items: &[Conflict]) {

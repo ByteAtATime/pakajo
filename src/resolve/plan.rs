@@ -23,7 +23,7 @@ pub enum Base {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoInstall {
     pub name: String,
     pub version: String,

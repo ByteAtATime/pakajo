@@ -9,6 +9,7 @@ const NO_REFRESH: &str = "--no-refresh";
 const IGNORE: &str = "--ignore";
 const FINGERPRINT_FILE: &str = "--fingerprint-file";
 const APPROVALS_FILE: &str = "--approvals-file";
+const PRECONFIRMED: &str = "--preconfirmed";
 
 pub enum PrivilegedOperation {
     Remove {
@@ -18,6 +19,7 @@ pub enum PrivilegedOperation {
     Install {
         targets: Vec<String>,
         as_deps: bool,
+        preconfirmed: bool,
         approvals: Option<crate::dispatch::approvals::ApprovalsFile>,
     },
     UpgradeRepo {
@@ -31,6 +33,7 @@ pub enum PrivilegedOperation {
 #[derive(Debug)]
 pub struct BuildOperation {
     pub targets: Vec<String>,
+    pub files: Vec<String>,
     pub as_deps: bool,
     pub no_check: bool,
 }
@@ -45,6 +48,7 @@ pub enum ChildOperation {
     Install {
         targets: Vec<String>,
         as_deps: bool,
+        preconfirmed: bool,
         approvals_path: Option<String>,
         stream: bool,
     },
@@ -74,11 +78,17 @@ impl PrivilegedOperation {
                 argv
             }
             PrivilegedOperation::Install {
-                targets, as_deps, ..
+                targets,
+                as_deps,
+                preconfirmed,
+                ..
             } => {
                 let mut argv = vec![INSTALL.to_string(), STREAM.to_string()];
                 if *as_deps {
                     argv.push(AS_DEPS.to_string());
+                }
+                if *preconfirmed {
+                    argv.push(PRECONFIRMED.to_string());
                 }
                 if let Some(path) = approvals_path {
                     argv.push(APPROVALS_FILE.to_string());
@@ -152,6 +162,7 @@ fn decode_remove(argv: &[String]) -> Option<ChildOperation> {
 fn decode_install(argv: &[String]) -> Option<ChildOperation> {
     let mut stream = false;
     let mut as_deps = false;
+    let mut preconfirmed = false;
     let mut approvals_path = None;
     let mut targets = Vec::new();
     let mut parts = argv.iter();
@@ -159,6 +170,7 @@ fn decode_install(argv: &[String]) -> Option<ChildOperation> {
         match arg.as_str() {
             STREAM => stream = true,
             AS_DEPS => as_deps = true,
+            PRECONFIRMED => preconfirmed = true,
             APPROVALS_FILE => approvals_path = Some(parts.next()?.clone()),
             _ => {
                 if arg.starts_with('-') {
@@ -171,6 +183,7 @@ fn decode_install(argv: &[String]) -> Option<ChildOperation> {
     Some(ChildOperation::Install {
         targets,
         as_deps,
+        preconfirmed,
         approvals_path,
         stream,
     })
@@ -262,6 +275,7 @@ mod tests {
         let operation = PrivilegedOperation::Install {
             targets: vec!["sl".to_string(), "figlet".to_string()],
             as_deps: true,
+            preconfirmed: false,
             approvals: None,
         };
         let argv = operation.wire_args(Some("/tmp/pakajo-approvals-1.json"), None);
@@ -282,7 +296,30 @@ mod tests {
             Some(ChildOperation::Install {
                 targets: vec!["sl".to_string(), "figlet".to_string()],
                 as_deps: true,
+                preconfirmed: false,
                 approvals_path: Some("/tmp/pakajo-approvals-1.json".to_string()),
+                stream: true,
+            })
+        );
+    }
+
+    #[test]
+    fn install_preconfirmed_wire_round_trip() {
+        let operation = PrivilegedOperation::Install {
+            targets: vec!["sl".to_string()],
+            as_deps: false,
+            preconfirmed: true,
+            approvals: None,
+        };
+        let argv = operation.wire_args(None, None);
+        assert_eq!(argv, ["install", "--stream", "--preconfirmed", "sl"]);
+        assert_eq!(
+            ChildOperation::decode(&argv),
+            Some(ChildOperation::Install {
+                targets: vec!["sl".to_string()],
+                as_deps: false,
+                preconfirmed: true,
+                approvals_path: None,
                 stream: true,
             })
         );
@@ -293,6 +330,7 @@ mod tests {
         let operation = PrivilegedOperation::Install {
             targets: vec!["sl".to_string()],
             as_deps: false,
+            preconfirmed: false,
             approvals: None,
         };
         let argv = operation.wire_args(None, None);
@@ -302,6 +340,7 @@ mod tests {
             Some(ChildOperation::Install {
                 targets: vec!["sl".to_string()],
                 as_deps: false,
+                preconfirmed: false,
                 approvals_path: None,
                 stream: true,
             })
@@ -313,6 +352,7 @@ mod tests {
         let operation = PrivilegedOperation::Install {
             targets: vec!["sl".to_string()],
             as_deps: true,
+            preconfirmed: false,
             approvals: None,
         };
         let argv = operation.wire_args(None, None);
@@ -322,6 +362,7 @@ mod tests {
             Some(ChildOperation::Install {
                 targets: vec!["sl".to_string()],
                 as_deps: true,
+                preconfirmed: false,
                 approvals_path: None,
                 stream: true,
             })

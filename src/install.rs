@@ -629,7 +629,7 @@ mod tests {
         handle
             .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
             .expect("failed to init stub preview transaction");
-        crate::dispatch::install::queue_stub_targets(&mut handle, &Some(plan))
+        crate::dispatch::install::queue_stub_targets(&mut handle, Some(&plan))
             .expect("stub queueing should succeed");
         handle
             .trans_prepare()
@@ -669,7 +669,7 @@ mod tests {
             no_check: false,
             ignores: vec![],
             prefer_aur: false,
-            decider: Box::new(crate::dispatch::protocol::AutomaticDecider),
+            decider: Box::new(crate::dispatch::protocol::AutomaticDecider::new()),
             approvals: None,
             tty: false,
             json: false,

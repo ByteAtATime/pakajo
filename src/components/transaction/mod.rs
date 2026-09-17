@@ -181,7 +181,7 @@ impl Transaction {
                     no_check: false,
                     ignores: vec![],
                     prefer_aur,
-                    decider: Box::new(AutomaticDecider),
+                    decider: Box::new(AutomaticDecider::new()),
                     approvals: None,
                     tty: false,
                     json: false,
@@ -376,13 +376,21 @@ impl Transaction {
         let targets = self.model.targets.clone();
         let prefer_aur = self.model.prefer_aur;
         self.model.status = TransactionStatus::Running;
+        let decider = match AutomaticDecider::from_payload(approvals.as_deref()) {
+            Ok(decider) => Box::new(decider),
+            Err(error) => {
+                self.model
+                    .finish(ChildOutcome::Failed(format!("{error:#}")));
+                return Action::None;
+            }
+        };
         let request = pakajo::dispatch::InstallRequest {
             targets,
             as_deps: false,
             no_check: false,
             ignores: vec![],
             prefer_aur,
-            decider: Box::new(AutomaticDecider),
+            decider,
             approvals,
             tty: false,
             json: false,

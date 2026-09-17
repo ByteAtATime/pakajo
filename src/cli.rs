@@ -93,15 +93,16 @@ fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
         }
         None => None,
     };
+    let tty = stdin_is_tty() && !args.json;
     let request = crate::dispatch::SysupgradeRequest {
         no_refresh: args.no_refresh,
         repo_only: args.repo_only,
         ignores: args.ignores.clone(),
-        decider: Box::new(TerminalDecider::new(args.json, args.skip_review)),
+        decider: Box::new(TerminalDecider::new(args.json, args.skip_review, tty)),
         aur_targets: None,
         fingerprint,
         approvals: None,
-        tty: stdin_is_tty() && !args.json,
+        tty,
         json: args.json,
     };
     outcome_code(&drain(crate::dispatch::sysupgrade(request), args.json))
@@ -114,21 +115,22 @@ fn seal_fingerprint_file(path: &str) -> anyhow::Result<crate::dispatch::approval
 }
 
 fn install_subcommand(args: InstallArgs) -> i32 {
-    let positionals = dedup_positionals(args.positionals);
+    let positionals = args.positionals;
 
     if positionals.is_empty() {
         usage_error();
     }
 
+    let tty = stdin_is_tty() && !args.json;
     let request = crate::dispatch::InstallRequest {
         targets: positionals,
         as_deps: args.as_deps,
         no_check: false,
         ignores: vec![],
         prefer_aur: false,
-        decider: Box::new(TerminalDecider::new(args.json, args.skip_review)),
+        decider: Box::new(TerminalDecider::new(args.json, args.skip_review, tty)),
         approvals: None,
-        tty: stdin_is_tty() && !args.json,
+        tty,
         json: args.json,
     };
     outcome_code(&drain(crate::dispatch::install(request), args.json))

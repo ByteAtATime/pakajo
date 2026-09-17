@@ -242,13 +242,16 @@ impl BuildOperation {
             let mut tx = tx;
             let mut sink = ChannelSink::new(tx.clone());
             let result = crate::build::run_build(
-                &self.targets,
-                self.no_check,
-                self.as_deps,
+                crate::build::BuildParams {
+                    targets: &self.targets,
+                    files: &self.files,
+                    no_check: self.no_check,
+                    as_deps: self.as_deps,
+                    approvals: approvals.as_deref(),
+                    tty,
+                },
                 &mut sink,
                 decider.as_ref(),
-                approvals.as_deref(),
-                tty,
             );
             let outcome = match result {
                 Ok(()) => ChildOutcome::Success,

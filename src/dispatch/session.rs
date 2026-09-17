@@ -8,6 +8,7 @@ use crate::dispatch::protocol::Decider;
 pub struct PhasePlan {
     pub privileged: Option<PrivilegedOperation>,
     pub aur_targets: Vec<String>,
+    pub files: Vec<String>,
     pub as_deps: bool,
     pub no_check: bool,
     pub repo_verb: &'static str,
@@ -49,6 +50,7 @@ pub fn run_phases(plan: PhasePlan, tx: &mut futures::channel::mpsc::Sender<Strea
     }
     let operation = BuildOperation {
         targets: plan.aur_targets,
+        files: plan.files,
         as_deps: plan.as_deps,
         no_check: plan.no_check,
     };

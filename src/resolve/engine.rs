@@ -179,36 +179,114 @@ impl Engine {
     }
 }
 
-pub(crate) fn resolve_plan(
+pub(crate) fn resolve_plan_raw(
     targets: &[String],
     no_check: bool,
     decisions: Decisions,
 ) -> anyhow::Result<Plan> {
     let mut engine = Engine::new(no_check)?;
-    let plan = engine
+    engine
         .resolve(targets, decisions)
-        .map_err(|error| anyhow::anyhow!("resolution failed: {error}"))?;
-    if let Some(first) = plan.missing.first() {
-        anyhow::bail!("{}", missing_message(first));
+        .map_err(|error| anyhow::anyhow!("resolution failed: {error}"))
+}
+
+pub(crate) fn check_plan_gates(plan: &Plan) -> anyhow::Result<()> {
+    if !plan.duplicates.is_empty() {
+        anyhow::bail!("{}", duplicate_message(&plan.duplicates));
     }
-    if let Some(duplicate) = plan.duplicates.first() {
-        anyhow::bail!("duplicate targets: {duplicate}");
+    if !plan.missing.is_empty() {
+        anyhow::bail!("{}", missing_report(&plan.missing));
     }
+    Ok(())
+}
+
+pub(crate) fn resolve_plan(
+    targets: &[String],
+    no_check: bool,
+    decisions: Decisions,
+) -> anyhow::Result<Plan> {
+    let plan = resolve_plan_raw(targets, no_check, decisions)?;
+    check_plan_gates(&plan)?;
     Ok(plan)
 }
 
-fn missing_message(missing: &Missing) -> String {
-    if missing.stack.is_empty() {
-        return format!("target not found in AUR: {}", missing.dep);
+pub(crate) fn duplicate_message(duplicates: &[String]) -> String {
+    format!("duplicate packages: {}", duplicates.join(" "))
+}
+
+pub(crate) fn missing_report(missing: &[Missing]) -> String {
+    let mut report = String::from("could not find all required packages:");
+    for entry in missing {
+        if entry.stack.is_empty() {
+            report.push_str(&format!("\n    {} (target)", entry.dep));
+            continue;
+        }
+        let stack = entry
+            .stack
+            .iter()
+            .map(|frame| match &frame.dep {
+                Some(dep) => format!("{} ({dep})", frame.pkg),
+                None => frame.pkg.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        report.push_str(&format!("\n    {} (wanted by: {stack})", entry.dep));
     }
-    let chain = missing
-        .stack
-        .iter()
-        .map(|frame| frame.pkg.as_str())
-        .collect::<Vec<_>>()
-        .join(" -> ");
-    format!(
-        "no AUR package found for {} (required by {chain})",
-        missing.dep
-    )
+    report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resolve::{Missing, MissingStack};
+
+    #[test]
+    fn duplicate_message_joins_all_names_with_single_space() {
+        assert_eq!(
+            duplicate_message(&["yay-bin".to_string(), "yay-bin".to_string()]),
+            "duplicate packages: yay-bin yay-bin"
+        );
+    }
+
+    #[test]
+    fn check_plan_gates_rejects_cross_source_duplicates() {
+        let plan = crate::resolve::Plan {
+            duplicates: vec!["xterm".to_string(), "xterm".to_string()],
+            ..Default::default()
+        };
+        let error = check_plan_gates(&plan).expect_err("duplicates must bail");
+        assert_eq!(format!("{error:#}"), "duplicate packages: xterm xterm");
+    }
+
+    #[test]
+    fn check_plan_gates_accepts_clean_plan() {
+        check_plan_gates(&crate::resolve::Plan::default()).expect("clean plan passes all gates");
+    }
+
+    #[test]
+    fn missing_report_lists_every_entry_paru_verbatim() {
+        let missing = vec![
+            Missing {
+                dep: "this-does-not-exist-xyz".to_string(),
+                stack: Vec::new(),
+            },
+            Missing {
+                dep: "libfoo".to_string(),
+                stack: vec![
+                    MissingStack {
+                        pkg: "bar".to_string(),
+                        dep: Some("libfoo".to_string()),
+                    },
+                    MissingStack {
+                        pkg: "baz".to_string(),
+                        dep: None,
+                    },
+                ],
+            },
+        ];
+        assert_eq!(
+            missing_report(&missing),
+            "could not find all required packages:\n    this-does-not-exist-xyz (target)\n    libfoo (wanted by: bar (libfoo) -> baz)"
+        );
+    }
 }

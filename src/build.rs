@@ -27,23 +27,45 @@ pub enum BuildDecision {
     Abort,
 }
 
+pub struct BuildParams<'a> {
+    pub targets: &'a [String],
+    pub files: &'a [String],
+    pub no_check: bool,
+    pub as_deps: bool,
+    pub approvals: Option<&'a str>,
+    pub tty: bool,
+}
+
 pub fn run_build<S: InstallSink + ?Sized>(
-    targets: &[String],
-    no_check: bool,
-    user_as_deps: bool,
+    params: BuildParams<'_>,
     sink: &mut S,
     decider: &dyn Decider,
-    approvals: Option<&str>,
-    tty: bool,
 ) -> anyhow::Result<()> {
+    let BuildParams {
+        targets,
+        files,
+        no_check,
+        as_deps,
+        approvals,
+        tty,
+    } = params;
     let (alpm, plan) = resolve_and_report(targets, no_check, sink, tty)?;
 
+    if plan.aur_builds().next().is_some() && crate::cli::privs::is_root() {
+        anyhow::bail!("can't install AUR package as root");
+    }
+    crate::resolve::check_plan_gates(&plan)?;
+
+    crate::cli::prompts::announce_conflict_calculation();
     if !plan.conflicts.is_empty() {
         crate::cli::prompts::print_conflicts(&plan.conflicts);
-        anyhow::ensure!(
-            decider.confirm_conflicts(&plan.conflicts),
-            "build cancelled by user"
-        );
+        crate::cli::prompts::confirm_conflict_warning(!tty);
+        if !decider.confirm_conflicts(&plan.conflicts) {
+            if tty {
+                anyhow::bail!("build cancelled by user");
+            }
+            anyhow::bail!("can not install conflicting packages with --noconfirm");
+        }
     }
 
     let decision = if plan.bases.is_empty() {
@@ -60,7 +82,8 @@ pub fn run_build<S: InstallSink + ?Sized>(
     review_if_requested(decision, &pkgbuilds, sink, decider)?;
 
     let arch = alpm.architectures().first();
-    install_repo_packages(&plan, sink, tty)?;
+    let spine_confirmed = !plan.bases.is_empty();
+    install_repo_packages(&plan, files, as_deps, approvals, spine_confirmed, sink, tty)?;
 
     if let Some(label) = plan.bases.iter().find_map(|base| match base {
         crate::resolve::Base::Pkgbuild { repo, base, .. } => Some(format!("{repo}/{base}")),
@@ -73,7 +96,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
             anyhow::bail!("resolution produced an empty package base: {pkgbase}");
         };
         let dir = clone_dir(pkgbase)?;
-        let as_deps = user_as_deps || members.iter().all(|member| !member.target);
+        let as_deps = as_deps || members.iter().all(|member| !member.target);
         let info = AurInfo {
             name: first.name.clone(),
             package_base: pkgbase.to_string(),
@@ -91,12 +114,8 @@ pub fn run_build<S: InstallSink + ?Sized>(
     Ok(())
 }
 
-fn install_repo_packages<S: InstallSink + ?Sized>(
-    plan: &Plan,
-    sink: &mut S,
-    tty: bool,
-) -> anyhow::Result<()> {
-    let mut explicit = Vec::new();
+fn partition_repo_targets(plan: &Plan, files: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut explicit = files.to_vec();
     let mut deps = Vec::new();
     for row in &plan.repo_installs {
         if row.target {
@@ -105,11 +124,24 @@ fn install_repo_packages<S: InstallSink + ?Sized>(
             deps.push(row.name.clone());
         }
     }
+    (explicit, deps)
+}
+
+fn install_repo_packages<S: InstallSink + ?Sized>(
+    plan: &Plan,
+    files: &[String],
+    as_deps: bool,
+    approvals: Option<&str>,
+    preconfirmed: bool,
+    sink: &mut S,
+    tty: bool,
+) -> anyhow::Result<()> {
+    let (explicit, deps) = partition_repo_targets(plan, files);
     if !explicit.is_empty() {
-        run_install_child(&explicit, false, sink, None, tty)?;
+        run_install_child(&explicit, as_deps, sink, approvals, preconfirmed, tty)?;
     }
     if !deps.is_empty() {
-        run_install_child(&deps, true, sink, None, tty)?;
+        run_install_child(&deps, true, sink, approvals, preconfirmed, tty)?;
     }
     Ok(())
 }
@@ -132,7 +164,7 @@ fn resolve_and_report<S: InstallSink + ?Sized>(
     } else {
         Decisions::Default
     };
-    let plan = crate::resolve::resolve_plan(targets, no_check, decisions)?;
+    let plan = crate::resolve::resolve_plan_raw(targets, no_check, decisions)?;
 
     let repo_deps = plan.repo_installs.len();
     let aur_packages = plan.all_members().count();
@@ -244,7 +276,14 @@ fn build_and_install_aur<S: InstallSink + ?Sized>(
         );
     }
 
-    run_install_child(&artifacts, config.as_deps, sink, approvals, config.tty)?;
+    run_install_child(
+        &artifacts,
+        config.as_deps,
+        sink,
+        approvals,
+        true,
+        config.tty,
+    )?;
     Ok(())
 }
 
@@ -385,6 +424,7 @@ fn run_install_child<S: InstallSink + ?Sized>(
     as_deps: bool,
     sink: &mut S,
     approvals: Option<&str>,
+    preconfirmed: bool,
     tty: bool,
 ) -> anyhow::Result<()> {
     use futures::StreamExt as _;
@@ -395,6 +435,7 @@ fn run_install_child<S: InstallSink + ?Sized>(
     let operation = crate::dispatch::operation::PrivilegedOperation::Install {
         targets: targets.to_vec(),
         as_deps,
+        preconfirmed,
         approvals: sealed,
     };
     let mut stream = operation.dispatch(tty);
@@ -420,6 +461,36 @@ fn run_install_child<S: InstallSink + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resolve::RepoInstall;
+
+    #[test]
+    fn partition_repo_targets_splits_explicit_and_deps_with_files_first() {
+        let plan = Plan {
+            repo_installs: vec![
+                RepoInstall {
+                    name: "neovim".to_string(),
+                    target: true,
+                    ..Default::default()
+                },
+                RepoInstall {
+                    name: "libtermkey".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let files = vec!["/tmp/foo-1.0-1-x86_64.pkg.tar.zst".to_string()];
+        let (explicit, deps) = partition_repo_targets(&plan, &files);
+        assert_eq!(explicit, vec![files[0].clone(), "neovim".to_string()]);
+        assert_eq!(deps, vec!["libtermkey".to_string()]);
+    }
+
+    #[test]
+    fn partition_repo_targets_empty_plan_yields_empty_batches() {
+        let (explicit, deps) = partition_repo_targets(&Plan::default(), &[]);
+        assert!(explicit.is_empty());
+        assert!(deps.is_empty());
+    }
 
     #[test]
     fn is_valid_pkgbase_table() {

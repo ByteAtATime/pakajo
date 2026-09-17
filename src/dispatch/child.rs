@@ -119,6 +119,7 @@ impl ChildOperation {
             ChildOperation::Install {
                 targets,
                 as_deps,
+                preconfirmed,
                 approvals_path,
                 stream,
             } => {
@@ -146,12 +147,13 @@ impl ChildOperation {
                     privs::stdin_is_tty(),
                 );
                 let answerer = answerer_for(approvals);
+                let confirmed = *preconfirmed;
                 match presentation {
                     Presentation::InteractiveStream => crate::install::run_install(
                         &targets,
                         *as_deps,
                         EscalatedSink::new(),
-                        confirm_install_stderr,
+                        move || confirmed || confirm_install_stderr(),
                         answerer,
                     ),
                     Presentation::SilentStream => crate::install::run_install(
@@ -165,7 +167,7 @@ impl ChildOperation {
                         &targets,
                         *as_deps,
                         ConsoleSink::new(),
-                        confirm_install,
+                        move || confirmed || confirm_install(),
                         answerer,
                     ),
                 }

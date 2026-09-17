@@ -41,13 +41,14 @@ pub(crate) fn run_install_preview(
     state: &std::rc::Rc<std::cell::RefCell<crate::dry_run::RecorderState>>,
 ) -> anyhow::Result<Preview> {
     let expanded = expand_install_groups(handle, &request.targets, request.tty);
-    let (repo_or_file, aur) = split_install_targets(handle, &expanded, request.prefer_aur);
-    let plan = resolve_aur_plan(&aur, request.no_check)?;
+    let (files, names) = peel_file_targets(&expanded);
+    let plan = resolve_combined_plan(&names, request.no_check)?;
     handle
         .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
         .context("failed to init install preview transaction")?;
-    queue_repo_targets(handle, &repo_or_file)?;
-    queue_stub_targets(handle, &plan)?;
+    queue_file_targets(handle, &files)?;
+    queue_plan_repo_installs(handle, plan.as_ref())?;
+    queue_stub_targets(handle, plan.as_ref())?;
     let prepare_error = handle
         .trans_prepare()
         .err()
@@ -81,28 +82,38 @@ fn merge_conflicts(
     merged
 }
 
-fn resolve_aur_plan(aur: &[String], no_check: bool) -> anyhow::Result<Option<Plan>> {
-    if aur.is_empty() {
+fn resolve_combined_plan(names: &[String], no_check: bool) -> anyhow::Result<Option<Plan>> {
+    if names.is_empty() {
         return Ok(None);
     }
-    let plan = crate::resolve::resolve_plan(aur, no_check, Decisions::Default)?;
+    let plan = crate::resolve::resolve_plan(names, no_check, Decisions::Default)?;
     Ok(Some(plan))
 }
 
-fn queue_repo_targets(handle: &mut alpm::Alpm, repo_or_file: &[String]) -> anyhow::Result<()> {
-    for target in repo_or_file {
-        if let Some(path) = file_suffix_path(target) {
-            let loaded = handle
-                .pkg_load(path, true, crate::pacman::local_file_siglevel(handle))
-                .context("failed to load package file")?;
-            handle
-                .trans_add_pkg(loaded)
-                .map_err(alpm::Error::from)
-                .context("failed to queue package file for installation")?;
-            continue;
-        }
-        let pkg = crate::pacman::find_pkg(handle, target)
-            .ok_or_else(|| anyhow::anyhow!("package '{target}' not found in any repository"))?;
+fn queue_file_targets(handle: &mut alpm::Alpm, files: &[String]) -> anyhow::Result<()> {
+    for target in files {
+        let loaded = handle
+            .pkg_load(
+                target.as_str(),
+                true,
+                crate::pacman::local_file_siglevel(handle),
+            )
+            .context("failed to load package file")?;
+        handle
+            .trans_add_pkg(loaded)
+            .map_err(alpm::Error::from)
+            .context("failed to queue package file for installation")?;
+    }
+    Ok(())
+}
+
+fn queue_plan_repo_installs(handle: &mut alpm::Alpm, plan: Option<&Plan>) -> anyhow::Result<()> {
+    let Some(plan) = plan else {
+        return Ok(());
+    };
+    for row in &plan.repo_installs {
+        let pkg = crate::pacman::find_pkg(handle, &row.name)
+            .ok_or_else(|| anyhow::anyhow!("package '{}' not found in any repository", row.name))?;
         handle
             .trans_add_pkg(pkg)
             .map_err(alpm::Error::from)
@@ -113,7 +124,7 @@ fn queue_repo_targets(handle: &mut alpm::Alpm, repo_or_file: &[String]) -> anyho
 
 pub(crate) fn queue_stub_targets(
     handle: &mut alpm::Alpm,
-    plan: &Option<Plan>,
+    plan: Option<&Plan>,
 ) -> anyhow::Result<()> {
     let Some(plan) = plan else {
         return Ok(());
@@ -136,6 +147,29 @@ pub(crate) fn queue_stub_targets(
     Ok(())
 }
 
+fn unwrap_or_fail<T>(
+    tx: &mut futures::channel::mpsc::Sender<StreamItem>,
+    result: anyhow::Result<T>,
+) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            send_done(tx, ChildOutcome::Failed(format!("{error:#}")));
+            None
+        }
+    }
+}
+
+fn seal_approvals(
+    request: &InstallRequest,
+) -> anyhow::Result<Option<crate::dispatch::approvals::ApprovalsFile>> {
+    request
+        .approvals
+        .as_deref()
+        .map(|payload| crate::dispatch::approvals::ApprovalsFile::write(payload.as_bytes()))
+        .transpose()
+}
+
 fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<StreamItem>) {
     if crate::cli::privs::is_root() {
         run_root_install(request, &mut tx);
@@ -148,39 +182,40 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
             return;
         }
     };
-    let resolved = match resolve_for_dispatch(&mut handle, &request) {
-        Ok(resolved) => resolved,
-        Err(error) => {
-            send_done(&mut tx, ChildOutcome::Failed(format!("{error:#}")));
+    let peeled = {
+        let peeled = unwrap_or_fail(&mut tx, peel_for_dispatch(&mut handle, &request));
+        drop(handle);
+        peeled
+    };
+    let Some(peeled) = peeled else {
+        return;
+    };
+    let files_only = peeled.names.is_empty();
+    let privileged = if files_only {
+        if peeled.files.is_empty() {
+            send_done(
+                &mut tx,
+                ChildOutcome::Failed("no install targets".to_string()),
+            );
             return;
         }
-    };
-    drop(handle);
-    let sealed = match request
-        .approvals
-        .as_deref()
-        .map(|payload| crate::dispatch::approvals::ApprovalsFile::write(payload.as_bytes()))
-        .transpose()
-    {
-        Ok(sealed) => sealed,
-        Err(error) => {
-            send_done(&mut tx, ChildOutcome::Failed(format!("{error:#}")));
+        let Some(sealed) = unwrap_or_fail(&mut tx, seal_approvals(&request)) else {
             return;
-        }
-    };
-    let privileged = if resolved.repo_or_file.is_empty() {
-        None
-    } else {
+        };
         Some(PrivilegedOperation::Install {
-            targets: resolved.repo_or_file,
+            targets: peeled.files.clone(),
             as_deps: request.as_deps,
+            preconfirmed: false,
             approvals: sealed,
         })
+    } else {
+        None
     };
     run_phases(
         PhasePlan {
             privileged,
-            aur_targets: resolved.aur,
+            aur_targets: if files_only { Vec::new() } else { peeled.names },
+            files: if files_only { Vec::new() } else { peeled.files },
             as_deps: request.as_deps,
             no_check: request.no_check,
             repo_verb: "installed",
@@ -200,112 +235,64 @@ fn run_root_install(request: InstallRequest, tx: &mut futures::channel::mpsc::Se
             return;
         }
     };
-    let resolved = match resolve_for_dispatch(&mut handle, &request) {
-        Ok(resolved) => resolved,
-        Err(error) => {
-            send_done(tx, ChildOutcome::Failed(format!("{error:#}")));
-            return;
-        }
+    let peeled = {
+        let peeled = unwrap_or_fail(tx, peel_for_dispatch(&mut handle, &request));
+        drop(handle);
+        peeled
     };
-    drop(handle);
-    if !resolved.aur.is_empty() {
-        send_done(
-            tx,
-            ChildOutcome::Failed(
-                "cannot build packages as root; re-run without privilege escalation".to_string(),
-            ),
-        );
+    let Some(peeled) = peeled else {
+        return;
+    };
+    if peeled.names.is_empty() {
+        let Some(sealed) = unwrap_or_fail(tx, seal_approvals(&request)) else {
+            return;
+        };
+        let operation = ChildOperation::Install {
+            targets: peeled.files,
+            as_deps: request.as_deps,
+            preconfirmed: false,
+            approvals_path: sealed
+                .as_ref()
+                .map(|file| file.path().to_string_lossy().into_owned()),
+            stream: request.json,
+        };
+        let outcome = operation
+            .execute()
+            .map(|()| ChildOutcome::Success)
+            .unwrap_or_else(|error| ChildOutcome::Failed(format!("{error:#}")));
+        send_done(tx, outcome);
         return;
     }
-    let sealed = match request
-        .approvals
-        .as_deref()
-        .map(|payload| crate::dispatch::approvals::ApprovalsFile::write(payload.as_bytes()))
-        .transpose()
-    {
-        Ok(sealed) => sealed,
-        Err(error) => {
-            send_done(tx, ChildOutcome::Failed(format!("{error:#}")));
-            return;
-        }
-    };
-    let operation = ChildOperation::Install {
-        targets: resolved.repo_or_file,
-        as_deps: request.as_deps,
-        approvals_path: sealed
-            .as_ref()
-            .map(|file| file.path().to_string_lossy().into_owned()),
-        stream: request.json,
-    };
-    let outcome = match operation.execute() {
-        Ok(()) => ChildOutcome::Success,
-        Err(error) => ChildOutcome::Failed(format!("{error:#}")),
-    };
-    send_done(tx, outcome);
+    run_phases(
+        PhasePlan {
+            privileged: None,
+            aur_targets: peeled.names,
+            files: peeled.files,
+            as_deps: request.as_deps,
+            no_check: request.no_check,
+            repo_verb: "installed",
+            approvals_payload: request.approvals,
+            decider: request.decider,
+            tty: request.tty,
+        },
+        tx,
+    );
 }
 
-struct ResolvedTargets {
-    repo_or_file: Vec<String>,
-    aur: Vec<String>,
+struct PeeledTargets {
+    files: Vec<String>,
+    names: Vec<String>,
 }
 
-fn resolve_for_dispatch(
+fn peel_for_dispatch(
     handle: &mut alpm::Alpm,
     request: &InstallRequest,
-) -> anyhow::Result<ResolvedTargets> {
+) -> anyhow::Result<PeeledTargets> {
     let config = crate::pacman::config()?;
     crate::upgrade::apply_ignores(handle, &config, &request.ignores);
     let expanded = expand_install_groups(handle, &request.targets, request.tty);
-    let (repo_or_file, aur) = split_install_targets(handle, &expanded, request.prefer_aur);
-    run_preflight_conflict_gate(&repo_or_file, &aur, request)?;
-    if request.tty && !request.json && !repo_or_file.is_empty() {
-        print_sync_preamble(handle, &repo_or_file);
-    }
-    Ok(ResolvedTargets { repo_or_file, aur })
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum Preflight {
-    Skip,
-    Bail,
-    Prompt,
-}
-
-fn preflight_gate(mixed: bool, has_conflicts: bool, tty: bool, json: bool) -> Preflight {
-    if !mixed || !has_conflicts {
-        return Preflight::Skip;
-    }
-    if !tty || json {
-        return Preflight::Bail;
-    }
-    Preflight::Prompt
-}
-
-fn run_preflight_conflict_gate(
-    repo_or_file: &[String],
-    aur: &[String],
-    request: &InstallRequest,
-) -> anyhow::Result<()> {
-    if repo_or_file.is_empty() || aur.is_empty() {
-        return Ok(());
-    }
-    let Some(plan) = resolve_aur_plan(aur, request.no_check)? else {
-        return Ok(());
-    };
-    match preflight_gate(true, !plan.conflicts.is_empty(), request.tty, request.json) {
-        Preflight::Skip => Ok(()),
-        Preflight::Bail => {
-            crate::cli::prompts::print_conflicts(&plan.conflicts);
-            anyhow::bail!("can not install conflicting packages with --noconfirm");
-        }
-        Preflight::Prompt => {
-            crate::cli::prompts::print_conflicts(&plan.conflicts);
-            if !request.decider.confirm_conflicts(&plan.conflicts) {
-                anyhow::bail!("build cancelled by user");
-            }
-            Ok(())
-        }
-    }
+    let (files, names) = peel_file_targets(&expanded);
+    Ok(PeeledTargets { files, names })
 }
 
 fn plan_conflicts_to_questions(report: &ConflictReport) -> Vec<crate::question::Conflict> {
@@ -331,19 +318,14 @@ fn expand_install_groups(
     interactive: bool,
 ) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for s in positionals {
         if crate::package::repo_exists(handle, s) {
-            if seen.insert(s.clone()) {
-                out.push(s.clone());
-            }
+            out.push(s.clone());
             continue;
         }
         let groups = crate::package::find_groups(handle, s);
         if groups.is_empty() {
-            if seen.insert(s.clone()) {
-                out.push(s.clone());
-            }
+            out.push(s.clone());
             continue;
         }
         let members: Vec<String> = if interactive {
@@ -355,8 +337,10 @@ fn expand_install_groups(
                 .map(|m| m.name.clone())
                 .collect()
         };
+        let mut expansion_seen: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for name in members {
-            if seen.insert(name.clone()) {
+            if expansion_seen.insert(name.clone()) {
                 out.push(name);
             }
         }
@@ -364,29 +348,17 @@ fn expand_install_groups(
     out
 }
 
-fn split_install_targets(
-    handle: &alpm::Alpm,
-    positionals: &[String],
-    prefer_aur: bool,
-) -> (Vec<String>, Vec<String>) {
-    let mut repo_or_file: Vec<String> = Vec::new();
-    let mut aur: Vec<String> = Vec::new();
+fn peel_file_targets(positionals: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut files: Vec<String> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
     for s in positionals {
         if file_suffix_path(s).is_some() {
-            repo_or_file.push(s.clone());
-            continue;
-        }
-        if prefer_aur {
-            aur.push(s.clone());
-            continue;
-        }
-        if crate::package::repo_exists(handle, s) {
-            repo_or_file.push(s.clone());
+            files.push(s.clone());
         } else {
-            aur.push(s.clone());
+            names.push(s.clone());
         }
     }
-    (repo_or_file, aur)
+    (files, names)
 }
 
 fn file_suffix_path(target: &str) -> Option<&str> {
@@ -395,26 +367,6 @@ fn file_suffix_path(target: &str) -> Option<&str> {
         .iter()
         .any(|suffix| target.ends_with(suffix))
         .then_some(target)
-}
-
-fn print_sync_preamble(handle: &alpm::Alpm, targets: &[String]) {
-    let labeled: Vec<String> = targets
-        .iter()
-        .map(|name| match crate::package::find(handle, name) {
-            Some(pkg) => format!("{name}-{}", pkg.version),
-            None => name.clone(),
-        })
-        .collect();
-    let c = crate::color::stdout_color();
-    println!(
-        "{} {}",
-        crate::color::paint(
-            c,
-            crate::color::BOLD,
-            &format!("Sync Explicit ({}):", targets.len())
-        ),
-        crate::color::paint(c, crate::color::CYAN, &labeled.join(", "))
-    );
 }
 
 #[cfg(test)]
@@ -448,28 +400,14 @@ mod tests {
     }
 
     #[test]
-    fn preflight_bails_when_mixed_conflicts_non_interactive() {
-        assert_eq!(preflight_gate(true, true, false, false), Preflight::Bail);
-    }
-
-    #[test]
-    fn preflight_bails_when_mixed_conflicts_json() {
-        assert_eq!(preflight_gate(true, true, true, true), Preflight::Bail);
-    }
-
-    #[test]
-    fn preflight_prompts_when_mixed_conflicts_interactive() {
-        assert_eq!(preflight_gate(true, true, true, false), Preflight::Prompt);
-    }
-
-    #[test]
-    fn preflight_skips_when_mixed_without_conflicts() {
-        assert_eq!(preflight_gate(true, false, true, false), Preflight::Skip);
-    }
-
-    #[test]
-    fn preflight_skips_when_single_source() {
-        assert_eq!(preflight_gate(false, true, true, false), Preflight::Skip);
+    fn peel_file_targets_separates_suffix_paths_from_names() {
+        let (files, names) = peel_file_targets(&[
+            "neovim".to_string(),
+            "/tmp/foo-1.0-1-x86_64.pkg.tar.zst".to_string(),
+            "yay-bin".to_string(),
+        ]);
+        assert_eq!(files, vec!["/tmp/foo-1.0-1-x86_64.pkg.tar.zst".to_string()]);
+        assert_eq!(names, vec!["neovim".to_string(), "yay-bin".to_string()]);
     }
 
     #[test]

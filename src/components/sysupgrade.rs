@@ -159,7 +159,7 @@ impl crate::PakajoApp {
                 no_refresh: false,
                 repo_only: false,
                 ignores: Vec::new(),
-                decider: Box::new(pakajo::dispatch::protocol::AutomaticDecider),
+                decider: Box::new(pakajo::dispatch::protocol::AutomaticDecider::new()),
                 aur_targets: Some(preview.aur.iter().map(|c| c.name.clone()).collect()),
                 fingerprint: Some(fingerprint),
                 approvals,

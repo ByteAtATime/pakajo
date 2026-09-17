@@ -111,6 +111,7 @@ fn run_sysupgrade(request: SysupgradeRequest, mut tx: futures::channel::mpsc::Se
                 approvals: sealed,
             }),
             aur_targets,
+            files: Vec::new(),
             as_deps: false,
             no_check: false,
             repo_verb: "upgraded",
@@ -169,6 +170,7 @@ fn run_root_sysupgrade(
         PhasePlan {
             privileged: None,
             aur_targets,
+            files: Vec::new(),
             as_deps: false,
             no_check: false,
             repo_verb: "upgraded",
