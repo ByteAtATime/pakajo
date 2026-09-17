@@ -1,8 +1,9 @@
-use cosmic::iced::{Color, Length};
+use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, Row, container, text};
 
-use super::shared::muted_color;
+use super::shared::{BadgeColor, destructive_color, muted_color, success_color};
 use crate::Element;
+use crate::components::theme::muted;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DiffLine {
@@ -150,13 +151,60 @@ pub(crate) fn parse_unified_diff(input: &str) -> Vec<DiffLine> {
     sections
 }
 
-fn marker_for(line: &DiffLine, is_new: bool) -> Option<(char, &str)> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RenderedLine {
+    Code {
+        marker: char,
+        text: String,
+    },
+    FileHeader {
+        name: String,
+        added: usize,
+        removed: usize,
+    },
+    Gap {
+        elided: usize,
+    },
+}
+
+fn body_line(marker: char, text: &str) -> RenderedLine {
+    RenderedLine::Code {
+        marker,
+        text: text.to_owned(),
+    }
+}
+
+fn render_body(line: &DiffLine, is_new: bool) -> Option<RenderedLine> {
     match line {
-        DiffLine::Added(body) => Some((if is_new { ' ' } else { '+' }, body)),
-        DiffLine::Removed(body) => Some((if is_new { ' ' } else { '-' }, body)),
-        DiffLine::Context(body) => Some((' ', body)),
+        DiffLine::Added(body) => Some(body_line(if is_new { ' ' } else { '+' }, body)),
+        DiffLine::Removed(body) => Some(body_line(if is_new { ' ' } else { '-' }, body)),
+        DiffLine::Context(body) => Some(body_line(' ', body)),
         DiffLine::FileHeader { .. } | DiffLine::HunkMeta { .. } => None,
     }
+}
+
+pub(crate) fn rendered_lines(lines: &[DiffLine], is_new: bool) -> Vec<RenderedLine> {
+    lines
+        .iter()
+        .filter_map(|line| match line {
+            DiffLine::FileHeader {
+                name,
+                added,
+                removed,
+            } => Some(RenderedLine::FileHeader {
+                name: name.clone(),
+                added: *added,
+                removed: *removed,
+            }),
+            DiffLine::HunkMeta { elided, .. } => {
+                if is_new || *elided == 0 {
+                    return None;
+                }
+                Some(RenderedLine::Gap { elided: *elided })
+            }
+            body => render_body(body, is_new),
+        })
+        .collect()
 }
 
 fn marker_color(theme: &cosmic::Theme, marker: char) -> Color {
@@ -167,7 +215,13 @@ fn marker_color(theme: &cosmic::Theme, marker: char) -> Color {
     }
 }
 
-fn diff_row(marker: char, body: &str) -> Element<'_> {
+fn plain_row(body: &str) -> Element<'static> {
+    container(text::monotext(body.to_owned()))
+        .width(Length::Fill)
+        .into()
+}
+
+fn diff_row(marker: char, body: &str) -> Element<'static> {
     let marker_cell = container(text::monotext(marker.to_string()))
         .width(Length::Fixed(16.0))
         .style(move |theme: &cosmic::Theme| container::Style {
@@ -177,18 +231,76 @@ fn diff_row(marker: char, body: &str) -> Element<'_> {
     Row::new()
         .spacing(8)
         .push(marker_cell)
-        .push(container(text::monotext(body.to_string())).width(Length::Fill))
+        .push(container(text::monotext(body.to_owned())).width(Length::Fill))
         .into()
 }
 
-pub(crate) fn diff_rows_column(lines: &[DiffLine], is_new: bool) -> Element<'_> {
-    lines
-        .iter()
-        .filter_map(|line| marker_for(line, is_new))
-        .fold(Column::new().spacing(0), |column, (marker, body)| {
-            column.push(diff_row(marker, body))
+fn count_chip(label: String, color: BadgeColor) -> Element<'static> {
+    container(text(label))
+        .style(move |theme: &cosmic::Theme| container::Style {
+            text_color: Some(color(theme)),
+            ..Default::default()
         })
         .into()
+}
+
+fn file_header_element(name: String, added: usize, removed: usize) -> Element<'static> {
+    let chip = container(text(name))
+        .padding([2.0, 10.0])
+        .style(|theme: &cosmic::Theme| container::Style {
+            background: Some(Background::Color(Color {
+                a: 0.16,
+                ..muted_color(theme)
+            })),
+            border: Border {
+                radius: 6.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    let mut header = Row::new().spacing(8).push(chip);
+    if added > 0 {
+        header = header.push(count_chip(format!("+{added}"), success_color));
+    }
+    if removed > 0 {
+        header = header.push(count_chip(format!("-{removed}"), destructive_color));
+    }
+    container(header)
+        .padding([10.0, 0.0, 4.0, 0.0])
+        .width(Length::Fill)
+        .into()
+}
+
+fn gap_element(elided: usize) -> Element<'static> {
+    muted(
+        text(format!("<{} lines unchanged>", elided))
+            .center()
+            .width(Length::Fill),
+    )
+    .into()
+}
+
+pub(crate) fn diff_rows_column(lines: &[DiffLine], is_new: bool) -> Element<'_> {
+    let mut column = Column::new().spacing(0);
+    for rendered in rendered_lines(lines, is_new) {
+        let row = match rendered {
+            RenderedLine::FileHeader {
+                name,
+                added,
+                removed,
+            } => file_header_element(name, added, removed),
+            RenderedLine::Gap { elided } => gap_element(elided),
+            RenderedLine::Code { marker, text } => {
+                if is_new {
+                    plain_row(&text)
+                } else {
+                    diff_row(marker, &text)
+                }
+            }
+        };
+        column = column.push(row);
+    }
+    column.into()
 }
 
 #[cfg(test)]
@@ -328,6 +440,82 @@ mod tests {
                 DiffLine::Context("keep".to_string()),
                 DiffLine::Removed("gone".to_string()),
                 DiffLine::Added("here".to_string()),
+            ]
+        );
+    }
+
+    fn rendered(input: &str, is_new: bool) -> Vec<RenderedLine> {
+        rendered_lines(&parse_unified_diff(input), is_new)
+    }
+
+    fn rendered_code(marker: char, text: &str) -> RenderedLine {
+        RenderedLine::Code {
+            marker,
+            text: text.to_owned(),
+        }
+    }
+
+    fn rendered_file(name: &str, added: usize, removed: usize) -> RenderedLine {
+        RenderedLine::FileHeader {
+            name: name.to_owned(),
+            added,
+            removed,
+        }
+    }
+
+    #[test]
+    fn rendered_multi_file_sequence_with_gap() {
+        assert_eq!(
+            rendered(MULTI_FILE, false),
+            vec![
+                rendered_file("PKGBUILD", 3, 2),
+                rendered_code(' ', "line1"),
+                rendered_code('-', "old1"),
+                rendered_code('+', "new1"),
+                rendered_code('+', "extra"),
+                rendered_code(' ', "line3"),
+                RenderedLine::Gap { elided: 6 },
+                rendered_code(' ', "line10"),
+                rendered_code('-', "old10"),
+                rendered_code('+', "new10"),
+                rendered_code(' ', "line12"),
+                rendered_file("foo.install", 1, 0),
+                rendered_code(' ', "start"),
+                rendered_code('+', "middle"),
+                rendered_code(' ', "end"),
+            ]
+        );
+    }
+
+    #[test]
+    fn rendered_gap_only_for_elided_hunks() {
+        let single = concat!(
+            "diff --git a/PKGBUILD b/PKGBUILD\n--- a/PKGBUILD\n+++ b/PKGBUILD\n",
+            "@@ -1,3 +1,4 @@\n line1\n-old1\n+new1\n+extra\n line3\n",
+        );
+        assert_eq!(
+            rendered(single, false),
+            vec![
+                rendered_file("PKGBUILD", 2, 1),
+                rendered_code(' ', "line1"),
+                rendered_code('-', "old1"),
+                rendered_code('+', "new1"),
+                rendered_code('+', "extra"),
+                rendered_code(' ', "line3"),
+            ]
+        );
+        let offset = concat!(
+            "diff --git a/PKGBUILD b/PKGBUILD\n--- a/PKGBUILD\n+++ b/PKGBUILD\n",
+            "@@ -5,3 +8,3 @@\n line8\n-old8\n+new8\n",
+        );
+        assert_eq!(
+            rendered(offset, false),
+            vec![
+                rendered_file("PKGBUILD", 1, 1),
+                RenderedLine::Gap { elided: 7 },
+                rendered_code(' ', "line8"),
+                rendered_code('-', "old8"),
+                rendered_code('+', "new8"),
             ]
         );
     }
