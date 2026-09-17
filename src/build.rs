@@ -11,7 +11,7 @@ use crate::dispatch::exec::{ChildOutcome, StreamItem};
 use crate::dispatch::protocol::Decider;
 use crate::events::{InstallEvent, InstallSink, PkgbuildReviewEntry};
 use crate::pkgbuild::PkgbuildInfo;
-use crate::resolve::{Decisions, Engine, Plan};
+use crate::resolve::{Decisions, Plan};
 
 #[derive(Clone, Copy)]
 struct AurBuildConfig {
@@ -37,6 +37,14 @@ pub fn run_build<S: InstallSink + ?Sized>(
     tty: bool,
 ) -> anyhow::Result<()> {
     let (alpm, plan) = resolve_and_report(targets, no_check, sink, tty)?;
+
+    if !plan.conflicts.is_empty() {
+        crate::cli::prompts::print_conflicts(&plan.conflicts);
+        anyhow::ensure!(
+            decider.confirm_conflicts(&plan.conflicts),
+            "build cancelled by user"
+        );
+    }
 
     let decision = decider.confirm_build(&plan);
     if matches!(decision, BuildDecision::Abort) {
@@ -114,21 +122,12 @@ fn resolve_and_report<S: InstallSink + ?Sized>(
     }
 
     let alpm = crate::pacman::handle()?;
-    let mut engine = Engine::new(no_check)?;
     let decisions = if tty {
         Decisions::Ask(Box::new(CliAsk))
     } else {
         Decisions::Default
     };
-    let plan = engine
-        .resolve(targets, decisions)
-        .map_err(|error| anyhow::anyhow!("resolution failed: {error}"))?;
-    if let Some(first) = plan.missing.first() {
-        anyhow::bail!("{}", crate::resolve::missing_message(first));
-    }
-    if let Some(duplicate) = plan.duplicates.first() {
-        anyhow::bail!("duplicate targets: {duplicate}");
-    }
+    let plan = crate::resolve::resolve_plan(targets, no_check, decisions)?;
 
     let repo_deps = plan.repo_installs.len();
     let aur_packages = plan.all_members().count();

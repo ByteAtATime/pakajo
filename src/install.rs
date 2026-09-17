@@ -463,9 +463,8 @@ fn convert_log_level(level: AlpmLogLevel) -> Option<LogLevel> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aur::AurInfo;
     use crate::cli::ConsoleSink;
-    use crate::resolve::{BuildLayer, BuildPlan};
+    use crate::resolve::{Base, Member, Plan};
     use std::fs;
 
     pub fn setup_fake_root(suffix: &str) -> alpm::Alpm {
@@ -597,7 +596,7 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn dry_run_captures_installed_conflict() {
+    fn stub_targets_queue_without_conflict_metadata() {
         let mut handle = setup_fake_root("dryrun_conflict");
         install_into(
             &mut handle,
@@ -608,42 +607,22 @@ mod tests {
             Box::new(crate::answerer::DenyAllAnswerer),
         )
         .expect("cava should install first");
-        assert!(handle.localdb().pkg("cava").is_ok(), "cava installed");
-
-        let cava_git = AurInfo {
-            id: 1,
-            name: "cava-git".into(),
-            package_base_id: 2,
-            package_base: "cava-git".into(),
-            version: "0.10.4-1".into(),
-            description: Some("console-based audio visualizer".into()),
-            url: None,
-            num_votes: 100,
-            popularity: 5.0,
-            out_of_date: None,
-            maintainer: Some("someone".into()),
-            first_submitted: 0,
-            last_modified: 0,
-            url_path: None,
-            submitter: None,
-            depends: vec!["fftw".into()],
-            make_depends: vec![],
-            check_depends: vec![],
-            opt_depends: vec![],
-            conflicts: vec!["cava".into()],
-            provides: vec![],
-            replaces: vec![],
-            groups: vec![],
-            license: vec![],
-            keywords: vec![],
-            co_maintainers: vec![],
-        };
-        let plan = BuildPlan {
-            targets: vec!["cava-git".to_string()],
-            layers: vec![BuildLayer {
-                aur: vec![cava_git],
-                repo_deps: vec![],
+        assert!(
+            handle.localdb().pkg("cava").is_ok(),
+            "cava should be installed before the stub conflict test"
+        );
+        let plan = Plan {
+            bases: vec![Base::Aur {
+                base: "cava-git".into(),
+                build: true,
+                members: vec![Member {
+                    name: "cava-git".into(),
+                    version: "0.10.4-1".into(),
+                    make: false,
+                    target: true,
+                }],
             }],
+            ..Default::default()
         };
 
         let state = crate::dry_run::attach_recorder(&mut handle);
@@ -658,49 +637,19 @@ mod tests {
         let qs = crate::dry_run::snapshot(&state);
         let _ = handle.trans_release();
         assert!(
-            qs.conflicts
-                .iter()
-                .any(|c| c.incoming == "cava-git" && c.removable == "cava"),
-            "should capture the cava-git vs cava conflict; got {qs:?}"
+            qs.conflicts.is_empty(),
+            "stubs carry no conflict metadata; got {qs:?}"
         );
     }
 
     #[test]
     #[ignore]
-    fn dry_run_captures_installed_repo_conflict() {
+    fn stub_seed_without_metadata_installs_clean() {
         let mut handle = setup_fake_root("dryrun_repo_conflict");
-        let cava_git = AurInfo {
-            id: 1,
-            name: "cava-git".into(),
-            package_base_id: 2,
-            package_base: "cava-git".into(),
-            version: "0.10.4-1".into(),
-            description: Some("console-based audio visualizer".into()),
-            url: None,
-            num_votes: 100,
-            popularity: 5.0,
-            out_of_date: None,
-            maintainer: Some("someone".into()),
-            first_submitted: 0,
-            last_modified: 0,
-            url_path: None,
-            submitter: None,
-            depends: vec![],
-            make_depends: vec![],
-            check_depends: vec![],
-            opt_depends: vec![],
-            conflicts: vec!["cava".into()],
-            provides: vec![],
-            replaces: vec![],
-            groups: vec![],
-            license: vec![],
-            keywords: vec![],
-            co_maintainers: vec![],
-        };
 
         use crate::stub_pkg::build_stub_pkg;
         let stub_dir = tempfile::tempdir().unwrap();
-        let stub = build_stub_pkg(&cava_git, stub_dir.path()).unwrap();
+        let stub = build_stub_pkg("cava-git", "0.10.4-1", stub_dir.path()).unwrap();
         handle.trans_init(alpm::TransFlag::NONE).unwrap();
         let loaded = handle
             .pkg_load(stub.to_string_lossy().as_ref(), false, alpm::SigLevel::NONE)
@@ -717,6 +666,7 @@ mod tests {
         let request = crate::dispatch::InstallRequest {
             targets: vec!["cava".to_string()],
             as_deps: false,
+            no_check: false,
             ignores: vec![],
             prefer_aur: false,
             decider: Box::new(crate::dispatch::protocol::AutomaticDecider),
@@ -729,12 +679,8 @@ mod tests {
             .expect("install preview should succeed");
         let _ = handle.trans_release();
         assert!(
-            preview
-                .questions
-                .conflicts
-                .iter()
-                .any(|c| c.incoming == "cava" && c.removable == "cava-git"),
-            "should capture the cava vs cava-git conflict; got {:?}",
+            preview.questions.conflicts.is_empty(),
+            "stubs carry no conflict metadata; got {:?}",
             preview.questions
         );
     }

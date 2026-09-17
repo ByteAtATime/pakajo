@@ -9,6 +9,7 @@ pub struct PhasePlan {
     pub privileged: Option<PrivilegedOperation>,
     pub aur_targets: Vec<String>,
     pub as_deps: bool,
+    pub no_check: bool,
     pub repo_verb: &'static str,
     pub approvals_payload: Option<String>,
     pub decider: Box<dyn Decider + Send>,
@@ -49,7 +50,7 @@ pub fn run_phases(plan: PhasePlan, tx: &mut futures::channel::mpsc::Sender<Strea
     let operation = BuildOperation {
         targets: plan.aur_targets,
         as_deps: plan.as_deps,
-        no_check: false,
+        no_check: plan.no_check,
     };
     match forward(
         operation.dispatch(plan.decider, plan.approvals_payload, plan.tty),

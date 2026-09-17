@@ -66,7 +66,7 @@ pub struct Conflict {
     pub conflicting: Vec<Conflicting>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConflictReport {
     pub local: Vec<Conflict>,
     pub inner: Vec<Conflict>,
@@ -93,7 +93,7 @@ pub enum OpenQuestion {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
     pub bases: Vec<Base>,
     pub repo_installs: Vec<RepoInstall>,
@@ -102,6 +102,12 @@ pub struct Plan {
     pub conflicts: ConflictReport,
     pub duplicates: Vec<String>,
     pub questions: Vec<OpenQuestion>,
+}
+
+impl ConflictReport {
+    pub fn is_empty(&self) -> bool {
+        self.local.is_empty() && self.inner.is_empty()
+    }
 }
 
 impl Base {

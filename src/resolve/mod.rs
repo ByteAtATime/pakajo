@@ -4,7 +4,7 @@ mod raur;
 mod sources;
 mod types;
 
-pub(crate) use engine::missing_message;
+pub(crate) use engine::resolve_plan;
 pub use engine::{
     Answers, Ask, Decisions, Engine, GroupAnswer, ProviderAnswer, ResolveError, resolve,
 };

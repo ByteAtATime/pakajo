@@ -123,6 +123,7 @@ fn install_subcommand(args: InstallArgs) -> i32 {
     let request = crate::dispatch::InstallRequest {
         targets: positionals,
         as_deps: args.as_deps,
+        no_check: false,
         ignores: vec![],
         prefer_aur: false,
         decider: Box::new(TerminalDecider::new(args.json, args.skip_review)),

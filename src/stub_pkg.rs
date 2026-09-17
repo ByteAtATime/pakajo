@@ -6,23 +6,15 @@ use anyhow::Context as _;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
-use crate::aur::AurInfo;
-
-pub fn build_stub_pkg(info: &AurInfo, dir: &Path) -> anyhow::Result<PathBuf> {
-    let version = ensure_release(&info.version);
+pub fn build_stub_pkg(name: &str, version: &str, dir: &Path) -> anyhow::Result<PathBuf> {
+    let version = ensure_release(version);
     let mut pkginfo = String::new();
-    writeln!(pkginfo, "pkgname = {}", info.name)?;
-    writeln!(pkginfo, "pkgver = {}", version)?;
+    writeln!(pkginfo, "pkgname = {name}")?;
+    writeln!(pkginfo, "pkgver = {version}")?;
     writeln!(pkginfo, "arch = any")?;
     writeln!(pkginfo, "builddate = {}", now_unix())?;
-    for d in &info.depends {
-        writeln!(pkginfo, "depend = {}", d)?;
-    }
-    for c in &info.conflicts {
-        writeln!(pkginfo, "conflict = {}", c)?;
-    }
 
-    let filename = format!("{}-{}-any.pkg.tar.gz", info.name, version);
+    let filename = format!("{name}-{version}-any.pkg.tar.gz");
     let path = dir.join(&filename);
     let file = std::fs::File::create(&path).context("failed to create stub package file")?;
     let encoder = GzEncoder::new(file, Compression::default());
@@ -70,36 +62,8 @@ mod tests {
 
     #[test]
     fn stub_pkg_round_trips() {
-        let info = AurInfo {
-            id: 1,
-            name: "cava-git".into(),
-            package_base_id: 2,
-            package_base: "cava-git".into(),
-            version: "0.10.4-1".into(),
-            description: Some("console-based audio visualizer".into()),
-            url: None,
-            num_votes: 100,
-            popularity: 5.0,
-            out_of_date: None,
-            maintainer: Some("someone".into()),
-            first_submitted: 0,
-            last_modified: 0,
-            url_path: None,
-            submitter: None,
-            depends: vec!["fftw".into()],
-            make_depends: vec![],
-            check_depends: vec![],
-            opt_depends: vec![],
-            conflicts: vec!["cava".into()],
-            provides: vec![],
-            replaces: vec![],
-            groups: vec![],
-            license: vec![],
-            keywords: vec![],
-            co_maintainers: vec![],
-        };
         let dir = tempfile::tempdir().expect("stub dir");
-        let path = build_stub_pkg(&info, dir.path()).expect("build stub");
+        let path = build_stub_pkg("cava-git", "0.10.4-1", dir.path()).expect("build stub");
 
         let handle = test_handle();
         let loaded = handle
@@ -108,11 +72,7 @@ mod tests {
         assert_eq!(loaded.name(), "cava-git");
         assert_eq!(loaded.version().to_string(), "0.10.4-1");
         assert_eq!(loaded.arch(), Some("any"));
-        let conflicts: Vec<String> = loaded
-            .conflicts()
-            .iter()
-            .map(|d| d.name().to_string())
-            .collect();
-        assert_eq!(conflicts, vec!["cava".to_string()]);
+        assert!(loaded.depends().is_empty());
+        assert!(loaded.conflicts().is_empty());
     }
 }

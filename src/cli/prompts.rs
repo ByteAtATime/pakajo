@@ -3,7 +3,7 @@ use std::io::Write as _;
 use crate::answerer::{ProviderDecision, QuestionAnswerer, StdioAnswerer};
 use crate::package::PackageGroup;
 use crate::question::ProviderCandidate;
-use crate::resolve::{Ask, GroupMember, Plan};
+use crate::resolve::{Ask, Conflict, ConflictReport, GroupMember, Plan};
 use crate::{build::BuildDecision, color};
 
 pub(crate) enum PromptStream {
@@ -34,6 +34,10 @@ fn read_confirmation(message: &str, stream: PromptStream, default_yes: bool) -> 
     }
     let mut input = String::new();
     let _ = std::io::stdin().read_line(&mut input);
+    parse_confirmation(&input, default_yes)
+}
+
+fn parse_confirmation(input: &str, default_yes: bool) -> bool {
     match input.trim().to_lowercase().as_str() {
         "" => default_yes,
         "y" | "yes" => true,
@@ -286,6 +290,41 @@ pub fn confirm_install_stderr() -> bool {
     read_confirmation("Proceed with installation?", PromptStream::Stderr, true)
 }
 
+pub fn print_conflicts(report: &ConflictReport) {
+    eprintln!();
+    print_conflict_section("Inner conflicts found:", &report.inner);
+    print_conflict_section("Conflicts found:", &report.local);
+}
+
+pub fn confirm_conflicts(_report: &ConflictReport) -> bool {
+    confirm_install()
+}
+
+fn print_conflict_section(title: &str, items: &[Conflict]) {
+    if items.is_empty() {
+        return;
+    }
+    let c = color::stderr_color();
+    eprintln!(
+        "{} {}",
+        color::paint(c, color::RED, "::"),
+        color::paint(c, color::BOLD, title)
+    );
+    for conflict in items {
+        let details = conflict
+            .conflicting
+            .iter()
+            .map(|conflicting| match &conflicting.conflict {
+                Some(detail) => format!("{} ({detail})", conflicting.pkg),
+                None => conflicting.pkg.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        eprintln!("    {}: {details}", conflict.pkg);
+    }
+    eprintln!();
+}
+
 pub fn confirm_remove_stderr() -> bool {
     eprintln!();
     read_confirmation(
@@ -306,4 +345,24 @@ pub fn confirm_hold_remove(stream: PromptStream) -> bool {
 pub fn confirm_review_accept() -> bool {
     println!();
     read_confirmation("Accept changes?", PromptStream::Stdout, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_confirmation;
+
+    #[test]
+    fn confirmation_answers_proceed_and_decline() {
+        assert!(parse_confirmation("y", false));
+        assert!(parse_confirmation("yes", false));
+        assert!(parse_confirmation("Y", false));
+        assert!(!parse_confirmation("n", true));
+        assert!(!parse_confirmation("no", true));
+    }
+
+    #[test]
+    fn confirmation_empty_takes_default() {
+        assert!(parse_confirmation("", true));
+        assert!(!parse_confirmation("", false));
+    }
 }

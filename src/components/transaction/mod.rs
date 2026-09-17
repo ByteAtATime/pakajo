@@ -178,6 +178,7 @@ impl Transaction {
                 let request = pakajo::dispatch::InstallRequest {
                     targets: dry_targets,
                     as_deps: false,
+                    no_check: false,
                     ignores: vec![],
                     prefer_aur,
                     decider: Box::new(AutomaticDecider),
@@ -378,6 +379,7 @@ impl Transaction {
         let request = pakajo::dispatch::InstallRequest {
             targets,
             as_deps: false,
+            no_check: false,
             ignores: vec![],
             prefer_aur,
             decider: Box::new(AutomaticDecider),

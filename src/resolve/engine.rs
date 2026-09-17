@@ -267,6 +267,24 @@ impl Ask for PinnedState {
     }
 }
 
+pub(crate) fn resolve_plan(
+    targets: &[String],
+    no_check: bool,
+    decisions: Decisions,
+) -> anyhow::Result<Plan> {
+    let mut engine = Engine::new(no_check)?;
+    let plan = engine
+        .resolve(targets, decisions)
+        .map_err(|error| anyhow::anyhow!("resolution failed: {error}"))?;
+    if let Some(first) = plan.missing.first() {
+        anyhow::bail!("{}", missing_message(first));
+    }
+    if let Some(duplicate) = plan.duplicates.first() {
+        anyhow::bail!("duplicate targets: {duplicate}");
+    }
+    Ok(plan)
+}
+
 pub(crate) fn missing_message(missing: &Missing) -> String {
     if missing.stack.is_empty() {
         return format!("target not found in AUR: {}", missing.dep);
