@@ -2,11 +2,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::Context as _;
-use serde::{Deserialize, Serialize};
 
 use crate::aur::AurClient;
 
-use super::plan::{GroupMember, Missing, OpenQuestion, Plan, plan_from_actions};
+use super::plan::{GroupMember, Missing, Plan, plan_from_actions};
 use super::raur::{AurRaur, RaurError};
 
 #[derive(Debug)]
@@ -76,28 +75,9 @@ impl Ask for Box<dyn Ask> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderAnswer {
-    pub depend: String,
-    pub provider_name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GroupAnswer {
-    pub group: String,
-    pub member_names: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Answers {
-    pub providers: Vec<ProviderAnswer>,
-    pub groups: Vec<GroupAnswer>,
-}
-
 pub enum Decisions {
     Default,
     Ask(Box<dyn Ask>),
-    Pinned(Answers),
 }
 
 pub struct Engine {
@@ -189,77 +169,13 @@ impl Engine {
                 let actions = futures::executor::block_on(
                     self.resolver(self.flags()).resolve_targets(targets),
                 )?;
-                Ok(plan_from_actions(&actions, vec![]))
+                Ok(plan_from_actions(&actions))
             }
             Decisions::Ask(ask) => {
                 let actions = self.resolve_interactive(targets, Rc::new(RefCell::new(ask)))?;
-                Ok(plan_from_actions(&actions, vec![]))
-            }
-            Decisions::Pinned(answers) => {
-                let state = Rc::new(RefCell::new(PinnedState {
-                    answers,
-                    questions: Vec::new(),
-                }));
-                let actions = self.resolve_interactive(targets, Rc::clone(&state))?;
-                let questions = state.borrow().questions.clone();
-                Ok(plan_from_actions(&actions, questions))
+                Ok(plan_from_actions(&actions))
             }
         }
-    }
-}
-
-struct PinnedState {
-    answers: Answers,
-    questions: Vec<OpenQuestion>,
-}
-
-impl Ask for PinnedState {
-    fn choose_provider(&mut self, depend: &str, candidates: &[String]) -> usize {
-        let pinned = self
-            .answers
-            .providers
-            .iter()
-            .find(|answer| answer.depend == depend)
-            .and_then(|answer| {
-                candidates
-                    .iter()
-                    .position(|name| *name == answer.provider_name)
-            });
-        if let Some(index) = pinned {
-            return index;
-        }
-        self.questions.push(OpenQuestion::Provider {
-            depend: depend.to_string(),
-            candidates: candidates.to_vec(),
-            chosen: candidates.first().cloned().unwrap_or_default(),
-        });
-        0
-    }
-
-    fn choose_group_members(&mut self, group: &str, members: &[GroupMember]) -> Vec<usize> {
-        let pinned = self
-            .answers
-            .groups
-            .iter()
-            .find(|answer| answer.group == group)
-            .map(|answer| {
-                members
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, member)| answer.member_names.contains(&member.name))
-                    .map(|(index, _)| index)
-                    .collect::<Vec<_>>()
-            })
-            .filter(|matched| !matched.is_empty());
-        if let Some(matched) = pinned {
-            return matched;
-        }
-        self.questions.push(OpenQuestion::Group {
-            group: group.to_string(),
-            members: members.to_vec(),
-            chosen: members.iter().map(|member| member.name.clone()).collect(),
-        });
-        (0..members.len()).collect()
     }
 }
 
@@ -281,7 +197,7 @@ pub(crate) fn resolve_plan(
     Ok(plan)
 }
 
-pub(crate) fn missing_message(missing: &Missing) -> String {
+fn missing_message(missing: &Missing) -> String {
     if missing.stack.is_empty() {
         return format!("target not found in AUR: {}", missing.dep);
     }

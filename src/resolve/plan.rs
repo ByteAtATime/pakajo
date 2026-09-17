@@ -45,12 +45,6 @@ pub struct Missing {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Unneeded {
-    pub name: String,
-    pub version: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Conflicting {
     pub pkg: String,
     pub conflict: Option<String>,
@@ -75,29 +69,13 @@ pub struct GroupMember {
     pub db: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OpenQuestion {
-    Provider {
-        depend: String,
-        candidates: Vec<String>,
-        chosen: String,
-    },
-    Group {
-        group: String,
-        members: Vec<GroupMember>,
-        chosen: Vec<String>,
-    },
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
     pub bases: Vec<Base>,
     pub repo_installs: Vec<RepoInstall>,
     pub missing: Vec<Missing>,
-    pub unneeded: Vec<Unneeded>,
     pub conflicts: ConflictReport,
     pub duplicates: Vec<String>,
-    pub questions: Vec<OpenQuestion>,
 }
 
 impl ConflictReport {
@@ -172,15 +150,6 @@ impl From<&aur_depends::DepMissing> for MissingStack {
     }
 }
 
-impl From<&aur_depends::Unneeded> for Unneeded {
-    fn from(item: &aur_depends::Unneeded) -> Self {
-        Self {
-            name: item.name.clone(),
-            version: item.version.clone(),
-        }
-    }
-}
-
 impl From<&aur_depends::RepoPackage<'_>> for RepoInstall {
     fn from(row: &aur_depends::RepoPackage<'_>) -> Self {
         Self {
@@ -237,20 +206,15 @@ fn conflicts(items: &[aur_depends::Conflict]) -> Vec<Conflict> {
     items.iter().map(Conflict::from).collect()
 }
 
-pub(crate) fn plan_from_actions(
-    actions: &aur_depends::Actions<'_>,
-    questions: Vec<OpenQuestion>,
-) -> Plan {
+pub(crate) fn plan_from_actions(actions: &aur_depends::Actions<'_>) -> Plan {
     Plan {
         bases: actions.build.iter().map(Into::into).collect(),
         repo_installs: actions.install.iter().map(Into::into).collect(),
         missing: actions.missing.iter().map(Into::into).collect(),
-        unneeded: actions.unneeded.iter().map(Into::into).collect(),
         conflicts: ConflictReport {
             local: conflicts(&actions.calculate_conflicts(true)),
             inner: conflicts(&actions.calculate_inner_conflicts(true)),
         },
         duplicates: actions.duplicate_targets(),
-        questions,
     }
 }

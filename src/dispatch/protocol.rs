@@ -72,13 +72,11 @@ mod tests {
             bases: Vec::new(),
             repo_installs: Vec::new(),
             missing: Vec::new(),
-            unneeded: Vec::new(),
             conflicts: ConflictReport {
                 local: Vec::new(),
                 inner: Vec::new(),
             },
             duplicates: Vec::new(),
-            questions: Vec::new(),
         }
     }
 
