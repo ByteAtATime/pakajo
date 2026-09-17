@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Context as _;
 
-use crate::aur::AurInfo;
+use crate::aur::{AurClient, AurInfo};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RepoInfo {
@@ -282,10 +282,7 @@ pub enum GendbOutcome {
     Recorded(usize),
 }
 
-pub fn generate_db(
-    handle: &alpm::Alpm,
-    aur: &impl crate::resolve::AurQuery,
-) -> anyhow::Result<GendbOutcome> {
+pub fn generate_db(handle: &alpm::Alpm, aur: &AurClient) -> anyhow::Result<GendbOutcome> {
     let arch = handle
         .architectures()
         .first()

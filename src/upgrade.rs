@@ -4,10 +4,9 @@ use std::rc::Rc;
 
 use anyhow::Context as _;
 
-use crate::aur::AurInfo;
+use crate::aur::{AurClient, AurInfo};
 use crate::events::{InstallEvent, InstallSink, LogLevel, TransactionSummary, summaries_match};
 use crate::install::{QuestionState, build_summary, register_callbacks};
-use crate::resolve::AurQuery;
 
 fn read_fingerprint_file(path: &str) -> anyhow::Result<TransactionSummary> {
     let bytes = std::fs::read(path).context("failed to read fingerprint file")?;
@@ -97,7 +96,7 @@ pub enum DevelSource {
 
 pub fn compute_aur_upgrades(
     handle: &alpm::Alpm,
-    aur: &impl AurQuery,
+    aur: &AurClient,
     devel: DevelSource,
 ) -> anyhow::Result<(Vec<AurUpgradeCandidate>, Vec<String>)> {
     let sync_names: HashSet<String> = handle

@@ -11,9 +11,3 @@ pub struct BuildPlan {
     pub targets: Vec<String>,
     pub layers: Vec<BuildLayer>,
 }
-
-#[derive(Debug, Clone)]
-pub struct RepoPackage {
-    pub name: String,
-    pub version: String,
-}

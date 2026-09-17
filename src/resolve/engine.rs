@@ -10,7 +10,6 @@ use super::plan::{
     GroupMember, Missing, OpenQuestion, Plan, build_plan_from_plan, plan_from_actions,
 };
 use super::raur::{AurRaur, RaurError};
-use super::sources::{AurQuery, PackageDb};
 use super::types::BuildPlan;
 
 #[derive(Debug)]
@@ -302,8 +301,8 @@ pub(crate) fn missing_message(missing: &Missing) -> String {
 }
 
 pub fn resolve(
-    _db: &impl PackageDb,
-    _aur: &impl AurQuery,
+    _db: &alpm::Alpm,
+    _aur: &AurClient,
     targets: &[String],
     no_check: bool,
 ) -> anyhow::Result<BuildPlan> {
