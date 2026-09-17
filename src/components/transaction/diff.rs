@@ -167,6 +167,7 @@ pub(crate) fn parse_unified_diff(input: &str) -> Vec<DiffLine> {
 pub(crate) struct StyledSegment {
     pub(crate) color: Color,
     pub(crate) text: String,
+    pub(crate) emphasized: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -223,9 +224,126 @@ fn highlight_line(body: &str, highlighter: &mut HighlightLines) -> Vec<StyledSeg
                     foreground.a as f32 / 255.0,
                 ),
                 text: fragment.to_owned(),
+                emphasized: false,
             }
         })
         .collect()
+}
+
+type Fragment = Option<(usize, usize)>;
+
+fn fragment_pair(removed: &str, added: &str) -> (Fragment, Fragment) {
+    let removed: Vec<char> = removed.chars().collect();
+    let added: Vec<char> = added.chars().collect();
+    let prefix = removed
+        .iter()
+        .zip(&added)
+        .take_while(|(l, r)| l == r)
+        .count();
+    let max_suffix = (removed.len() - prefix).min(added.len() - prefix);
+    let suffix = removed
+        .iter()
+        .rev()
+        .zip(added.iter().rev())
+        .take(max_suffix)
+        .take_while(|(l, r)| l == r)
+        .count();
+    let range = |len: usize| {
+        if len <= prefix + suffix {
+            None
+        } else if prefix == 0 && suffix == 0 {
+            Some((0, usize::MAX))
+        } else {
+            Some((prefix, len - suffix))
+        }
+    };
+    (range(removed.len()), range(added.len()))
+}
+
+fn flush_fragments(
+    emphasis: &mut [Option<(usize, usize)>],
+    lines: &[DiffLine],
+    removed: &mut Vec<usize>,
+    added: &mut Vec<usize>,
+    full: bool,
+) {
+    for (removed_index, added_index) in removed.iter().zip(added.iter()) {
+        if let (DiffLine::Removed(removed_text), DiffLine::Added(added_text)) =
+            (&lines[*removed_index], &lines[*added_index])
+        {
+            (emphasis[*removed_index], emphasis[*added_index]) =
+                fragment_pair(removed_text, added_text);
+        }
+    }
+    if full {
+        let paired = removed.len().min(added.len());
+        for leftover in removed.iter().skip(paired).chain(added.iter().skip(paired)) {
+            emphasis[*leftover] = Some((0, usize::MAX));
+        }
+    }
+    removed.clear();
+    added.clear();
+}
+
+fn pair_fragments(lines: &[DiffLine]) -> Vec<Option<(usize, usize)>> {
+    let mut emphasis = vec![None; lines.len()];
+    let mut removed = Vec::new();
+    let mut added = Vec::new();
+    let mut seen_removed = false;
+    for (index, line) in lines.iter().enumerate() {
+        match line {
+            DiffLine::Removed(_) => {
+                if !added.is_empty() {
+                    flush_fragments(&mut emphasis, lines, &mut removed, &mut added, seen_removed);
+                }
+                removed.push(index);
+                seen_removed = true;
+            }
+            DiffLine::Added(_) => added.push(index),
+            _ => {
+                flush_fragments(&mut emphasis, lines, &mut removed, &mut added, seen_removed);
+                if matches!(line, DiffLine::FileHeader { .. }) {
+                    seen_removed = false;
+                }
+            }
+        }
+    }
+    flush_fragments(&mut emphasis, lines, &mut removed, &mut added, seen_removed);
+    emphasis
+}
+
+fn highlight_fragmented(
+    body: &str,
+    fragment: Option<(usize, usize)>,
+    highlighter: &mut HighlightLines,
+) -> Vec<StyledSegment> {
+    let Some((start, end)) = fragment else {
+        return highlight_line(body, highlighter);
+    };
+    let len = body.chars().count();
+    let (start, end) = (start.min(len), end.min(len));
+    if start >= end {
+        return highlight_line(body, highlighter);
+    }
+    let byte = |nth: usize| {
+        body.char_indices()
+            .map(|(index, _)| index)
+            .chain([body.len()])
+            .nth(nth)
+            .unwrap_or(body.len())
+    };
+    let (head, tail) = (byte(start), byte(end));
+    let mut segments = highlight_line(&body[..head], highlighter);
+    segments.extend(
+        highlight_line(&body[head..tail], highlighter)
+            .into_iter()
+            .map(|segment| StyledSegment {
+                emphasized: true,
+                ..segment
+            }),
+    );
+    segments.extend(highlight_line(&body[tail..], highlighter));
+    segments
 }
 
 pub(crate) fn rendered_lines(lines: &[DiffLine], is_new: bool) -> Vec<RenderedLine> {
@@ -236,9 +354,15 @@ pub(crate) fn rendered_lines(lines: &[DiffLine], is_new: bool) -> Vec<RenderedLi
     });
     let plain = SYNTAX_SET.find_syntax_plain_text();
     let mut highlighter = HighlightLines::new(plain, theme);
+    let emphasis = if is_new {
+        vec![None; lines.len()]
+    } else {
+        pair_fragments(lines)
+    };
     lines
         .iter()
-        .filter_map(|line| match line {
+        .zip(emphasis)
+        .filter_map(|(line, line_emphasis)| match line {
             DiffLine::FileHeader {
                 name,
                 added,
@@ -260,12 +384,12 @@ pub(crate) fn rendered_lines(lines: &[DiffLine], is_new: bool) -> Vec<RenderedLi
             DiffLine::Added(body) => Some(RenderedLine::Code {
                 marker: if is_new { ' ' } else { '+' },
                 text: body.clone(),
-                segments: highlight_line(body, &mut highlighter),
+                segments: highlight_fragmented(body, line_emphasis, &mut highlighter),
             }),
             DiffLine::Removed(body) => Some(RenderedLine::Code {
                 marker: if is_new { ' ' } else { '-' },
                 text: body.clone(),
-                segments: highlight_line(body, &mut highlighter),
+                segments: highlight_fragmented(body, line_emphasis, &mut highlighter),
             }),
             DiffLine::Context(body) => Some(RenderedLine::Code {
                 marker: ' ',
@@ -284,7 +408,11 @@ fn marker_color(theme: &cosmic::Theme, marker: char) -> Color {
     }
 }
 
-fn code_spans(segments: &[StyledSegment], fallback: &str) -> Vec<MonoSpan> {
+fn code_spans(
+    segments: &[StyledSegment],
+    fallback: &str,
+    emphasis: Option<Color>,
+) -> Vec<MonoSpan> {
     if segments.is_empty() {
         return vec![
             span(fallback.to_owned())
@@ -295,10 +423,21 @@ fn code_spans(segments: &[StyledSegment], fallback: &str) -> Vec<MonoSpan> {
     segments
         .iter()
         .map(|segment| {
-            span(segment.text.clone())
-                .color(segment.color)
-                .font(cosmic::font::mono())
-                .to_static()
+            let font = cosmic::font::Font {
+                weight: if segment.emphasized {
+                    cosmic::iced::font::Weight::Bold
+                } else {
+                    cosmic::iced::font::Weight::Normal
+                },
+                ..cosmic::font::mono()
+            };
+            let current = span(segment.text.clone()).color(segment.color).font(font);
+            match (segment.emphasized, emphasis) {
+                (true, Some(background)) => current
+                    .background(Background::Color(background))
+                    .to_static(),
+                _ => current.to_static(),
+            }
         })
         .collect()
 }
@@ -314,7 +453,12 @@ fn code_text(spans: Vec<MonoSpan>) -> Element<'static> {
     .into()
 }
 
-fn diff_row(marker: char, body: &str, segments: &[StyledSegment]) -> Element<'static> {
+fn diff_row(
+    marker: char,
+    body: &str,
+    segments: &[StyledSegment],
+    background: Option<Color>,
+) -> Element<'static> {
     let marker_cell = container(text::monotext(marker.to_string()))
         .width(Length::Fixed(16.0))
         .style(move |theme: &cosmic::Theme| container::Style {
@@ -324,7 +468,7 @@ fn diff_row(marker: char, body: &str, segments: &[StyledSegment]) -> Element<'st
     Row::new()
         .spacing(8)
         .push(marker_cell)
-        .push(code_text(code_spans(segments, body)))
+        .push(code_text(code_spans(segments, body, background)))
         .into()
 }
 
@@ -373,6 +517,9 @@ fn gap_element(elided: usize) -> Element<'static> {
 }
 
 pub(crate) fn diff_rows_column(rows: &[RenderedLine], is_new: bool) -> Element<'_> {
+    let theme = cosmic::theme::active();
+    let success = success_color(&theme);
+    let destructive = destructive_color(&theme);
     let mut column = Column::new().spacing(0);
     for rendered in rows {
         let row = match rendered {
@@ -388,9 +535,17 @@ pub(crate) fn diff_rows_column(rows: &[RenderedLine], is_new: bool) -> Element<'
                 segments,
             } => {
                 if is_new {
-                    code_text(code_spans(segments, text))
+                    code_text(code_spans(segments, text, None))
                 } else {
-                    diff_row(*marker, text, segments)
+                    let background = match marker {
+                        '+' => Some(Color { a: 0.3, ..success }),
+                        '-' => Some(Color {
+                            a: 0.3,
+                            ..destructive
+                        }),
+                        _ => None,
+                    };
+                    diff_row(*marker, text, segments, background)
                 }
             }
         };
@@ -646,5 +801,87 @@ mod tests {
     #[test]
     fn unknown_extension_falls_back_to_plain_text() {
         assert_eq!(syntax_for_file("notes.unknownextxyz").name, "Plain Text");
+    }
+
+    fn diff_input(hunk: &str, body: &str) -> String {
+        format!("diff --git a/PKGBUILD b/PKGBUILD\n--- a/PKGBUILD\n+++ b/PKGBUILD\n{hunk}{body}")
+    }
+
+    fn fragments(input: &str) -> Vec<Option<(usize, usize)>> {
+        pair_fragments(&parse_unified_diff(input))
+    }
+
+    const FULL: Option<(usize, usize)> = Some((0, usize::MAX));
+
+    #[test]
+    fn changed_fragments_pair_and_trim() {
+        let cases = [
+            ("-pkgver=1\n+pkgver=2\n", vec![Some((7, 8)), Some((7, 8))]),
+            (
+                "-foo old bar\n+foo new bar\n",
+                vec![Some((4, 7)), Some((4, 7))],
+            ),
+            ("-same\n+same\n", vec![None, None]),
+            (
+                "-old1\n-old2\n+new1\n+new2\n",
+                vec![Some((0, 3)), Some((0, 3)), Some((0, 3)), Some((0, 3))],
+            ),
+            ("-foo\n+\n", vec![FULL, None]),
+            (
+                "-café old bar\n+café new bar\n",
+                vec![Some((5, 8)), Some((5, 8))],
+            ),
+        ];
+        for (body, expected) in cases {
+            assert_eq!(
+                &fragments(&diff_input("@@ -1,1 +1,1 @@\n", body))[2..],
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn fragments_stay_local_to_each_run() {
+        assert_eq!(
+            &fragments(&diff_input("@@ -1,2 +1,1\n", "-gone\n keep\n"))[2..],
+            [FULL, None]
+        );
+        let split = concat!(
+            "diff --git a/PKGBUILD b/PKGBUILD\n--- a/PKGBUILD\n+++ b/PKGBUILD\n",
+            "@@ -1,1 +1,1 @@\n-gone\n",
+            "@@ -2,1 +2,1 @@\n+here\n",
+        );
+        assert_eq!(fragments(split), vec![None, None, FULL, None, FULL]);
+        let mixed = concat!(
+            "diff --git a/new.install b/new.install\n--- a/new.install\n+++ b/new.install\n",
+            "@@ -0,0 +1,3 @@\n+one\n+two\n+three\n",
+            "diff --git a/PKGBUILD b/PKGBUILD\n--- a/PKGBUILD\n+++ b/PKGBUILD\n",
+            "@@ -1,1 +1,2 @@\n-old\n+new\n+extra\n",
+        );
+        let mixed = fragments(mixed);
+        assert_eq!(&mixed[2..5], [None, None, None]);
+        assert_eq!(&mixed[7..], [FULL, FULL, FULL]);
+    }
+
+    #[test]
+    fn fragmented_highlight_marks_only_the_middle() {
+        let theme = THEME_SET.get(EmbeddedThemeName::Base16OceanDark);
+        let mut highlighter = HighlightLines::new(SYNTAX_SET.find_syntax_plain_text(), theme);
+        let segments = highlight_fragmented("café old bar", Some((5, 8)), &mut highlighter);
+        assert_eq!(
+            segments
+                .iter()
+                .map(|part| part.text.as_str())
+                .collect::<String>(),
+            "café old bar"
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .filter(|part| part.emphasized)
+                .map(|part| part.text.as_str())
+                .collect::<String>(),
+            "old"
+        );
     }
 }
