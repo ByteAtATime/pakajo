@@ -1,8 +1,10 @@
 use cosmic::iced::Length;
-use cosmic::widget::{Row, button, dialog, scrollable, text};
+use cosmic::iced::alignment::Vertical;
+use cosmic::widget::{Row, button, container, dialog, scrollable, text};
 
 use super::TransactionMessage;
 use super::diff::{RenderedLine, diff_rows_column, parse_unified_diff, rendered_lines};
+use super::shared::{pill, success_color};
 use crate::Element;
 
 #[derive(Clone, Debug)]
@@ -57,25 +59,30 @@ impl PkgbuildModel {
     }
 
     pub(crate) fn view(&self) -> Element<'_> {
-        let mut tabs = Row::new().spacing(4);
+        let mut tabs = Row::new().spacing(4).align_y(Vertical::Center);
         for (i, entry) in self.entries.iter().enumerate() {
-            let label = if entry.is_new {
-                format!("{} (new)", entry.name)
-            } else {
-                entry.name.clone()
-            };
-            let item = button::standard(label).on_press(crate::Message::Transaction(
-                TransactionMessage::Pkgbuild(PkgbuildMessage::SelectTab(i)),
-            ));
+            let mut tab_label = Row::new()
+                .align_y(Vertical::Center)
+                .spacing(8)
+                .push(text(entry.name.clone()));
+            if entry.is_new {
+                tab_label = tab_label.push(pill("new", success_color));
+            }
+            let item = button::custom(tab_label)
+                .class(cosmic::theme::Button::Standard)
+                .on_press(crate::Message::Transaction(TransactionMessage::Pkgbuild(
+                    PkgbuildMessage::SelectTab(i),
+                )));
             tabs = tabs.push(item);
         }
 
-        let body = match self.entries.get(self.current) {
+        let scroll = match self.entries.get(self.current) {
             Some(entry) => {
-                scrollable(diff_rows_column(&entry.rows, entry.is_new)).height(Length::Fixed(400.0))
+                scrollable(diff_rows_column(&entry.rows, entry.is_new)).height(Length::Fill)
             }
-            None => scrollable(text("No PKGBUILD to review")).height(Length::Fixed(400.0)),
+            None => scrollable(text("No PKGBUILD to review")).height(Length::Fill),
         };
+        let body = container(scroll).width(Length::Fill).height(Length::Fill);
 
         let cancel = button::standard("Cancel").on_press(crate::Message::Transaction(
             TransactionMessage::CancelPkgbuild,
@@ -90,7 +97,12 @@ impl PkgbuildModel {
             ))
         };
 
-        let mut review = dialog().title("Review PKGBUILD");
+        let mut review = dialog()
+            .title("Review PKGBUILD")
+            .width(Length::Fill)
+            .max_width(1100.0)
+            .height(Length::Fill)
+            .max_height(800.0);
         if self.entries.len() > 1 {
             review = review.control(tabs);
         }

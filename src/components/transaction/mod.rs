@@ -442,7 +442,7 @@ impl Transaction {
         } else {
             self.model.pkgbuild_review.as_ref().map(|p| p.view())?
         };
-        Some(dialog_backdrop(content))
+        Some(dialog_backdrop(content, 32.0))
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -481,14 +481,15 @@ impl Transaction {
     }
 }
 
-fn dialog_backdrop(content: Element<'_>) -> Element<'_> {
+fn dialog_backdrop(content: Element<'_>, padding: f32) -> Element<'_> {
     container(content)
         .width(Length::Fill)
         .height(Length::Fill)
+        .padding(padding)
         .center_x(Length::Fill)
         .center_y(Length::Fill)
         .style(|_theme: &cosmic::Theme| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.5))),
+            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.55))),
             ..Default::default()
         })
         .into()
