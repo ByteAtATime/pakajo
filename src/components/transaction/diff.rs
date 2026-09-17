@@ -1,9 +1,21 @@
+use std::sync::LazyLock;
+
+use cosmic::iced::widget::text::LineHeight;
+use cosmic::iced::widget::{rich_text, span};
 use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, Row, container, text};
+use syntect::easy::HighlightLines;
+use syntect::parsing::{SyntaxReference, SyntaxSet};
+use two_face::theme::{EmbeddedLazyThemeSet, EmbeddedThemeName};
 
 use super::shared::{BadgeColor, destructive_color, muted_color, success_color};
 use crate::Element;
 use crate::components::theme::muted;
+
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_no_newlines);
+static THEME_SET: LazyLock<EmbeddedLazyThemeSet> = LazyLock::new(two_face::theme::extra);
+
+type MonoSpan = cosmic::iced::widget::text::Span<'static, (), cosmic::font::Font>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DiffLine {
@@ -151,11 +163,18 @@ pub(crate) fn parse_unified_diff(input: &str) -> Vec<DiffLine> {
     sections
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StyledSegment {
+    pub(crate) color: Color,
+    pub(crate) text: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RenderedLine {
     Code {
         marker: char,
         text: String,
+        segments: Vec<StyledSegment>,
     },
     FileHeader {
         name: String,
@@ -167,23 +186,56 @@ pub(crate) enum RenderedLine {
     },
 }
 
-fn body_line(marker: char, text: &str) -> RenderedLine {
-    RenderedLine::Code {
-        marker,
-        text: text.to_owned(),
-    }
+fn shell_syntax() -> &'static SyntaxReference {
+    SYNTAX_SET
+        .find_syntax_by_name("Bourne Again Shell (bash)")
+        .or_else(|| SYNTAX_SET.find_syntax_by_extension("sh"))
+        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text())
 }
 
-fn render_body(line: &DiffLine, is_new: bool) -> Option<RenderedLine> {
-    match line {
-        DiffLine::Added(body) => Some(body_line(if is_new { ' ' } else { '+' }, body)),
-        DiffLine::Removed(body) => Some(body_line(if is_new { ' ' } else { '-' }, body)),
-        DiffLine::Context(body) => Some(body_line(' ', body)),
-        DiffLine::FileHeader { .. } | DiffLine::HunkMeta { .. } => None,
+fn syntax_for_file(name: &str) -> &'static SyntaxReference {
+    if name == "PKGBUILD" || name.ends_with(".install") || name.ends_with(".sh") {
+        return shell_syntax();
     }
+    SYNTAX_SET
+        .find_syntax_for_file(name)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text())
+}
+
+fn highlight_line(body: &str, highlighter: &mut HighlightLines) -> Vec<StyledSegment> {
+    if body.is_empty() {
+        return Vec::new();
+    }
+    let Ok(ranges) = highlighter.highlight_line(body, &SYNTAX_SET) else {
+        return Vec::new();
+    };
+    ranges
+        .into_iter()
+        .map(|(style, fragment)| {
+            let foreground = style.foreground;
+            StyledSegment {
+                color: Color::from_rgba8(
+                    foreground.r,
+                    foreground.g,
+                    foreground.b,
+                    foreground.a as f32 / 255.0,
+                ),
+                text: fragment.to_owned(),
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn rendered_lines(lines: &[DiffLine], is_new: bool) -> Vec<RenderedLine> {
+    let theme = THEME_SET.get(if cosmic::theme::is_dark() {
+        EmbeddedThemeName::Base16OceanDark
+    } else {
+        EmbeddedThemeName::InspiredGithub
+    });
+    let plain = SYNTAX_SET.find_syntax_plain_text();
+    let mut highlighter = HighlightLines::new(plain, theme);
     lines
         .iter()
         .filter_map(|line| match line {
@@ -191,18 +243,35 @@ pub(crate) fn rendered_lines(lines: &[DiffLine], is_new: bool) -> Vec<RenderedLi
                 name,
                 added,
                 removed,
-            } => Some(RenderedLine::FileHeader {
-                name: name.clone(),
-                added: *added,
-                removed: *removed,
-            }),
+            } => {
+                highlighter = HighlightLines::new(syntax_for_file(name), theme);
+                Some(RenderedLine::FileHeader {
+                    name: name.clone(),
+                    added: *added,
+                    removed: *removed,
+                })
+            }
             DiffLine::HunkMeta { elided, .. } => {
                 if is_new || *elided == 0 {
                     return None;
                 }
                 Some(RenderedLine::Gap { elided: *elided })
             }
-            body => render_body(body, is_new),
+            DiffLine::Added(body) => Some(RenderedLine::Code {
+                marker: if is_new { ' ' } else { '+' },
+                text: body.clone(),
+                segments: highlight_line(body, &mut highlighter),
+            }),
+            DiffLine::Removed(body) => Some(RenderedLine::Code {
+                marker: if is_new { ' ' } else { '-' },
+                text: body.clone(),
+                segments: highlight_line(body, &mut highlighter),
+            }),
+            DiffLine::Context(body) => Some(RenderedLine::Code {
+                marker: ' ',
+                text: body.clone(),
+                segments: highlight_line(body, &mut highlighter),
+            }),
         })
         .collect()
 }
@@ -215,13 +284,37 @@ fn marker_color(theme: &cosmic::Theme, marker: char) -> Color {
     }
 }
 
-fn plain_row(body: &str) -> Element<'static> {
-    container(text::monotext(body.to_owned()))
-        .width(Length::Fill)
-        .into()
+fn code_spans(segments: &[StyledSegment], fallback: &str) -> Vec<MonoSpan> {
+    if segments.is_empty() {
+        return vec![
+            span(fallback.to_owned())
+                .font(cosmic::font::mono())
+                .to_static(),
+        ];
+    }
+    segments
+        .iter()
+        .map(|segment| {
+            span(segment.text.clone())
+                .color(segment.color)
+                .font(cosmic::font::mono())
+                .to_static()
+        })
+        .collect()
 }
 
-fn diff_row(marker: char, body: &str) -> Element<'static> {
+fn code_text(spans: Vec<MonoSpan>) -> Element<'static> {
+    container(
+        rich_text(spans)
+            .font(cosmic::font::mono())
+            .size(14.0)
+            .line_height(LineHeight::Absolute(20.0.into())),
+    )
+    .width(Length::Fill)
+    .into()
+}
+
+fn diff_row(marker: char, body: &str, segments: &[StyledSegment]) -> Element<'static> {
     let marker_cell = container(text::monotext(marker.to_string()))
         .width(Length::Fixed(16.0))
         .style(move |theme: &cosmic::Theme| container::Style {
@@ -231,7 +324,7 @@ fn diff_row(marker: char, body: &str) -> Element<'static> {
     Row::new()
         .spacing(8)
         .push(marker_cell)
-        .push(container(text::monotext(body.to_owned())).width(Length::Fill))
+        .push(code_text(code_spans(segments, body)))
         .into()
 }
 
@@ -277,24 +370,27 @@ fn gap_element(elided: usize) -> Element<'static> {
             .center()
             .width(Length::Fill),
     )
-    .into()
 }
 
-pub(crate) fn diff_rows_column(lines: &[DiffLine], is_new: bool) -> Element<'_> {
+pub(crate) fn diff_rows_column(rows: &[RenderedLine], is_new: bool) -> Element<'_> {
     let mut column = Column::new().spacing(0);
-    for rendered in rendered_lines(lines, is_new) {
+    for rendered in rows {
         let row = match rendered {
             RenderedLine::FileHeader {
                 name,
                 added,
                 removed,
-            } => file_header_element(name, added, removed),
-            RenderedLine::Gap { elided } => gap_element(elided),
-            RenderedLine::Code { marker, text } => {
+            } => file_header_element(name.clone(), *added, *removed),
+            RenderedLine::Gap { elided } => gap_element(*elided),
+            RenderedLine::Code {
+                marker,
+                text,
+                segments,
+            } => {
                 if is_new {
-                    plain_row(&text)
+                    code_text(code_spans(segments, text))
                 } else {
-                    diff_row(marker, &text)
+                    diff_row(*marker, text, segments)
                 }
             }
         };
@@ -444,46 +540,47 @@ mod tests {
         );
     }
 
-    fn rendered(input: &str, is_new: bool) -> Vec<RenderedLine> {
+    fn rendered_plain(input: &str, is_new: bool) -> Vec<String> {
         rendered_lines(&parse_unified_diff(input), is_new)
+            .iter()
+            .map(|line| match line {
+                RenderedLine::Code { marker, text, .. } => format!("{marker}:{text}"),
+                RenderedLine::FileHeader {
+                    name,
+                    added,
+                    removed,
+                } => format!("file:{name}+{added}-{removed}"),
+                RenderedLine::Gap { elided } => format!("gap:{elided}"),
+            })
+            .collect()
     }
 
-    fn rendered_code(marker: char, text: &str) -> RenderedLine {
-        RenderedLine::Code {
-            marker,
-            text: text.to_owned(),
-        }
-    }
-
-    fn rendered_file(name: &str, added: usize, removed: usize) -> RenderedLine {
-        RenderedLine::FileHeader {
-            name: name.to_owned(),
-            added,
-            removed,
-        }
+    fn expect_render(input: &str, is_new: bool, expected: &[&str]) {
+        assert_eq!(rendered_plain(input, is_new), expected);
     }
 
     #[test]
     fn rendered_multi_file_sequence_with_gap() {
-        assert_eq!(
-            rendered(MULTI_FILE, false),
-            vec![
-                rendered_file("PKGBUILD", 3, 2),
-                rendered_code(' ', "line1"),
-                rendered_code('-', "old1"),
-                rendered_code('+', "new1"),
-                rendered_code('+', "extra"),
-                rendered_code(' ', "line3"),
-                RenderedLine::Gap { elided: 6 },
-                rendered_code(' ', "line10"),
-                rendered_code('-', "old10"),
-                rendered_code('+', "new10"),
-                rendered_code(' ', "line12"),
-                rendered_file("foo.install", 1, 0),
-                rendered_code(' ', "start"),
-                rendered_code('+', "middle"),
-                rendered_code(' ', "end"),
-            ]
+        expect_render(
+            MULTI_FILE,
+            false,
+            &[
+                "file:PKGBUILD+3-2",
+                " :line1",
+                "-:old1",
+                "+:new1",
+                "+:extra",
+                " :line3",
+                "gap:6",
+                " :line10",
+                "-:old10",
+                "+:new10",
+                " :line12",
+                "file:foo.install+1-0",
+                " :start",
+                "+:middle",
+                " :end",
+            ],
         );
     }
 
@@ -493,30 +590,61 @@ mod tests {
             "diff --git a/PKGBUILD b/PKGBUILD\n--- a/PKGBUILD\n+++ b/PKGBUILD\n",
             "@@ -1,3 +1,4 @@\n line1\n-old1\n+new1\n+extra\n line3\n",
         );
-        assert_eq!(
-            rendered(single, false),
-            vec![
-                rendered_file("PKGBUILD", 2, 1),
-                rendered_code(' ', "line1"),
-                rendered_code('-', "old1"),
-                rendered_code('+', "new1"),
-                rendered_code('+', "extra"),
-                rendered_code(' ', "line3"),
-            ]
+        expect_render(
+            single,
+            false,
+            &[
+                "file:PKGBUILD+2-1",
+                " :line1",
+                "-:old1",
+                "+:new1",
+                "+:extra",
+                " :line3",
+            ],
         );
         let offset = concat!(
             "diff --git a/PKGBUILD b/PKGBUILD\n--- a/PKGBUILD\n+++ b/PKGBUILD\n",
             "@@ -5,3 +8,3 @@\n line8\n-old8\n+new8\n",
         );
-        assert_eq!(
-            rendered(offset, false),
-            vec![
-                rendered_file("PKGBUILD", 1, 1),
-                RenderedLine::Gap { elided: 7 },
-                rendered_code(' ', "line8"),
-                rendered_code('-', "old8"),
-                rendered_code('+', "new8"),
-            ]
+        expect_render(
+            offset,
+            false,
+            &["file:PKGBUILD+1-1", "gap:7", " :line8", "-:old8", "+:new8"],
         );
+    }
+
+    #[test]
+    fn code_lines_carry_highlight_segments() {
+        let single = concat!(
+            "diff --git a/PKGBUILD b/PKGBUILD\n--- a/PKGBUILD\n+++ b/PKGBUILD\n",
+            "@@ -1,1 +1,1 @@\n-pkgname=fixture\n",
+        );
+        let rows = rendered_lines(&parse_unified_diff(single), false);
+        let code = rows.iter().find_map(|row| match row {
+            RenderedLine::Code { text, segments, .. } => Some((text, segments)),
+            _ => None,
+        });
+        let (text, segments) = code.expect("diff has one code line");
+        assert_eq!(text, "pkgname=fixture");
+        assert_eq!(
+            segments
+                .iter()
+                .map(|part| part.text.as_str())
+                .collect::<String>(),
+            "pkgname=fixture"
+        );
+    }
+
+    #[test]
+    fn shell_files_share_bash_syntax() {
+        let pkgbuild = syntax_for_file("PKGBUILD").name.clone();
+        assert_eq!(pkgbuild, syntax_for_file("hooks.install").name);
+        assert_eq!(pkgbuild, syntax_for_file("setup.sh").name);
+        assert_eq!(pkgbuild, "Bourne Again Shell (bash)");
+    }
+
+    #[test]
+    fn unknown_extension_falls_back_to_plain_text() {
+        assert_eq!(syntax_for_file("notes.unknownextxyz").name, "Plain Text");
     }
 }

@@ -2,7 +2,7 @@ use cosmic::iced::Length;
 use cosmic::widget::{Row, button, dialog, scrollable, text};
 
 use super::TransactionMessage;
-use super::diff::{diff_rows_column, parse_unified_diff};
+use super::diff::{RenderedLine, diff_rows_column, parse_unified_diff, rendered_lines};
 use crate::Element;
 
 #[derive(Clone, Debug)]
@@ -14,16 +14,17 @@ pub(crate) struct ReviewedDiff {
     pub(crate) name: String,
     pub(crate) is_new: bool,
     pub(crate) dir: std::path::PathBuf,
-    pub(crate) lines: Vec<super::diff::DiffLine>,
+    pub(crate) rows: Vec<RenderedLine>,
 }
 
 impl ReviewedDiff {
     pub(crate) fn parse(diff: &pakajo::pkgbuild::PkgbuildDiff) -> Self {
+        let rows = rendered_lines(&parse_unified_diff(&diff.diff), diff.is_new);
         Self {
             name: diff.name.clone(),
             is_new: diff.is_new,
             dir: diff.dir.clone(),
-            lines: parse_unified_diff(&diff.diff),
+            rows,
         }
     }
 
@@ -70,8 +71,9 @@ impl PkgbuildModel {
         }
 
         let body = match self.entries.get(self.current) {
-            Some(entry) => scrollable(diff_rows_column(&entry.lines, entry.is_new))
-                .height(Length::Fixed(400.0)),
+            Some(entry) => {
+                scrollable(diff_rows_column(&entry.rows, entry.is_new)).height(Length::Fixed(400.0))
+            }
             None => scrollable(text("No PKGBUILD to review")).height(Length::Fixed(400.0)),
         };
 

@@ -64,10 +64,10 @@ use crate::Element;
 use crate::components::theme::{
     accent_color, destructive_color, muted_text as muted, pill, success_color, warning_color,
 };
-use crate::components::transaction::diff::DiffLine;
 use crate::components::transaction::review::{ReviewModel, ReviewSelection, review_body};
-use crate::components::transaction::{ReviewedDiff, diff_rows_column};
-use crate::components::transaction::{Transaction, format_signed_bytes};
+use crate::components::transaction::{
+    ReviewedDiff, Transaction, diff_rows_column, format_signed_bytes,
+};
 use crate::components::updates::aur_upgrade_row;
 use cosmic::widget::divider;
 
@@ -217,10 +217,7 @@ impl crate::PakajoApp {
                             has_diffs,
                             next
                         );
-                        let pkgbuild_rows = ReviewedDiff::parse_all(&preview.pkgbuild_diffs)
-                            .into_iter()
-                            .map(|entry| entry.lines)
-                            .collect();
+                        let pkgbuild_rows = ReviewedDiff::parse_all(&preview.pkgbuild_diffs);
                         self.sysupgrade_preview = Some(preview);
                         self.pkgbuild_rows = pkgbuild_rows;
                         self.sysupgrade_preview_error = None;
@@ -355,14 +352,14 @@ impl crate::PakajoApp {
             return no_preview();
         }
         let index = self.pkgbuild_review_index.min(diffs.len() - 1);
-        let rows: &[DiffLine] = self.pkgbuild_rows[index].as_slice();
+        let entry = &self.pkgbuild_rows[index];
 
         let position = format!("Diff {} of {}", index + 1, diffs.len());
         let body = Column::new()
             .spacing(16)
             .padding([0.0, 12.0])
             .push(text(position))
-            .push(diff_rows_column(rows, diffs[index].is_new));
+            .push(diff_rows_column(&entry.rows, entry.is_new));
 
         let column = Column::new()
             .push(padded_header)

@@ -90,7 +90,7 @@ pub struct PakajoApp {
     pub(crate) sysupgrade_preview_in_flight: bool,
     search_focus_pending: bool,
     pub(crate) sysupgrade_review: Option<ReviewModel>,
-    pub(crate) pkgbuild_rows: Vec<Vec<crate::components::transaction::diff::DiffLine>>,
+    pub(crate) pkgbuild_rows: Vec<crate::components::transaction::ReviewedDiff>,
     pub(crate) pkgbuild_review_index: usize,
 }
 
