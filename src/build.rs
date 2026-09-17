@@ -46,10 +46,15 @@ pub fn run_build<S: InstallSink + ?Sized>(
         );
     }
 
-    let decision = decider.confirm_build(&plan);
-    if matches!(decision, BuildDecision::Abort) {
-        anyhow::bail!("build cancelled by user");
-    }
+    let decision = if plan.bases.is_empty() {
+        BuildDecision::Proceed
+    } else {
+        let decision = decider.confirm_build(&plan);
+        if matches!(decision, BuildDecision::Abort) {
+            anyhow::bail!("build cancelled by user");
+        }
+        decision
+    };
 
     let pkgbuilds = crate::pkgbuild::collect_for_review(&plan, sink)?;
     review_if_requested(decision, &pkgbuilds, sink, decider)?;
