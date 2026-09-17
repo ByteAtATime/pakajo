@@ -34,8 +34,10 @@ mod resolve;
 mod shared;
 pub(crate) use shared::format_signed_bytes;
 
+pub(crate) mod diff;
 mod pkgbuild;
-pub(crate) use pkgbuild::diff_lines_column;
+pub(crate) use diff::diff_rows_column;
+pub(crate) use pkgbuild::ReviewedDiff;
 use pkgbuild::{PkgbuildMessage, PkgbuildModel};
 
 pub(crate) mod review;
@@ -335,8 +337,8 @@ impl Transaction {
             }
             TransactionMessage::ApprovePkgbuild => {
                 if let Some(p) = self.model.pkgbuild_review.take() {
-                    for diff in &p.diffs {
-                        let _ = mark_seen(&diff.dir);
+                    for entry in &p.entries {
+                        let _ = mark_seen(&entry.dir);
                     }
                 }
                 let approvals = self.model.pending_approvals.take();

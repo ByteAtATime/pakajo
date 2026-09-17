@@ -90,6 +90,7 @@ pub struct PakajoApp {
     pub(crate) sysupgrade_preview_in_flight: bool,
     search_focus_pending: bool,
     pub(crate) sysupgrade_review: Option<ReviewModel>,
+    pub(crate) pkgbuild_rows: Vec<Vec<crate::components::transaction::diff::DiffLine>>,
     pub(crate) pkgbuild_review_index: usize,
 }
 
@@ -188,6 +189,7 @@ impl Application for PakajoApp {
             sysupgrade_preview_in_flight: false,
             search_focus_pending: true,
             sysupgrade_review: None,
+            pkgbuild_rows: Vec::new(),
             pkgbuild_review_index: 0,
         };
         let task = match pakajo::updates::load_cached() {
