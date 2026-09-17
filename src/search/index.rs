@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const POP_NORM_MAX: f64 = 100.0;
-const INDEX_MAGIC: [u8; 4] = *b"PKJ2";
+const INDEX_MAGIC: [u8; 4] = *b"v001";
 
 fn next_prefix_bound(q: &[u8]) -> Option<Vec<u8>> {
     let last = q.len() - 1;
