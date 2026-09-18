@@ -3,18 +3,22 @@ use std::process::{Command, Stdio};
 
 use anyhow::Context as _;
 
+use syntect::easy::HighlightLines;
+
 use crate::cli::prompts::confirm_review_accept;
 use crate::color;
-use crate::diff::{DiffLine, parse_unified_diff};
+use crate::color::ColorTier;
+use crate::diff::{DiffLine, StyledSegment, highlight_line, parse_unified_diff, syntax_for_file};
 use crate::pkgbuild::{PkgbuildInfo, compute_diff};
 
 pub fn review_pkgbuilds(pkgbuilds: &[PkgbuildInfo]) -> bool {
-    let use_color = color::stdout_color();
+    let tier = color::terminal_tier();
+    let enabled = tier != ColorTier::Off;
     let mut sections: Vec<(String, String)> = Vec::new();
     for pb in pkgbuilds {
         match compute_diff(&pb.dir, pb.is_new, false) {
             Ok(raw) => {
-                if let Some(body) = render_package(&raw, pb.is_new, use_color) {
+                if let Some(body) = render_package(&raw, pb.is_new, tier) {
                     sections.push((pb.name.clone(), body));
                 }
             }
@@ -27,14 +31,14 @@ pub fn review_pkgbuilds(pkgbuilds: &[PkgbuildInfo]) -> bool {
     if sections.is_empty() {
         println!(
             "{}",
-            color::colon(use_color, "Nothing new to review - all PKGBUILDs unchanged")
+            color::colon(enabled, "Nothing new to review - all PKGBUILDs unchanged")
         );
         return true;
     }
 
     let mut combined = String::new();
     for (name, body) in &sections {
-        combined.push_str(&color::colon(use_color, name));
+        combined.push_str(&color::colon(enabled, name));
         combined.push_str("\n\n");
         combined.push_str(body);
         combined.push_str("\n\n");
@@ -105,7 +109,7 @@ fn run_pager(pager: &str, content: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn render_package(raw: &str, is_new: bool, colored: bool) -> Option<String> {
+fn render_package(raw: &str, is_new: bool, tier: ColorTier) -> Option<String> {
     let lines = parse_unified_diff(raw);
     if !lines.iter().any(|line| {
         matches!(
@@ -116,20 +120,62 @@ fn render_package(raw: &str, is_new: bool, colored: bool) -> Option<String> {
         return None;
     }
     if is_new {
-        return Some(render_new(&lines, colored));
+        return Some(render_new(&lines, tier));
     }
-    Some(render_diff(&lines, colored))
+    Some(render_diff(&lines, tier))
 }
 
-fn render_diff(lines: &[DiffLine], colored: bool) -> String {
-    let added = color::paint(colored, color::GREEN, "+");
-    let removed = color::paint(colored, color::RED, "-");
+fn paint_segment(segment: &StyledSegment, tier: ColorTier) -> String {
+    match tier {
+        ColorTier::Truecolor => format!(
+            "\x1b[38;2;{};{};{}m{}\x1b[0m",
+            segment.color.r, segment.color.g, segment.color.b, segment.text
+        ),
+        ColorTier::Basic16 => {
+            let index = color::quantize_dark(segment.color.r, segment.color.g, segment.color.b);
+            format!(
+                "\x1b[{}m{}\x1b[0m",
+                if index < 8 {
+                    30 + index as u32
+                } else {
+                    82 + index as u32
+                },
+                segment.text
+            )
+        }
+        ColorTier::Off => segment.text.clone(),
+    }
+}
+
+fn new_highlighter(name: &str) -> HighlightLines<'_> {
+    HighlightLines::new(syntax_for_file(name), crate::diff::terminal_theme())
+}
+
+fn render_code(text: &str, highlighter: Option<&mut HighlightLines>, tier: ColorTier) -> String {
+    if tier == ColorTier::Off {
+        return text.to_string();
+    }
+    let Some(highlighter) = highlighter else {
+        return text.to_string();
+    };
+    highlight_line(text, highlighter)
+        .iter()
+        .map(|segment| paint_segment(segment, tier))
+        .collect()
+}
+
+fn render_diff(lines: &[DiffLine], tier: ColorTier) -> String {
+    let enabled = tier != ColorTier::Off;
+    let added = color::paint(enabled, color::GREEN, "+");
+    let removed = color::paint(enabled, color::RED, "-");
+    let mut highlighter: Option<HighlightLines> = None;
     let mut out = Vec::new();
     for line in lines {
         match line {
             DiffLine::FileHeader { name, .. } => {
-                out.push(color::paint(colored, color::RED, &format!("--- {name}")));
-                out.push(color::paint(colored, color::GREEN, &format!("+++ {name}")));
+                highlighter = Some(new_highlighter(name));
+                out.push(color::paint(enabled, color::RED, &format!("--- {name}")));
+                out.push(color::paint(enabled, color::GREEN, &format!("+++ {name}")));
             }
             DiffLine::HunkMeta {
                 old_start,
@@ -138,7 +184,7 @@ fn render_diff(lines: &[DiffLine], colored: bool) -> String {
                 new_len,
                 ..
             } => out.push(color::paint(
-                colored,
+                enabled,
                 color::CYAN,
                 &format!(
                     "@@ -{} +{} @@",
@@ -146,9 +192,18 @@ fn render_diff(lines: &[DiffLine], colored: bool) -> String {
                     range_part(*new_start, *new_len)
                 ),
             )),
-            DiffLine::Added(text) => out.push(format!("{added}{text}")),
-            DiffLine::Removed(text) => out.push(format!("{removed}{text}")),
-            DiffLine::Context(text) => out.push(format!(" {text}")),
+            DiffLine::Added(text) => out.push(format!(
+                "{added}{}",
+                render_code(text, highlighter.as_mut(), tier)
+            )),
+            DiffLine::Removed(text) => out.push(format!(
+                "{removed}{}",
+                render_code(text, highlighter.as_mut(), tier)
+            )),
+            DiffLine::Context(text) => out.push(format!(
+                " {}",
+                render_code(text, highlighter.as_mut(), tier)
+            )),
         }
     }
     out.join("\n")
@@ -162,21 +217,27 @@ fn range_part(start: usize, len: usize) -> String {
     }
 }
 
-fn render_new(lines: &[DiffLine], colored: bool) -> String {
+fn render_new(lines: &[DiffLine], tier: ColorTier) -> String {
+    let enabled = tier != ColorTier::Off;
     let multi = lines
         .iter()
         .filter(|line| matches!(line, DiffLine::FileHeader { .. }))
         .count()
         > 1;
+    let mut highlighter: Option<HighlightLines> = None;
     let mut out = Vec::new();
     for line in lines {
         match line {
             DiffLine::FileHeader { name, .. } => {
+                highlighter = Some(new_highlighter(name));
                 if multi {
-                    out.push(color::paint(colored, color::DIM, name));
+                    out.push(color::paint(enabled, color::DIM, name));
                 }
             }
-            DiffLine::Added(text) | DiffLine::Context(text) => out.push(format!(" {text}")),
+            DiffLine::Added(text) | DiffLine::Context(text) => out.push(format!(
+                " {}",
+                render_code(text, highlighter.as_mut(), tier)
+            )),
             DiffLine::Removed(_) | DiffLine::HunkMeta { .. } => {}
         }
     }
@@ -224,32 +285,80 @@ mod tests {
             "+middle\n",
             " end",
         );
-        let plain = render_package(STALE, false, false).expect("stale diff has code lines");
+        let plain =
+            render_package(STALE, false, ColorTier::Off).expect("stale diff has code lines");
         assert_eq!(plain, expected);
         assert!(!plain.contains('\x1b'));
         let colored_expected = concat!(
             "\x1b[1;31m--- PKGBUILD\x1b[0m\n",
             "\x1b[1;32m+++ PKGBUILD\x1b[0m\n",
             "\x1b[36m@@ -1,3 +1,4 @@\x1b[0m\n",
-            " line1\n",
-            "\x1b[1;31m-\x1b[0mold1\n",
-            "\x1b[1;32m+\x1b[0mnew1\n",
-            "\x1b[1;32m+\x1b[0mextra\n",
-            " line3\n",
+            " \x1b[30mline1\x1b[0m\n",
+            "\x1b[1;31m-\x1b[0m\x1b[30mold1\x1b[0m\n",
+            "\x1b[1;32m+\x1b[0m\x1b[30mnew1\x1b[0m\n",
+            "\x1b[1;32m+\x1b[0m\x1b[30mextra\x1b[0m\n",
+            " \x1b[30mline3\x1b[0m\n",
             "\x1b[36m@@ -10 +11 @@\x1b[0m\n",
-            " line10\n",
-            "\x1b[1;31m-\x1b[0mold10\n",
-            "\x1b[1;32m+\x1b[0mnew10\n",
+            " \x1b[30mline10\x1b[0m\n",
+            "\x1b[1;31m-\x1b[0m\x1b[30mold10\x1b[0m\n",
+            "\x1b[1;32m+\x1b[0m\x1b[30mnew10\x1b[0m\n",
             "\x1b[1;31m--- foo.install\x1b[0m\n",
             "\x1b[1;32m+++ foo.install\x1b[0m\n",
             "\x1b[36m@@ -1,2 +1,3 @@\x1b[0m\n",
-            " start\n",
-            "\x1b[1;32m+\x1b[0mmiddle\n",
-            " end",
+            " \x1b[30mstart\x1b[0m\n",
+            "\x1b[1;32m+\x1b[0m\x1b[30mmiddle\x1b[0m\n",
+            " \x1b[30mend\x1b[0m",
         );
-        let colored = render_package(STALE, false, true).expect("stale diff has code lines");
+        let colored =
+            render_package(STALE, false, ColorTier::Basic16).expect("stale diff has code lines");
         assert_eq!(colored, colored_expected);
         assert_eq!(color::ansi_strip(&colored), plain);
+        let truecolor =
+            render_package(STALE, false, ColorTier::Truecolor).expect("stale diff has code lines");
+        assert_eq!(color::ansi_strip(&truecolor), plain);
+    }
+
+    const TINY: &str = concat!(
+        "diff --git a/PKGBUILD b/PKGBUILD\n--- a/PKGBUILD\n+++ b/PKGBUILD\n",
+        "@@ -1,1 +1,1 @@\n-pkgname=fixture\n+pkgname=other\n",
+    );
+
+    #[test]
+    fn tiered_spans_carry_syntect_colors() {
+        let plain = render_package(TINY, false, ColorTier::Off).expect("tiny diff has code lines");
+        let expected = concat!(
+            "\x1b[1;31m--- PKGBUILD\x1b[0m\n",
+            "\x1b[1;32m+++ PKGBUILD\x1b[0m\n",
+            "\x1b[36m@@ -1 +1 @@\x1b[0m\n",
+            "\x1b[1;31m-\x1b[0m\x1b[38;2;191;97;106mpkgname\x1b[0m\x1b[38;2;192;197;206m=\x1b[0m\x1b[38;2;163;190;140mfixture\x1b[0m\n",
+            "\x1b[1;32m+\x1b[0m\x1b[38;2;191;97;106mpkgname\x1b[0m\x1b[38;2;192;197;206m=\x1b[0m\x1b[38;2;163;190;140mother\x1b[0m",
+        );
+        let rendered =
+            render_package(TINY, false, ColorTier::Truecolor).expect("tiny diff has code lines");
+        assert_eq!(rendered, expected);
+        assert_eq!(color::ansi_strip(&rendered), plain);
+        let expected = concat!(
+            "\x1b[1;31m--- PKGBUILD\x1b[0m\n",
+            "\x1b[1;32m+++ PKGBUILD\x1b[0m\n",
+            "\x1b[36m@@ -1 +1 @@\x1b[0m\n",
+            "\x1b[1;31m-\x1b[0m\x1b[31mpkgname\x1b[0m\x1b[90m=\x1b[0m\x1b[30mfixture\x1b[0m\n",
+            "\x1b[1;32m+\x1b[0m\x1b[31mpkgname\x1b[0m\x1b[90m=\x1b[0m\x1b[30mother\x1b[0m",
+        );
+        let rendered =
+            render_package(TINY, false, ColorTier::Basic16).expect("tiny diff has code lines");
+        assert_eq!(rendered, expected);
+        let code_only = rendered
+            .lines()
+            .skip(3)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("\x1b[1;31m-\x1b[0m", "")
+            .replace("\x1b[1;32m+\x1b[0m", "");
+        assert!(code_only.contains("\x1b[31m"));
+        assert!(code_only.contains("\x1b[90m"));
+        assert!(code_only.contains("\x1b[30m"));
+        assert!(!code_only.contains("\x1b[1"));
+        assert_eq!(color::ansi_strip(&rendered), plain);
     }
 
     #[test]
@@ -262,13 +371,15 @@ mod tests {
             " start\n",
             " end",
         );
-        let plain = render_package(NEW_TWO_FILES, true, false).expect("new files have code lines");
+        let plain =
+            render_package(NEW_TWO_FILES, true, ColorTier::Off).expect("new files have code lines");
         assert_eq!(plain, expected);
         assert!(!plain.contains('\x1b'));
         assert!(!plain.contains("---"));
         assert!(!plain.contains("+++"));
         assert!(!plain.contains("@@"));
-        let colored = render_package(NEW_TWO_FILES, true, true).expect("new files have code lines");
+        let colored = render_package(NEW_TWO_FILES, true, ColorTier::Basic16)
+            .expect("new files have code lines");
         assert!(colored.contains(&format!("{}foo.install{}", color::DIM, color::RESET)));
         assert_eq!(color::ansi_strip(&colored), plain);
     }
@@ -279,8 +390,8 @@ mod tests {
             "diff --git a/PKGBUILD b/PKGBUILD\nold mode 100644\nnew mode 100755\n",
             "diff --git a/data.bin b/data.bin\nBinary files a/data.bin and b/data.bin differ\n",
         );
-        assert_eq!(render_package(chrome, false, false), None);
-        assert_eq!(render_package(chrome, false, true), None);
-        assert_eq!(render_package(chrome, true, false), None);
+        assert_eq!(render_package(chrome, false, ColorTier::Off), None);
+        assert_eq!(render_package(chrome, false, ColorTier::Truecolor), None);
+        assert_eq!(render_package(chrome, true, ColorTier::Basic16), None);
     }
 }

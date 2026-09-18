@@ -1,14 +1,10 @@
 use cosmic::iced::widget::text::{Rich, Span};
 use cosmic::iced::{Color, Length};
 use pakajo::ansi::{self, AnsiColor, StyledSpan};
+use pakajo::color::DARK_PALETTE;
 
 use crate::Element;
 use crate::components::theme::muted_color;
-
-const DARK_PALETTE: [u32; 16] = [
-    0x8b949e, 0xe5534b, 0x3fb950, 0xe3b341, 0x539bf5, 0xb083f0, 0x39c5cf, 0xd0d7de, 0xb0bac8,
-    0xff7b72, 0x56d364, 0xf2cc60, 0x7aa2f7, 0xd2a8ff, 0x56d4dd, 0xf0f3f6,
-];
 
 const LIGHT_PALETTE: [u32; 16] = [
     0x24292f, 0xcf222e, 0x1a7f37, 0x9a6700, 0x0969da, 0x8250df, 0x1b7c83, 0x57606a, 0x6e7781,

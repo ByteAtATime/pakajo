@@ -31,6 +31,51 @@ pub fn stdout_color() -> bool {
     std::io::stdout().is_terminal() && !no_color_requested()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorTier {
+    Off,
+    Basic16,
+    Truecolor,
+}
+
+pub fn terminal_tier() -> ColorTier {
+    if !stdout_color() {
+        return ColorTier::Off;
+    }
+    if std::env::var("COLORTERM").is_ok_and(|value| {
+        let lowered = value.to_ascii_lowercase();
+        lowered.contains("truecolor") || lowered.contains("24bit")
+    }) {
+        ColorTier::Truecolor
+    } else {
+        ColorTier::Basic16
+    }
+}
+
+pub const DARK_PALETTE: [u32; 16] = [
+    0x8b949e, 0xe5534b, 0x3fb950, 0xe3b341, 0x539bf5, 0xb083f0, 0x39c5cf, 0xd0d7de, 0xb0bac8,
+    0xff7b72, 0x56d364, 0xf2cc60, 0x7aa2f7, 0xd2a8ff, 0x56d4dd, 0xf0f3f6,
+];
+
+pub fn quantize_dark(r: u8, g: u8, b: u8) -> u8 {
+    let mut best = 0;
+    let mut best_distance = u32::MAX;
+    for (index, hex) in DARK_PALETTE.iter().enumerate() {
+        let pr = (hex >> 16) as u8;
+        let pg = (hex >> 8) as u8;
+        let pb = *hex as u8;
+        let dr = r as i32 - pr as i32;
+        let dg = g as i32 - pg as i32;
+        let db = b as i32 - pb as i32;
+        let distance = (dr * dr + dg * dg + db * db) as u32;
+        if distance < best_distance {
+            best_distance = distance;
+            best = index;
+        }
+    }
+    best as u8
+}
+
 pub fn stderr_color() -> bool {
     std::io::stderr().is_terminal() && !no_color_requested()
 }

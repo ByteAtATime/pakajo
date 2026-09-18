@@ -1,6 +1,7 @@
 use std::sync::LazyLock;
 
 use syntect::easy::HighlightLines;
+use syntect::highlighting::Theme;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use two_face::theme::{EmbeddedLazyThemeSet, EmbeddedThemeName};
 
@@ -183,6 +184,10 @@ pub enum RenderedLine {
     Gap {
         elided: usize,
     },
+}
+
+pub fn terminal_theme() -> &'static Theme {
+    THEME_SET.get(EmbeddedThemeName::Base16OceanDark)
 }
 
 pub fn shell_syntax() -> &'static SyntaxReference {
