@@ -17,6 +17,7 @@ fn installed_data(local: &alpm::Package) -> InstalledData {
         explicit: matches!(local.reason(), alpm::PackageReason::Explicit),
         install_date: local.install_date().and_then(|d| (d > 0).then_some(d)),
         script: local.has_scriptlet(),
+        installed_size: local.isize(),
     }
 }
 
@@ -273,6 +274,9 @@ fn package_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)
         rows.push(row);
     }
     let PackageKind::Repo(data) = &pkg.kind else {
+        if let Some(overlay) = pkg.installed.as_ref() {
+            rows.push(("Size on Disk", humanized(overlay.installed_size)));
+        }
         return rows;
     };
     let script = pkg
@@ -286,13 +290,17 @@ fn package_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)
     if data.is_local() {
         rows.push(("Size on Disk", humanized(data.installed_size)));
     } else {
+        let installed_size = pkg
+            .installed
+            .as_ref()
+            .map_or(data.installed_size, |overlay| overlay.installed_size);
         rows.push((
             "Size",
             format!(
                 "{} {}, {} {}",
                 humanized(data.download_size),
                 color::paint(stdout_color, color::GRAY, "(download)"),
-                humanized(data.installed_size),
+                humanized(installed_size),
                 color::paint(stdout_color, color::GRAY, "(installed)"),
             ),
         ));
@@ -549,6 +557,7 @@ mod tests {
             explicit: true,
             install_date: None,
             script: true,
+            installed_size: 2048,
         });
 
         let out = render(&pkg, false);

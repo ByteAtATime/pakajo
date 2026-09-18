@@ -21,6 +21,7 @@ pub struct InstalledData {
     pub explicit: bool,
     pub install_date: Option<i64>,
     pub script: bool,
+    pub installed_size: i64,
 }
 
 #[derive(Clone)]
