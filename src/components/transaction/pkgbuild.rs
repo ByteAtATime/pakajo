@@ -3,9 +3,10 @@ use cosmic::iced::alignment::Vertical;
 use cosmic::widget::{Row, button, container, dialog, scrollable, text};
 
 use super::TransactionMessage;
-use super::diff::{RenderedLine, diff_rows_column, parse_unified_diff, rendered_lines};
+use super::diff::diff_rows_column;
 use super::shared::{pill, success_color};
 use crate::Element;
+use pakajo::diff::{RenderedLine, parse_unified_diff, rendered_lines};
 
 #[derive(Clone, Debug)]
 pub enum PkgbuildMessage {
@@ -21,7 +22,11 @@ pub(crate) struct ReviewedDiff {
 
 impl ReviewedDiff {
     pub(crate) fn parse(diff: &pakajo::pkgbuild::PkgbuildDiff) -> Self {
-        let rows = rendered_lines(&parse_unified_diff(&diff.diff), diff.is_new);
+        let rows = rendered_lines(
+            &parse_unified_diff(&diff.diff),
+            diff.is_new,
+            cosmic::theme::is_dark(),
+        );
         Self {
             name: diff.name.clone(),
             is_new: diff.is_new,

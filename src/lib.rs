@@ -8,6 +8,7 @@ pub mod color;
 pub mod dashboard;
 pub mod db;
 pub mod devel;
+pub mod diff;
 pub mod dispatch;
 pub mod dry_run;
 pub mod events;
