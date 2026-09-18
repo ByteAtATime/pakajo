@@ -317,7 +317,7 @@ pub fn clone_dir(pkgbase: &str) -> anyhow::Result<PathBuf> {
     if is_valid_pkgbase(pkgbase).is_none() {
         anyhow::bail!("invalid pkgbase from AUR: {pkgbase:?}");
     }
-    Ok(crate::utils::cache_root()?.join(pkgbase))
+    Ok(crate::utils::cache_root()?.join("aur").join(pkgbase))
 }
 
 pub fn git_clone_or_pull(dir: &Path, pkgbase: &str) -> anyhow::Result<()> {
