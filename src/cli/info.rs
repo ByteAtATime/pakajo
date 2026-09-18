@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::color;
 use crate::package::{InstalledData, OptDependency, Package, PackageKind};
+use crate::utils::{format_bytes, group_thousands};
 
 const NAME: &str = "\x1b[1;37m";
 const VERSION: &str = "\x1b[1;36m";
@@ -124,29 +125,6 @@ fn format_epoch(epoch: i64, fmt: &str) -> String {
         .to_string()
 }
 
-fn format_date(epoch: i64) -> String {
-    format_epoch(epoch, "%a %d %b %Y")
-}
-
-fn humanized(bytes: i64) -> String {
-    let (value, unit) = crate::utils::humanize_size(bytes);
-    format!("{value:.2} {unit}")
-}
-
-fn format_ymd(epoch: i64) -> String {
-    format_epoch(epoch, "%Y-%m-%d")
-}
-
-fn grouped_votes(votes: u64) -> String {
-    let digits: Vec<char> = votes.to_string().chars().collect();
-    digits
-        .rchunks(3)
-        .rev()
-        .map(|chunk| chunk.iter().collect::<String>())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
 fn installed_row(pkg: &Package, stdout_color: bool) -> Option<(&'static str, String)> {
     let overlay = pkg.installed.as_ref()?;
     let base: &str = if overlay.explicit {
@@ -161,7 +139,7 @@ fn installed_row(pkg: &Package, stdout_color: bool) -> Option<(&'static str, Str
     };
     let fragment = color::paint(stdout_color, color::GRAY, &format!("({note})"));
     let value = match overlay.install_date {
-        Some(epoch) => format!("{} {fragment}", format_date(epoch)),
+        Some(epoch) => format!("{} {fragment}", format_epoch(epoch, "%a %d %b %Y")),
         None => fragment,
     };
     Some(("Installed", value))
@@ -275,7 +253,7 @@ fn package_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)
     }
     let PackageKind::Repo(data) = &pkg.kind else {
         if let Some(overlay) = pkg.installed.as_ref() {
-            rows.push(("Size on Disk", humanized(overlay.installed_size)));
+            rows.push(("Size on Disk", format_bytes(overlay.installed_size)));
         }
         return rows;
     };
@@ -288,7 +266,7 @@ fn package_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)
         if script { "Yes" } else { "No" }.to_string(),
     ));
     if data.is_local() {
-        rows.push(("Size on Disk", humanized(data.installed_size)));
+        rows.push(("Size on Disk", format_bytes(data.installed_size)));
     } else {
         let installed_size = pkg
             .installed
@@ -298,15 +276,15 @@ fn package_rows(pkg: &Package, stdout_color: bool) -> Vec<(&'static str, String)
             "Size",
             format!(
                 "{} {}, {} {}",
-                humanized(data.download_size),
+                format_bytes(data.download_size),
                 color::paint(stdout_color, color::GRAY, "(download)"),
-                humanized(installed_size),
+                format_bytes(installed_size),
                 color::paint(stdout_color, color::GRAY, "(installed)"),
             ),
         ));
     }
     if let Some(epoch) = data.build_date {
-        rows.push(("Build Date", format_date(epoch)));
+        rows.push(("Build Date", format_epoch(epoch, "%a %d %b %Y")));
     }
     rows.push(("Packager", pkg.maintainer.clone().unwrap_or_default()));
     rows.push(("License", pkg.licenses.join(", ")));
@@ -330,7 +308,7 @@ fn community_rows(
         "Votes / Pop",
         format!(
             "{} {}",
-            grouped_votes(data.num_votes),
+            group_thousands(data.num_votes as i64),
             color::paint(
                 stdout_color,
                 color::GRAY,
@@ -346,10 +324,10 @@ fn community_rows(
         )),
     }
     if let Some(epoch) = data.submitted {
-        rows.push(("Submitted", format_date(epoch)));
+        rows.push(("Submitted", format_epoch(epoch, "%a %d %b %Y")));
     }
     if let Some(epoch) = data.last_modified {
-        rows.push(("Last Modified", format_date(epoch)));
+        rows.push(("Last Modified", format_epoch(epoch, "%a %d %b %Y")));
     }
     match data.flagged {
         Some(epoch) => rows.push((
@@ -357,7 +335,7 @@ fn community_rows(
             color::paint(
                 stdout_color,
                 color::YELLOW,
-                &format!("Yes ({})", format_ymd(epoch)),
+                &format!("Yes ({})", format_epoch(epoch, "%Y-%m-%d")),
             ),
         )),
         None => rows.push(("Flagged Out", "No".to_string())),
