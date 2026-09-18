@@ -34,21 +34,21 @@ pub enum DiffLine {
     Context(String),
 }
 
-pub fn parse_range(side: &str) -> Option<(usize, usize)> {
+fn parse_range(side: &str) -> Option<(usize, usize)> {
     let mut parts = side.trim_start_matches(['-', '+']).split(',');
     let start: usize = parts.next()?.parse().ok()?;
     let len = parts.next().map_or(Ok(1), |len| len.parse()).ok()?;
     Some((start, len))
 }
 
-pub fn parse_hunk_header(line: &str) -> Option<(usize, usize, usize, usize)> {
+fn parse_hunk_header(line: &str) -> Option<(usize, usize, usize, usize)> {
     let mut words = line.strip_prefix("@@")?.split_whitespace();
     let (old_start, old_len) = parse_range(words.next()?)?;
     let (new_start, new_len) = parse_range(words.next()?)?;
     Some((old_start, old_len, new_start, new_len))
 }
 
-pub fn file_basename(line: &str) -> String {
+fn file_basename(line: &str) -> String {
     let path = line.split(' ').nth(2).unwrap_or(line);
     let path = path
         .strip_prefix("b/")
@@ -57,7 +57,7 @@ pub fn file_basename(line: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
 }
 
-pub fn is_hidden_chrome(line: &str) -> bool {
+fn is_hidden_chrome(line: &str) -> bool {
     const PREFIXES: [&str; 11] = [
         "index ",
         "new file",
@@ -74,11 +74,11 @@ pub fn is_hidden_chrome(line: &str) -> bool {
     PREFIXES.iter().any(|prefix| line.starts_with(prefix))
 }
 
-pub fn is_file_marker(line: &str) -> bool {
+fn is_file_marker(line: &str) -> bool {
     line.starts_with("--- ") || line == "---" || line.starts_with("+++ ") || line == "+++"
 }
 
-pub fn content_line(raw: &str) -> DiffLine {
+fn content_line(raw: &str) -> DiffLine {
     if let Some(body) = raw.strip_prefix('+') {
         DiffLine::Added(body.to_owned())
     } else if let Some(body) = raw.strip_prefix('-') {
@@ -90,14 +90,14 @@ pub fn content_line(raw: &str) -> DiffLine {
     }
 }
 
-pub enum Classified {
+enum Classified {
     Hunk(usize, usize, usize, usize),
     File,
     Hidden,
     Body,
 }
 
-pub fn classify(raw: &str, in_body: bool) -> Classified {
+fn classify(raw: &str, in_body: bool) -> Classified {
     if let Some((old_start, old_len, new_start, new_len)) = parse_hunk_header(raw) {
         return Classified::Hunk(old_start, old_len, new_start, new_len);
     }
@@ -258,7 +258,7 @@ pub fn fragment_pair(removed: &str, added: &str) -> (Fragment, Fragment) {
     (range(removed.len()), range(added.len()))
 }
 
-pub fn flush_fragments(
+fn flush_fragments(
     emphasis: &mut [Option<(usize, usize)>],
     lines: &[DiffLine],
     removed: &mut Vec<usize>,
