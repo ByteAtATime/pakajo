@@ -6,7 +6,7 @@ use crate::dispatch::operation::{ChildOperation, PrivilegedOperation};
 use crate::dispatch::protocol::Decider;
 use crate::dispatch::remove::Preview;
 use crate::dispatch::session::{PhasePlan, run_phases};
-use crate::resolve::{ConflictReport, Decisions, Plan};
+use crate::resolve::{ConflictReport, Decisions, Plan, RepoInstall};
 
 pub struct InstallRequest {
     pub targets: Vec<String>,
@@ -113,16 +113,30 @@ fn queue_plan_repo_installs(handle: &mut alpm::Alpm, plan: Option<&Plan>) -> any
         return Ok(());
     };
     for row in &plan.repo_installs {
-        let pkg = handle
-            .syncdbs()
-            .pkg(row.name.as_str())
-            .map_err(|_| anyhow::anyhow!("package '{}' not found in any repository", row.name))?;
+        let pkg = plan_repo_pkg(handle, row)?;
         handle
             .trans_add_pkg(pkg)
             .map_err(alpm::Error::from)
             .context("failed to queue package for installation")?;
     }
     Ok(())
+}
+
+fn plan_repo_pkg<'a>(
+    handle: &'a alpm::Alpm,
+    row: &RepoInstall,
+) -> anyhow::Result<&'a alpm::Package> {
+    if row.db.is_empty() {
+        return handle
+            .syncdbs()
+            .pkg(row.name.as_str())
+            .map_err(|_| anyhow::anyhow!("package '{}' not found in any repository", row.name));
+    }
+    let pin = format!("{}/{}", row.db, row.name);
+    handle
+        .syncdbs()
+        .find_target(pin.as_str())
+        .map_err(|_| anyhow::anyhow!("package '{}' not found in any repository", row.name))
 }
 
 pub(crate) fn queue_stub_targets(
@@ -375,7 +389,7 @@ fn file_suffix_path(target: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolve::{Conflict, Conflicting};
+    use crate::resolve::{Conflict, Conflicting, RepoInstall};
 
     fn conflicting_report() -> ConflictReport {
         ConflictReport {
