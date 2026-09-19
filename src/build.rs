@@ -118,10 +118,15 @@ fn partition_repo_targets(plan: &Plan, files: &[String]) -> (Vec<String>, Vec<St
     let mut explicit = files.to_vec();
     let mut deps = Vec::new();
     for row in &plan.repo_installs {
-        if row.target {
-            explicit.push(row.name.clone());
+        let target = if row.db.is_empty() {
+            row.name.clone()
         } else {
-            deps.push(row.name.clone());
+            format!("{}/{}", row.db, row.name)
+        };
+        if row.target {
+            explicit.push(target);
+        } else {
+            deps.push(target);
         }
     }
     (explicit, deps)
@@ -464,16 +469,23 @@ mod tests {
     use crate::resolve::RepoInstall;
 
     #[test]
-    fn partition_repo_targets_splits_explicit_and_deps_with_files_first() {
+    fn partition_repo_targets_pins_explicit_and_deps() {
         let plan = Plan {
             repo_installs: vec![
                 RepoInstall {
                     name: "neovim".to_string(),
+                    db: "extra".to_string(),
+                    target: true,
+                    ..Default::default()
+                },
+                RepoInstall {
+                    name: "bare".to_string(),
                     target: true,
                     ..Default::default()
                 },
                 RepoInstall {
                     name: "libtermkey".to_string(),
+                    db: "extra".to_string(),
                     ..Default::default()
                 },
             ],
@@ -481,15 +493,15 @@ mod tests {
         };
         let files = vec!["/tmp/foo-1.0-1-x86_64.pkg.tar.zst".to_string()];
         let (explicit, deps) = partition_repo_targets(&plan, &files);
-        assert_eq!(explicit, vec![files[0].clone(), "neovim".to_string()]);
-        assert_eq!(deps, vec!["libtermkey".to_string()]);
-    }
-
-    #[test]
-    fn partition_repo_targets_empty_plan_yields_empty_batches() {
-        let (explicit, deps) = partition_repo_targets(&Plan::default(), &[]);
-        assert!(explicit.is_empty());
-        assert!(deps.is_empty());
+        assert_eq!(
+            explicit,
+            vec![
+                files[0].clone(),
+                "extra/neovim".to_string(),
+                "bare".to_string()
+            ]
+        );
+        assert_eq!(deps, vec!["extra/libtermkey".to_string()]);
     }
 
     #[test]

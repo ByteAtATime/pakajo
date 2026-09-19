@@ -129,17 +129,17 @@ impl ChildOperation {
                     .iter()
                     .map(|s| classify_target(s))
                     .collect::<Vec<_>>();
-                let needs_lookup = targets.iter().any(|t| matches!(t, InstallTarget::Repo(_)));
-                if needs_lookup {
-                    for target in &targets {
-                        if let InstallTarget::Repo(name) = target
-                            && !crate::package::repo_exists(&handle, name)
-                        {
-                            anyhow::bail!(
-                                "cannot build packages as root; re-run without privilege escalation"
-                            );
-                        }
-                    }
+                let repo_names: Vec<String> = targets
+                    .iter()
+                    .filter_map(|t| match t {
+                        InstallTarget::Repo(name) => Some(name.clone()),
+                        InstallTarget::File(_) => None,
+                    })
+                    .collect();
+                if crate::tx::targets::unresolvable_target(&handle, &repo_names).is_some() {
+                    anyhow::bail!(
+                        "cannot build packages as root; re-run without privilege escalation"
+                    );
                 }
                 let presentation = select_install_presentation(
                     *stream,
