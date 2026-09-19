@@ -389,7 +389,7 @@ fn file_suffix_path(target: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolve::{Conflict, Conflicting, RepoInstall};
+    use crate::resolve::{Conflict, Conflicting};
 
     fn conflicting_report() -> ConflictReport {
         ConflictReport {

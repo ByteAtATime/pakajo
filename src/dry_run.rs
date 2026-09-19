@@ -6,6 +6,9 @@ use anyhow::Context as _;
 use crate::events::TransactionSummary;
 use crate::question::{Conflict, ProviderCandidate, ProviderPrompt, QuestionSet};
 
+pub use crate::tx::convert::PrepareFailure;
+pub(crate) use crate::tx::convert::extract_prepare_failure;
+
 #[derive(Default)]
 pub(crate) struct RecorderState {
     conflicts: Vec<Conflict>,
@@ -30,7 +33,7 @@ pub(crate) fn dry_sysupgrade(handle: &mut alpm::Alpm) -> anyhow::Result<Sysupgra
         .context("sync_sysupgrade failed to resolve upgrade targets")?;
     let prepare_error = handle.trans_prepare().err().map(extract_prepare_failure);
     let questions = snapshot(&state);
-    let summary = crate::install::build_summary(handle);
+    let summary = crate::tx::convert::build_summary(handle);
     let _ = handle.trans_release();
     Ok(SysupgradeDryRun {
         summary,
@@ -43,33 +46,6 @@ pub fn default_repo_summary(
     handle: &mut alpm::Alpm,
 ) -> anyhow::Result<crate::events::TransactionSummary> {
     dry_sysupgrade(handle).map(|dry| dry.summary)
-}
-
-#[derive(Debug, Clone)]
-pub enum PrepareFailure {
-    Unsatisfied(Vec<UnsatisfiedDep>),
-    Other(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct UnsatisfiedDep {
-    pub depend: String,
-    pub target: String,
-}
-
-pub(crate) fn extract_prepare_failure(err: alpm::PrepareError) -> PrepareFailure {
-    match err.data() {
-        Some(alpm::PrepareData::UnsatisfiedDeps(list)) => PrepareFailure::Unsatisfied(
-            list.iter()
-                .map(|d| UnsatisfiedDep {
-                    depend: d.depend().name().to_string(),
-                    target: d.target().to_string(),
-                })
-                .collect(),
-        ),
-        Some(other) => PrepareFailure::Other(format!("{other:?}")),
-        None => PrepareFailure::Other(format!("{}", err.error())),
-    }
 }
 
 pub(crate) fn attach_recorder(handle: &mut alpm::Alpm) -> Rc<RefCell<RecorderState>> {
