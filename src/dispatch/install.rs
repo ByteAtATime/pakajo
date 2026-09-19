@@ -1,3 +1,4 @@
+use alpm_utils::DbListExt;
 use anyhow::Context as _;
 
 use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem, send_done};
@@ -112,8 +113,10 @@ fn queue_plan_repo_installs(handle: &mut alpm::Alpm, plan: Option<&Plan>) -> any
         return Ok(());
     };
     for row in &plan.repo_installs {
-        let pkg = crate::pacman::find_pkg(handle, &row.name)
-            .ok_or_else(|| anyhow::anyhow!("package '{}' not found in any repository", row.name))?;
+        let pkg = handle
+            .syncdbs()
+            .pkg(row.name.as_str())
+            .map_err(|_| anyhow::anyhow!("package '{}' not found in any repository", row.name))?;
         handle
             .trans_add_pkg(pkg)
             .map_err(alpm::Error::from)

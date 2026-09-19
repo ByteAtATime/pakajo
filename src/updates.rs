@@ -1,5 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use alpm_utils::DbListExt;
 use anyhow::Context as _;
 
 use crate::pacman;
@@ -149,7 +150,7 @@ pub fn compute_repo_upgrades(
         if pkg.groups().iter().any(|g| ignore_groups.contains(g)) {
             continue;
         }
-        if let Some(sync) = pacman::find_pkg(handle, pkg.name())
+        if let Some(sync) = handle.syncdbs().pkg(pkg.name()).ok()
             && alpm::vercmp(sync.version().to_string(), pkg.version().to_string())
                 == std::cmp::Ordering::Greater
         {

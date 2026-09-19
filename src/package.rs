@@ -1,4 +1,5 @@
 use crate::aur::AurInfo;
+use alpm_utils::DbListExt;
 
 #[derive(Debug, Clone)]
 pub struct OptDependency {
@@ -283,11 +284,11 @@ pub fn installed_names(handle: &alpm::Alpm) -> std::collections::HashSet<String>
 }
 
 pub fn find(handle: &alpm::Alpm, name: &str) -> Option<Package> {
-    crate::pacman::find_pkg(handle, name).map(Package::from)
+    handle.syncdbs().pkg(name).ok().map(Package::from)
 }
 
 pub fn repo_exists(handle: &alpm::Alpm, name: &str) -> bool {
-    crate::pacman::find_pkg(handle, name).is_some()
+    handle.syncdbs().pkg(name).is_ok()
 }
 
 #[derive(Debug, Clone)]

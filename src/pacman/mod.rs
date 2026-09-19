@@ -140,7 +140,3 @@ pub fn refresh_sync_dbs_rootless(handle: &mut Alpm) -> anyhow::Result<()> {
         Err(e) => Err(anyhow::Error::new(e).context("failed to refresh sync DBs rootless")),
     }
 }
-
-pub fn find_pkg<'a>(handle: &'a Alpm, name: &str) -> Option<&'a alpm::Package> {
-    handle.syncdbs().iter().find_map(|db| db.pkg(name).ok())
-}
