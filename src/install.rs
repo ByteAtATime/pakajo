@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 
 use alpm::DownloadResult as AlpmDownloadResult;
 use alpm::LogLevel as AlpmLogLevel;
@@ -165,10 +165,12 @@ pub fn register_callbacks<S: InstallSink + 'static>(
             match s.answerer.answer_provider(&depend, &candidates) {
                 crate::answerer::ProviderDecision::Choose(i) => spq.set_index(i as i32),
                 crate::answerer::ProviderDecision::Decline => {
+                    spq.set_index(-1);
                     s.deny_flag = true;
                     s.detail = format!("declined to choose a provider for {depend}");
                 }
                 crate::answerer::ProviderDecision::CannotPrompt => {
+                    spq.set_index(-1);
                     s.deny_flag = true;
                     s.detail = format!(
                         "cannot prompt for provider ({depend}): stdin is not a terminal; re-run from an interactive shell"
@@ -220,33 +222,53 @@ fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
         sink.borrow_mut().event(InstallEvent::LoadingPackages);
     }
 
+    let repo_names: Vec<String> = targets
+        .iter()
+        .filter_map(|target| match target {
+            InstallTarget::Repo(name) => Some(name.clone()),
+            InstallTarget::File(_) => None,
+        })
+        .collect();
+    let resolved = crate::tx::targets::resolve_targets(handle, &repo_names)?;
+    for skipped in &resolved.skipped {
+        sink.borrow_mut().event(InstallEvent::Log {
+            level: LogLevel::Warning,
+            message: format!("skipping target: {skipped}"),
+        });
+    }
+
     let mut added_names: Vec<String> = Vec::with_capacity(targets.len());
-    for target in targets {
-        match target {
-            InstallTarget::Repo(name) => {
-                let pkg = crate::pacman::find_pkg(handle, name)
-                    .ok_or_else(|| anyhow!("package '{name}' not found in any repository"))?;
-                added_names.push(name.clone());
-                handle
-                    .trans_add_pkg(pkg)
-                    .map_err(alpm::Error::from)
-                    .context("failed to queue package for installation")?;
-            }
-            InstallTarget::File(path) => {
-                let loaded = handle
-                    .pkg_load(
-                        path.to_string_lossy().as_ref(),
-                        true,
-                        crate::pacman::local_file_siglevel(handle),
-                    )
-                    .context("failed to load package file")?;
-                added_names.push(loaded.name().to_string());
-                handle
-                    .trans_add_pkg(loaded)
-                    .map_err(alpm::Error::from)
-                    .context("failed to queue package file for installation")?;
-            }
-        }
+    for pkg in resolved.packages {
+        added_names.push(pkg.name().to_string());
+        handle
+            .trans_add_pkg(pkg)
+            .map_err(alpm::Error::from)
+            .context("failed to queue package for installation")?;
+    }
+    for path in targets.iter().filter_map(|target| match target {
+        InstallTarget::File(path) => Some(path),
+        InstallTarget::Repo(_) => None,
+    }) {
+        let loaded = handle
+            .pkg_load(
+                path.to_string_lossy().as_ref(),
+                true,
+                crate::pacman::local_file_siglevel(handle),
+            )
+            .context("failed to load package file")?;
+        added_names.push(loaded.name().to_string());
+        handle
+            .trans_add_pkg(loaded)
+            .map_err(alpm::Error::from)
+            .context("failed to queue package file for installation")?;
+    }
+
+    if handle.trans_add().is_empty() {
+        sink.borrow_mut().event(InstallEvent::Log {
+            level: LogLevel::Warning,
+            message: " there is nothing to do".to_string(),
+        });
+        return Ok(());
     }
 
     let prepare_result = handle.trans_prepare();

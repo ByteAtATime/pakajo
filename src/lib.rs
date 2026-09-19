@@ -26,6 +26,7 @@ pub mod resolve;
 pub mod search;
 pub mod srcinfo_io;
 pub mod stub_pkg;
+pub mod tx;
 pub mod updates;
 pub mod upgrade;
 pub mod utils;
