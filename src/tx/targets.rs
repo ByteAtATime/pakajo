@@ -1,21 +1,21 @@
 use alpm::Alpm;
 
 #[derive(Debug)]
-pub enum ResolveError {
+pub enum TargetError {
     TargetNotFound(String),
     DatabaseNotFound(String),
 }
 
-impl std::fmt::Display for ResolveError {
+impl std::fmt::Display for TargetError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ResolveError::TargetNotFound(name) => write!(formatter, "target not found: {name}"),
-            ResolveError::DatabaseNotFound(repo) => write!(formatter, "database not found: {repo}"),
+            TargetError::TargetNotFound(name) => write!(formatter, "target not found: {name}"),
+            TargetError::DatabaseNotFound(repo) => write!(formatter, "database not found: {repo}"),
         }
     }
 }
 
-impl std::error::Error for ResolveError {}
+impl std::error::Error for TargetError {}
 
 pub struct ResolvedTargets<'a> {
     pub packages: Vec<&'a alpm::Package>,
@@ -27,7 +27,7 @@ pub fn unresolvable_target(handle: &Alpm, targets: &[String]) -> Option<String> 
         let Err(error) = resolve_targets(handle, std::slice::from_ref(target)) else {
             continue;
         };
-        if error.downcast_ref::<ResolveError>().is_some() {
+        if error.downcast_ref::<TargetError>().is_some() {
             return Some(target.clone());
         }
     }
@@ -52,7 +52,7 @@ pub fn resolve_targets<'a>(
 fn resolve_one<'a>(handle: &'a Alpm, target: &str) -> anyhow::Result<Option<&'a alpm::Package>> {
     if let Some((repo, name)) = split_pin(target) {
         let Some(db) = handle.syncdbs().iter().find(|db| db.name() == repo) else {
-            return Err(ResolveError::DatabaseNotFound(repo.to_string()).into());
+            return Err(TargetError::DatabaseNotFound(repo.to_string()).into());
         };
         let saved = db.usage()?;
         db.set_usage(saved | alpm::Usage::INSTALL)?;
@@ -61,7 +61,7 @@ fn resolve_one<'a>(handle: &'a Alpm, target: &str) -> anyhow::Result<Option<&'a 
         let found = dbs.list().find_satisfier(name);
         db.set_usage(saved)?;
         if found.is_none() && !is_ignored(handle) {
-            return Err(ResolveError::TargetNotFound(name.to_string()).into());
+            return Err(TargetError::TargetNotFound(name.to_string()).into());
         }
         return Ok(found);
     }
@@ -71,7 +71,7 @@ fn resolve_one<'a>(handle: &'a Alpm, target: &str) -> anyhow::Result<Option<&'a 
     if is_ignored(handle) {
         return Ok(None);
     }
-    Err(ResolveError::TargetNotFound(target.to_string()).into())
+    Err(TargetError::TargetNotFound(target.to_string()).into())
 }
 
 fn is_ignored(handle: &Alpm) -> bool {
@@ -327,6 +327,16 @@ mod tests {
         let resolved = resolve_targets(&handle, &["repob/onlyb".to_string()]).unwrap();
         assert_eq!(resolved.packages[0].name(), "onlyb");
         assert_eq!(gated.usage().unwrap(), alpm::Usage::SEARCH);
+    }
+
+    #[test]
+    fn split_pin_shapes() {
+        assert_eq!(split_pin("a/b"), Some(("a", "b")));
+        assert_eq!(split_pin("/b"), None);
+        assert_eq!(split_pin("b"), None);
+        assert_eq!(split_pin("a/b/c"), Some(("a", "b/c")));
+        let (_dir, handle) = fixture(&[("repoa", vec![pkg("foo", "1.0-1")])], &[]);
+        assert_eq!(err(&handle, "/b"), "target not found: /b");
     }
 
     #[test]
