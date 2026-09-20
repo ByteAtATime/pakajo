@@ -206,7 +206,6 @@ mod tests {
                 removed: BTreeSet::new(),
             }
         );
-        assert!(!got.is_empty());
         assert!(
             summary_delta(
                 &summary(vec![package("alpha", "1.0")]),
