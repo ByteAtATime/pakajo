@@ -83,7 +83,7 @@ pub enum Answer {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum QuestionKey {
     Conflict { first: String, second: String },
     SelectProvider { depend: String },
