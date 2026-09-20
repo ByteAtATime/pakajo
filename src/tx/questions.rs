@@ -149,7 +149,7 @@ impl QuestionSession {
             SourceDecision::Answer(Answer::Stop) => Ok(None),
             SourceDecision::Answer(answer) => Ok(Some(answer)),
             SourceDecision::Abort(denied) => {
-                let report = format!("aborted: {:?}: {}", denied.key, denied.reason);
+                let report = denied.to_string();
                 self.denied = Some(denied);
                 Err(report)
             }

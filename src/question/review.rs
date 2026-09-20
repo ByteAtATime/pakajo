@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,11 +15,6 @@ pub struct Fingerprint {
 pub struct ReviewDelta {
     pub added: BTreeSet<(String, String, String)>,
     pub removed: BTreeSet<(String, String, String)>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExploreStamp {
-    pub sync_dbs: BTreeMap<String, String>,
 }
 
 pub fn fingerprint(
@@ -137,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn fingerprint_matches_hand_computed_value() {
+    fn fingerprint_matches_hand_computed_value_and_detects_version_bump() {
         let (question, answer) = conflict_pair();
         let got = fingerprint(
             &[question],
@@ -165,30 +160,20 @@ mod tests {
                 summary: entries,
             }
         );
-    }
-
-    #[test]
-    fn identical_inputs_match_and_version_bump_differs() {
-        let (first_q, first_a) = conflict_pair();
-        let (second_q, second_a) = conflict_pair();
-        let base = fingerprint(
-            &[first_q],
-            &[first_a],
-            &summary(vec![package("alpha", "1.0")]),
-        );
+        let (repeat_q, repeat_a) = conflict_pair();
         let same = fingerprint(
-            &[second_q],
-            &[second_a],
+            &[repeat_q],
+            &[repeat_a],
             &summary(vec![package("alpha", "1.0")]),
         );
-        assert_eq!(base, same);
-        let (third_q, third_a) = conflict_pair();
+        assert_eq!(got, same);
+        let (bump_q, bump_a) = conflict_pair();
         let bumped = fingerprint(
-            &[third_q],
-            &[third_a],
+            &[bump_q],
+            &[bump_a],
             &summary(vec![package("alpha", "2.0")]),
         );
-        assert_ne!(base, bumped);
+        assert_ne!(got, bumped);
     }
 
     #[test]
@@ -213,16 +198,5 @@ mod tests {
             )
             .is_empty()
         );
-    }
-
-    #[test]
-    fn explore_stamp_round_trips_json() {
-        let mut sync_dbs = BTreeMap::new();
-        sync_dbs.insert("core".to_string(), "1758300000".to_string());
-        sync_dbs.insert("extra".to_string(), "1758300001".to_string());
-        let stamp = ExploreStamp { sync_dbs };
-        let json = serde_json::to_string(&stamp).expect("encode");
-        let back: ExploreStamp = serde_json::from_str(&json).expect("decode");
-        assert_eq!(back, stamp);
     }
 }

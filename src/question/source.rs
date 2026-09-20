@@ -18,6 +18,12 @@ pub struct FailClosed {
     pub reason: String,
 }
 
+impl std::fmt::Display for FailClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "aborted: {:?}: {}", self.key, self.reason)
+    }
+}
+
 pub fn parse_provider_selection(input: &str, candidate_count: usize) -> Option<usize> {
     if candidate_count == 0 {
         return None;

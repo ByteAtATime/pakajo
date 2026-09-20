@@ -230,7 +230,7 @@ fn outcome(handle: &alpm::Alpm, finish: Finish) -> RunOutcome {
 
 fn fail_on_denied(session: &QuestionSession) -> anyhow::Result<()> {
     match session.denied() {
-        Some(denied) => anyhow::bail!("aborted: {:?}: {}", denied.key, denied.reason),
+        Some(denied) => anyhow::bail!("{denied}"),
         None => Ok(()),
     }
 }

@@ -309,6 +309,10 @@ mod tests {
 
     #[test]
     fn literals_pins_and_versioned_queries() {
+        assert_eq!(split_pin("a/b"), Some(("a", "b")));
+        assert_eq!(split_pin("/b"), None);
+        assert_eq!(split_pin("b"), None);
+        assert_eq!(split_pin("a/b/c"), Some(("a", "b/c")));
         let (_dir, handle) = fixture(
             &[
                 ("repoa", vec![pkg("dup", "1.0-1"), pkg("common", "1.0-1")]),
@@ -331,6 +335,7 @@ mod tests {
         assert_eq!(err(&handle, "nope/dup"), "database not found: nope");
         assert_eq!(err(&handle, "repoa/ghost"), "target not found: ghost");
         assert_eq!(err(&handle, "repoa/onlyb"), "target not found: onlyb");
+        assert_eq!(err(&handle, "/b"), "target not found: /b");
     }
 
     #[test]
@@ -383,16 +388,6 @@ mod tests {
         let resolved = resolve_targets(&handle, &["repob/onlyb".to_string()]).unwrap();
         assert_eq!(resolved.packages[0].name(), "onlyb");
         assert_eq!(gated.usage().unwrap(), alpm::Usage::SEARCH);
-    }
-
-    #[test]
-    fn split_pin_shapes() {
-        assert_eq!(split_pin("a/b"), Some(("a", "b")));
-        assert_eq!(split_pin("/b"), None);
-        assert_eq!(split_pin("b"), None);
-        assert_eq!(split_pin("a/b/c"), Some(("a", "b/c")));
-        let (_dir, handle) = fixture(&[("repoa", vec![pkg("foo", "1.0-1")])], &[]);
-        assert_eq!(err(&handle, "/b"), "target not found: /b");
     }
 
     #[test]

@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn sealed_provider_matches_only_its_own_question() {
+    fn sealed_answers_match_only_their_own_questions() {
         let sealed = seal(&[provider_question()], &[provider_answer()]);
         assert!(matches!(
             match_answer(&provider_question(), &sealed),
@@ -254,28 +254,6 @@ mod tests {
             candidates: vec![],
         };
         assert!(matches!(match_answer(&stranger, &sealed), Sealed::Ask));
-    }
-
-    #[test]
-    fn approved_groups_survive_round_trip_and_default_empty() {
-        let question = Question::GroupMembers {
-            group: "base-devel".to_string(),
-            members: vec!["autoconf".to_string()],
-        };
-        let answer = Answer::GroupMembers {
-            selected: vec!["autoconf".to_string()],
-        };
-        let sealed = seal(&[question], &[answer]);
-        let json = serde_json::to_string(&sealed).expect("encode");
-        let decoded: Approvals = serde_json::from_str(&json).expect("decode");
-        assert_eq!(decoded, sealed);
-        let legacy: Approvals =
-            serde_json::from_str(r#"{"approved_conflicts":[]}"#).expect("decode legacy");
-        assert!(legacy.approved_groups.is_empty());
-    }
-
-    #[test]
-    fn unsealed_questions_ask() {
         assert!(matches!(
             match_answer(&provider_question(), &Approvals::default()),
             Sealed::Ask
@@ -284,61 +262,39 @@ mod tests {
             match_answer(&Question::Proceed(summary()), &Approvals::default()),
             Sealed::Ask
         ));
-    }
-
-    #[test]
-    fn sealed_conflict_matches_swapped_orientation() {
-        let sealed = seal(&[conflict_question()], &[conflict_answer(true)]);
+        let conflicts = seal(&[conflict_question()], &[conflict_answer(true)]);
         let swapped = Question::Conflict {
             incoming: "bar".to_string(),
             removable: "foo".to_string(),
         };
         assert!(matches!(
-            match_answer(&swapped, &sealed),
+            match_answer(&swapped, &conflicts),
             Sealed::Answer(Answer::Conflict { incoming, removable, remove: true })
             if incoming == "bar" && removable == "foo"
         ));
     }
 
     #[test]
-    fn declined_conflict_records_nothing() {
+    fn mismatched_answers_record_nothing() {
         let mut stored = Approvals::default();
         assert!(!extend(
             &mut stored,
             &conflict_question(),
             &conflict_answer(false)
         ));
-        assert!(stored.approved_conflicts.is_empty());
-    }
-
-    #[test]
-    fn group_answer_with_foreign_name_records_nothing() {
-        let mut stored = Approvals::default();
-        let question = Question::GroupMembers {
+        let group = Question::GroupMembers {
             group: "base-devel".to_string(),
             members: vec!["autoconf".to_string()],
         };
-        let answer = Answer::GroupMembers {
+        let foreign = Answer::GroupMembers {
             selected: vec!["autoconf".to_string(), "stranger".to_string()],
         };
-        assert!(!extend(&mut stored, &question, &answer));
-        assert!(!stored.approved_groups.contains_key("base-devel"));
-    }
-
-    #[test]
-    fn provider_answer_with_unoffered_repo_records_nothing() {
-        let mut stored = Approvals::default();
-        let answer = Answer::SelectProvider {
+        assert!(!extend(&mut stored, &group, &foreign));
+        let unoffered = Answer::SelectProvider {
             name: "sdl12-compat".to_string(),
             repo: Some("aur".to_string()),
         };
-        assert!(!extend(&mut stored, &provider_question(), &answer));
-        assert!(stored.approved_providers.is_empty());
-    }
-
-    #[test]
-    fn reanswers_replace_same_group_but_reject_divergent_provider() {
-        let mut stored = Approvals::default();
+        assert!(!extend(&mut stored, &provider_question(), &unoffered));
         assert!(extend(
             &mut stored,
             &provider_question(),
@@ -349,12 +305,18 @@ mod tests {
             repo: Some("extra".to_string()),
         };
         assert!(!extend(&mut stored, &provider_question(), &divergent));
+        assert!(stored.approved_conflicts.is_empty());
+        assert!(!stored.approved_groups.contains_key("base-devel"));
         assert_eq!(stored.approved_providers.len(), 1);
+    }
 
+    #[test]
+    fn groups_reseal_and_survive_json_round_trip() {
         let question = Question::GroupMembers {
             group: "base-devel".to_string(),
             members: vec!["autoconf".to_string(), "automake".to_string()],
         };
+        let mut stored = Approvals::default();
         let first = Answer::GroupMembers {
             selected: vec!["autoconf".to_string(), "automake".to_string()],
         };
@@ -367,5 +329,11 @@ mod tests {
             stored.approved_groups["base-devel"],
             vec!["automake".to_string()]
         );
+        let json = serde_json::to_string(&stored).expect("encode");
+        let decoded: Approvals = serde_json::from_str(&json).expect("decode");
+        assert_eq!(decoded, stored);
+        let legacy: Approvals =
+            serde_json::from_str(r#"{"approved_conflicts":[]}"#).expect("decode legacy");
+        assert!(legacy.approved_groups.is_empty());
     }
 }
