@@ -41,7 +41,7 @@ pub(crate) fn run_install_preview(
     request: &InstallRequest,
     state: &std::rc::Rc<std::cell::RefCell<crate::dry_run::RecorderState>>,
 ) -> anyhow::Result<Preview> {
-    let expanded = expand_install_groups(handle, &request.targets);
+    let expanded = expand_install_groups(handle, &request.targets, request.tty);
     let (files, names) = peel_file_targets(&expanded);
     let plan = resolve_combined_plan(&names, request.no_check)?;
     handle
@@ -207,33 +207,44 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
     let Some(peeled) = peeled else {
         return;
     };
-    let files_only = peeled.names.is_empty();
-    let privileged = if files_only {
-        if peeled.files.is_empty() {
-            send_done(
-                &mut tx,
-                ChildOutcome::Failed("no install targets".to_string()),
-            );
-            return;
-        }
-        let Some(sealed) = unwrap_or_fail(&mut tx, seal_approvals(&request)) else {
-            return;
-        };
-        Some(PrivilegedOperation::Install {
-            targets: peeled.files.clone(),
-            as_deps: request.as_deps,
-            reinstall: false,
-            preconfirmed: false,
-            approvals: sealed,
-        })
-    } else {
-        None
+    let Some(targets) = direct_install_targets(&peeled) else {
+        run_phases(
+            PhasePlan {
+                privileged: None,
+                aur_targets: peeled.names,
+                files: peeled.files,
+                as_deps: request.as_deps,
+                no_check: request.no_check,
+                repo_verb: "installed",
+                approvals_payload: request.approvals,
+                decider: request.decider,
+                tty: request.tty,
+            },
+            &mut tx,
+        );
+        return;
+    };
+    if targets.is_empty() {
+        send_done(
+            &mut tx,
+            ChildOutcome::Failed("no install targets".to_string()),
+        );
+        return;
+    }
+    let Some(sealed) = unwrap_or_fail(&mut tx, seal_approvals(&request)) else {
+        return;
     };
     run_phases(
         PhasePlan {
-            privileged,
-            aur_targets: if files_only { Vec::new() } else { peeled.names },
-            files: if files_only { Vec::new() } else { peeled.files },
+            privileged: Some(PrivilegedOperation::Install {
+                targets,
+                as_deps: request.as_deps,
+                reinstall: false,
+                preconfirmed: false,
+                approvals: sealed,
+            }),
+            aur_targets: Vec::new(),
+            files: Vec::new(),
             as_deps: request.as_deps,
             no_check: request.no_check,
             repo_verb: "installed",
@@ -261,12 +272,16 @@ fn run_root_install(request: InstallRequest, tx: &mut futures::channel::mpsc::Se
     let Some(peeled) = peeled else {
         return;
     };
-    if peeled.names.is_empty() {
+    if let Some(targets) = direct_install_targets(&peeled) {
+        if targets.is_empty() {
+            send_done(tx, ChildOutcome::Failed("no install targets".to_string()));
+            return;
+        }
         let Some(sealed) = unwrap_or_fail(tx, seal_approvals(&request)) else {
             return;
         };
         let operation = ChildOperation::Install {
-            targets: peeled.files,
+            targets,
             as_deps: request.as_deps,
             reinstall: false,
             preconfirmed: false,
@@ -301,6 +316,16 @@ fn run_root_install(request: InstallRequest, tx: &mut futures::channel::mpsc::Se
 struct PeeledTargets {
     files: Vec<String>,
     names: Vec<String>,
+    pure_repo: bool,
+}
+
+fn direct_install_targets(peeled: &PeeledTargets) -> Option<Vec<String>> {
+    if !peeled.names.is_empty() && !peeled.pure_repo {
+        return None;
+    }
+    let mut targets = peeled.files.clone();
+    targets.extend(peeled.names.iter().cloned());
+    Some(targets)
 }
 
 fn peel_for_dispatch(
@@ -309,9 +334,14 @@ fn peel_for_dispatch(
 ) -> anyhow::Result<PeeledTargets> {
     let config = crate::pacman::config()?;
     crate::upgrade::apply_ignores(handle, &config, &request.ignores);
-    let expanded = expand_install_groups(handle, &request.targets);
+    let expanded = expand_install_groups(handle, &request.targets, request.tty);
     let (files, names) = peel_file_targets(&expanded);
-    Ok(PeeledTargets { files, names })
+    let pure_repo = names.iter().all(|name| routes_to_engine(handle, name));
+    Ok(PeeledTargets {
+        files,
+        names,
+        pure_repo,
+    })
 }
 
 fn plan_conflicts_to_questions(report: &ConflictReport) -> Vec<crate::question::Conflict> {
@@ -331,20 +361,38 @@ fn plan_conflicts_to_questions(report: &ConflictReport) -> Vec<crate::question::
         .collect()
 }
 
-fn routes_to_engine(handle: &alpm::Alpm, target: &str) -> bool {
+fn repo_resolvable(handle: &alpm::Alpm, target: &str) -> bool {
     crate::tx::targets::unresolvable_target(handle, std::slice::from_ref(&target.to_string()))
         .is_none()
-        || !crate::package::find_groups(handle, target).is_empty()
 }
 
-fn expand_install_groups(handle: &alpm::Alpm, positionals: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for s in positionals {
-        if routes_to_engine(handle, s) {
-            out.push(s.clone());
-            continue;
+fn routes_to_engine(handle: &alpm::Alpm, target: &str) -> bool {
+    repo_resolvable(handle, target) || !crate::package::find_groups(handle, target).is_empty()
+}
+
+fn group_members(handle: &alpm::Alpm, target: &str) -> Vec<String> {
+    let mut members: Vec<String> = Vec::new();
+    for group in crate::package::find_groups(handle, target) {
+        for member in group.members {
+            if !members.contains(&member.name) {
+                members.push(member.name);
+            }
         }
-        out.push(s.clone());
+    }
+    members
+}
+
+fn expand_install_groups(handle: &alpm::Alpm, positionals: &[String], tty: bool) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for target in positionals {
+        if !tty && !repo_resolvable(handle, target) {
+            let members = group_members(handle, target);
+            if !members.is_empty() {
+                out.extend(members);
+                continue;
+            }
+        }
+        out.push(target.clone());
     }
     out
 }
@@ -412,100 +460,33 @@ mod tests {
     }
 
     #[test]
-    fn merge_conflicts_concatenates_disjoint_sets() {
-        let existing = vec![crate::question::Conflict {
+    fn merge_conflicts_dedupes_while_preserving_order() {
+        let linux = crate::question::Conflict {
             incoming: "linux".to_string(),
             removable: "linux-lts".to_string(),
-        }];
-        let engine = vec![
-            crate::question::Conflict {
-                incoming: "nvidia-470xx-utils".to_string(),
-                removable: "nvidia-utils".to_string(),
-            },
-            crate::question::Conflict {
-                incoming: "cava-git".to_string(),
-                removable: "cava".to_string(),
-            },
-        ];
-        assert_eq!(
-            merge_conflicts(&existing, &engine),
-            vec![
-                crate::question::Conflict {
-                    incoming: "linux".to_string(),
-                    removable: "linux-lts".to_string(),
-                },
-                crate::question::Conflict {
-                    incoming: "nvidia-470xx-utils".to_string(),
-                    removable: "nvidia-utils".to_string(),
-                },
-                crate::question::Conflict {
-                    incoming: "cava-git".to_string(),
-                    removable: "cava".to_string(),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn merge_conflicts_drops_exact_pair_duplicates() {
-        let existing = vec![crate::question::Conflict {
+        };
+        let nvidia = crate::question::Conflict {
             incoming: "nvidia-470xx-utils".to_string(),
             removable: "nvidia-utils".to_string(),
-        }];
-        let engine = vec![
-            crate::question::Conflict {
-                incoming: "nvidia-470xx-utils".to_string(),
-                removable: "nvidia-utils".to_string(),
-            },
-            crate::question::Conflict {
-                incoming: "cava-git".to_string(),
-                removable: "cava".to_string(),
-            },
-        ];
+        };
+        let cava = crate::question::Conflict {
+            incoming: "cava-git".to_string(),
+            removable: "cava".to_string(),
+        };
+        let existing = [linux.clone()];
+        let engine = [nvidia.clone(), cava.clone()];
         assert_eq!(
             merge_conflicts(&existing, &engine),
-            vec![
-                crate::question::Conflict {
-                    incoming: "nvidia-470xx-utils".to_string(),
-                    removable: "nvidia-utils".to_string(),
-                },
-                crate::question::Conflict {
-                    incoming: "cava-git".to_string(),
-                    removable: "cava".to_string(),
-                },
-            ]
+            [linux.clone(), nvidia.clone(), cava.clone()]
         );
-    }
-
-    #[test]
-    fn merge_conflicts_keeps_non_conflicting_recorder_entries() {
-        let existing = vec![
-            crate::question::Conflict {
-                incoming: "linux".to_string(),
-                removable: "linux-lts".to_string(),
-            },
-            crate::question::Conflict {
-                incoming: "nvidia-470xx-utils".to_string(),
-                removable: "nvidia-utils".to_string(),
-            },
-        ];
-        let engine = vec![crate::question::Conflict {
-            incoming: "nvidia-470xx-utils".to_string(),
-            removable: "nvidia-utils".to_string(),
-        }];
+        let existing = [nvidia.clone()];
         assert_eq!(
             merge_conflicts(&existing, &engine),
-            vec![
-                crate::question::Conflict {
-                    incoming: "linux".to_string(),
-                    removable: "linux-lts".to_string(),
-                },
-                crate::question::Conflict {
-                    incoming: "nvidia-470xx-utils".to_string(),
-                    removable: "nvidia-utils".to_string(),
-                },
-            ]
+            [nvidia.clone(), cava.clone()]
         );
+        let existing = [linux.clone(), nvidia.clone()];
+        let engine = [nvidia.clone()];
+        assert_eq!(merge_conflicts(&existing, &engine), [linux, nvidia]);
     }
 
     #[test]
@@ -528,12 +509,7 @@ mod tests {
                 },
             ]
         );
-    }
-
-    #[test]
-    fn conflict_mapping_empty_when_no_conflicts() {
-        let mapped = plan_conflicts_to_questions(&ConflictReport::default());
-        assert!(mapped.is_empty());
+        assert!(plan_conflicts_to_questions(&ConflictReport::default()).is_empty());
     }
 
     fn engine_handle() -> (tempfile::TempDir, alpm::Alpm) {
@@ -542,20 +518,28 @@ mod tests {
         let db = dir.path().join("db");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(db.join("sync")).unwrap();
-        let entries = [("neovim", None), ("vim", Some("%GROUPS%\neditors\n\n"))];
+        let entries = [
+            ("neovim", "1.0-1", ""),
+            ("vim", "1.0-1", "%GROUPS%\neditors\n\n"),
+            ("foo", "2.0-1", ""),
+            ("provider", "1.0-1", "%PROVIDES%\nvirt\n\n"),
+        ];
         let file = std::fs::File::create(db.join("sync").join("core.db")).unwrap();
         let mut builder = tar::Builder::new(file);
-        for (name, groups) in entries {
+        for (name, version, extra) in entries {
             let desc = format!(
-                "%NAME%\n{name}\n\n%VERSION%\n1.0-1\n\n%FILENAME%\n{name}-1.0-1-x86_64.pkg.tar.zst\n\n{}",
-                groups.unwrap_or_default()
+                "%NAME%\n{name}\n\n%VERSION%\n{version}\n\n%FILENAME%\n{name}-{version}-x86_64.pkg.tar.zst\n\n{extra}"
             );
             let mut header = tar::Header::new_gnu();
             header.set_size(desc.len() as u64);
             header.set_mode(0o644);
             header.set_cksum();
             builder
-                .append_data(&mut header, format!("{name}-1.0-1/desc"), desc.as_bytes())
+                .append_data(
+                    &mut header,
+                    format!("{name}-{version}/desc"),
+                    desc.as_bytes(),
+                )
                 .unwrap();
         }
         builder.into_inner().unwrap();
@@ -572,11 +556,50 @@ mod tests {
         (dir, handle)
     }
 
+    fn peeled(names: &[&str], pure_repo: bool) -> PeeledTargets {
+        PeeledTargets {
+            files: Vec::new(),
+            names: names.iter().map(|name| name.to_string()).collect(),
+            pure_repo,
+        }
+    }
+
     #[test]
-    fn engine_guard_routes_repo_group_and_rejects_aur() {
+    fn engine_routing_covers_repo_forms() {
         let (_dir, handle) = engine_handle();
-        assert!(routes_to_engine(&handle, "neovim"));
-        assert!(routes_to_engine(&handle, "editors"));
+        for target in ["neovim", "virt", "foo>=2", "core/neovim", "foo", "editors"] {
+            assert!(routes_to_engine(&handle, target), "{target}");
+        }
         assert!(!routes_to_engine(&handle, "yay-bin"));
+    }
+
+    #[test]
+    fn group_expansion_applies_only_without_tty() {
+        let (_dir, handle) = engine_handle();
+        assert_eq!(
+            expand_install_groups(&handle, &["editors".to_string()], true),
+            vec!["editors".to_string()]
+        );
+        assert_eq!(
+            expand_install_groups(&handle, &["editors".to_string()], false),
+            vec!["vim".to_string()]
+        );
+        assert_eq!(
+            expand_install_groups(&handle, &["yay-bin".to_string()], false),
+            vec!["yay-bin".to_string()]
+        );
+    }
+
+    #[test]
+    fn pure_repo_decision_gates_direct_dispatch() {
+        let direct = peeled(&["neovim", "virt"], true);
+        assert_eq!(
+            direct_install_targets(&direct),
+            Some(vec!["neovim".to_string(), "virt".to_string()])
+        );
+        assert_eq!(
+            direct_install_targets(&peeled(&["neovim", "yay-bin"], false)),
+            None
+        );
     }
 }
