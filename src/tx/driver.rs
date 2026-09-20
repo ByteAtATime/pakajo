@@ -566,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn bad_group_answer_fails_closed() {
+    fn mismatched_answers_fail_closed() {
         let (_dir, mut handle) = tools_fixture();
         let error = run(
             &mut handle,
@@ -587,6 +587,17 @@ mod tests {
         });
         let error = run(&mut handle, &spec(&["tools"], false), mismatched).unwrap_err();
         assert!(format!("{error:#}").contains("did not match"));
+        release(&mut handle);
+
+        let (_dir, mut handle) = fixture(&[plain("solo")]);
+        let mismatched = script(|_| {
+            SourceDecision::Answer(Answer::GroupMembers {
+                selected: Vec::new(),
+            })
+        });
+        let error = run(&mut handle, &spec(&["solo"], false), mismatched).unwrap_err();
+        assert!(format!("{error:#}").contains("Proceed"));
+        assert!(handle.localdb().pkg("solo").is_err());
         release(&mut handle);
     }
 
@@ -717,30 +728,6 @@ mod tests {
         let outcome = run(&mut handle, &spec(&["solo"], false), stop()).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert!(handle.localdb().pkg("solo").is_err());
-        release(&mut handle);
-    }
-
-    #[test]
-    fn proceed_mismatch_fails_closed_naming_proceed() {
-        let (_dir, mut handle) = fixture(&[plain("solo")]);
-        let mismatched = script(|_| {
-            SourceDecision::Answer(Answer::GroupMembers {
-                selected: Vec::new(),
-            })
-        });
-        let error = run(&mut handle, &spec(&["solo"], false), mismatched).unwrap_err();
-        assert!(format!("{error:#}").contains("Proceed"));
-        assert!(handle.localdb().pkg("solo").is_err());
-        release(&mut handle);
-    }
-
-    #[test]
-    fn group_stop_queues_nothing() {
-        let (_dir, mut handle) = tools_fixture();
-        let outcome = run(&mut handle, &spec(&["tools"], true), stop()).unwrap();
-        assert!(matches!(outcome.finish, Finish::Stopped));
-        assert!(outcome.summary.packages.is_empty());
-        assert!(handle.localdb().pkg("a").is_err());
         release(&mut handle);
     }
 

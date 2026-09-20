@@ -180,6 +180,7 @@ impl Transaction {
                 let request = pakajo::dispatch::InstallRequest {
                     targets: dry_targets,
                     as_deps: false,
+                    reinstall: false,
                     no_check: false,
                     ignores: vec![],
                     prefer_aur,
@@ -389,6 +390,7 @@ impl Transaction {
         let request = pakajo::dispatch::InstallRequest {
             targets,
             as_deps: false,
+            reinstall: false,
             no_check: false,
             ignores: vec![],
             prefer_aur,

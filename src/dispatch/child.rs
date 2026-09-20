@@ -64,6 +64,15 @@ fn finish_install(outcome: crate::tx::driver::RunOutcome) -> anyhow::Result<()> 
     Ok(())
 }
 
+fn repo_names_acceptable(handle: &alpm::Alpm, repo_names: &[String]) -> bool {
+    let probe: Vec<String> = repo_names
+        .iter()
+        .filter(|name| crate::package::find_groups(handle, name).is_empty())
+        .cloned()
+        .collect();
+    crate::tx::targets::unresolvable_target(handle, &probe).is_none()
+}
+
 pub fn code_from(result: anyhow::Result<()>) -> i32 {
     match result {
         Ok(()) => 0,
@@ -143,7 +152,7 @@ impl ChildOperation {
                         InstallTarget::File(_) => None,
                     })
                     .collect();
-                if crate::tx::targets::unresolvable_target(&handle, &repo_names).is_some() {
+                if !repo_names_acceptable(&handle, &repo_names) {
                     anyhow::bail!(
                         "cannot build packages as root; re-run without privilege escalation"
                     );

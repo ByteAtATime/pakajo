@@ -58,19 +58,17 @@ fn render_ignorepkg(name: &str) -> String {
 }
 
 fn render_remove_pkgs(names: &[String]) -> String {
-    let mut out = match names.len() {
-        1 => "The following package cannot be upgraded due to unresolvable dependencies:\n"
-            .to_string(),
-        _ => "The following packages cannot be upgraded due to unresolvable dependencies:\n"
-            .to_string(),
-    };
+    let single = names.len() == 1;
+    let package_word = if single { "package" } else { "packages" };
+    let mut out = format!(
+        "The following {package_word} cannot be upgraded due to unresolvable dependencies:\n"
+    );
     for name in names {
         out.push_str(&format!("  {name}\n"));
     }
-    match names.len() {
-        1 => out.push_str("Do you want to skip the above package for this upgrade? [y/N]: "),
-        _ => out.push_str("Do you want to skip the above packages for this upgrade? [y/N]: "),
-    }
+    out.push_str(&format!(
+        "Do you want to skip the above {package_word} for this upgrade? [y/N]: "
+    ));
     out
 }
 
@@ -359,12 +357,12 @@ mod tests {
     }
 
     #[test]
-    fn provider_answers_follow_selection_rules() {
-        let question = Question::SelectProvider {
+    fn selection_answers_follow_rules() {
+        let provider = Question::SelectProvider {
             depend: "sdl".to_string(),
             candidates: vec![candidate("foo", "core"), candidate("bar", "extra")],
         };
-        let (decision, prompt) = ask(&question, b"\n");
+        let (decision, prompt) = ask(&provider, b"\n");
         assert_eq!(
             prompt,
             "There are 2 providers available for sdl:\n  [1] core/foo\n  [2] extra/bar\n\nEnter a number (default=1): "
@@ -376,47 +374,44 @@ mod tests {
             }
             other => panic!("expected provider answer, got {other:?}"),
         }
-        match ask(&question, b"2\n").0 {
+        match ask(&provider, b"2\n").0 {
             SourceDecision::Answer(Answer::SelectProvider { name, repo }) => {
                 assert_eq!(name, "bar");
                 assert_eq!(repo, Some("extra".to_string()));
             }
             other => panic!("expected provider answer, got {other:?}"),
         }
-        let single = Question::SelectProvider {
+        let single_provider = Question::SelectProvider {
             depend: "sdl".to_string(),
             candidates: vec![candidate("foo", "core")],
         };
         assert!(matches!(
-            ask(&single, b"9\n").0,
+            ask(&single_provider, b"9\n").0,
             SourceDecision::Answer(Answer::Stop)
         ));
-    }
 
-    #[test]
-    fn group_answers_follow_selection_rules() {
-        let question = Question::GroupMembers {
+        let group = Question::GroupMembers {
             group: "tools".to_string(),
             members: vec!["a".to_string(), "b".to_string(), "c".to_string()],
         };
-        match ask(&question, b"\n").0 {
+        match ask(&group, b"\n").0 {
             SourceDecision::Answer(Answer::GroupMembers { selected }) => {
                 assert_eq!(selected, vec!["a", "b", "c"]);
             }
             other => panic!("expected group answer, got {other:?}"),
         }
-        match ask(&question, b"1 3\n").0 {
+        match ask(&group, b"1 3\n").0 {
             SourceDecision::Answer(Answer::GroupMembers { selected }) => {
                 assert_eq!(selected, vec!["a", "c"]);
             }
             other => panic!("expected group answer, got {other:?}"),
         }
-        let single = Question::GroupMembers {
+        let single_group = Question::GroupMembers {
             group: "tools".to_string(),
             members: vec!["a".to_string()],
         };
         assert!(matches!(
-            ask(&single, b"99\n").0,
+            ask(&single_group, b"99\n").0,
             SourceDecision::Answer(Answer::Stop)
         ));
     }

@@ -17,6 +17,7 @@ use crate::resolve::{Decisions, Plan};
 struct AurBuildConfig {
     no_check: bool,
     as_deps: bool,
+    reinstall: bool,
     tty: bool,
 }
 
@@ -32,6 +33,7 @@ pub struct BuildParams<'a> {
     pub files: &'a [String],
     pub no_check: bool,
     pub as_deps: bool,
+    pub reinstall: bool,
     pub approvals: Option<&'a str>,
     pub tty: bool,
 }
@@ -46,6 +48,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
         files,
         no_check,
         as_deps,
+        reinstall,
         approvals,
         tty,
     } = params;
@@ -83,7 +86,13 @@ pub fn run_build<S: InstallSink + ?Sized>(
 
     let arch = alpm.architectures().first();
     let spine_confirmed = !plan.bases.is_empty();
-    install_repo_packages(&plan, files, as_deps, approvals, spine_confirmed, sink, tty)?;
+    let repo_config = AurBuildConfig {
+        no_check,
+        as_deps,
+        reinstall,
+        tty,
+    };
+    install_repo_packages(&plan, files, repo_config, approvals, spine_confirmed, sink)?;
 
     if let Some(label) = plan.bases.iter().find_map(|base| match base {
         crate::resolve::Base::Pkgbuild { repo, base, .. } => Some(format!("{repo}/{base}")),
@@ -97,6 +106,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
         };
         let dir = clone_dir(pkgbase)?;
         let as_deps = as_deps || members.iter().all(|member| !member.target);
+        let explicit = members.iter().any(|member| member.target);
         let info = AurInfo {
             name: first.name.clone(),
             package_base: pkgbase.to_string(),
@@ -106,6 +116,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
         let config = AurBuildConfig {
             no_check,
             as_deps,
+            reinstall: reinstall && explicit,
             tty,
         };
         build_and_install_aur(&info, &dir, config, approvals, arch, sink)?;
@@ -135,18 +146,33 @@ fn partition_repo_targets(plan: &Plan, files: &[String]) -> (Vec<String>, Vec<St
 fn install_repo_packages<S: InstallSink + ?Sized>(
     plan: &Plan,
     files: &[String],
-    as_deps: bool,
+    config: AurBuildConfig,
     approvals: Option<&str>,
     preconfirmed: bool,
     sink: &mut S,
-    tty: bool,
 ) -> anyhow::Result<()> {
     let (explicit, deps) = partition_repo_targets(plan, files);
     if !explicit.is_empty() {
-        run_install_child(&explicit, as_deps, sink, approvals, preconfirmed, tty)?;
+        run_install_child(
+            &explicit,
+            config.as_deps,
+            config.reinstall,
+            sink,
+            approvals,
+            preconfirmed,
+            config.tty,
+        )?;
     }
     if !deps.is_empty() {
-        run_install_child(&deps, true, sink, approvals, preconfirmed, tty)?;
+        run_install_child(
+            &deps,
+            true,
+            false,
+            sink,
+            approvals,
+            preconfirmed,
+            config.tty,
+        )?;
     }
     Ok(())
 }
@@ -284,6 +310,7 @@ fn build_and_install_aur<S: InstallSink + ?Sized>(
     run_install_child(
         &artifacts,
         config.as_deps,
+        config.reinstall,
         sink,
         approvals,
         true,
@@ -427,6 +454,7 @@ fn makepkg_command(dir: &Path, no_check: bool) -> std::process::Command {
 fn run_install_child<S: InstallSink + ?Sized>(
     targets: &[String],
     as_deps: bool,
+    reinstall: bool,
     sink: &mut S,
     approvals: Option<&str>,
     preconfirmed: bool,
@@ -440,7 +468,7 @@ fn run_install_child<S: InstallSink + ?Sized>(
     let operation = crate::dispatch::operation::PrivilegedOperation::Install {
         targets: targets.to_vec(),
         as_deps,
-        reinstall: false,
+        reinstall,
         preconfirmed,
         approvals: sealed,
     };

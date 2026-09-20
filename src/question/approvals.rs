@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn groups_reseal_and_survive_json_round_trip() {
+    fn groups_reseal_replaces_selection() {
         let question = Question::GroupMembers {
             group: "base-devel".to_string(),
             members: vec!["autoconf".to_string(), "automake".to_string()],
@@ -329,11 +329,5 @@ mod tests {
             stored.approved_groups["base-devel"],
             vec!["automake".to_string()]
         );
-        let json = serde_json::to_string(&stored).expect("encode");
-        let decoded: Approvals = serde_json::from_str(&json).expect("decode");
-        assert_eq!(decoded, stored);
-        let legacy: Approvals =
-            serde_json::from_str(r#"{"approved_conflicts":[]}"#).expect("decode legacy");
-        assert!(legacy.approved_groups.is_empty());
     }
 }

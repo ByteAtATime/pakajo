@@ -247,6 +247,7 @@ impl BuildOperation {
                     files: &self.files,
                     no_check: self.no_check,
                     as_deps: self.as_deps,
+                    reinstall: self.reinstall,
                     approvals: approvals.as_deref(),
                     tty,
                 },

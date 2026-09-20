@@ -124,6 +124,7 @@ fn install_subcommand(args: InstallArgs) -> i32 {
     let request = crate::dispatch::InstallRequest {
         targets: positionals,
         as_deps: args.as_deps,
+        reinstall: args.reinstall,
         no_check: false,
         ignores: vec![],
         prefer_aur: false,
@@ -234,7 +235,23 @@ fn exit_with_result(result: anyhow::Result<()>) -> ! {
 #[cfg(test)]
 mod tests {
     use super::classify_target;
+    use crate::cli::args::{Cli, Command};
     use crate::install::InstallTarget;
+    use clap::Parser as _;
+
+    #[test]
+    fn install_reinstall_flag_defaults_off_and_parses() {
+        let cli = Cli::try_parse_from(["pakajo", "install", "sl"]).unwrap();
+        let Some(Command::Install(args)) = cli.command else {
+            panic!("expected install command");
+        };
+        assert!(!args.reinstall);
+        let cli = Cli::try_parse_from(["pakajo", "install", "--reinstall", "sl"]).unwrap();
+        let Some(Command::Install(args)) = cli.command else {
+            panic!("expected install command");
+        };
+        assert!(args.reinstall);
+    }
 
     #[test]
     fn classify_target_table() {

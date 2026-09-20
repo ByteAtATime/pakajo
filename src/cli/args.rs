@@ -28,6 +28,8 @@ pub struct InstallArgs {
     pub json: bool,
     #[arg(long = "asdeps")]
     pub as_deps: bool,
+    #[arg(long = "reinstall")]
+    pub reinstall: bool,
     #[arg(long = "skip-review")]
     pub skip_review: bool,
     pub positionals: Vec<String>,

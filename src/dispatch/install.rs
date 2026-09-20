@@ -11,6 +11,7 @@ use crate::resolve::{ConflictReport, Decisions, Plan, RepoInstall};
 pub struct InstallRequest {
     pub targets: Vec<String>,
     pub as_deps: bool,
+    pub reinstall: bool,
     pub no_check: bool,
     pub ignores: Vec<String>,
     pub prefer_aur: bool,
@@ -214,6 +215,7 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
                 aur_targets: peeled.names,
                 files: peeled.files,
                 as_deps: request.as_deps,
+                reinstall: peeled.reinstall,
                 no_check: request.no_check,
                 repo_verb: "installed",
                 approvals_payload: request.approvals,
@@ -239,13 +241,14 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
             privileged: Some(PrivilegedOperation::Install {
                 targets,
                 as_deps: request.as_deps,
-                reinstall: false,
+                reinstall: peeled.reinstall,
                 preconfirmed: false,
                 approvals: sealed,
             }),
             aur_targets: Vec::new(),
             files: Vec::new(),
             as_deps: request.as_deps,
+            reinstall: peeled.reinstall,
             no_check: request.no_check,
             repo_verb: "installed",
             approvals_payload: request.approvals,
@@ -283,7 +286,7 @@ fn run_root_install(request: InstallRequest, tx: &mut futures::channel::mpsc::Se
         let operation = ChildOperation::Install {
             targets,
             as_deps: request.as_deps,
-            reinstall: false,
+            reinstall: peeled.reinstall,
             preconfirmed: false,
             approvals_path: sealed
                 .as_ref()
@@ -303,6 +306,7 @@ fn run_root_install(request: InstallRequest, tx: &mut futures::channel::mpsc::Se
             aur_targets: peeled.names,
             files: peeled.files,
             as_deps: request.as_deps,
+            reinstall: peeled.reinstall,
             no_check: request.no_check,
             repo_verb: "installed",
             approvals_payload: request.approvals,
@@ -317,6 +321,7 @@ struct PeeledTargets {
     files: Vec<String>,
     names: Vec<String>,
     pure_repo: bool,
+    reinstall: bool,
 }
 
 fn direct_install_targets(peeled: &PeeledTargets) -> Option<Vec<String>> {
@@ -341,6 +346,7 @@ fn peel_for_dispatch(
         files,
         names,
         pure_repo,
+        reinstall: request.reinstall,
     })
 }
 
@@ -561,6 +567,7 @@ mod tests {
             files: Vec::new(),
             names: names.iter().map(|name| name.to_string()).collect(),
             pure_repo,
+            reinstall: false,
         }
     }
 

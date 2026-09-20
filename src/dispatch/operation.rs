@@ -37,6 +37,7 @@ pub struct BuildOperation {
     pub targets: Vec<String>,
     pub files: Vec<String>,
     pub as_deps: bool,
+    pub reinstall: bool,
     pub no_check: bool,
 }
 
@@ -316,51 +317,32 @@ mod tests {
     }
 
     #[test]
-    fn install_reinstall_wire_round_trip() {
-        let operation = PrivilegedOperation::Install {
-            targets: vec!["sl".to_string()],
-            as_deps: false,
-            reinstall: true,
-            preconfirmed: false,
-            approvals: None,
-        };
-        let argv = operation.wire_args(None, None);
-        assert_eq!(argv, ["install", "--stream", "--reinstall", "sl"]);
-        assert_eq!(
-            ChildOperation::decode(&argv),
-            Some(ChildOperation::Install {
+    fn install_flag_wire_round_trip() {
+        for (as_deps, reinstall, preconfirmed, flag) in [
+            (false, true, false, "--reinstall"),
+            (false, false, true, "--preconfirmed"),
+        ] {
+            let operation = PrivilegedOperation::Install {
                 targets: vec!["sl".to_string()],
-                as_deps: false,
-                reinstall: true,
-                preconfirmed: false,
-                approvals_path: None,
-                stream: true,
-            })
-        );
-    }
-
-    #[test]
-    fn install_preconfirmed_wire_round_trip() {
-        let operation = PrivilegedOperation::Install {
-            targets: vec!["sl".to_string()],
-            as_deps: false,
-            reinstall: false,
-            preconfirmed: true,
-            approvals: None,
-        };
-        let argv = operation.wire_args(None, None);
-        assert_eq!(argv, ["install", "--stream", "--preconfirmed", "sl"]);
-        assert_eq!(
-            ChildOperation::decode(&argv),
-            Some(ChildOperation::Install {
-                targets: vec!["sl".to_string()],
-                as_deps: false,
-                reinstall: false,
-                preconfirmed: true,
-                approvals_path: None,
-                stream: true,
-            })
-        );
+                as_deps,
+                reinstall,
+                preconfirmed,
+                approvals: None,
+            };
+            let argv = operation.wire_args(None, None);
+            assert_eq!(argv, ["install", "--stream", flag, "sl"]);
+            assert_eq!(
+                ChildOperation::decode(&argv),
+                Some(ChildOperation::Install {
+                    targets: vec!["sl".to_string()],
+                    as_deps,
+                    reinstall,
+                    preconfirmed,
+                    approvals_path: None,
+                    stream: true,
+                })
+            );
+        }
     }
 
     #[test]

@@ -509,6 +509,7 @@ mod tests {
         let request = crate::dispatch::InstallRequest {
             targets: vec!["cava".to_string()],
             as_deps: false,
+            reinstall: false,
             no_check: false,
             ignores: vec![],
             prefer_aur: false,

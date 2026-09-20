@@ -10,6 +10,7 @@ pub struct PhasePlan {
     pub aur_targets: Vec<String>,
     pub files: Vec<String>,
     pub as_deps: bool,
+    pub reinstall: bool,
     pub no_check: bool,
     pub repo_verb: &'static str,
     pub approvals_payload: Option<String>,
@@ -52,6 +53,7 @@ pub fn run_phases(plan: PhasePlan, tx: &mut futures::channel::mpsc::Sender<Strea
         targets: plan.aur_targets,
         files: plan.files,
         as_deps: plan.as_deps,
+        reinstall: plan.reinstall,
         no_check: plan.no_check,
     };
     match forward(
