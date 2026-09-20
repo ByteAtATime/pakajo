@@ -1,5 +1,8 @@
 use alpm::Alpm;
 
+#[cfg(test)]
+use std::path::Path;
+
 #[derive(Debug)]
 pub enum TargetError {
     TargetNotFound(String),
@@ -95,11 +98,49 @@ fn split_pin(target: &str) -> Option<(&str, &str)> {
 }
 
 #[cfg(test)]
+pub(crate) fn filename(name: &str, version: &str) -> String {
+    format!("{name}-{version}-any.pkg.tar.gz")
+}
+
+#[cfg(test)]
+pub(crate) fn write_cachedir_stub(
+    cachedir: &Path,
+    name: &str,
+    version: &str,
+    depends: &[&str],
+    conflicts: &[&str],
+) {
+    use std::fmt::Write as _;
+    use std::io::Cursor;
+    let mut pkginfo = String::new();
+    writeln!(pkginfo, "pkgname = {name}").unwrap();
+    writeln!(pkginfo, "pkgver = {version}").unwrap();
+    writeln!(pkginfo, "arch = any").unwrap();
+    for depend in depends {
+        writeln!(pkginfo, "depend = {depend}").unwrap();
+    }
+    for conflict in conflicts {
+        writeln!(pkginfo, "conflict = {conflict}").unwrap();
+    }
+    let path = cachedir.join(filename(name, version));
+    let file = std::fs::File::create(&path).unwrap();
+    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut tar = tar::Builder::new(encoder);
+    let bytes = pkginfo.into_bytes();
+    let mut header = tar::Header::new_gnu();
+    header.set_path(".PKGINFO").unwrap();
+    header.set_size(bytes.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    tar.append(&header, &mut Cursor::new(&bytes)).unwrap();
+    tar.finish().unwrap();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::fs::File;
-    use std::path::Path;
     use std::rc::Rc;
 
     struct FixturePackage {
@@ -120,15 +161,12 @@ mod tests {
         }
     }
 
-    fn filename(name: &str, version: &str) -> String {
-        format!("{name}-{version}-x86_64.pkg.tar.zst")
-    }
-
     fn push_tag_list(out: &mut String, tag: &str, entries: &[&str]) {
         if entries.is_empty() {
             return;
         }
         out.push_str(tag);
+        out.push('\n');
         for entry in entries {
             out.push_str(entry);
             out.push('\n');
@@ -143,9 +181,9 @@ mod tests {
             package.version,
             filename(package.name, package.version),
         );
-        push_tag_list(&mut out, "%PROVIDES%\n", package.provides);
-        push_tag_list(&mut out, "%CONFLICTS%\n", package.conflicts);
-        push_tag_list(&mut out, "%GROUPS%\n", package.groups);
+        push_tag_list(&mut out, "%PROVIDES%", package.provides);
+        push_tag_list(&mut out, "%CONFLICTS%", package.conflicts);
+        push_tag_list(&mut out, "%GROUPS%", package.groups);
         out.into_bytes()
     }
 

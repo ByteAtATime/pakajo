@@ -67,6 +67,7 @@ pub fn run(
     )
     .context("failed to initialize transaction")?;
     let outcome = drive(handle, spec, source);
+    drop(handle.take_raw_question_cb());
     finish_transaction(handle);
     outcome
 }
@@ -92,7 +93,7 @@ fn drive(
     }
     fail_on_denied(&session.borrow())?;
     let summary = build_summary(handle);
-    if spec.explore {
+    if spec.explore || !ask_proceed(&session, &summary)? {
         return Ok(RunOutcome {
             summary,
             finish: Finish::Stopped,
@@ -104,6 +105,25 @@ fn drive(
         summary,
         finish: Finish::Committed,
     })
+}
+
+fn ask_proceed(
+    session: &Rc<RefCell<QuestionSession>>,
+    summary: &TransactionSummary,
+) -> anyhow::Result<bool> {
+    let question = Question::Proceed(summary.clone());
+    let key = question.key();
+    let asked = session.borrow_mut().ask_direct(&question)?;
+    let Some(answer) = asked else {
+        return Ok(false);
+    };
+    let Answer::Proceed = answer else {
+        session
+            .borrow_mut()
+            .deny(key, "answer did not match question");
+        return fail_on_denied(&session.borrow()).map(|()| false);
+    };
+    Ok(true)
 }
 
 fn queue_targets(
@@ -140,17 +160,21 @@ fn queue_file(handle: &alpm::Alpm, target: &str) -> anyhow::Result<()> {
 }
 
 fn group_members(handle: &alpm::Alpm, target: &str) -> Option<Vec<String>> {
-    handle
-        .syncdbs()
-        .iter()
-        .find_map(|db| db.group(target).ok())
-        .map(|group| {
-            group
-                .packages()
-                .iter()
-                .map(|pkg| pkg.name().to_string())
-                .collect()
-        })
+    let mut found = false;
+    let mut members = Vec::new();
+    for db in handle.syncdbs().iter() {
+        let Ok(group) = db.group(target) else {
+            continue;
+        };
+        found = true;
+        for pkg in group.packages().iter() {
+            let name = pkg.name().to_string();
+            if !members.contains(&name) {
+                members.push(name);
+            }
+        }
+    }
+    found.then_some(members)
 }
 
 fn queue_group(
@@ -248,6 +272,13 @@ mod tests {
         script(|_| SourceDecision::Answer(Answer::Stop))
     }
 
+    fn proceed() -> Box<dyn AnswerSource> {
+        script(|question| match question {
+            Question::Proceed(_) => SourceDecision::Answer(Answer::Proceed),
+            _ => SourceDecision::Answer(Answer::Stop),
+        })
+    }
+
     fn group_answer(selected: &[&str]) -> Box<dyn AnswerSource> {
         let owned: Vec<String> = selected.iter().map(|name| name.to_string()).collect();
         script(move |_| {
@@ -273,6 +304,7 @@ mod tests {
         version: &'static str,
         depends: Vec<&'static str>,
         provides: Vec<&'static str>,
+        conflicts: Vec<&'static str>,
         groups: Vec<&'static str>,
     }
 
@@ -288,17 +320,21 @@ mod tests {
             version,
             depends: depends.to_vec(),
             provides: provides.to_vec(),
+            conflicts: Vec::new(),
             groups: groups.to_vec(),
         }
     }
 
     fn desc(package: &Pkg) -> Vec<u8> {
         let mut out = format!(
-            "%NAME%\n{}\n\n%VERSION%\n{}\n\n%FILENAME%\n{}-{}-x86_64.pkg.tar.zst\n\n",
-            package.name, package.version, package.name, package.version,
+            "%NAME%\n{}\n\n%VERSION%\n{}\n\n%FILENAME%\n{}\n\n",
+            package.name,
+            package.version,
+            crate::tx::targets::filename(package.name, package.version),
         );
         for (tag, entries) in [
             ("%DEPENDS%\n", &package.depends),
+            ("%CONFLICTS%\n", &package.conflicts),
             ("%PROVIDES%\n", &package.provides),
             ("%GROUPS%\n", &package.groups),
         ] {
@@ -337,23 +373,48 @@ mod tests {
 
     fn fixture_full(sync: &[(&str, Vec<Pkg>)], local: &[Pkg]) -> (tempfile::TempDir, alpm::Alpm) {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("local")).unwrap();
-        std::fs::create_dir_all(dir.path().join("sync")).unwrap();
-        let handle = alpm::Alpm::new("/", dir.path().to_string_lossy().as_ref()).unwrap();
+        let root = dir.path().join("root");
+        let db = dir.path().join("db");
+        let cache = dir.path().join("cache");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(db.join("local")).unwrap();
+        std::fs::create_dir_all(db.join("sync")).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        let mut handle = alpm::Alpm::new(
+            root.to_string_lossy().as_ref(),
+            db.to_string_lossy().as_ref(),
+        )
+        .unwrap();
         for (repo, packages) in sync {
-            write_syncdb(dir.path(), repo, packages);
+            write_syncdb(&db, repo, packages);
+            for package in packages {
+                crate::tx::targets::write_cachedir_stub(
+                    &cache,
+                    package.name,
+                    package.version,
+                    &package.depends,
+                    &package.conflicts,
+                );
+            }
         }
         for package in local {
-            let dir_path = dir
-                .path()
+            let dir_path = db
                 .join("local")
                 .join(format!("{}-{}", package.name, package.version));
             std::fs::create_dir_all(&dir_path).unwrap();
             std::fs::write(dir_path.join("desc"), desc(package)).unwrap();
+            std::fs::write(dir_path.join("files"), b"%FILES%\n").unwrap();
         }
         for (repo, _) in sync {
-            handle.register_syncdb(*repo, alpm::SigLevel::NONE).unwrap();
+            handle
+                .register_syncdb_mut(*repo, alpm::SigLevel::NONE)
+                .unwrap()
+                .add_server("file:///pakajo-offline-stub")
+                .unwrap();
         }
+        handle
+            .add_cachedir(cache.to_string_lossy().as_ref())
+            .unwrap();
         (dir, handle)
     }
 
@@ -463,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn group_selection_expands_subset_and_empty_stops() {
+    fn group_selection_expands_subset_empty_stops_and_spans_dbs() {
         let (_dir, mut handle) = tools_fixture();
         let outcome = run(
             &mut handle,
@@ -482,6 +543,24 @@ mod tests {
         let outcome = run(&mut handle, &spec(&["tools"], true), group_answer(&[])).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert!(outcome.summary.packages.is_empty());
+        release(&mut handle);
+
+        let sync = [
+            ("core", vec![make("a", "1.0-1", &[], &[], &["tools"])]),
+            ("extra", vec![make("b", "1.0-1", &[], &[], &["tools"])]),
+        ];
+        let (_dir, mut handle) = fixture_full(&sync, &[]);
+        let outcome = run(
+            &mut handle,
+            &spec(&["tools"], true),
+            group_answer(&["a", "b"]),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        assert_eq!(
+            summary_names(&outcome),
+            vec!["a".to_string(), "b".to_string()]
+        );
         release(&mut handle);
     }
 
@@ -564,6 +643,79 @@ mod tests {
         let outcome = run(&mut handle, &spec(&["skipme"], false), stop()).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert!(outcome.summary.packages.is_empty());
+        release(&mut handle);
+    }
+
+    #[test]
+    fn commit_marks_explicit_depend_and_as_deps_reasons() {
+        let sync = vec![make("app", "1.0-1", &["lib"], &[], &[]), plain("lib")];
+        let (_dir, mut handle) = fixture_full(&[("core", sync)], &[]);
+        let outcome = run(&mut handle, &spec(&["app"], false), proceed()).unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert_eq!(
+            handle.localdb().pkg("app").unwrap().reason(),
+            alpm::PackageReason::Explicit
+        );
+        assert_eq!(
+            handle.localdb().pkg("lib").unwrap().reason(),
+            alpm::PackageReason::Depend
+        );
+        release(&mut handle);
+
+        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
+        let as_deps = RunSpec {
+            targets: vec!["solo".to_string()],
+            explore: false,
+            as_deps: true,
+            reinstall: false,
+            ..spec(&[], false)
+        };
+        let outcome = run(&mut handle, &as_deps, proceed()).unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert_eq!(
+            handle.localdb().pkg("solo").unwrap().reason(),
+            alpm::PackageReason::Depend
+        );
+        release(&mut handle);
+    }
+
+    #[test]
+    fn commit_conflict_removal_and_declined_proceed_stop() {
+        let conflicting = Pkg {
+            version: "2.0-1",
+            conflicts: vec!["oldpkg"],
+            ..plain("newpkg")
+        };
+        let (_dir, mut handle) = fixture_full(&[("core", vec![conflicting])], &[plain("oldpkg")]);
+        let source = script(|question| match question {
+            Question::Conflict {
+                incoming,
+                removable,
+            } => SourceDecision::Answer(Answer::Conflict {
+                incoming: incoming.clone(),
+                removable: removable.clone(),
+                remove: true,
+            }),
+            Question::Proceed(_) => SourceDecision::Answer(Answer::Proceed),
+            _ => SourceDecision::Answer(Answer::Stop),
+        });
+        let outcome = run(&mut handle, &spec(&["newpkg"], false), source).unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert!(handle.localdb().pkg("newpkg").is_ok());
+        assert!(handle.localdb().pkg("oldpkg").is_err());
+        assert!(
+            outcome
+                .summary
+                .packages
+                .iter()
+                .any(|package| package.name == "oldpkg" && package.is_removal)
+        );
+        release(&mut handle);
+
+        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
+        let outcome = run(&mut handle, &spec(&["solo"], false), stop()).unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        assert!(handle.localdb().pkg("solo").is_err());
         release(&mut handle);
     }
 }
