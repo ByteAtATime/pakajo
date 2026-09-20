@@ -233,6 +233,7 @@ mod tests {
             }],
             approved_providers: vec![],
             approved_held: vec![],
+            approved_groups: Default::default(),
         };
         let a = ApprovalsAnswerer::new(approvals);
         assert!(matches!(
@@ -258,6 +259,7 @@ mod tests {
             }],
             approved_providers: vec![],
             approved_held: vec![],
+            approved_groups: Default::default(),
         };
         let json = serde_json::to_vec(&original).expect("serialize");
         let decoded: Approvals = serde_json::from_slice(&json).expect("deserialize");
@@ -334,6 +336,7 @@ mod tests {
                 provider_repo: None,
             }],
             approved_held: vec![],
+            approved_groups: Default::default(),
         };
         let a = ApprovalsAnswerer::new(approvals);
 
@@ -357,6 +360,7 @@ mod tests {
                 provider_repo: None,
             }],
             approved_held: vec![],
+            approved_groups: Default::default(),
         };
         let a = ApprovalsAnswerer::new(approvals);
 
@@ -377,6 +381,7 @@ mod tests {
                 provider_repo: None,
             }],
             approved_held: vec![],
+            approved_groups: Default::default(),
         };
         let a = ApprovalsAnswerer::new(approvals);
         assert!(matches!(
@@ -395,6 +400,7 @@ mod tests {
                 provider_repo: Some("extra".into()),
             }],
             approved_held: vec![],
+            approved_groups: Default::default(),
         };
         let a = ApprovalsAnswerer::new(approvals);
         let candidates = vec![

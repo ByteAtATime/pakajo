@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Context as _, bail};
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,8 @@ pub struct Approvals {
     pub approved_providers: Vec<ProviderApproval>,
     #[serde(default)]
     pub approved_held: Vec<String>,
+    #[serde(default)]
+    pub approved_groups: BTreeMap<String, Vec<String>>,
 }
 
 impl QuestionSet {
@@ -108,6 +110,7 @@ impl QuestionSet {
             approved_conflicts,
             approved_providers,
             approved_held,
+            approved_groups: BTreeMap::new(),
         })
     }
 }

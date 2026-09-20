@@ -175,6 +175,7 @@ mod tests {
             }],
             approved_providers: Vec::new(),
             approved_held: Vec::new(),
+            approved_groups: Default::default(),
         };
         assert!(AutomaticDecider::with_approvals(approvals).confirm_conflicts(&report));
     }
