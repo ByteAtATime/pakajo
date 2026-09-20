@@ -3,13 +3,16 @@ use std::rc::Rc;
 
 use anyhow::Context;
 
-use crate::events::TransactionSummary;
+use crate::events::{InstallEvent, InstallSink, LogLevel, TransactionSummary};
 use crate::pacman::lock::{
     LOCK_POLL_INTERVAL, cleanup_on_signal, during_commit, finish_transaction, lock_retry,
 };
 use crate::question::model::{Answer, Question};
 use crate::question::source::AnswerSource;
-use crate::tx::convert::{PrepareFailure, build_summary, extract_prepare_failure};
+use crate::tx::convert::{
+    PrepareFailure, build_summary, convert_download, convert_event, convert_log_level,
+    convert_progress_phase, extract_prepare_failure,
+};
 use crate::tx::questions::QuestionSession;
 use crate::tx::targets::resolve_targets;
 
@@ -58,29 +61,79 @@ pub fn run(
     handle: &mut alpm::Alpm,
     spec: &RunSpec,
     source: Box<dyn AnswerSource>,
+    sink: Box<dyn InstallSink>,
 ) -> anyhow::Result<RunOutcome> {
+    let events: Rc<RefCell<Box<dyn InstallSink>>> = Rc::new(RefCell::new(sink));
+    forward_alpm_events(handle, &events);
     cleanup_on_signal(handle);
     lock_retry(
         || handle.trans_init(trans_init_flags(spec.explore, spec.as_deps, spec.reinstall)),
-        || {},
+        || {
+            events
+                .borrow_mut()
+                .event(InstallEvent::WaitingForDatabaseLock);
+        },
         LOCK_POLL_INTERVAL,
     )
     .context("failed to initialize transaction")?;
-    let outcome = drive(handle, spec, source);
+    let outcome = drive(handle, spec, source, &events);
     drop(handle.take_raw_question_cb());
     finish_transaction(handle);
     outcome
+}
+
+fn forward_alpm_events(handle: &mut alpm::Alpm, events: &Rc<RefCell<Box<dyn InstallSink>>>) {
+    handle.set_event_cb(events.clone(), |any_event, data| {
+        if let Some(event) = convert_event(any_event) {
+            data.borrow_mut().event(event);
+        }
+    });
+    handle.set_dl_cb(events.clone(), |filename, any_ev, data| {
+        if let Some(event) = convert_download(filename, any_ev) {
+            data.borrow_mut().event(event);
+        }
+    });
+    handle.set_progress_cb(
+        events.clone(),
+        |phase, pkgname, percent, howmany, current, data| {
+            data.borrow_mut().event(InstallEvent::Progress {
+                phase: convert_progress_phase(phase),
+                package: pkgname.to_string(),
+                percent,
+                current,
+                total: howmany,
+            });
+        },
+    );
+    handle.set_log_cb(events.clone(), |level, message, data| {
+        if let Some(mapped) = convert_log_level(level) {
+            data.borrow_mut().event(InstallEvent::Log {
+                level: mapped,
+                message: message.to_string(),
+            });
+        }
+    });
 }
 
 fn drive(
     handle: &mut alpm::Alpm,
     spec: &RunSpec,
     source: Box<dyn AnswerSource>,
+    events: &Rc<RefCell<Box<dyn InstallSink>>>,
 ) -> anyhow::Result<RunOutcome> {
     let session = QuestionSession::attach(handle, source);
+    if spec.targets.iter().any(|target| is_file_target(target)) {
+        events.borrow_mut().event(InstallEvent::LoadingPackages);
+    }
     queue_targets(handle, spec, &session)?;
     if handle.trans_add().is_empty() {
         fail_on_denied(&session.borrow())?;
+        if !spec.explore {
+            events.borrow_mut().event(InstallEvent::Log {
+                level: LogLevel::Warning,
+                message: " there is nothing to do".to_string(),
+            });
+        }
         return Ok(outcome(handle, Finish::Stopped));
     }
     let failure = match handle.trans_prepare() {
@@ -93,6 +146,11 @@ fn drive(
     }
     fail_on_denied(&session.borrow())?;
     let summary = build_summary(handle);
+    if !spec.explore {
+        events
+            .borrow_mut()
+            .event(InstallEvent::TransactionSummary(summary.clone()));
+    }
     if spec.explore || !ask_proceed(&session, &summary)? {
         return Ok(RunOutcome {
             summary,
@@ -238,6 +296,7 @@ fn fail_on_denied(session: &QuestionSession) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::{InstallEvent, InstallSink, LogLevel};
     use crate::question::model::{Answer, Question};
     use crate::question::source::{FailClosed, SourceDecision};
     use std::cell::Cell;
@@ -287,6 +346,39 @@ mod tests {
                 selected: owned.clone(),
             })
         })
+    }
+
+    struct Discard;
+
+    impl InstallSink for Discard {
+        fn event(&mut self, _event: InstallEvent) {}
+    }
+
+    fn discard() -> Box<dyn InstallSink> {
+        Box::new(Discard)
+    }
+
+    #[derive(Clone, Default)]
+    struct Recorder {
+        seen: Rc<RefCell<Vec<InstallEvent>>>,
+    }
+
+    impl InstallSink for Recorder {
+        fn event(&mut self, event: InstallEvent) {
+            self.seen.borrow_mut().push(event);
+        }
+    }
+
+    struct OrderSink {
+        log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl InstallSink for OrderSink {
+        fn event(&mut self, event: InstallEvent) {
+            if matches!(event, InstallEvent::TransactionSummary(_)) {
+                self.log.borrow_mut().push("summary".to_string());
+            }
+        }
     }
 
     fn spec(targets: &[&str], explore: bool) -> RunSpec {
@@ -482,7 +574,7 @@ mod tests {
         let (_dir, mut handle) = fixture(&[plain("foo")]);
         let mut holder = peer(Path::new(handle.dbpath()));
         holder.trans_init(alpm::TransFlag::NONE).unwrap();
-        let outcome = run(&mut handle, &spec(&["foo"], true), deny()).unwrap();
+        let outcome = run(&mut handle, &spec(&["foo"], true), deny(), discard()).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert_eq!(summary_names(&outcome), vec!["foo".to_string()]);
         assert!(handle.localdb().pkg("foo").is_err());
@@ -494,7 +586,7 @@ mod tests {
     fn denied_question_aborts_with_reason() {
         let (_dir, mut handle) = fixture(&[plain("skipme")]);
         handle.add_ignorepkg("skipme").unwrap();
-        let error = run(&mut handle, &spec(&["skipme"], false), deny()).unwrap_err();
+        let error = run(&mut handle, &spec(&["skipme"], false), deny(), discard()).unwrap_err();
         assert!(format!("{error:#}").contains("denied in test"));
         release(&mut handle);
     }
@@ -502,7 +594,7 @@ mod tests {
     #[test]
     fn unsatisfiable_dep_reports_prepare_failure() {
         let (_dir, mut handle) = fixture(&[make("needy", "1.0-1", &["ghost>=9"], &[], &[])]);
-        let outcome = run(&mut handle, &spec(&["needy"], false), stop()).unwrap();
+        let outcome = run(&mut handle, &spec(&["needy"], false), stop(), discard()).unwrap();
         let Finish::PrepareFailed(PrepareFailure::Unsatisfied(missing)) = outcome.finish else {
             panic!("expected an unsatisfied prepare failure");
         };
@@ -518,9 +610,22 @@ mod tests {
         let stub =
             crate::stub_pkg::build_stub_pkg("cava-git", "0.10.4-1", stub_dir.path()).unwrap();
         let target = stub.to_string_lossy().into_owned();
-        let outcome = run(&mut handle, &spec(&[&target], true), stop()).unwrap();
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let outcome = run(
+            &mut handle,
+            &spec(&[&target], true),
+            stop(),
+            Box::new(recorder),
+        )
+        .unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert_eq!(summary_names(&outcome), vec!["cava-git".to_string()]);
+        assert!(
+            seen.borrow()
+                .iter()
+                .any(|event| matches!(event, InstallEvent::LoadingPackages))
+        );
         release(&mut handle);
     }
 
@@ -531,6 +636,7 @@ mod tests {
             &mut handle,
             &spec(&["tools"], true),
             group_answer(&["a", "c"]),
+            discard(),
         )
         .unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
@@ -541,7 +647,13 @@ mod tests {
         release(&mut handle);
 
         let (_dir, mut handle) = tools_fixture();
-        let outcome = run(&mut handle, &spec(&["tools"], true), group_answer(&[])).unwrap();
+        let outcome = run(
+            &mut handle,
+            &spec(&["tools"], true),
+            group_answer(&[]),
+            discard(),
+        )
+        .unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert!(outcome.summary.packages.is_empty());
         release(&mut handle);
@@ -555,6 +667,7 @@ mod tests {
             &mut handle,
             &spec(&["tools"], true),
             group_answer(&["a", "b"]),
+            discard(),
         )
         .unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
@@ -572,6 +685,7 @@ mod tests {
             &mut handle,
             &spec(&["tools"], false),
             group_answer(&["ghost"]),
+            discard(),
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains("is not offered"));
@@ -585,7 +699,7 @@ mod tests {
                 remove: true,
             })
         });
-        let error = run(&mut handle, &spec(&["tools"], false), mismatched).unwrap_err();
+        let error = run(&mut handle, &spec(&["tools"], false), mismatched, discard()).unwrap_err();
         assert!(format!("{error:#}").contains("did not match"));
         release(&mut handle);
 
@@ -595,7 +709,7 @@ mod tests {
                 selected: Vec::new(),
             })
         });
-        let error = run(&mut handle, &spec(&["solo"], false), mismatched).unwrap_err();
+        let error = run(&mut handle, &spec(&["solo"], false), mismatched, discard()).unwrap_err();
         assert!(format!("{error:#}").contains("Proceed"));
         assert!(handle.localdb().pkg("solo").is_err());
         release(&mut handle);
@@ -621,7 +735,7 @@ mod tests {
                 }),
                 _ => SourceDecision::Answer(Answer::Stop),
             });
-            let outcome = run(&mut handle, &spec(&["virt"], true), source).unwrap();
+            let outcome = run(&mut handle, &spec(&["virt"], true), source, discard()).unwrap();
             assert!(matches!(outcome.finish, Finish::Stopped));
             assert_eq!(summary_names(&outcome), vec!["provider-two".to_string()]);
             release(&mut handle);
@@ -633,7 +747,7 @@ mod tests {
         let sync = [plain("foo")];
         let local = [plain("foo")];
         let (_dir, mut handle) = fixture_full(&[("core", sync.to_vec())], &local);
-        let outcome = run(&mut handle, &spec(&["foo"], true), stop()).unwrap();
+        let outcome = run(&mut handle, &spec(&["foo"], true), stop(), discard()).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert!(outcome.summary.packages.is_empty());
         release(&mut handle);
@@ -646,13 +760,13 @@ mod tests {
             reinstall: true,
             ..spec(&[], true)
         };
-        let outcome = run(&mut handle, &reinstall, stop()).unwrap();
+        let outcome = run(&mut handle, &reinstall, stop(), discard()).unwrap();
         assert_eq!(summary_names(&outcome), vec!["foo".to_string()]);
         release(&mut handle);
 
         let (_dir, mut handle) = fixture(&[plain("skipme")]);
         handle.add_ignorepkg("skipme").unwrap();
-        let outcome = run(&mut handle, &spec(&["skipme"], false), stop()).unwrap();
+        let outcome = run(&mut handle, &spec(&["skipme"], false), stop(), discard()).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert!(outcome.summary.packages.is_empty());
         release(&mut handle);
@@ -662,7 +776,7 @@ mod tests {
     fn commit_marks_explicit_depend_and_as_deps_reasons() {
         let sync = vec![make("app", "1.0-1", &["lib"], &[], &[]), plain("lib")];
         let (_dir, mut handle) = fixture_full(&[("core", sync)], &[]);
-        let outcome = run(&mut handle, &spec(&["app"], false), proceed()).unwrap();
+        let outcome = run(&mut handle, &spec(&["app"], false), proceed(), discard()).unwrap();
         assert!(matches!(outcome.finish, Finish::Committed));
         assert_eq!(
             handle.localdb().pkg("app").unwrap().reason(),
@@ -682,7 +796,7 @@ mod tests {
             reinstall: false,
             ..spec(&[], false)
         };
-        let outcome = run(&mut handle, &as_deps, proceed()).unwrap();
+        let outcome = run(&mut handle, &as_deps, proceed(), discard()).unwrap();
         assert!(matches!(outcome.finish, Finish::Committed));
         assert_eq!(
             handle.localdb().pkg("solo").unwrap().reason(),
@@ -711,7 +825,7 @@ mod tests {
             Question::Proceed(_) => SourceDecision::Answer(Answer::Proceed),
             _ => SourceDecision::Answer(Answer::Stop),
         });
-        let outcome = run(&mut handle, &spec(&["newpkg"], false), source).unwrap();
+        let outcome = run(&mut handle, &spec(&["newpkg"], false), source, discard()).unwrap();
         assert!(matches!(outcome.finish, Finish::Committed));
         assert!(handle.localdb().pkg("newpkg").is_ok());
         assert!(handle.localdb().pkg("oldpkg").is_err());
@@ -725,7 +839,7 @@ mod tests {
         release(&mut handle);
 
         let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
-        let outcome = run(&mut handle, &spec(&["solo"], false), stop()).unwrap();
+        let outcome = run(&mut handle, &spec(&["solo"], false), stop(), discard()).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert!(handle.localdb().pkg("solo").is_err());
         release(&mut handle);
@@ -761,9 +875,59 @@ mod tests {
                 }),
             }) as Box<dyn AnswerSource>
         };
-        let error = run(&mut handle, &spec(&["aaa", "bbb"], false), source).unwrap_err();
+        let error = run(
+            &mut handle,
+            &spec(&["aaa", "bbb"], false),
+            source,
+            discard(),
+        )
+        .unwrap_err();
         assert_eq!(calls.get(), 1);
         assert!(format!("{error:#}").contains(&*first.borrow()));
+        release(&mut handle);
+    }
+
+    #[test]
+    fn tty_event_lifecycle() {
+        let (_dir, mut handle) = fixture(&[plain("solo")]);
+        let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let asked = log.clone();
+        let source = script(move |question| {
+            if matches!(question, Question::Proceed(_)) {
+                asked.borrow_mut().push("question".to_string());
+                SourceDecision::Answer(Answer::Proceed)
+            } else {
+                SourceDecision::Answer(Answer::Stop)
+            }
+        });
+        let outcome = run(
+            &mut handle,
+            &spec(&["solo"], false),
+            source,
+            Box::new(OrderSink { log: log.clone() }),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert_eq!(
+            *log.borrow(),
+            vec!["summary".to_string(), "question".to_string()]
+        );
+        release(&mut handle);
+
+        let (_dir, mut handle) = fixture(&[plain("foo")]);
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let outcome = run(&mut handle, &spec(&[], false), stop(), Box::new(recorder)).unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 1);
+        match &seen[0] {
+            InstallEvent::Log { level, message } => {
+                assert_eq!(*level, LogLevel::Warning);
+                assert_eq!(message, " there is nothing to do");
+            }
+            other => panic!("expected nothing-to-do log, got {other:?}"),
+        }
         release(&mut handle);
     }
 }

@@ -84,11 +84,8 @@ fn render_import_key(fingerprint: &str, uid: &str) -> String {
     }
 }
 
-fn render_proceed(summary: &crate::events::TransactionSummary) -> String {
-    format!(
-        "{}\nProceed with installation? [Y/n]: ",
-        crate::cli::summary::render_summary(summary, false)
-    )
+fn render_proceed(_summary: &crate::events::TransactionSummary) -> String {
+    "Proceed with installation? [Y/n]: ".to_string()
 }
 
 fn render_group(group: &str, members: &[String]) -> String {
@@ -226,17 +223,23 @@ pub fn execute_with<R: BufRead + 'static, W: Write + 'static>(
     output: W,
     handle: &mut alpm::Alpm,
     spec: &RunSpec,
+    sink: Box<dyn crate::events::InstallSink>,
 ) -> anyhow::Result<RunOutcome> {
     let source = InteractiveSource::new(input, output);
-    driver::run(handle, spec, Box::new(source))
+    driver::run(handle, spec, Box::new(source), sink)
 }
 
-pub fn execute(handle: &mut alpm::Alpm, spec: &RunSpec) -> anyhow::Result<RunOutcome> {
+pub fn execute(
+    handle: &mut alpm::Alpm,
+    spec: &RunSpec,
+    sink: Box<dyn crate::events::InstallSink>,
+) -> anyhow::Result<RunOutcome> {
     execute_with(
         std::io::BufReader::new(std::io::stdin()),
         std::io::stdout(),
         handle,
         spec,
+        sink,
     )
 }
 
@@ -308,7 +311,7 @@ mod tests {
             ),
             (
                 Question::Proceed(summary()),
-                "\nPackage (0)  Net Change\n\n\n\nProceed with installation? [Y/n]: ",
+                "Proceed with installation? [Y/n]: ",
             ),
             (
                 Question::Corrupted {

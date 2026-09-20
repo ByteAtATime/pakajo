@@ -178,9 +178,14 @@ impl ChildOperation {
                                 std::io::stderr(),
                                 &mut handle,
                                 &spec,
+                                Box::new(EscalatedSink::new()),
                             )?
                         } else {
-                            crate::tx::prompt::execute(&mut handle, &spec)?
+                            crate::tx::prompt::execute(
+                                &mut handle,
+                                &spec,
+                                Box::new(ConsoleSink::new()),
+                            )?
                         };
                         finish_install(outcome)
                     }
