@@ -10,7 +10,7 @@ pub struct QuestionSession {
 }
 
 impl QuestionSession {
-    pub fn new(source: Box<dyn AnswerSource>) -> Self {
+    fn new(source: Box<dyn AnswerSource>) -> Self {
         Self {
             source,
             denied: None,
@@ -29,7 +29,21 @@ impl QuestionSession {
         self.denied.as_ref()
     }
 
-    pub fn handle(&mut self, question: alpm::AnyQuestion) {
+    pub(crate) fn ask_direct(&mut self, question: &Question) -> anyhow::Result<Option<Answer>> {
+        match self.poll(question) {
+            Ok(answer) => Ok(answer),
+            Err(report) => anyhow::bail!(report),
+        }
+    }
+
+    pub(crate) fn deny(&mut self, key: QuestionKey, reason: impl Into<String>) {
+        self.denied = Some(FailClosed {
+            key,
+            reason: reason.into(),
+        });
+    }
+
+    fn handle(&mut self, question: alpm::AnyQuestion) {
         if self.denied.is_some() {
             return;
         }
@@ -124,21 +138,22 @@ impl QuestionSession {
     }
 
     fn ask(&mut self, question: &Question) -> Option<Answer> {
-        match self.source.answer(question) {
-            SourceDecision::Answer(Answer::Stop) => None,
-            SourceDecision::Answer(answer) => Some(answer),
-            SourceDecision::Abort(denied) => {
-                self.denied = Some(denied);
-                None
-            }
-        }
+        self.poll(question).unwrap_or(None)
     }
 
-    fn deny(&mut self, key: QuestionKey, reason: impl Into<String>) {
-        self.denied = Some(FailClosed {
-            key,
-            reason: reason.into(),
-        });
+    fn poll(&mut self, question: &Question) -> Result<Option<Answer>, String> {
+        if self.denied.is_some() {
+            return Ok(None);
+        }
+        match self.source.answer(question) {
+            SourceDecision::Answer(Answer::Stop) => Ok(None),
+            SourceDecision::Answer(answer) => Ok(Some(answer)),
+            SourceDecision::Abort(denied) => {
+                let report = format!("aborted: {:?}: {}", denied.key, denied.reason);
+                self.denied = Some(denied);
+                Err(report)
+            }
+        }
     }
 }
 
@@ -156,7 +171,7 @@ fn match_bool(question: &Question, answer: &Answer) -> Option<bool> {
     }
 }
 
-pub fn resolve_provider_index(
+fn resolve_provider_index(
     candidates: &[ProviderCandidate],
     name: &str,
     repo: Option<&str>,
