@@ -106,6 +106,8 @@ mod tests {
         name: &'static str,
         version: &'static str,
         provides: &'static [&'static str],
+        conflicts: &'static [&'static str],
+        groups: &'static [&'static str],
     }
 
     fn pkg(name: &'static str, version: &'static str) -> FixturePackage {
@@ -113,21 +115,37 @@ mod tests {
             name,
             version,
             provides: &[],
+            conflicts: &[],
+            groups: &[],
         }
     }
 
-    fn desc(name: &str, version: &str, provides: &[&str]) -> Vec<u8> {
-        let mut out = format!(
-            "%NAME%\n{name}\n\n%VERSION%\n{version}\n\n%FILENAME%\n{name}-{version}-x86_64.pkg.tar.zst\n\n"
-        );
-        if !provides.is_empty() {
-            out.push_str("%PROVIDES%\n");
-            for provide in provides {
-                out.push_str(provide);
-                out.push('\n');
-            }
+    fn filename(name: &str, version: &str) -> String {
+        format!("{name}-{version}-x86_64.pkg.tar.zst")
+    }
+
+    fn push_tag_list(out: &mut String, tag: &str, entries: &[&str]) {
+        if entries.is_empty() {
+            return;
+        }
+        out.push_str(tag);
+        for entry in entries {
+            out.push_str(entry);
             out.push('\n');
         }
+        out.push('\n');
+    }
+
+    fn desc(package: &FixturePackage) -> Vec<u8> {
+        let mut out = format!(
+            "%NAME%\n{}\n\n%VERSION%\n{}\n\n%FILENAME%\n{}\n\n",
+            package.name,
+            package.version,
+            filename(package.name, package.version),
+        );
+        push_tag_list(&mut out, "%PROVIDES%\n", package.provides);
+        push_tag_list(&mut out, "%CONFLICTS%\n", package.conflicts);
+        push_tag_list(&mut out, "%GROUPS%\n", package.groups);
         out.into_bytes()
     }
 
@@ -135,7 +153,7 @@ mod tests {
         let file = File::create(dbpath.join("sync").join(format!("{repo}.db"))).unwrap();
         let mut builder = tar::Builder::new(file);
         for package in packages {
-            let content = desc(package.name, package.version, package.provides);
+            let content = desc(package);
             let mut header = tar::Header::new_gnu();
             header.set_size(content.len() as u64);
             header.set_mode(0o644);
@@ -168,11 +186,7 @@ mod tests {
                 .join("local")
                 .join(format!("{}-{}", package.name, package.version));
             std::fs::create_dir_all(&dir_path).unwrap();
-            std::fs::write(
-                dir_path.join("desc"),
-                desc(package.name, package.version, package.provides),
-            )
-            .unwrap();
+            std::fs::write(dir_path.join("desc"), desc(package)).unwrap();
         }
         for (repo, _) in repos {
             handle.register_syncdb(*repo, alpm::SigLevel::NONE).unwrap();
@@ -202,11 +216,15 @@ mod tests {
                 name: "provider-one",
                 version: "1.0-1",
                 provides: &["virt"],
+                conflicts: &[],
+                groups: &[],
             },
             FixturePackage {
                 name: "provider-two",
                 version: "1.0-1",
                 provides: &["virt"],
+                conflicts: &[],
+                groups: &[],
             },
         ]
     }
