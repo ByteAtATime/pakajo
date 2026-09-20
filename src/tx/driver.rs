@@ -121,7 +121,7 @@ fn ask_proceed(
         session
             .borrow_mut()
             .deny(key, "answer did not match question");
-        return fail_on_denied(&session.borrow()).map(|()| false);
+        return Err(fail_on_denied(&session.borrow()).unwrap_err());
     };
     Ok(true)
 }
@@ -240,6 +240,7 @@ mod tests {
     use super::*;
     use crate::question::model::{Answer, Question};
     use crate::question::source::{FailClosed, SourceDecision};
+    use std::cell::Cell;
     use std::fs::File;
     use std::path::Path;
 
@@ -716,6 +717,66 @@ mod tests {
         let outcome = run(&mut handle, &spec(&["solo"], false), stop()).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert!(handle.localdb().pkg("solo").is_err());
+        release(&mut handle);
+    }
+
+    #[test]
+    fn proceed_mismatch_fails_closed_naming_proceed() {
+        let (_dir, mut handle) = fixture(&[plain("solo")]);
+        let mismatched = script(|_| {
+            SourceDecision::Answer(Answer::GroupMembers {
+                selected: Vec::new(),
+            })
+        });
+        let error = run(&mut handle, &spec(&["solo"], false), mismatched).unwrap_err();
+        assert!(format!("{error:#}").contains("Proceed"));
+        assert!(handle.localdb().pkg("solo").is_err());
+        release(&mut handle);
+    }
+
+    #[test]
+    fn group_stop_queues_nothing() {
+        let (_dir, mut handle) = tools_fixture();
+        let outcome = run(&mut handle, &spec(&["tools"], true), stop()).unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        assert!(outcome.summary.packages.is_empty());
+        assert!(handle.localdb().pkg("a").is_err());
+        release(&mut handle);
+    }
+
+    #[test]
+    fn first_denial_wins_across_questions() {
+        let (_dir, mut handle) = fixture(&[plain("aaa"), plain("bbb")]);
+        handle.add_ignorepkg("aaa").unwrap();
+        handle.add_ignorepkg("bbb").unwrap();
+        let calls = Rc::new(Cell::new(0));
+        let first = Rc::new(RefCell::new(String::new()));
+        let source = {
+            let calls = Rc::clone(&calls);
+            let first = Rc::clone(&first);
+            Box::new(Script {
+                respond: Box::new(move |question: &Question| {
+                    calls.set(calls.get() + 1);
+                    let Question::InstallIgnorepkg { name } = question else {
+                        return SourceDecision::Answer(Answer::Stop);
+                    };
+                    if calls.get() == 1 {
+                        *first.borrow_mut() = name.clone();
+                        return SourceDecision::Abort(FailClosed {
+                            key: question.key(),
+                            reason: "first denial".to_string(),
+                        });
+                    }
+                    SourceDecision::Answer(Answer::InstallIgnorepkg {
+                        name: name.clone(),
+                        install: true,
+                    })
+                }),
+            }) as Box<dyn AnswerSource>
+        };
+        let error = run(&mut handle, &spec(&["aaa", "bbb"], false), source).unwrap_err();
+        assert_eq!(calls.get(), 1);
+        assert!(format!("{error:#}").contains(&*first.borrow()));
         release(&mut handle);
     }
 }
