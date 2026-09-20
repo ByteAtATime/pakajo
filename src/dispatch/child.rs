@@ -1,7 +1,6 @@
 use crate::cli::{
     ConsoleSink, EscalatedSink, JsonSink, PromptStream, answerer_for, classify_target,
-    confirm_hold_remove, confirm_install, confirm_install_stderr, confirm_remove,
-    confirm_remove_stderr, privs,
+    confirm_hold_remove, confirm_remove, confirm_remove_stderr, privs,
 };
 use crate::dispatch::operation::ChildOperation;
 use crate::install::InstallTarget;
@@ -56,6 +55,13 @@ fn read_approvals(
                 .with_context(|| format!("failed to parse approvals file {path}"))
         })
         .transpose()
+}
+
+fn finish_install(outcome: crate::tx::driver::RunOutcome) -> anyhow::Result<()> {
+    if let crate::tx::driver::Finish::PrepareFailed(failure) = outcome.finish {
+        anyhow::bail!("failed to prepare transaction: {failure:?}")
+    }
+    Ok(())
 }
 
 pub fn code_from(result: anyhow::Result<()>) -> i32 {
@@ -119,17 +125,18 @@ impl ChildOperation {
             ChildOperation::Install {
                 targets,
                 as_deps,
-                preconfirmed,
+                reinstall,
+                preconfirmed: _,
                 approvals_path,
                 stream,
             } => {
                 let approvals = read_approvals(approvals_path.as_deref())?;
-                let handle = crate::pacman::handle()?;
-                let targets = targets
+                let mut handle = crate::pacman::handle()?;
+                let classified = targets
                     .iter()
                     .map(|s| classify_target(s))
                     .collect::<Vec<_>>();
-                let repo_names: Vec<String> = targets
+                let repo_names: Vec<String> = classified
                     .iter()
                     .filter_map(|t| match t {
                         InstallTarget::Repo(name) => Some(name.clone()),
@@ -147,27 +154,32 @@ impl ChildOperation {
                     privs::stdin_is_tty(),
                 );
                 let answerer = answerer_for(approvals);
-                let confirmed = *preconfirmed;
                 match presentation {
-                    Presentation::InteractiveStream => crate::install::run_install(
-                        &targets,
-                        *as_deps,
-                        EscalatedSink::new(),
-                        move || confirmed || confirm_install_stderr(),
-                        answerer,
-                    ),
+                    Presentation::InteractiveStream | Presentation::Console => {
+                        let spec = crate::tx::driver::RunSpec {
+                            kind: crate::tx::driver::RunKind::Sync,
+                            targets: targets.clone(),
+                            explore: false,
+                            as_deps: *as_deps,
+                            reinstall: *reinstall,
+                        };
+                        let outcome = if matches!(presentation, Presentation::InteractiveStream) {
+                            crate::tx::prompt::execute_with(
+                                std::io::BufReader::new(std::io::stdin()),
+                                std::io::stderr(),
+                                &mut handle,
+                                &spec,
+                            )?
+                        } else {
+                            crate::tx::prompt::execute(&mut handle, &spec)?
+                        };
+                        finish_install(outcome)
+                    }
                     Presentation::SilentStream => crate::install::run_install(
-                        &targets,
+                        &classified,
                         *as_deps,
                         JsonSink::new(),
                         || true,
-                        answerer,
-                    ),
-                    Presentation::Console => crate::install::run_install(
-                        &targets,
-                        *as_deps,
-                        ConsoleSink::new(),
-                        move || confirmed || confirm_install(),
                         answerer,
                     ),
                 }

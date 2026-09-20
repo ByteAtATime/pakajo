@@ -12,13 +12,12 @@ use self::args::{
 };
 pub use self::args::{Cli, Command};
 
-mod summary;
+pub(crate) mod summary;
 
 mod info;
 
 pub(crate) mod prompts;
 pub(crate) use self::prompts::{PromptStream, confirm_hold_remove};
-pub(crate) use self::prompts::{confirm_install, confirm_install_stderr};
 pub(crate) use self::prompts::{confirm_remove, confirm_remove_stderr};
 
 pub(crate) mod review;

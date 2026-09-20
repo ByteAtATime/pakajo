@@ -287,10 +287,6 @@ pub fn find(handle: &alpm::Alpm, name: &str) -> Option<Package> {
     handle.syncdbs().pkg(name).ok().map(Package::from)
 }
 
-pub fn repo_exists(handle: &alpm::Alpm, name: &str) -> bool {
-    handle.syncdbs().pkg(name).is_ok()
-}
-
 #[derive(Debug, Clone)]
 pub struct GroupMember {
     pub name: String,

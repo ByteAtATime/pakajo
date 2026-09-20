@@ -19,7 +19,7 @@ pub fn render(question: &Question) -> String {
         Question::RemovePkgs { names } => render_remove_pkgs(names),
         Question::Corrupted { path } => render_corrupted(path),
         Question::ImportKey { fingerprint, uid } => render_import_key(fingerprint, uid),
-        Question::Proceed(_) => render_proceed(),
+        Question::Proceed(summary) => render_proceed(summary),
         Question::GroupMembers { group, members } => render_group(group, members),
     }
 }
@@ -86,8 +86,11 @@ fn render_import_key(fingerprint: &str, uid: &str) -> String {
     }
 }
 
-fn render_proceed() -> String {
-    "Proceed with installation? [Y/n]: ".to_string()
+fn render_proceed(summary: &crate::events::TransactionSummary) -> String {
+    format!(
+        "{}\nProceed with installation? [Y/n]: ",
+        crate::cli::summary::render_summary(summary, false)
+    )
 }
 
 fn render_group(group: &str, members: &[String]) -> String {
@@ -220,11 +223,23 @@ impl<R: BufRead, W: Write> AnswerSource for InteractiveSource<R, W> {
     }
 }
 
-pub fn execute(handle: &mut alpm::Alpm, spec: &RunSpec) -> anyhow::Result<RunOutcome> {
-    let input = std::io::stdin();
-    let output = std::io::stdout();
-    let source = InteractiveSource::new(input.lock(), output.lock());
+pub fn execute_with<R: BufRead + 'static, W: Write + 'static>(
+    input: R,
+    output: W,
+    handle: &mut alpm::Alpm,
+    spec: &RunSpec,
+) -> anyhow::Result<RunOutcome> {
+    let source = InteractiveSource::new(input, output);
     driver::run(handle, spec, Box::new(source))
+}
+
+pub fn execute(handle: &mut alpm::Alpm, spec: &RunSpec) -> anyhow::Result<RunOutcome> {
+    execute_with(
+        std::io::BufReader::new(std::io::stdin()),
+        std::io::stdout(),
+        handle,
+        spec,
+    )
 }
 
 #[cfg(test)]
@@ -295,7 +310,7 @@ mod tests {
             ),
             (
                 Question::Proceed(summary()),
-                "Proceed with installation? [Y/n]: ",
+                "\nPackage (0)  Net Change\n\n\n\nProceed with installation? [Y/n]: ",
             ),
             (
                 Question::Corrupted {
@@ -424,6 +439,40 @@ mod tests {
             ask(&Question::Proceed(summary()), b"n\n").0,
             SourceDecision::Answer(Answer::Stop)
         ));
+        for (question, check) in [
+            (
+                Question::Replace {
+                    old: "nginx".to_string(),
+                    new: "nginx-mainline".to_string(),
+                    repo: Some("extra".to_string()),
+                },
+                "replace",
+            ),
+            (
+                Question::InstallIgnorepkg {
+                    name: "glibc".to_string(),
+                },
+                "ignorepkg",
+            ),
+            (
+                Question::Corrupted {
+                    path: "/var/cache/pkg-1.pkg.tar.zst".to_string(),
+                },
+                "corrupted",
+            ),
+            (
+                Question::ImportKey {
+                    fingerprint: "ABCDEF".to_string(),
+                    uid: "Packager <pack@example.com>".to_string(),
+                },
+                "import",
+            ),
+        ] {
+            assert!(
+                matches!(ask(&question, b"\n").0, SourceDecision::Answer(_)),
+                "empty input accepts default-yes {check}",
+            );
+        }
     }
 
     #[test]

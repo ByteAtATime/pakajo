@@ -440,6 +440,7 @@ fn run_install_child<S: InstallSink + ?Sized>(
     let operation = crate::dispatch::operation::PrivilegedOperation::Install {
         targets: targets.to_vec(),
         as_deps,
+        reinstall: false,
         preconfirmed,
         approvals: sealed,
     };

@@ -276,11 +276,6 @@ pub fn confirm_proceed_to_review(plan: &Plan) -> BuildDecision {
     }
 }
 
-pub fn confirm_install_stderr() -> bool {
-    eprintln!();
-    read_confirmation("Proceed with installation?", PromptStream::Stderr, true)
-}
-
 pub fn announce_conflict_calculation() {
     let c = color::stderr_color();
     for message in ["Calculating conflicts...", "Calculating inner conflicts..."] {

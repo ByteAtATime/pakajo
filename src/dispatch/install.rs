@@ -41,7 +41,7 @@ pub(crate) fn run_install_preview(
     request: &InstallRequest,
     state: &std::rc::Rc<std::cell::RefCell<crate::dry_run::RecorderState>>,
 ) -> anyhow::Result<Preview> {
-    let expanded = expand_install_groups(handle, &request.targets, request.tty);
+    let expanded = expand_install_groups(handle, &request.targets);
     let (files, names) = peel_file_targets(&expanded);
     let plan = resolve_combined_plan(&names, request.no_check)?;
     handle
@@ -222,6 +222,7 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
         Some(PrivilegedOperation::Install {
             targets: peeled.files.clone(),
             as_deps: request.as_deps,
+            reinstall: false,
             preconfirmed: false,
             approvals: sealed,
         })
@@ -267,6 +268,7 @@ fn run_root_install(request: InstallRequest, tx: &mut futures::channel::mpsc::Se
         let operation = ChildOperation::Install {
             targets: peeled.files,
             as_deps: request.as_deps,
+            reinstall: false,
             preconfirmed: false,
             approvals_path: sealed
                 .as_ref()
@@ -307,7 +309,7 @@ fn peel_for_dispatch(
 ) -> anyhow::Result<PeeledTargets> {
     let config = crate::pacman::config()?;
     crate::upgrade::apply_ignores(handle, &config, &request.ignores);
-    let expanded = expand_install_groups(handle, &request.targets, request.tty);
+    let expanded = expand_install_groups(handle, &request.targets);
     let (files, names) = peel_file_targets(&expanded);
     Ok(PeeledTargets { files, names })
 }
@@ -329,38 +331,20 @@ fn plan_conflicts_to_questions(report: &ConflictReport) -> Vec<crate::question::
         .collect()
 }
 
-fn expand_install_groups(
-    handle: &alpm::Alpm,
-    positionals: &[String],
-    interactive: bool,
-) -> Vec<String> {
+fn routes_to_engine(handle: &alpm::Alpm, target: &str) -> bool {
+    crate::tx::targets::unresolvable_target(handle, std::slice::from_ref(&target.to_string()))
+        .is_none()
+        || !crate::package::find_groups(handle, target).is_empty()
+}
+
+fn expand_install_groups(handle: &alpm::Alpm, positionals: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for s in positionals {
-        if crate::package::repo_exists(handle, s) {
+        if routes_to_engine(handle, s) {
             out.push(s.clone());
             continue;
         }
-        let groups = crate::package::find_groups(handle, s);
-        if groups.is_empty() {
-            out.push(s.clone());
-            continue;
-        }
-        let members: Vec<String> = if interactive {
-            crate::cli::prompts::select_group_members(s, &groups)
-        } else {
-            groups
-                .iter()
-                .flat_map(|g| g.members.iter())
-                .map(|m| m.name.clone())
-                .collect()
-        };
-        let mut expansion_seen: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        for name in members {
-            if expansion_seen.insert(name.clone()) {
-                out.push(name);
-            }
-        }
+        out.push(s.clone());
     }
     out
 }
@@ -550,5 +534,49 @@ mod tests {
     fn conflict_mapping_empty_when_no_conflicts() {
         let mapped = plan_conflicts_to_questions(&ConflictReport::default());
         assert!(mapped.is_empty());
+    }
+
+    fn engine_handle() -> (tempfile::TempDir, alpm::Alpm) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let db = dir.path().join("db");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(db.join("sync")).unwrap();
+        let entries = [("neovim", None), ("vim", Some("%GROUPS%\neditors\n\n"))];
+        let file = std::fs::File::create(db.join("sync").join("core.db")).unwrap();
+        let mut builder = tar::Builder::new(file);
+        for (name, groups) in entries {
+            let desc = format!(
+                "%NAME%\n{name}\n\n%VERSION%\n1.0-1\n\n%FILENAME%\n{name}-1.0-1-x86_64.pkg.tar.zst\n\n{}",
+                groups.unwrap_or_default()
+            );
+            let mut header = tar::Header::new_gnu();
+            header.set_size(desc.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, format!("{name}-1.0-1/desc"), desc.as_bytes())
+                .unwrap();
+        }
+        builder.into_inner().unwrap();
+        let mut handle = alpm::Alpm::new(
+            root.to_string_lossy().as_ref(),
+            db.to_string_lossy().as_ref(),
+        )
+        .unwrap();
+        handle
+            .register_syncdb_mut("core", alpm::SigLevel::NONE)
+            .unwrap()
+            .add_server("file:///pakajo-offline-stub")
+            .unwrap();
+        (dir, handle)
+    }
+
+    #[test]
+    fn engine_guard_routes_repo_group_and_rejects_aur() {
+        let (_dir, handle) = engine_handle();
+        assert!(routes_to_engine(&handle, "neovim"));
+        assert!(routes_to_engine(&handle, "editors"));
+        assert!(!routes_to_engine(&handle, "yay-bin"));
     }
 }
