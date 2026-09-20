@@ -264,7 +264,7 @@ fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
     if handle.trans_add().is_empty() {
         sink.borrow_mut().event(InstallEvent::Log {
             level: LogLevel::Warning,
-            message: " there is nothing to do".to_string(),
+            message: "there is nothing to do".to_string(),
         });
         return Ok(());
     }

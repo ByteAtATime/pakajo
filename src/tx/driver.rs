@@ -131,7 +131,7 @@ fn drive(
         if !spec.explore {
             events.borrow_mut().event(InstallEvent::Log {
                 level: LogLevel::Warning,
-                message: " there is nothing to do".to_string(),
+                message: "there is nothing to do".to_string(),
             });
         }
         return Ok(outcome(handle, Finish::Stopped));
@@ -924,7 +924,7 @@ mod tests {
         match &seen[0] {
             InstallEvent::Log { level, message } => {
                 assert_eq!(*level, LogLevel::Warning);
-                assert_eq!(message, " there is nothing to do");
+                assert_eq!(message, "there is nothing to do");
             }
             other => panic!("expected nothing-to-do log, got {other:?}"),
         }
