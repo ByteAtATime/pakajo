@@ -3,6 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use anyhow::{Context as _, bail};
 use serde::{Deserialize, Serialize};
 
+pub use super::model::ProviderCandidate;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Conflict {
     pub incoming: String,
@@ -10,13 +12,6 @@ pub struct Conflict {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ProviderCandidate {
-    pub name: String,
-    pub repo: Option<String>,
-    pub version: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderPrompt {
     pub depend: String,
     pub candidates: Vec<ProviderCandidate>,

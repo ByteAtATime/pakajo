@@ -101,12 +101,12 @@ fn extend_provider(
     {
         return false;
     }
-    if approvals
+    if let Some(known) = approvals
         .approved_providers
         .iter()
-        .any(|known| known.depend == depend)
+        .find(|known| known.depend == depend)
     {
-        return true;
+        return known.provider_name == name && known.provider_repo == *repo;
     }
     approvals.approved_providers.push(ProviderApproval {
         depend: depend.to_string(),
@@ -129,11 +129,7 @@ fn extend_group_members(
         .approved_groups
         .entry(group.to_string())
         .or_default();
-    for name in selected {
-        if !entry.contains(name) {
-            entry.push(name.clone());
-        }
-    }
+    *entry = selected.to_vec();
     entry.sort();
     true
 }
@@ -279,18 +275,13 @@ mod tests {
     }
 
     #[test]
-    fn unmatched_collectable_question_asks_instead_of_guessing() {
+    fn unsealed_questions_ask() {
         assert!(matches!(
             match_answer(&provider_question(), &Approvals::default()),
             Sealed::Ask
         ));
-    }
-
-    #[test]
-    fn proceed_without_sealed_confirmation_does_not_pass() {
-        let question = Question::Proceed(summary());
         assert!(matches!(
-            match_answer(&question, &Approvals::default()),
+            match_answer(&Question::Proceed(summary()), &Approvals::default()),
             Sealed::Ask
         ));
     }
@@ -343,5 +334,38 @@ mod tests {
         };
         assert!(!extend(&mut stored, &provider_question(), &answer));
         assert!(stored.approved_providers.is_empty());
+    }
+
+    #[test]
+    fn reanswers_replace_same_group_but_reject_divergent_provider() {
+        let mut stored = Approvals::default();
+        assert!(extend(
+            &mut stored,
+            &provider_question(),
+            &provider_answer()
+        ));
+        let divergent = Answer::SelectProvider {
+            name: "sdl2".to_string(),
+            repo: Some("extra".to_string()),
+        };
+        assert!(!extend(&mut stored, &provider_question(), &divergent));
+        assert_eq!(stored.approved_providers.len(), 1);
+
+        let question = Question::GroupMembers {
+            group: "base-devel".to_string(),
+            members: vec!["autoconf".to_string(), "automake".to_string()],
+        };
+        let first = Answer::GroupMembers {
+            selected: vec!["autoconf".to_string(), "automake".to_string()],
+        };
+        assert!(extend(&mut stored, &question, &first));
+        let second = Answer::GroupMembers {
+            selected: vec!["automake".to_string()],
+        };
+        assert!(extend(&mut stored, &question, &second));
+        assert_eq!(
+            stored.approved_groups["base-devel"],
+            vec!["automake".to_string()]
+        );
     }
 }

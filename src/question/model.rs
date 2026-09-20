@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::TransactionSummary;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProviderCandidate {
     pub name: String,
     pub repo: Option<String>,
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn conflict_keys_ignore_order_but_distinguish_packages() {
+    fn question_keys_normalize_order() {
         let forward = Question::Conflict {
             incoming: "cava-git".to_string(),
             removable: "cava".to_string(),
@@ -189,10 +189,19 @@ mod tests {
                 depend: "cava".to_string(),
             }
         );
+        let shuffled = Question::RemovePkgs {
+            names: vec!["b".to_string(), "a".to_string()],
+        };
+        assert_eq!(
+            shuffled.key(),
+            QuestionKey::RemovePkgs {
+                names: vec!["a".to_string(), "b".to_string()],
+            }
+        );
     }
 
     #[test]
-    fn questions_split_into_collectable_and_runtime() {
+    fn collectable_questions_exclude_runtime_and_proceed() {
         let collectable = [
             Question::Conflict {
                 incoming: "a".to_string(),
@@ -233,14 +242,6 @@ mod tests {
             assert!(!question.is_collectable());
         }
         assert!(!Question::Proceed(summary()).is_collectable());
-        let shuffled = Question::RemovePkgs {
-            names: vec!["b".to_string(), "a".to_string()],
-        };
-        assert_eq!(
-            shuffled.key(),
-            QuestionKey::RemovePkgs {
-                names: vec!["a".to_string(), "b".to_string()],
-            }
-        );
+        assert!(!Question::Proceed(summary()).is_runtime());
     }
 }

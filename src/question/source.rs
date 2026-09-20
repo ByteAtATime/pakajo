@@ -35,10 +35,7 @@ pub fn parse_provider_selection(input: &str, candidate_count: usize) -> Option<u
     if trimmed.is_empty() {
         return Some(1);
     }
-    match trimmed.parse::<usize>() {
-        Ok(n) if (1..=candidate_count).contains(&n) => Some(n),
-        _ => None,
-    }
+    parse_member_number(trimmed, candidate_count)
 }
 
 pub fn parse_group_selection(input: &str, member_count: usize) -> Option<Vec<usize>> {
@@ -80,32 +77,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_selection_defaults_rejects_out_of_range() {
-        let cases = [
+    fn selection_parsing() {
+        for (input, count, expected) in [
             ("", 3, Some(1)),
             ("2", 3, Some(2)),
+            ("3", 3, Some(3)),
             ("x", 3, None),
             ("0", 3, None),
             ("4", 3, None),
             ("", 0, None),
-        ];
-        for (input, count, expected) in cases {
+        ] {
             assert_eq!(parse_provider_selection(input, count), expected);
         }
-    }
-
-    #[test]
-    fn group_selection_expands_ranges_rejects_bad_tokens() {
-        let cases = [
-            ("", Some(vec![1, 2, 3, 4, 5])),
-            ("3", Some(vec![3])),
-            ("1-3 5", Some(vec![1, 2, 3, 5])),
-            ("9", None),
-            ("1-x", None),
-            ("2 9", None),
-        ];
-        for (input, expected) in cases {
-            assert_eq!(parse_group_selection(input, 5), expected);
+        for (input, count, expected) in [
+            ("", 5, Some(vec![1, 2, 3, 4, 5])),
+            ("3", 5, Some(vec![3])),
+            ("1-3 5", 5, Some(vec![1, 2, 3, 5])),
+            ("1-3 2", 5, Some(vec![1, 2, 3])),
+            ("3-1", 5, None),
+            ("9", 5, None),
+            ("1-x", 5, None),
+            ("2 9", 5, None),
+            ("", 0, Some(vec![])),
+        ] {
+            assert_eq!(parse_group_selection(input, count), expected);
         }
     }
 }
