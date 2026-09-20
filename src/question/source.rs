@@ -18,15 +18,6 @@ pub struct FailClosed {
     pub reason: String,
 }
 
-impl FailClosed {
-    pub fn new(key: QuestionKey, reason: impl Into<String>) -> Self {
-        Self {
-            key,
-            reason: reason.into(),
-        }
-    }
-}
-
 pub fn parse_provider_selection(input: &str, candidate_count: usize) -> Option<usize> {
     if candidate_count == 0 {
         return None;

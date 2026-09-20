@@ -135,7 +135,10 @@ impl QuestionSession {
     }
 
     fn deny(&mut self, key: QuestionKey, reason: impl Into<String>) {
-        self.denied = Some(FailClosed::new(key, reason));
+        self.denied = Some(FailClosed {
+            key,
+            reason: reason.into(),
+        });
     }
 }
 
