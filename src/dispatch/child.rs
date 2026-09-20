@@ -176,6 +176,7 @@ impl ChildOperation {
                             crate::tx::prompt::execute_with(
                                 std::io::BufReader::new(std::io::stdin()),
                                 std::io::stderr(),
+                                crate::color::stderr_color(),
                                 &mut handle,
                                 &spec,
                                 Box::new(EscalatedSink::new()),

@@ -22,6 +22,8 @@ pub const GREEN: &str = "\x1b[1;32m";
 pub const DIM: &str = "\x1b[2m\x1b[90m";
 pub const GRAY: &str = "\x1b[90m";
 pub const RESET: &str = "\x1b[0m";
+pub const HIDE_CURSOR: &str = "\x1b[?25l";
+pub const SHOW_CURSOR: &str = "\x1b[?25h";
 
 fn no_color_requested() -> bool {
     std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())

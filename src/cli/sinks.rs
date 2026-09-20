@@ -3,6 +3,7 @@ use std::io::Write as _;
 use std::time::Instant;
 
 use super::summary::{print_summary, render_summary};
+use crate::color::{HIDE_CURSOR, SHOW_CURSOR};
 use crate::events::{DownloadResult, InstallEvent, InstallSink, LogLevel, ProgressPhase};
 use crate::{
     color,
@@ -40,6 +41,7 @@ pub struct ConsoleSink {
     color: bool,
     stderr_color: bool,
     downloads: HashMap<String, DownloadStat>,
+    cursor: Cursor,
 }
 
 impl ConsoleSink {
@@ -50,6 +52,23 @@ impl ConsoleSink {
             color: color::stdout_color(),
             stderr_color: color::stderr_color(),
             downloads: HashMap::new(),
+            cursor: Cursor::new(color::stdout_color()),
+        }
+    }
+
+    fn show_cursor(&mut self) {
+        let show = self.cursor.show();
+        if !show.is_empty() {
+            print!("{show}");
+            let _ = std::io::stdout().flush();
+        }
+    }
+
+    fn hide_cursor(&mut self) {
+        let hide = self.cursor.hide();
+        if !hide.is_empty() {
+            print!("{hide}");
+            let _ = std::io::stdout().flush();
         }
     }
 
@@ -127,6 +146,7 @@ impl ConsoleSink {
                     return;
                 }
                 self.last_progress = Some(key);
+                self.hide_cursor();
                 print_progress(*phase, package, *percent, *current, *total, self.color);
             }
             InstallEvent::HookRun {
@@ -243,6 +263,7 @@ impl ConsoleSink {
     }
 
     fn download_progress(&mut self, filename: &str, downloaded: i64, total: i64) {
+        self.hide_cursor();
         let now = Instant::now();
         let stat = self
             .downloads
@@ -288,6 +309,12 @@ impl Default for ConsoleSink {
 impl InstallSink for ConsoleSink {
     fn event(&mut self, event: InstallEvent) {
         self.print_event(&event);
+    }
+}
+
+impl Drop for ConsoleSink {
+    fn drop(&mut self) {
+        self.show_cursor();
     }
 }
 
@@ -388,6 +415,38 @@ impl InstallSink for EscalatedSink {
 fn hook_run_line(position: usize, total: usize, name: &str, desc: Option<&str>) -> String {
     let label = desc.unwrap_or(name);
     format!("({position}/{total}) {label}")
+}
+
+struct Cursor {
+    hidden: bool,
+    color: bool,
+}
+
+impl Cursor {
+    fn new(color: bool) -> Self {
+        Cursor {
+            hidden: false,
+            color,
+        }
+    }
+
+    fn hide(&mut self) -> &'static str {
+        if !self.color || self.hidden {
+            ""
+        } else {
+            self.hidden = true;
+            HIDE_CURSOR
+        }
+    }
+
+    fn show(&mut self) -> &'static str {
+        if self.hidden {
+            self.hidden = false;
+            SHOW_CURSOR
+        } else {
+            ""
+        }
+    }
 }
 
 fn clean_pkg_filename(name: &str) -> &str {
