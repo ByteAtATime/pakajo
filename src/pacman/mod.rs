@@ -26,10 +26,30 @@ pub fn handle() -> anyhow::Result<Alpm> {
 pub fn handle_with_config(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
     let mut handle = Alpm::new(config.root_dir.as_str(), config.db_path.as_str())
         .context("failed to initialize alpm")?;
+    let system_hookdirs: Vec<String> = handle
+        .hookdirs()
+        .iter()
+        .map(|dir| dir.to_string())
+        .collect();
     alpm_utils::configure_alpm(&mut handle, config)
         .map_err(|e| anyhow::anyhow!("failed to configure alpm: {e}"))?;
+    for dir in &system_hookdirs {
+        let known = handle
+            .hookdirs()
+            .iter()
+            .any(|known| trim_slash(known) == trim_slash(dir));
+        if !known && std::path::Path::new(dir).exists() {
+            handle
+                .add_hookdir(dir.as_str())
+                .with_context(|| format!("failed to restore system hookdir {dir}"))?;
+        }
+    }
     apply_sig_levels(&handle, config)?;
     Ok(handle)
+}
+
+fn trim_slash(path: &str) -> &str {
+    path.trim_end_matches('/')
 }
 
 pub fn handle_rootless() -> anyhow::Result<Alpm> {
@@ -138,5 +158,70 @@ pub fn refresh_sync_dbs_rootless(handle: &mut Alpm) -> anyhow::Result<()> {
             }
         }
         Err(e) => Err(anyhow::Error::new(e).context("failed to refresh sync DBs rootless")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handle_with_config_preserves_system_hookdir() {
+        let root = tempfile::tempdir().unwrap();
+        let syshooks = root.path().join("usr/share/libalpm/hooks");
+        std::fs::create_dir_all(&syshooks).unwrap();
+        let probe = root.path().join("etc/pacman.d/hooks");
+        std::fs::create_dir_all(&probe).unwrap();
+        let db = root.path().join("db");
+        std::fs::create_dir_all(&db).unwrap();
+        let mut config = pacmanconf::Config::default();
+        config.root_dir = root.path().to_string_lossy().into_owned();
+        config.db_path = db.to_string_lossy().into_owned();
+        config.hook_dir = vec![probe.to_string_lossy().into_owned()];
+        config.cache_dir = vec![root.path().join("cache").to_string_lossy().into_owned()];
+        config.gpg_dir = root.path().join("gnupg").to_string_lossy().into_owned();
+        config.log_file = root
+            .path()
+            .join("pacman.log")
+            .to_string_lossy()
+            .into_owned();
+        config.architecture = vec!["x86_64".to_string()];
+        let handle = handle_with_config(&config).unwrap();
+        let dirs: Vec<String> = handle
+            .hookdirs()
+            .iter()
+            .map(|dir| dir.to_string())
+            .collect();
+        assert_eq!(
+            dirs,
+            vec![
+                format!("{}/", probe.display()),
+                format!("{}/", syshooks.display()),
+            ]
+        );
+    }
+
+    #[test]
+    fn handle_with_config_skips_missing_system_hookdir() {
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("db");
+        std::fs::create_dir_all(&db).unwrap();
+        let mut config = pacmanconf::Config::default();
+        config.root_dir = root.path().to_string_lossy().into_owned();
+        config.db_path = db.to_string_lossy().into_owned();
+        config.gpg_dir = root.path().join("gnupg").to_string_lossy().into_owned();
+        config.log_file = root
+            .path()
+            .join("pacman.log")
+            .to_string_lossy()
+            .into_owned();
+        config.architecture = vec!["x86_64".to_string()];
+        let handle = handle_with_config(&config).unwrap();
+        let dirs: Vec<String> = handle
+            .hookdirs()
+            .iter()
+            .map(|dir| dir.to_string())
+            .collect();
+        assert_eq!(dirs, Vec::<String>::new());
     }
 }

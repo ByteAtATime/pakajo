@@ -888,6 +888,41 @@ mod tests {
     }
 
     #[test]
+    fn commit_surfaces_post_transaction_hook_runs() {
+        let (_dir, mut handle) = fixture(&[plain("solo")]);
+        let hookdir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            hookdir.path().join("probe.hook"),
+            "[Trigger]\nOperation = Install\nType = Package\nTarget = *\n\n[Action]\nDescription = Probing hooks\nWhen = PostTransaction\nExec = /bin/true\n",
+        )
+        .unwrap();
+        handle
+            .set_hookdirs([hookdir.path().to_string_lossy().as_ref()].iter())
+            .unwrap();
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let outcome = run(
+            &mut handle,
+            &spec(&["solo"], false),
+            proceed(),
+            Box::new(recorder),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        let hook = seen.borrow().iter().find_map(|event| match event {
+            InstallEvent::HookRun {
+                position,
+                total,
+                desc,
+                ..
+            } => Some((*position, *total, desc.clone())),
+            _ => None,
+        });
+        assert_eq!(hook, Some((1, 1, Some("Probing hooks".to_string()))));
+        release(&mut handle);
+    }
+
+    #[test]
     fn tty_event_lifecycle() {
         let (_dir, mut handle) = fixture(&[plain("solo")]);
         let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));

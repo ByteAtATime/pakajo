@@ -142,8 +142,10 @@ impl ConsoleSink {
                         color::colon(self.color, "Running post-transaction hooks...")
                     );
                 }
-                let label = desc.as_deref().unwrap_or(name);
-                println!("({position}/{total}) {label}");
+                println!(
+                    "{}",
+                    hook_run_line(*position, *total, name, desc.as_deref())
+                );
             }
             InstallEvent::ScriptletInfo { line } => {
                 if line.ends_with('\n') {
@@ -305,17 +307,36 @@ impl InstallSink for JsonSink {
     }
 }
 
-pub struct EscalatedSink;
+pub struct EscalatedSink {
+    hooks_header_done: bool,
+}
 
 impl EscalatedSink {
     pub fn new() -> Self {
-        EscalatedSink
+        EscalatedSink {
+            hooks_header_done: false,
+        }
     }
 }
 
 impl InstallSink for EscalatedSink {
     fn event(&mut self, event: InstallEvent) {
         match event {
+            InstallEvent::HookRun {
+                position,
+                total,
+                name,
+                desc,
+            } => {
+                if !self.hooks_header_done {
+                    self.hooks_header_done = true;
+                    eprintln!(
+                        "{}",
+                        color::colon(color::stderr_color(), "Running post-transaction hooks...")
+                    );
+                }
+                eprintln!("{}", hook_run_line(position, total, &name, desc.as_deref()));
+            }
             InstallEvent::TransactionSummary(s) => {
                 if s.packages.is_empty() {
                     eprintln!(" nothing to do");
@@ -362,6 +383,11 @@ impl InstallSink for EscalatedSink {
             }
         }
     }
+}
+
+fn hook_run_line(position: usize, total: usize, name: &str, desc: Option<&str>) -> String {
+    let label = desc.unwrap_or(name);
+    format!("({position}/{total}) {label}")
 }
 
 fn clean_pkg_filename(name: &str) -> &str {
