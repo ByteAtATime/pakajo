@@ -1,21 +1,85 @@
-use super::legacy::{Approvals, Conflict, ProviderApproval};
-use super::model::{Answer, ProviderCandidate, Question};
+use std::collections::BTreeMap;
 
-#[derive(Debug, Clone)]
+use serde::{Deserialize, Serialize};
+
+use super::model::{Answer, Question, QuestionKey};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedApprovals {
+    pub answers: Vec<(QuestionKey, Answer)>,
+    pub proceed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sealed {
     Answer(Answer),
     Ask,
 }
 
-pub fn seal(questions: &[Question], answers: &[Answer]) -> Approvals {
-    let mut sealed = Approvals::default();
-    for (question, answer) in questions.iter().zip(answers.iter()) {
-        extend(&mut sealed, question, answer);
+pub fn seal(
+    questions: &[Question],
+    answers: &[Answer],
+    proceed: bool,
+) -> anyhow::Result<SealedApprovals> {
+    if questions.len() != answers.len() {
+        anyhow::bail!(
+            "answer count {} does not match question count {}",
+            answers.len(),
+            questions.len()
+        );
     }
-    sealed
+    let mut keyed = BTreeMap::new();
+    for (question, answer) in questions.iter().zip(answers.iter()) {
+        validate_pair(question, answer)?;
+        let key = question.key();
+        if let Some(seen) = keyed.insert(key.clone(), answer.clone())
+            && seen != *answer
+        {
+            anyhow::bail!("question {:?} was sealed with divergent answers", key);
+        }
+    }
+    Ok(SealedApprovals {
+        answers: keyed.into_iter().collect(),
+        proceed,
+    })
 }
 
-pub fn extend(approvals: &mut Approvals, question: &Question, answer: &Answer) -> bool {
+pub fn match_answer(question: &Question, sealed: &SealedApprovals) -> Sealed {
+    match question {
+        Question::Proceed(_) if sealed.proceed => Sealed::Answer(Answer::Proceed),
+        Question::Proceed(_) => Sealed::Ask,
+        question if question.is_runtime() => Sealed::Ask,
+        question => replay_answer(question, sealed),
+    }
+}
+
+fn replay_answer(question: &Question, sealed: &SealedApprovals) -> Sealed {
+    let key = question.key();
+    let Ok(index) = sealed
+        .answers
+        .binary_search_by(|(stored, _)| stored.cmp(&key))
+    else {
+        return Sealed::Ask;
+    };
+    let stored = &sealed.answers[index].1;
+    if !answer_fits_question(stored, question) {
+        return Sealed::Ask;
+    }
+    Sealed::Answer(stored.clone())
+}
+
+fn validate_pair(question: &Question, answer: &Answer) -> anyhow::Result<()> {
+    let key = question.key();
+    if !question.is_collectable() {
+        anyhow::bail!("question {:?} cannot be sealed", key);
+    }
+    if !answer_fits_question(answer, question) {
+        anyhow::bail!("answer does not fit question {:?}", key);
+    }
+    Ok(())
+}
+
+fn answer_fits_question(answer: &Answer, question: &Question) -> bool {
     match (question, answer) {
         (
             Question::Conflict {
@@ -23,40 +87,34 @@ pub fn extend(approvals: &mut Approvals, question: &Question, answer: &Answer) -
                 removable,
             },
             Answer::Conflict {
-                incoming: accept_incoming,
-                removable: accept_removable,
-                remove: true,
+                incoming: a_in,
+                removable: a_re,
+                ..
             },
-        ) => extend_conflict(
-            approvals,
-            incoming,
-            removable,
-            accept_incoming,
-            accept_removable,
-        ),
+        ) => is_same_pair(incoming, removable, a_in, a_re),
+        (Question::SelectProvider { candidates, .. }, Answer::SelectProvider { name, repo }) => {
+            candidates
+                .iter()
+                .any(|c| c.name == *name && (repo.is_none() || c.repo == *repo))
+        }
+        (Question::GroupMembers { members, .. }, Answer::GroupMembers { selected }) => {
+            selected.iter().all(|name| members.contains(name))
+        }
         (
-            Question::SelectProvider { depend, candidates },
-            Answer::SelectProvider { name, repo },
-        ) => extend_provider(approvals, depend, candidates, name, repo),
-        (Question::GroupMembers { group, members }, Answer::GroupMembers { selected }) => {
-            extend_group_members(approvals, group, members, selected)
+            Question::Replace { old, new, .. },
+            Answer::Replace {
+                old: a_old,
+                new: a_new,
+                ..
+            },
+        ) => old == a_old && new == a_new,
+        (Question::InstallIgnorepkg { name }, Answer::InstallIgnorepkg { name: a_name, .. }) => {
+            name == a_name
+        }
+        (Question::RemovePkgs { names }, Answer::RemovePkgs { names: a_names, .. }) => {
+            is_same_name_set(names, a_names)
         }
         _ => false,
-    }
-}
-
-pub fn match_answer(question: &Question, approvals: &Approvals) -> Sealed {
-    match question {
-        Question::Conflict {
-            incoming,
-            removable,
-        } => match_conflict(approvals, incoming, removable),
-        Question::SelectProvider { depend, candidates } => {
-            match_provider(approvals, depend, candidates)
-        }
-        Question::GroupMembers { group, members } => match_group_members(approvals, group, members),
-        Question::Proceed(_) => Sealed::Ask,
-        _ => Sealed::Ask,
     }
 }
 
@@ -64,133 +122,22 @@ fn is_same_pair(first_a: &str, second_a: &str, first_b: &str, second_b: &str) ->
     (first_a == first_b && second_a == second_b) || (first_a == second_b && second_a == first_b)
 }
 
-fn extend_conflict(
-    approvals: &mut Approvals,
-    incoming: &str,
-    removable: &str,
-    accept_incoming: &str,
-    accept_removable: &str,
-) -> bool {
-    if !is_same_pair(incoming, removable, accept_incoming, accept_removable) {
-        return false;
-    }
-    if approvals
-        .approved_conflicts
-        .iter()
-        .any(|known| is_same_pair(&known.incoming, &known.removable, incoming, removable))
-    {
-        return true;
-    }
-    approvals.approved_conflicts.push(Conflict {
-        incoming: incoming.to_string(),
-        removable: removable.to_string(),
-    });
-    true
-}
-
-fn extend_provider(
-    approvals: &mut Approvals,
-    depend: &str,
-    candidates: &[ProviderCandidate],
-    name: &str,
-    repo: &Option<String>,
-) -> bool {
-    if !candidates
-        .iter()
-        .any(|candidate| candidate.name == name && candidate.repo == *repo)
-    {
-        return false;
-    }
-    if let Some(known) = approvals
-        .approved_providers
-        .iter()
-        .find(|known| known.depend == depend)
-    {
-        return known.provider_name == name && known.provider_repo == *repo;
-    }
-    approvals.approved_providers.push(ProviderApproval {
-        depend: depend.to_string(),
-        provider_name: name.to_string(),
-        provider_repo: repo.clone(),
-    });
-    true
-}
-
-fn extend_group_members(
-    approvals: &mut Approvals,
-    group: &str,
-    members: &[String],
-    selected: &[String],
-) -> bool {
-    if !selected.iter().all(|name| members.contains(name)) {
-        return false;
-    }
-    let entry = approvals
-        .approved_groups
-        .entry(group.to_string())
-        .or_default();
-    *entry = selected.to_vec();
-    entry.sort();
-    true
-}
-
-fn match_conflict(approvals: &Approvals, incoming: &str, removable: &str) -> Sealed {
-    let approved = approvals
-        .approved_conflicts
-        .iter()
-        .any(|known| is_same_pair(&known.incoming, &known.removable, incoming, removable));
-    if !approved {
-        return Sealed::Ask;
-    }
-    Sealed::Answer(Answer::Conflict {
-        incoming: incoming.to_string(),
-        removable: removable.to_string(),
-        remove: true,
-    })
-}
-
-fn match_provider(approvals: &Approvals, depend: &str, candidates: &[ProviderCandidate]) -> Sealed {
-    let Some(known) = approvals
-        .approved_providers
-        .iter()
-        .find(|known| known.depend == depend)
-    else {
-        return Sealed::Ask;
-    };
-    let offered = match &known.provider_repo {
-        Some(repo) => candidates.iter().any(|candidate| {
-            candidate.name == known.provider_name
-                && candidate.repo.as_deref() == Some(repo.as_str())
-        }),
-        None => candidates
-            .iter()
-            .any(|candidate| candidate.name == known.provider_name),
-    };
-    if !offered {
-        return Sealed::Ask;
-    }
-    Sealed::Answer(Answer::SelectProvider {
-        name: known.provider_name.clone(),
-        repo: known.provider_repo.clone(),
-    })
-}
-
-fn match_group_members(approvals: &Approvals, group: &str, members: &[String]) -> Sealed {
-    let Some(selected) = approvals.approved_groups.get(group) else {
-        return Sealed::Ask;
-    };
-    if !selected.iter().all(|name| members.contains(name)) {
-        return Sealed::Ask;
-    }
-    Sealed::Answer(Answer::GroupMembers {
-        selected: selected.clone(),
-    })
+fn is_same_name_set(left: &[String], right: &[String]) -> bool {
+    let mut paired = [left.to_vec(), right.to_vec()];
+    paired.iter_mut().for_each(|names| names.sort());
+    paired[0] == paired[1]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::events::TransactionSummary;
+    use crate::question::model::ProviderCandidate;
+    use serde_json::{from_value, to_value};
+
+    fn s(value: &str) -> String {
+        value.to_string()
+    }
 
     fn summary() -> TransactionSummary {
         TransactionSummary {
@@ -201,133 +148,270 @@ mod tests {
         }
     }
 
-    fn provider_question() -> Question {
-        Question::SelectProvider {
-            depend: "sdl".to_string(),
-            candidates: vec![
-                ProviderCandidate {
-                    name: "sdl12-compat".to_string(),
-                    repo: Some("extra".to_string()),
-                    version: None,
+    fn candidate(name: &str) -> ProviderCandidate {
+        ProviderCandidate {
+            name: s(name),
+            repo: Some(s("extra")),
+            version: None,
+        }
+    }
+
+    fn collectable_fixture() -> Vec<(Question, Answer)> {
+        vec![
+            (
+                Question::Conflict {
+                    incoming: s("foo"),
+                    removable: s("bar"),
                 },
-                ProviderCandidate {
-                    name: "sdl2".to_string(),
-                    repo: Some("extra".to_string()),
-                    version: None,
+                Answer::Conflict {
+                    incoming: s("foo"),
+                    removable: s("bar"),
+                    remove: true,
                 },
-            ],
-        }
+            ),
+            (
+                Question::SelectProvider {
+                    depend: s("sdl"),
+                    candidates: vec![candidate("sdl12-compat"), candidate("sdl2")],
+                },
+                Answer::SelectProvider {
+                    name: s("sdl12-compat"),
+                    repo: Some(s("extra")),
+                },
+            ),
+            (
+                Question::GroupMembers {
+                    group: s("base-devel"),
+                    members: vec![s("autoconf"), s("automake")],
+                },
+                Answer::GroupMembers {
+                    selected: vec![s("automake")],
+                },
+            ),
+            (
+                Question::Replace {
+                    old: s("nginx"),
+                    new: s("nginx-mainline"),
+                    repo: None,
+                },
+                Answer::Replace {
+                    old: s("nginx"),
+                    new: s("nginx-mainline"),
+                    replace: true,
+                },
+            ),
+            (
+                Question::InstallIgnorepkg { name: s("glibc") },
+                Answer::InstallIgnorepkg {
+                    name: s("glibc"),
+                    install: true,
+                },
+            ),
+            (
+                Question::RemovePkgs {
+                    names: vec![s("b"), s("a")],
+                },
+                Answer::RemovePkgs {
+                    names: vec![s("a"), s("b")],
+                    skip: false,
+                },
+            ),
+        ]
     }
 
-    fn provider_answer() -> Answer {
-        Answer::SelectProvider {
-            name: "sdl12-compat".to_string(),
-            repo: Some("extra".to_string()),
-        }
-    }
-
-    fn conflict_question() -> Question {
-        Question::Conflict {
-            incoming: "foo".to_string(),
-            removable: "bar".to_string(),
-        }
-    }
-
-    fn conflict_answer(remove: bool) -> Answer {
-        Answer::Conflict {
-            incoming: "foo".to_string(),
-            removable: "bar".to_string(),
-            remove,
-        }
-    }
-
-    #[test]
-    fn sealed_answers_match_only_their_own_questions() {
-        let sealed = seal(&[provider_question()], &[provider_answer()]);
-        assert!(matches!(
-            match_answer(&provider_question(), &sealed),
-            Sealed::Answer(Answer::SelectProvider { name, .. })
-            if name == "sdl12-compat"
-        ));
-        let stranger = Question::SelectProvider {
-            depend: "libgl".to_string(),
-            candidates: vec![],
-        };
-        assert!(matches!(match_answer(&stranger, &sealed), Sealed::Ask));
-        assert!(matches!(
-            match_answer(&provider_question(), &Approvals::default()),
-            Sealed::Ask
-        ));
-        assert!(matches!(
-            match_answer(&Question::Proceed(summary()), &Approvals::default()),
-            Sealed::Ask
-        ));
-        let conflicts = seal(&[conflict_question()], &[conflict_answer(true)]);
-        let swapped = Question::Conflict {
-            incoming: "bar".to_string(),
-            removable: "foo".to_string(),
-        };
-        assert!(matches!(
-            match_answer(&swapped, &conflicts),
-            Sealed::Answer(Answer::Conflict { incoming, removable, remove: true })
-            if incoming == "bar" && removable == "foo"
-        ));
+    fn split(fixture: &[(Question, Answer)]) -> (Vec<Question>, Vec<Answer>) {
+        fixture.iter().cloned().unzip()
     }
 
     #[test]
-    fn mismatched_answers_record_nothing() {
-        let mut stored = Approvals::default();
-        assert!(!extend(
-            &mut stored,
-            &conflict_question(),
-            &conflict_answer(false)
-        ));
-        let group = Question::GroupMembers {
-            group: "base-devel".to_string(),
-            members: vec!["autoconf".to_string()],
-        };
-        let foreign = Answer::GroupMembers {
-            selected: vec!["autoconf".to_string(), "stranger".to_string()],
-        };
-        assert!(!extend(&mut stored, &group, &foreign));
-        let unoffered = Answer::SelectProvider {
-            name: "sdl12-compat".to_string(),
-            repo: Some("aur".to_string()),
-        };
-        assert!(!extend(&mut stored, &provider_question(), &unoffered));
-        assert!(extend(
-            &mut stored,
-            &provider_question(),
-            &provider_answer()
-        ));
-        let divergent = Answer::SelectProvider {
-            name: "sdl2".to_string(),
-            repo: Some("extra".to_string()),
-        };
-        assert!(!extend(&mut stored, &provider_question(), &divergent));
-        assert!(stored.approved_conflicts.is_empty());
-        assert!(!stored.approved_groups.contains_key("base-devel"));
-        assert_eq!(stored.approved_providers.len(), 1);
-    }
-
-    #[test]
-    fn groups_reseal_replaces_selection() {
-        let question = Question::GroupMembers {
-            group: "base-devel".to_string(),
-            members: vec!["autoconf".to_string(), "automake".to_string()],
-        };
-        let mut stored = Approvals::default();
-        let first = Answer::GroupMembers {
-            selected: vec!["autoconf".to_string(), "automake".to_string()],
-        };
-        assert!(extend(&mut stored, &question, &first));
-        let second = Answer::GroupMembers {
-            selected: vec!["automake".to_string()],
-        };
-        assert!(extend(&mut stored, &question, &second));
+    fn seal_round_trips_sorted_and_deterministic() {
+        let fixture = collectable_fixture();
+        let (questions, answers) = split(&fixture);
+        let sealed = seal(&questions, &answers, true).expect("seal succeeds");
+        assert!(sealed.proceed);
+        let keys: Vec<&QuestionKey> = sealed.answers.iter().map(|(key, _)| key).collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted);
+        let restored: SealedApprovals =
+            from_value(to_value(&sealed).expect("serializes")).expect("deserializes");
+        assert_eq!(restored, sealed);
+        let (rev_questions, rev_answers) =
+            split(&fixture.iter().cloned().rev().collect::<Vec<_>>());
         assert_eq!(
-            stored.approved_groups["base-devel"],
-            vec!["automake".to_string()]
+            seal(&rev_questions, &rev_answers, false)
+                .expect("reordered seal succeeds")
+                .answers,
+            seal(&questions, &answers, false)
+                .expect("seal succeeds")
+                .answers
+        );
+    }
+
+    #[test]
+    fn seal_rejects_mismatches_and_unsealable() {
+        let fixture = collectable_fixture();
+        let (questions, answers) = split(&fixture);
+        assert!(seal(&questions[..1], &[], false).is_err());
+        assert!(seal(&questions[..1], &answers[4..5], false).is_err());
+        assert!(
+            seal(
+                &[Question::Corrupted { path: s("p") }],
+                &[answers[4].clone()],
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            seal(
+                &[Question::Proceed(summary())],
+                &[answers[4].clone()],
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            seal(
+                &[questions[0].clone()],
+                &[Answer::Conflict {
+                    incoming: s("foo"),
+                    removable: s("baz"),
+                    remove: true
+                }],
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            seal(
+                &[questions[1].clone()],
+                &[Answer::SelectProvider {
+                    name: s("sdl3"),
+                    repo: None
+                }],
+                false
+            )
+            .is_err()
+        );
+        let dup = vec![questions[1].clone(), questions[1].clone()];
+        assert!(
+            seal(
+                &dup,
+                &[
+                    answers[1].clone(),
+                    Answer::SelectProvider {
+                        name: s("sdl2"),
+                        repo: Some(s("extra"))
+                    }
+                ],
+                false
+            )
+            .is_err()
+        );
+        assert_eq!(
+            seal(&dup, &[answers[1].clone(), answers[1].clone()], false)
+                .expect("identical re-seal succeeds")
+                .answers
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn replay_returns_stored_or_asks() {
+        let fixture = collectable_fixture();
+        let (questions, answers) = split(&fixture);
+        let sealed = seal(&questions, &answers, true).expect("seal succeeds");
+        for (question, answer) in &fixture {
+            assert_eq!(
+                match_answer(question, &sealed),
+                Sealed::Answer(answer.clone())
+            );
+        }
+        assert_eq!(
+            match_answer(
+                &Question::SelectProvider {
+                    depend: s("libgl"),
+                    candidates: vec![]
+                },
+                &sealed
+            ),
+            Sealed::Ask
+        );
+        let shrunk = Question::SelectProvider {
+            depend: s("sdl"),
+            candidates: vec![candidate("sdl2")],
+        };
+        assert_eq!(match_answer(&shrunk, &sealed), Sealed::Ask);
+        let repo_less = Question::SelectProvider {
+            depend: s("ffmpeg"),
+            candidates: vec![ProviderCandidate {
+                name: s("ffmpeg-full"),
+                repo: Some(s("core")),
+                version: None,
+            }],
+        };
+        let repo_less_answer = Answer::SelectProvider {
+            name: s("ffmpeg-full"),
+            repo: None,
+        };
+        let repo_less_sealed = seal(
+            std::slice::from_ref(&repo_less),
+            std::slice::from_ref(&repo_less_answer),
+            false,
+        )
+        .expect("repo-less answer seals");
+        assert_eq!(
+            match_answer(&repo_less, &repo_less_sealed),
+            Sealed::Answer(repo_less_answer)
+        );
+    }
+
+    #[test]
+    fn defers_runtime_and_proceed_and_normalizes_key_order() {
+        let fixture = collectable_fixture();
+        let (questions, answers) = split(&fixture);
+        let sealed = seal(&questions, &answers, true).expect("seal succeeds");
+        let proceed = Question::Proceed(summary());
+        assert_eq!(
+            match_answer(&proceed, &sealed),
+            Sealed::Answer(Answer::Proceed)
+        );
+        assert_eq!(
+            match_answer(
+                &proceed,
+                &seal(&questions, &answers, false).expect("seal succeeds")
+            ),
+            Sealed::Ask
+        );
+        assert_eq!(
+            match_answer(&Question::Corrupted { path: s("p") }, &sealed),
+            Sealed::Ask
+        );
+        assert_eq!(
+            match_answer(
+                &Question::ImportKey {
+                    fingerprint: s("f"),
+                    uid: s("u")
+                },
+                &sealed
+            ),
+            Sealed::Ask
+        );
+        let swapped = Question::Conflict {
+            incoming: s("bar"),
+            removable: s("foo"),
+        };
+        assert_eq!(
+            match_answer(&swapped, &sealed),
+            Sealed::Answer(fixture[0].1.clone())
+        );
+        let reordered = Question::RemovePkgs {
+            names: vec![s("a"), s("b")],
+        };
+        assert_eq!(
+            match_answer(&reordered, &sealed),
+            Sealed::Answer(fixture[5].1.clone())
         );
     }
 }
