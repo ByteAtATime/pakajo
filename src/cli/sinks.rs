@@ -309,6 +309,7 @@ impl ConsoleSink {
                     crate::utils::pacsave_warning(file)
                 );
             }
+            InstallEvent::RuntimePrompt { .. } => {}
             InstallEvent::FailClosed { reason, .. } => {
                 eprintln!(
                     "{} {}",

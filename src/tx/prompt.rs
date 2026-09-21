@@ -4,7 +4,8 @@ use std::io::{BufRead, Write};
 use crate::color;
 use crate::question::model::{Answer, Question};
 use crate::question::source::{
-    AnswerSource, FailClosed, SourceDecision, parse_group_selection, parse_provider_selection,
+    AnswerSource, FailClosed, RuntimeSource, SourceDecision, parse_group_selection,
+    parse_provider_selection,
 };
 use crate::tx::driver::{self, RunOutcome, RunSpec};
 
@@ -138,55 +139,63 @@ fn confirm(line: &str, default_yes: bool) -> bool {
     }
 }
 
-fn decide(question: &Question, line: &str) -> Option<Answer> {
+const IMPORT_KEY_NOT_ANSWERED: &str = "InteractiveSource does not answer ImportKey; runtime questions are intercepted by RuntimeSource";
+
+fn decide(question: &Question, line: &str) -> SourceDecision {
     match question {
         Question::Conflict {
             incoming,
             removable,
-        } => Some(Answer::Conflict {
+        } => SourceDecision::Answer(Answer::Conflict {
             incoming: incoming.clone(),
             removable: removable.clone(),
             remove: confirm(line, false),
         }),
         Question::SelectProvider { candidates, .. } => {
-            let chosen = parse_provider_selection(line, candidates.len())?;
-            let candidate = candidates.get(chosen - 1)?;
-            Some(Answer::SelectProvider {
+            let Some(chosen) = parse_provider_selection(line, candidates.len()) else {
+                return SourceDecision::Answer(Answer::Stop);
+            };
+            let Some(candidate) = candidates.get(chosen - 1) else {
+                return SourceDecision::Answer(Answer::Stop);
+            };
+            SourceDecision::Answer(Answer::SelectProvider {
                 name: candidate.name.clone(),
                 repo: candidate.repo.clone(),
             })
         }
-        Question::Replace { old, new, .. } => Some(Answer::Replace {
+        Question::Replace { old, new, .. } => SourceDecision::Answer(Answer::Replace {
             old: old.clone(),
             new: new.clone(),
             replace: confirm(line, true),
         }),
-        Question::InstallIgnorepkg { name } => Some(Answer::InstallIgnorepkg {
+        Question::InstallIgnorepkg { name } => SourceDecision::Answer(Answer::InstallIgnorepkg {
             name: name.clone(),
             install: confirm(line, true),
         }),
-        Question::RemovePkgs { names } => Some(Answer::RemovePkgs {
+        Question::RemovePkgs { names } => SourceDecision::Answer(Answer::RemovePkgs {
             names: names.clone(),
             skip: confirm(line, false),
         }),
-        Question::Corrupted { path } => Some(Answer::Corrupted {
+        Question::Corrupted { path } => SourceDecision::Answer(Answer::Corrupted {
             path: path.clone(),
             remove: confirm(line, true),
         }),
-        Question::ImportKey { fingerprint, .. } => Some(Answer::ImportKey {
-            fingerprint: fingerprint.clone(),
-            import: confirm(line, true),
+        Question::ImportKey { .. } => SourceDecision::Abort(FailClosed {
+            key: question.key(),
+            reason: IMPORT_KEY_NOT_ANSWERED.to_string(),
         }),
         Question::Proceed(_) => {
             if confirm(line, true) {
-                Some(Answer::Proceed)
+                SourceDecision::Answer(Answer::Proceed)
             } else {
-                None
+                SourceDecision::Answer(Answer::Stop)
             }
         }
         Question::GroupMembers { members, .. } => {
-            let picked = parse_group_selection(line, members.len())?;
-            Some(Answer::GroupMembers {
+            let Some(picked) = parse_group_selection(line, members.len()) else {
+                return SourceDecision::Answer(Answer::Stop);
+            };
+            SourceDecision::Answer(Answer::GroupMembers {
                 selected: picked
                     .into_iter()
                     .filter_map(|n| members.get(n - 1).cloned())
@@ -261,10 +270,52 @@ impl<R: BufRead, W: Write> AnswerSource for InteractiveSource<R, W> {
                 });
             }
         };
-        match decide(question, &line) {
-            Some(answer) => SourceDecision::Answer(answer),
-            None => SourceDecision::Answer(Answer::Stop),
+        decide(question, &line)
+    }
+}
+
+pub struct TtyImportPrompter<R, W> {
+    input: RefCell<R>,
+    output: RefCell<W>,
+    colored: bool,
+}
+
+impl<R: BufRead, W: Write> TtyImportPrompter<R, W> {
+    pub fn new(input: R, output: W, colored: bool) -> Self {
+        Self {
+            input: RefCell::new(input),
+            output: RefCell::new(output),
+            colored,
         }
+    }
+
+    fn ask(&self, fingerprint: &str, uid: &str) -> bool {
+        let (hide, show) = if self.colored {
+            (color::HIDE_CURSOR, color::SHOW_CURSOR)
+        } else {
+            ("", "")
+        };
+        let mut output = self.output.borrow_mut();
+        let rendered = render_import_key(fingerprint, uid, self.colored);
+        let written = output.write_all(hide.as_bytes()).is_ok()
+            && output.write_all(rendered.as_bytes()).is_ok()
+            && output.write_all(show.as_bytes()).is_ok()
+            && output.flush().is_ok();
+        if !written {
+            return false;
+        }
+        let mut line = String::new();
+        match self.input.borrow_mut().read_line(&mut line) {
+            Ok(0) => false,
+            Ok(_) => confirm(&line, true),
+            Err(_) => false,
+        }
+    }
+}
+
+impl<R: BufRead, W: Write> crate::question::source::RuntimePrompter for TtyImportPrompter<R, W> {
+    fn import_key(&self, fingerprint: &str, uid: &str) -> bool {
+        self.ask(fingerprint, uid)
     }
 }
 
@@ -285,18 +336,6 @@ impl AnswerSource for PreapprovedProceed {
     }
 }
 
-pub fn execute_with<R: BufRead + 'static, W: Write + 'static>(
-    input: R,
-    output: W,
-    colored: bool,
-    handle: &mut alpm::Alpm,
-    spec: &RunSpec,
-    sink: Box<dyn crate::events::InstallSink>,
-) -> anyhow::Result<RunOutcome> {
-    let source = InteractiveSource::new(input, output, colored);
-    execute_with_source(Box::new(source), handle, spec, sink)
-}
-
 pub fn execute_with_source(
     source: Box<dyn AnswerSource>,
     handle: &mut alpm::Alpm,
@@ -306,19 +345,31 @@ pub fn execute_with_source(
     driver::run(handle, spec, source, sink)
 }
 
+pub fn tty_runtime_source<R: BufRead + 'static, W: Write + 'static>(
+    source: InteractiveSource<R, W>,
+    prompter: TtyImportPrompter<R, W>,
+) -> Box<dyn AnswerSource> {
+    Box::new(RuntimeSource::new(Box::new(source), prompter))
+}
+
 pub fn execute(
     handle: &mut alpm::Alpm,
     spec: &RunSpec,
     sink: Box<dyn crate::events::InstallSink>,
 ) -> anyhow::Result<RunOutcome> {
-    execute_with(
-        std::io::BufReader::new(std::io::stdin()),
-        std::io::stdout(),
-        color::stdout_color(),
-        handle,
-        spec,
-        sink,
-    )
+    let source = tty_runtime_source(
+        InteractiveSource::new(
+            std::io::BufReader::new(std::io::stdin()),
+            std::io::stdout(),
+            color::stdout_color(),
+        ),
+        TtyImportPrompter::new(
+            std::io::BufReader::new(std::io::stdin()),
+            std::io::stdout(),
+            color::stdout_color(),
+        ),
+    );
+    execute_with_source(source, handle, spec, sink)
 }
 
 #[cfg(test)]
@@ -326,6 +377,7 @@ mod tests {
     use super::*;
     use crate::events::TransactionSummary;
     use crate::question::model::{ProviderCandidate, QuestionKey};
+    use crate::question::source::RuntimePrompter;
     use std::io::Cursor;
 
     fn summary() -> TransactionSummary {
@@ -557,18 +609,95 @@ mod tests {
                 },
                 "corrupted",
             ),
-            (
-                Question::ImportKey {
-                    fingerprint: "ABCDEF".to_string(),
-                    uid: "Packager <pack@example.com>".to_string(),
-                },
-                "import",
-            ),
         ] {
             assert!(
                 matches!(ask(&question, b"\n", false).0, SourceDecision::Answer(_)),
                 "empty input accepts default-yes {check}",
             );
+        }
+    }
+
+    #[test]
+    fn interactive_source_aborts_import_key_as_fail_closed_guard() {
+        let question = Question::ImportKey {
+            fingerprint: "ABCDEF".to_string(),
+            uid: "Packager <pack@example.com>".to_string(),
+        };
+        let (decision, _) = ask(&question, b"\n", false);
+        assert_eq!(
+            decision,
+            SourceDecision::Abort(FailClosed {
+                key: question.key(),
+                reason: IMPORT_KEY_NOT_ANSWERED.to_string(),
+            })
+        );
+    }
+
+    fn ask_prompter(input: &[u8], uid: &str) -> (bool, String) {
+        let prompter = TtyImportPrompter::new(Cursor::new(input.to_vec()), Vec::new(), false);
+        let verdict = prompter.import_key("ABCDEF", uid);
+        let output = prompter.output.into_inner();
+        (verdict, String::from_utf8(output).unwrap())
+    }
+
+    #[test]
+    fn tty_import_prompter_answers_presented_defaults() {
+        let (verdict, prompt) = ask_prompter(b"\n", "Packager <pack@example.com>");
+        assert!(verdict);
+        assert_eq!(
+            prompt,
+            "Import PGP key ABCDEF, \"Packager <pack@example.com>\"? [Y/n] "
+        );
+        let (verdict, prompt) = ask_prompter(b"\n", "");
+        assert!(verdict);
+        assert_eq!(prompt, "Import PGP key ABCDEF? [Y/n] ");
+        for (input, expected) in [(b"y\n".as_slice(), true), (b"yes\n", true), (b"n\n", false)] {
+            assert_eq!(ask_prompter(input, "u").0, expected, "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn tty_import_prompter_declines_on_eof_and_io_error() {
+        assert!(!ask_prompter(b"", "").0);
+        struct Broken;
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("broken"))
+            }
+        }
+        impl BufRead for Broken {
+            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+                Err(std::io::Error::other("broken"))
+            }
+            fn consume(&mut self, _: usize) {}
+        }
+        let prompter = TtyImportPrompter::new(Broken, Vec::new(), false);
+        assert!(!prompter.import_key("ABCDEF", ""));
+    }
+
+    #[test]
+    fn runtime_source_answers_import_key_through_tty_prompter() {
+        let question = Question::ImportKey {
+            fingerprint: "ABCDEF".to_string(),
+            uid: "Packager <pack@example.com>".to_string(),
+        };
+        let source = RuntimeSource::new(
+            Box::new(InteractiveSource::new(
+                Cursor::new(b"\n".to_vec()),
+                Vec::new(),
+                false,
+            )),
+            TtyImportPrompter::new(Cursor::new(b"\n".to_vec()), Vec::new(), false),
+        );
+        match source.answer(&question) {
+            SourceDecision::Answer(Answer::ImportKey {
+                fingerprint,
+                import,
+            }) => {
+                assert_eq!(fingerprint, "ABCDEF");
+                assert!(import);
+            }
+            other => panic!("expected import key answer, got {other:?}"),
         }
     }
 

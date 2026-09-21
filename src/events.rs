@@ -156,6 +156,9 @@ pub enum InstallEvent {
     PacsaveCreated {
         file: String,
     },
+    RuntimePrompt {
+        question: crate::question::model::Question,
+    },
     FailClosed {
         key: crate::question::model::QuestionKey,
         reason: String,
@@ -292,6 +295,30 @@ pub fn read_event_stream<R: std::io::BufRead, S: InstallSink + ?Sized>(reader: R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_prompt_round_trips_json() {
+        let event = InstallEvent::RuntimePrompt {
+            question: crate::question::model::Question::ImportKey {
+                fingerprint: "ABCDEF".to_string(),
+                uid: "Packager <pack@example.com>".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        let back: InstallEvent = serde_json::from_str(&json).expect("deserialize");
+        match back {
+            InstallEvent::RuntimePrompt { question } => {
+                assert_eq!(
+                    question,
+                    crate::question::model::Question::ImportKey {
+                        fingerprint: "ABCDEF".to_string(),
+                        uid: "Packager <pack@example.com>".to_string(),
+                    }
+                );
+            }
+            _ => panic!("wrong variant after round-trip"),
+        }
+    }
 
     #[test]
     fn sysupgrade_aur_candidates_round_trips_json() {

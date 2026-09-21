@@ -67,12 +67,13 @@ fn finish_install(outcome: crate::tx::driver::RunOutcome) -> anyhow::Result<()> 
 fn engine_source<R: std::io::BufRead + 'static, W: std::io::Write + 'static>(
     preconfirmed: bool,
     source: crate::tx::prompt::InteractiveSource<R, W>,
+    prompter: crate::tx::prompt::TtyImportPrompter<R, W>,
 ) -> Box<dyn crate::question::source::AnswerSource> {
-    let boxed = Box::new(source) as Box<dyn crate::question::source::AnswerSource>;
+    let runtime = crate::tx::prompt::tty_runtime_source(source, prompter);
     if preconfirmed {
-        crate::tx::prompt::with_preapproved_proceed(boxed)
+        crate::tx::prompt::with_preapproved_proceed(runtime)
     } else {
-        boxed
+        runtime
     }
 }
 
@@ -194,6 +195,11 @@ impl ChildOperation {
                                     std::io::stderr(),
                                     crate::color::stderr_color(),
                                 ),
+                                crate::tx::prompt::TtyImportPrompter::new(
+                                    std::io::BufReader::new(std::io::stdin()),
+                                    std::io::stderr(),
+                                    crate::color::stderr_color(),
+                                ),
                             );
                             crate::tx::prompt::execute_with_source(
                                 source,
@@ -205,6 +211,11 @@ impl ChildOperation {
                             let source = engine_source(
                                 preconfirmed,
                                 crate::tx::prompt::InteractiveSource::new(
+                                    std::io::BufReader::new(std::io::stdin()),
+                                    std::io::stdout(),
+                                    crate::color::stdout_color(),
+                                ),
+                                crate::tx::prompt::TtyImportPrompter::new(
                                     std::io::BufReader::new(std::io::stdin()),
                                     std::io::stdout(),
                                     crate::color::stdout_color(),
