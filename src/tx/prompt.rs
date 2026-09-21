@@ -238,8 +238,12 @@ impl<R: BufRead, W: Write> InteractiveSource<R, W> {
         }
         let mut line = String::new();
         let read = self.input.borrow_mut().read_line(&mut line);
+        let mut output = self.output.borrow_mut();
+        let rehide = output.write_all(hide.as_bytes());
+        let flushed = rehide.and_then(|_| output.flush());
         match read {
             Ok(0) => Err("end of input".to_string()),
+            Ok(_) if flushed.is_err() => Err("failed to write prompt".to_string()),
             Ok(_) => Ok(line),
             Err(_) => Err("failed to read answer".to_string()),
         }
