@@ -268,6 +268,23 @@ impl<R: BufRead, W: Write> AnswerSource for InteractiveSource<R, W> {
     }
 }
 
+pub fn with_preapproved_proceed(inner: Box<dyn AnswerSource>) -> Box<dyn AnswerSource> {
+    Box::new(PreapprovedProceed { inner })
+}
+
+struct PreapprovedProceed {
+    inner: Box<dyn AnswerSource>,
+}
+
+impl AnswerSource for PreapprovedProceed {
+    fn answer(&self, question: &Question) -> SourceDecision {
+        match question {
+            Question::Proceed(_) => SourceDecision::Answer(Answer::Proceed),
+            other => self.inner.answer(other),
+        }
+    }
+}
+
 pub fn execute_with<R: BufRead + 'static, W: Write + 'static>(
     input: R,
     output: W,
@@ -277,7 +294,16 @@ pub fn execute_with<R: BufRead + 'static, W: Write + 'static>(
     sink: Box<dyn crate::events::InstallSink>,
 ) -> anyhow::Result<RunOutcome> {
     let source = InteractiveSource::new(input, output, colored);
-    driver::run(handle, spec, Box::new(source), sink)
+    execute_with_source(Box::new(source), handle, spec, sink)
+}
+
+pub fn execute_with_source(
+    source: Box<dyn AnswerSource>,
+    handle: &mut alpm::Alpm,
+    spec: &RunSpec,
+    sink: Box<dyn crate::events::InstallSink>,
+) -> anyhow::Result<RunOutcome> {
+    driver::run(handle, spec, source, sink)
 }
 
 pub fn execute(
@@ -331,6 +357,27 @@ mod tests {
             incoming: "newpkg".to_string(),
             removable: "oldpkg".to_string(),
         }
+    }
+
+    struct Script;
+
+    impl AnswerSource for Script {
+        fn answer(&self, _question: &Question) -> SourceDecision {
+            SourceDecision::Answer(Answer::Stop)
+        }
+    }
+
+    #[test]
+    fn preapproved_proceed_answers_proceed_and_delegates_rest() {
+        let source = with_preapproved_proceed(Box::new(Script));
+        assert!(matches!(
+            source.answer(&Question::Proceed(summary())),
+            SourceDecision::Answer(Answer::Proceed)
+        ));
+        assert!(matches!(
+            source.answer(&conflict()),
+            SourceDecision::Answer(Answer::Stop)
+        ));
     }
 
     #[test]

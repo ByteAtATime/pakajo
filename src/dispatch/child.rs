@@ -64,6 +64,18 @@ fn finish_install(outcome: crate::tx::driver::RunOutcome) -> anyhow::Result<()> 
     Ok(())
 }
 
+fn engine_source<R: std::io::BufRead + 'static, W: std::io::Write + 'static>(
+    preconfirmed: bool,
+    source: crate::tx::prompt::InteractiveSource<R, W>,
+) -> Box<dyn crate::question::source::AnswerSource> {
+    let boxed = Box::new(source) as Box<dyn crate::question::source::AnswerSource>;
+    if preconfirmed {
+        crate::tx::prompt::with_preapproved_proceed(boxed)
+    } else {
+        boxed
+    }
+}
+
 fn repo_names_acceptable(handle: &alpm::Alpm, repo_names: &[String]) -> bool {
     let probe: Vec<String> = repo_names
         .iter()
@@ -135,7 +147,7 @@ impl ChildOperation {
                 targets,
                 as_deps,
                 reinstall,
-                preconfirmed: _,
+                preconfirmed,
                 approvals_path,
                 stream,
             } => {
@@ -163,6 +175,7 @@ impl ChildOperation {
                     privs::stdin_is_tty(),
                 );
                 let answerer = answerer_for(approvals);
+                let preconfirmed = *preconfirmed;
                 match presentation {
                     Presentation::InteractiveStream | Presentation::Console => {
                         let spec = crate::tx::driver::RunSpec {
@@ -173,16 +186,31 @@ impl ChildOperation {
                             reinstall: *reinstall,
                         };
                         let outcome = if matches!(presentation, Presentation::InteractiveStream) {
-                            crate::tx::prompt::execute_with(
-                                std::io::BufReader::new(std::io::stdin()),
-                                std::io::stderr(),
-                                crate::color::stderr_color(),
+                            let source = engine_source(
+                                preconfirmed,
+                                crate::tx::prompt::InteractiveSource::new(
+                                    std::io::BufReader::new(std::io::stdin()),
+                                    std::io::stderr(),
+                                    crate::color::stderr_color(),
+                                ),
+                            );
+                            crate::tx::prompt::execute_with_source(
+                                source,
                                 &mut handle,
                                 &spec,
                                 Box::new(EscalatedSink::new()),
                             )?
                         } else {
-                            crate::tx::prompt::execute(
+                            let source = engine_source(
+                                preconfirmed,
+                                crate::tx::prompt::InteractiveSource::new(
+                                    std::io::BufReader::new(std::io::stdin()),
+                                    std::io::stdout(),
+                                    crate::color::stdout_color(),
+                                ),
+                            );
+                            crate::tx::prompt::execute_with_source(
+                                source,
                                 &mut handle,
                                 &spec,
                                 Box::new(ConsoleSink::new()),
