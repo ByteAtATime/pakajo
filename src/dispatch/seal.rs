@@ -1,6 +1,64 @@
 use anyhow::Context;
 
+use crate::build::BuildDecision;
+use crate::dispatch::protocol::Decider;
+use crate::pkgbuild::PkgbuildInfo;
 use crate::question::approvals::{SealedApprovals, validate};
+use crate::question::model::{Answer, QuestionKey};
+use crate::resolve::{ConflictReport, Plan};
+
+pub struct SealedDecider {
+    sealed: SealedApprovals,
+}
+
+pub fn sealed_decider(sealed: SealedApprovals) -> SealedDecider {
+    SealedDecider { sealed }
+}
+
+impl SealedDecider {
+    fn conflict_removed(&self, incoming: &str, removable: &str) -> bool {
+        let key = QuestionKey::Conflict {
+            first: incoming.min(removable).to_string(),
+            second: incoming.max(removable).to_string(),
+        };
+        let Ok(index) = self
+            .sealed
+            .answers
+            .binary_search_by(|(stored, _)| stored.cmp(&key))
+        else {
+            return false;
+        };
+        matches!(
+            &self.sealed.answers[index].1,
+            Answer::Conflict { remove: true, .. }
+        )
+    }
+}
+
+impl Decider for SealedDecider {
+    fn confirm_build(&self, _plan: &Plan) -> BuildDecision {
+        BuildDecision::Proceed
+    }
+
+    fn confirm_conflicts(&self, report: &ConflictReport) -> bool {
+        report
+            .local
+            .iter()
+            .chain(report.inner.iter())
+            .flat_map(|conflict| {
+                conflict
+                    .conflicting
+                    .iter()
+                    .map(|entry| (conflict.pkg.as_str(), entry.pkg.as_str()))
+            })
+            .all(|(incoming, removable)| self.conflict_removed(incoming, removable))
+            && !report.is_empty()
+    }
+
+    fn review_pkgbuilds(&self, _pkgbuilds: &[PkgbuildInfo]) -> bool {
+        true
+    }
+}
 
 pub fn encode_seal(sealed: &SealedApprovals) -> anyhow::Result<String> {
     serde_json::to_string(sealed).context("failed to encode seal")
@@ -139,6 +197,96 @@ mod tests {
         )];
         let error = decode_seal(&encode_pairs(&pairs, false)).expect_err("import key rejected");
         assert!(error.to_string().contains("cannot be sealed"));
+    }
+
+    fn conflicted_report() -> ConflictReport {
+        ConflictReport {
+            local: vec![crate::resolve::Conflict {
+                pkg: "cava".to_string(),
+                conflicting: vec![crate::resolve::Conflicting {
+                    pkg: "cava-git".to_string(),
+                    conflict: Some("cava".to_string()),
+                }],
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn multi_conflicted_report() -> ConflictReport {
+        let mut report = conflicted_report();
+        report.local.push(crate::resolve::Conflict {
+            pkg: "nginx".to_string(),
+            conflicting: vec![crate::resolve::Conflicting {
+                pkg: "nginx-mainline".to_string(),
+                conflict: Some("nginx".to_string()),
+            }],
+        });
+        report
+    }
+
+    fn conflict_seal(first: &str, second: &str, remove: bool) -> SealedApprovals {
+        SealedApprovals {
+            answers: vec![(
+                QuestionKey::Conflict {
+                    first: first.min(second).to_string(),
+                    second: first.max(second).to_string(),
+                },
+                Answer::Conflict {
+                    incoming: first.to_string(),
+                    removable: second.to_string(),
+                    remove,
+                },
+            )],
+            proceed: true,
+        }
+    }
+
+    #[test]
+    fn sealed_decider_mirrors_automatic_semantics() {
+        let decider = sealed_decider(conflict_seal("cava", "cava-git", true));
+        assert_eq!(
+            decider.confirm_build(&Plan {
+                bases: Vec::new(),
+                repo_installs: Vec::new(),
+                missing: Vec::new(),
+                conflicts: ConflictReport::default(),
+                duplicates: Vec::new(),
+            }),
+            BuildDecision::Proceed
+        );
+        assert!(decider.review_pkgbuilds(&[]));
+        assert!(!decider.confirm_conflicts(&ConflictReport::default()));
+    }
+
+    #[test]
+    fn sealed_decider_proceeds_when_every_conflict_removed() {
+        assert!(
+            sealed_decider(conflict_seal("cava-git", "cava", true))
+                .confirm_conflicts(&conflicted_report())
+        );
+    }
+
+    #[test]
+    fn sealed_decider_bails_when_conflict_kept() {
+        assert!(
+            !sealed_decider(conflict_seal("cava", "cava-git", false))
+                .confirm_conflicts(&conflicted_report())
+        );
+    }
+
+    #[test]
+    fn sealed_decider_bails_when_a_pair_is_missing() {
+        assert!(
+            !sealed_decider(conflict_seal("cava", "cava-git", true))
+                .confirm_conflicts(&multi_conflicted_report())
+        );
+    }
+
+    #[test]
+    fn sealed_decider_matches_swapped_orientation() {
+        let report = conflicted_report();
+        assert!(sealed_decider(conflict_seal("cava", "cava-git", true)).confirm_conflicts(&report));
+        assert!(sealed_decider(conflict_seal("cava-git", "cava", true)).confirm_conflicts(&report));
     }
 
     #[test]
