@@ -33,23 +33,39 @@ pub fn handle_with_config(config: &pacmanconf::Config) -> anyhow::Result<Alpm> {
         .collect();
     alpm_utils::configure_alpm(&mut handle, config)
         .map_err(|e| anyhow::anyhow!("failed to configure alpm: {e}"))?;
+    let config_hookdirs: Vec<String> = handle
+        .hookdirs()
+        .iter()
+        .map(|dir| dir.to_string())
+        .collect();
+    let mut hookdirs: Vec<String> = Vec::new();
     for dir in &system_hookdirs {
-        let known = handle
-            .hookdirs()
-            .iter()
-            .any(|known| trim_slash(known) == trim_slash(dir));
-        if !known && std::path::Path::new(dir).exists() {
-            handle
-                .add_hookdir(dir.as_str())
-                .with_context(|| format!("failed to restore system hookdir {dir}"))?;
+        if !std::path::Path::new(dir).exists() {
+            continue;
         }
+        push_hookdir(&mut hookdirs, dir);
     }
+    for dir in &config_hookdirs {
+        push_hookdir(&mut hookdirs, dir);
+    }
+    handle
+        .set_hookdirs(hookdirs.iter().map(String::as_str))
+        .context("failed to set hookdirs")?;
     apply_sig_levels(&handle, config)?;
     Ok(handle)
 }
 
 fn trim_slash(path: &str) -> &str {
     path.trim_end_matches('/')
+}
+
+fn push_hookdir(hookdirs: &mut Vec<String>, dir: &str) {
+    let known = hookdirs
+        .iter()
+        .any(|known| trim_slash(known) == trim_slash(dir));
+    if !known {
+        hookdirs.push(dir.to_string());
+    }
 }
 
 pub fn handle_rootless() -> anyhow::Result<Alpm> {
@@ -195,8 +211,8 @@ mod tests {
         assert_eq!(
             dirs,
             vec![
-                format!("{}/", probe.display()),
                 format!("{}/", syshooks.display()),
+                format!("{}/", probe.display()),
             ]
         );
     }
