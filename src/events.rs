@@ -52,6 +52,9 @@ pub enum InstallEvent {
         current: usize,
         total: usize,
     },
+    HookStart {
+        pre: bool,
+    },
     HookRun {
         position: usize,
         total: usize,

@@ -95,6 +95,9 @@ pub(crate) fn convert_event(any_event: alpm::AnyEvent) -> Option<InstallEvent> {
         alpm::Event::ScriptletInfo(e) => Some(InstallEvent::ScriptletInfo {
             line: e.line().to_string(),
         }),
+        alpm::Event::HookStart(e) => Some(InstallEvent::HookStart {
+            pre: e.when() == alpm::HookWhen::PreTransaction,
+        }),
         alpm::Event::HookRunStart(e) => Some(InstallEvent::HookRun {
             position: e.position(),
             total: e.total(),

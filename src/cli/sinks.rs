@@ -37,7 +37,7 @@ impl DownloadStat {
 
 pub struct ConsoleSink {
     last_progress: Option<(ProgressPhase, String, i32)>,
-    hooks_header_done: bool,
+    hook_phase: Option<bool>,
     color: bool,
     stderr_color: bool,
     downloads: HashMap<String, DownloadStat>,
@@ -48,7 +48,7 @@ impl ConsoleSink {
     pub fn new() -> Self {
         Self {
             last_progress: None,
-            hooks_header_done: false,
+            hook_phase: None,
             color: color::stdout_color(),
             stderr_color: color::stderr_color(),
             downloads: HashMap::new(),
@@ -149,19 +149,17 @@ impl ConsoleSink {
                 self.hide_cursor();
                 print_progress(*phase, package, *percent, *current, *total, self.color);
             }
+            InstallEvent::HookStart { pre } => {
+                if let Some(label) = hook_header(&mut self.hook_phase, *pre) {
+                    println!("{}", color::colon(self.color, label));
+                }
+            }
             InstallEvent::HookRun {
                 position,
                 total,
                 name,
                 desc,
             } => {
-                if !self.hooks_header_done {
-                    self.hooks_header_done = true;
-                    println!(
-                        "{}",
-                        color::colon(self.color, "Running post-transaction hooks...")
-                    );
-                }
                 println!(
                     "{}",
                     hook_run_line(*position, *total, name, desc.as_deref())
@@ -335,33 +333,29 @@ impl InstallSink for JsonSink {
 }
 
 pub struct EscalatedSink {
-    hooks_header_done: bool,
+    hook_phase: Option<bool>,
 }
 
 impl EscalatedSink {
     pub fn new() -> Self {
-        EscalatedSink {
-            hooks_header_done: false,
-        }
+        EscalatedSink { hook_phase: None }
     }
 }
 
 impl InstallSink for EscalatedSink {
     fn event(&mut self, event: InstallEvent) {
         match event {
+            InstallEvent::HookStart { pre } => {
+                if let Some(label) = hook_header(&mut self.hook_phase, pre) {
+                    eprintln!("{}", color::colon(color::stderr_color(), label));
+                }
+            }
             InstallEvent::HookRun {
                 position,
                 total,
                 name,
                 desc,
             } => {
-                if !self.hooks_header_done {
-                    self.hooks_header_done = true;
-                    eprintln!(
-                        "{}",
-                        color::colon(color::stderr_color(), "Running post-transaction hooks...")
-                    );
-                }
                 eprintln!("{}", hook_run_line(position, total, &name, desc.as_deref()));
             }
             InstallEvent::TransactionSummary(s) => {
@@ -409,6 +403,22 @@ impl InstallSink for EscalatedSink {
                 }
             }
         }
+    }
+}
+
+fn hook_header(phase: &mut Option<bool>, pre: bool) -> Option<&'static str> {
+    if *phase == Some(pre) {
+        return None;
+    }
+    *phase = Some(pre);
+    Some(hook_phase_label(pre))
+}
+
+fn hook_phase_label(pre: bool) -> &'static str {
+    if pre {
+        "Running pre-transaction hooks..."
+    } else {
+        "Running post-transaction hooks..."
     }
 }
 
@@ -525,6 +535,20 @@ fn progress_phase_label(phase: ProgressPhase) -> &'static str {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn hook_header_prints_pre_label_before_post() {
+        let mut phase = None;
+        assert_eq!(
+            hook_header(&mut phase, true),
+            Some("Running pre-transaction hooks...")
+        );
+        assert_eq!(hook_header(&mut phase, true), None);
+        assert_eq!(
+            hook_header(&mut phase, false),
+            Some("Running post-transaction hooks...")
+        );
+    }
 
     #[test]
     fn count_digits_handles_boundaries() {

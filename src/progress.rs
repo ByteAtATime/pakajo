@@ -219,7 +219,9 @@ pub fn event_stage(ev: &InstallEvent) -> Option<RepoStage> {
         | DownloadRetry { .. }
         | DownloadCompleted { .. } => Some(Download),
         PackageOperation { .. } => Some(Install),
-        HookRun { .. } | ScriptletInfo { .. } | TransactionDone => Some(Finalize),
+        HookStart { .. } | HookRun { .. } | ScriptletInfo { .. } | TransactionDone => {
+            Some(Finalize)
+        }
         _ => None,
     }
 }
@@ -455,7 +457,9 @@ fn event_stage_aur(ev: &InstallEvent) -> Option<AurStage> {
         CloningRepo { .. } | BuildStarted { .. } | BuildOutput { .. } | BuildCompleted { .. } => {
             Some(Build)
         }
-        HookRun { .. } | ScriptletInfo { .. } | TransactionDone => Some(Finalize),
+        HookStart { .. } | HookRun { .. } | ScriptletInfo { .. } | TransactionDone => {
+            Some(Finalize)
+        }
         _ if event_stage(ev).is_some() || matches!(ev, TransactionSummary(_)) => Some(Install),
         _ => None,
     }
