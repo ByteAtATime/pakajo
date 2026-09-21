@@ -156,6 +156,10 @@ pub enum InstallEvent {
     PacsaveCreated {
         file: String,
     },
+    FailClosed {
+        key: crate::question::model::QuestionKey,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

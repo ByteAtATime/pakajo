@@ -31,6 +31,10 @@ impl QuestionSession {
         self.denied.as_ref()
     }
 
+    pub(crate) fn take_denied(&mut self) -> Option<FailClosed> {
+        self.denied.take()
+    }
+
     pub(crate) fn recorded(&self) -> Vec<(Question, Answer)> {
         self.recorded.clone()
     }

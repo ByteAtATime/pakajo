@@ -132,9 +132,12 @@ fn drive(
     {
         events.borrow_mut().event(InstallEvent::LoadingPackages);
     }
-    queue_targets(handle, spec, &session)?;
+    if let Err(error) = queue_targets(handle, spec, &session) {
+        fail_closed(&session, events)?;
+        return Err(error);
+    }
     if handle.trans_add().is_empty() {
-        fail_on_denied(&session.borrow())?;
+        fail_closed(&session, events)?;
         if !spec.explore {
             events.borrow_mut().event(InstallEvent::Log {
                 level: LogLevel::Warning,
@@ -148,10 +151,10 @@ fn drive(
         Err(error) => Some(extract_prepare_failure(error)),
     };
     if let Some(failure) = failure {
-        fail_on_denied(&session.borrow())?;
+        fail_closed(&session, events)?;
         return outcome(handle, Finish::PrepareFailed(failure), spec, &session);
     }
-    fail_on_denied(&session.borrow())?;
+    fail_closed(&session, events)?;
     let summary = build_summary(handle);
     if !spec.explore {
         events
@@ -159,7 +162,15 @@ fn drive(
             .event(InstallEvent::TransactionSummary(summary.clone()));
     }
     let review = maybe_review(handle, spec, &session, &summary)?;
-    if spec.explore || !ask_proceed(&session, &summary)? {
+    let commit = !spec.explore
+        && match ask_proceed(&session, &summary) {
+            Ok(proceed) => proceed,
+            Err(error) => {
+                fail_closed(&session, events)?;
+                return Err(error);
+            }
+        };
+    if !commit {
         return Ok(RunOutcome {
             summary,
             finish: Finish::Stopped,
@@ -167,7 +178,7 @@ fn drive(
         });
     }
     during_commit(|| handle.trans_commit()).context("failed to commit transaction")?;
-    fail_on_denied(&session.borrow())?;
+    fail_closed(&session, events)?;
     Ok(RunOutcome {
         summary,
         finish: Finish::Committed,
@@ -380,6 +391,20 @@ fn fail_on_denied(session: &QuestionSession) -> anyhow::Result<()> {
         Some(denied) => anyhow::bail!("{denied}"),
         None => Ok(()),
     }
+}
+
+fn fail_closed(
+    session: &Rc<RefCell<QuestionSession>>,
+    events: &Rc<RefCell<Box<dyn InstallSink>>>,
+) -> anyhow::Result<()> {
+    let Some(denied) = session.borrow_mut().take_denied() else {
+        return Ok(());
+    };
+    events.borrow_mut().event(InstallEvent::FailClosed {
+        key: denied.key.clone(),
+        reason: denied.reason.clone(),
+    });
+    anyhow::bail!("{denied}")
 }
 
 #[cfg(test)]
@@ -764,9 +789,37 @@ mod tests {
     fn denied_question_aborts_with_reason() {
         let (_dir, mut handle) = fixture(&[plain("skipme")]);
         handle.add_ignorepkg("skipme").unwrap();
-        let error = run(&mut handle, &spec(&["skipme"], false), deny(), discard()).unwrap_err();
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let error = run(
+            &mut handle,
+            &spec(&["skipme"], false),
+            deny(),
+            Box::new(recorder),
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("denied in test"));
+        assert_eq!(
+            fail_closed_events(&seen.borrow()),
+            vec![(
+                crate::question::model::QuestionKey::InstallIgnorepkg {
+                    name: "skipme".to_string()
+                },
+                "denied in test".to_string()
+            )]
+        );
         release(&mut handle);
+    }
+
+    fn fail_closed_events(
+        seen: &[InstallEvent],
+    ) -> Vec<(crate::question::model::QuestionKey, String)> {
+        seen.iter()
+            .filter_map(|event| match event {
+                InstallEvent::FailClosed { key, reason } => Some((key.clone(), reason.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -868,14 +921,25 @@ mod tests {
     #[test]
     fn mismatched_answers_fail_closed() {
         let (_dir, mut handle) = tools_fixture();
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
         let error = run(
             &mut handle,
             &spec(&["tools"], false),
             group_answer(&["ghost"]),
-            discard(),
+            Box::new(recorder),
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains("is not offered"));
+        assert_eq!(
+            fail_closed_events(&seen.borrow()),
+            vec![(
+                crate::question::model::QuestionKey::GroupMembers {
+                    group: "tools".to_string()
+                },
+                "group member ghost is not offered".to_string()
+            )]
+        );
         release(&mut handle);
 
         let (_dir, mut handle) = tools_fixture();

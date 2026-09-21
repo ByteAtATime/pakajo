@@ -309,6 +309,13 @@ impl ConsoleSink {
                     crate::utils::pacsave_warning(file)
                 );
             }
+            InstallEvent::FailClosed { reason, .. } => {
+                eprintln!(
+                    "{} {}",
+                    color::paint(self.stderr_color, color::RED, "error:"),
+                    reason
+                );
+            }
         }
     }
 
