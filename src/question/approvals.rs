@@ -79,19 +79,75 @@ fn validate_pair(question: &Question, answer: &Answer) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn answer_fits_question(answer: &Answer, question: &Question) -> bool {
-    match (question, answer) {
+pub fn validate(sealed: &SealedApprovals) -> anyhow::Result<()> {
+    let mut previous: Option<&QuestionKey> = None;
+    for (key, answer) in &sealed.answers {
+        if !is_collectable_key(key) {
+            anyhow::bail!("question {:?} cannot be sealed", key);
+        }
+        if !answer_fits_key(answer, key) {
+            anyhow::bail!("answer does not fit question {:?}", key);
+        }
+        if let Some(prev) = previous {
+            match key.cmp(prev) {
+                std::cmp::Ordering::Less => {
+                    anyhow::bail!("answers are not sorted at question {:?}", key)
+                }
+                std::cmp::Ordering::Equal => {
+                    anyhow::bail!("duplicate answers for question {:?}", key)
+                }
+                std::cmp::Ordering::Greater => {}
+            }
+        }
+        previous = Some(key);
+    }
+    Ok(())
+}
+
+fn is_collectable_key(key: &QuestionKey) -> bool {
+    !matches!(
+        key,
+        QuestionKey::Proceed | QuestionKey::Corrupted { .. } | QuestionKey::ImportKey { .. }
+    )
+}
+
+fn answer_fits_key(answer: &Answer, key: &QuestionKey) -> bool {
+    match (key, answer) {
         (
-            Question::Conflict {
+            QuestionKey::Conflict { first, second },
+            Answer::Conflict {
                 incoming,
                 removable,
-            },
-            Answer::Conflict {
-                incoming: a_in,
-                removable: a_re,
                 ..
             },
-        ) => is_same_pair(incoming, removable, a_in, a_re),
+        ) => is_same_pair(first, second, incoming, removable),
+        (QuestionKey::SelectProvider { .. }, Answer::SelectProvider { .. }) => true,
+        (
+            QuestionKey::Replace { old, new },
+            Answer::Replace {
+                old: a_old,
+                new: a_new,
+                ..
+            },
+        ) => old == a_old && new == a_new,
+        (QuestionKey::InstallIgnorepkg { name }, Answer::InstallIgnorepkg { name: a_name, .. }) => {
+            name == a_name
+        }
+        (QuestionKey::RemovePkgs { names }, Answer::RemovePkgs { names: a_names, .. }) => {
+            let mut ordered = a_names.clone();
+            ordered.sort();
+            ordered == *names
+        }
+        (QuestionKey::GroupMembers { .. }, Answer::GroupMembers { .. }) => true,
+        _ => false,
+    }
+}
+
+fn answer_fits_question(answer: &Answer, question: &Question) -> bool {
+    if !answer_fits_key(answer, &question.key()) {
+        return false;
+    }
+    match (question, answer) {
         (Question::SelectProvider { candidates, .. }, Answer::SelectProvider { name, repo }) => {
             candidates
                 .iter()
@@ -100,32 +156,12 @@ fn answer_fits_question(answer: &Answer, question: &Question) -> bool {
         (Question::GroupMembers { members, .. }, Answer::GroupMembers { selected }) => {
             selected.iter().all(|name| members.contains(name))
         }
-        (
-            Question::Replace { old, new, .. },
-            Answer::Replace {
-                old: a_old,
-                new: a_new,
-                ..
-            },
-        ) => old == a_old && new == a_new,
-        (Question::InstallIgnorepkg { name }, Answer::InstallIgnorepkg { name: a_name, .. }) => {
-            name == a_name
-        }
-        (Question::RemovePkgs { names }, Answer::RemovePkgs { names: a_names, .. }) => {
-            is_same_name_set(names, a_names)
-        }
-        _ => false,
+        _ => true,
     }
 }
 
 fn is_same_pair(first_a: &str, second_a: &str, first_b: &str, second_b: &str) -> bool {
     (first_a == first_b && second_a == second_b) || (first_a == second_b && second_a == first_b)
-}
-
-fn is_same_name_set(left: &[String], right: &[String]) -> bool {
-    let mut paired = [left.to_vec(), right.to_vec()];
-    paired.iter_mut().for_each(|names| names.sort());
-    paired[0] == paired[1]
 }
 
 #[cfg(test)]

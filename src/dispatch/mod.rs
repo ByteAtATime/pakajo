@@ -4,6 +4,7 @@ pub mod exec;
 pub mod operation;
 pub mod protocol;
 mod remove;
+pub mod seal;
 pub use remove::{Preview, RemoveRequest, preview, remove};
 pub(crate) mod install;
 pub use install::{InstallPreview, InstallRequest, install, install_preview};
