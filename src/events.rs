@@ -158,7 +158,7 @@ pub enum InstallEvent {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TransactionSummary {
     pub packages: Vec<SummaryPackage>,
     pub total_download_size: i64,
@@ -167,7 +167,7 @@ pub struct TransactionSummary {
     pub total_removed_size: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SummaryPackage {
     pub name: String,
     pub repository: Option<String>,

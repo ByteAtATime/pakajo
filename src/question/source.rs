@@ -6,7 +6,7 @@ pub trait AnswerSource {
     fn answer(&self, question: &Question) -> SourceDecision;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceDecision {
     Answer(Answer),
     Abort(FailClosed),
@@ -21,6 +21,63 @@ pub struct FailClosed {
 impl std::fmt::Display for FailClosed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "aborted: {:?}: {}", self.key, self.reason)
+    }
+}
+
+pub struct ExploreDefaults;
+
+const RUNTIME_NOT_PROMPTABLE: &str =
+    "explore cannot answer runtime questions; they require a prompting source";
+
+impl AnswerSource for ExploreDefaults {
+    fn answer(&self, question: &Question) -> SourceDecision {
+        match question {
+            Question::SelectProvider { candidates, .. } => match candidates.first() {
+                Some(first) => SourceDecision::Answer(Answer::SelectProvider {
+                    name: first.name.clone(),
+                    repo: first.repo.clone(),
+                }),
+                None => SourceDecision::Abort(FailClosed {
+                    key: question.key(),
+                    reason: "no provider candidates were offered".to_string(),
+                }),
+            },
+            Question::Conflict {
+                incoming,
+                removable,
+            } => SourceDecision::Answer(Answer::Conflict {
+                incoming: incoming.clone(),
+                removable: removable.clone(),
+                remove: true,
+            }),
+            Question::Replace { old, new, .. } => SourceDecision::Answer(Answer::Replace {
+                old: old.clone(),
+                new: new.clone(),
+                replace: true,
+            }),
+            Question::InstallIgnorepkg { name } => {
+                SourceDecision::Answer(Answer::InstallIgnorepkg {
+                    name: name.clone(),
+                    install: false,
+                })
+            }
+            Question::RemovePkgs { names } => SourceDecision::Answer(Answer::RemovePkgs {
+                names: names.clone(),
+                skip: true,
+            }),
+            Question::GroupMembers { members, .. } => {
+                SourceDecision::Answer(Answer::GroupMembers {
+                    selected: members.clone(),
+                })
+            }
+            Question::Proceed(_) => SourceDecision::Answer(Answer::Stop),
+            Question::Corrupted { .. } | Question::ImportKey { .. } => {
+                SourceDecision::Abort(FailClosed {
+                    key: question.key(),
+                    reason: RUNTIME_NOT_PROMPTABLE.to_string(),
+                })
+            }
+        }
     }
 }
 
@@ -71,7 +128,124 @@ fn parse_member_number(text: &str, member_count: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::ProviderCandidate;
     use super::*;
+
+    fn provider(name: &str, repo: &str) -> ProviderCandidate {
+        ProviderCandidate {
+            name: name.to_string(),
+            repo: Some(repo.to_string()),
+            version: None,
+        }
+    }
+
+    fn summary() -> crate::events::TransactionSummary {
+        crate::events::TransactionSummary::default()
+    }
+
+    #[test]
+    fn explore_defaults_follow_matrix_and_fail_closed() {
+        let explore = ExploreDefaults;
+        let cases: Vec<(Question, Answer)> = vec![
+            (
+                Question::SelectProvider {
+                    depend: "virt".to_string(),
+                    candidates: vec![
+                        provider("provider-one", "core"),
+                        provider("provider-two", "extra"),
+                    ],
+                },
+                Answer::SelectProvider {
+                    name: "provider-one".to_string(),
+                    repo: Some("core".to_string()),
+                },
+            ),
+            (
+                Question::Conflict {
+                    incoming: "cava-git".to_string(),
+                    removable: "cava".to_string(),
+                },
+                Answer::Conflict {
+                    incoming: "cava-git".to_string(),
+                    removable: "cava".to_string(),
+                    remove: true,
+                },
+            ),
+            (
+                Question::Replace {
+                    old: "nginx".to_string(),
+                    new: "nginx-mainline".to_string(),
+                    repo: Some("extra".to_string()),
+                },
+                Answer::Replace {
+                    old: "nginx".to_string(),
+                    new: "nginx-mainline".to_string(),
+                    replace: true,
+                },
+            ),
+            (
+                Question::InstallIgnorepkg {
+                    name: "glibc".to_string(),
+                },
+                Answer::InstallIgnorepkg {
+                    name: "glibc".to_string(),
+                    install: false,
+                },
+            ),
+            (
+                Question::RemovePkgs {
+                    names: vec!["gone".to_string(), "also-gone".to_string()],
+                },
+                Answer::RemovePkgs {
+                    names: vec!["gone".to_string(), "also-gone".to_string()],
+                    skip: true,
+                },
+            ),
+            (
+                Question::GroupMembers {
+                    group: "tools".to_string(),
+                    members: vec!["a".to_string(), "b".to_string()],
+                },
+                Answer::GroupMembers {
+                    selected: vec!["a".to_string(), "b".to_string()],
+                },
+            ),
+        ];
+        for (question, expected) in cases {
+            assert_eq!(explore.answer(&question), SourceDecision::Answer(expected));
+        }
+        assert_eq!(
+            explore.answer(&Question::Proceed(summary())),
+            SourceDecision::Answer(Answer::Stop)
+        );
+        for question in [
+            Question::Corrupted {
+                path: "/cache/foo.pkg.tar.zst".to_string(),
+            },
+            Question::ImportKey {
+                fingerprint: "ABC".to_string(),
+                uid: "root".to_string(),
+            },
+        ] {
+            let SourceDecision::Abort(denied) = explore.answer(&question) else {
+                panic!("expected fail-closed for {question:?}");
+            };
+            assert_eq!(denied.key, question.key());
+            assert!(denied.reason.contains("runtime"), "{}", denied.reason);
+        }
+        let SourceDecision::Abort(denied) = explore.answer(&Question::SelectProvider {
+            depend: "virt".to_string(),
+            candidates: vec![],
+        }) else {
+            panic!("expected fail-closed for empty provider candidates");
+        };
+        assert_eq!(
+            denied.key,
+            QuestionKey::SelectProvider {
+                depend: "virt".to_string()
+            }
+        );
+    }
 
     #[test]
     fn selection_parsing() {

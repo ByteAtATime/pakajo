@@ -7,6 +7,7 @@ use crate::question::source::{AnswerSource, FailClosed, SourceDecision};
 pub struct QuestionSession {
     source: Box<dyn AnswerSource>,
     denied: Option<FailClosed>,
+    recorded: Vec<(Question, Answer)>,
 }
 
 impl QuestionSession {
@@ -14,6 +15,7 @@ impl QuestionSession {
         Self {
             source,
             denied: None,
+            recorded: Vec::new(),
         }
     }
 
@@ -27,6 +29,10 @@ impl QuestionSession {
 
     pub fn denied(&self) -> Option<&FailClosed> {
         self.denied.as_ref()
+    }
+
+    pub(crate) fn recorded(&self) -> Vec<(Question, Answer)> {
+        self.recorded.clone()
     }
 
     pub(crate) fn ask_direct(&mut self, question: &Question) -> anyhow::Result<Option<Answer>> {
@@ -147,7 +153,10 @@ impl QuestionSession {
         }
         match self.source.answer(question) {
             SourceDecision::Answer(Answer::Stop) => Ok(None),
-            SourceDecision::Answer(answer) => Ok(Some(answer)),
+            SourceDecision::Answer(answer) => {
+                self.recorded.push((question.clone(), answer.clone()));
+                Ok(Some(answer))
+            }
             SourceDecision::Abort(denied) => {
                 let report = denied.to_string();
                 self.denied = Some(denied);
@@ -213,6 +222,26 @@ mod tests {
             repo: Some(repo.into()),
             version: None,
         }
+    }
+
+    #[test]
+    fn session_records_answers_but_skips_stops() {
+        use crate::question::source::ExploreDefaults;
+        let mut session = QuestionSession::new(Box::new(ExploreDefaults));
+        let group = Question::GroupMembers {
+            group: "tools".to_string(),
+            members: vec!["a".to_string(), "b".to_string()],
+        };
+        let answered = session.ask_direct(&group).unwrap();
+        assert_eq!(
+            answered,
+            Some(Answer::GroupMembers {
+                selected: vec!["a".to_string(), "b".to_string()]
+            })
+        );
+        let proceed = Question::Proceed(crate::events::TransactionSummary::default());
+        assert_eq!(session.ask_direct(&proceed).unwrap(), None);
+        assert_eq!(session.recorded(), vec![(group, answered.unwrap())]);
     }
 
     #[test]

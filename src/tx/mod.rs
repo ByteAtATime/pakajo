@@ -1,3 +1,4 @@
+pub mod compose;
 pub mod convert;
 pub mod driver;
 pub mod prompt;

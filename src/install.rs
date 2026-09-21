@@ -472,8 +472,15 @@ mod tests {
         handle
             .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
             .expect("failed to init stub preview transaction");
-        crate::dispatch::install::queue_stub_targets(&mut handle, Some(&plan))
-            .expect("stub queueing should succeed");
+        let (stub_dir, stubs) = crate::dispatch::install::build_stubs(Some(&plan))
+            .expect("stub building should succeed");
+        for stub in &stubs {
+            let loaded = handle
+                .pkg_load(stub.as_str(), false, alpm::SigLevel::NONE)
+                .expect("stub should load");
+            handle.trans_add_pkg(loaded).expect("stub should queue");
+        }
+        drop(stub_dir);
         handle
             .trans_prepare()
             .expect("stub transaction should prepare");
@@ -518,14 +525,13 @@ mod tests {
             tty: false,
             json: false,
         };
-        let state = crate::dry_run::attach_recorder(&mut handle);
-        let preview = crate::dispatch::install::run_install_preview(&mut handle, &request, &state)
+        let preview = crate::dispatch::install::run_install_preview(&mut handle, &request)
             .expect("install preview should succeed");
         let _ = handle.trans_release();
+        let qs = preview.question_set();
         assert!(
-            preview.questions.conflicts.is_empty(),
-            "stubs carry no conflict metadata; got {:?}",
-            preview.questions
+            qs.conflicts.is_empty(),
+            "stubs carry no conflict metadata; got {qs:?}"
         );
     }
 

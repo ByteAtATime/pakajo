@@ -189,7 +189,7 @@ impl Transaction {
                     tty: false,
                     json: false,
                 };
-                pakajo::dispatch::install_preview(&request).map(|preview| preview.questions)
+                pakajo::dispatch::install_preview(&request).map(|preview| preview.question_set())
             },
             "dry-run channel closed",
             |result| crate::Message::Transaction(TransactionMessage::DryRunResult(result)).into(),

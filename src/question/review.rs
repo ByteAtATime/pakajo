@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +9,24 @@ use crate::events::{SummaryPackage, TransactionSummary, classify_action, target_
 pub struct Fingerprint {
     pub questions: BTreeSet<(QuestionKey, String)>,
     pub summary: BTreeSet<(String, String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Review {
+    pub part1: Vec<Question>,
+    pub part2: TransactionSummary,
+    pub generated_by: ExploreStamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ExploreStamp {
+    pub dbs: BTreeMap<String, DbMark>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DbMark {
+    pub packages: usize,
+    pub mtime: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +192,30 @@ mod tests {
             &summary(vec![package("alpha", "2.0")]),
         );
         assert_ne!(got, bumped);
+    }
+
+    #[test]
+    fn review_and_stamp_round_trip_and_compare() {
+        let (question, _) = conflict_pair();
+        let review = Review {
+            part1: vec![question],
+            part2: summary(vec![package("alpha", "1.0")]),
+            generated_by: ExploreStamp {
+                dbs: BTreeMap::from([(
+                    "core".to_string(),
+                    DbMark {
+                        packages: 799,
+                        mtime: 1_700_000,
+                    },
+                )]),
+            },
+        };
+        let json = serde_json::to_string(&review).unwrap();
+        assert_eq!(serde_json::from_str::<Review>(&json).unwrap(), review);
+
+        let mut other = review.clone();
+        other.generated_by.dbs.get_mut("core").unwrap().mtime += 1;
+        assert_ne!(review.generated_by, other.generated_by);
     }
 
     #[test]

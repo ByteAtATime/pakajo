@@ -9,7 +9,7 @@ pub struct ProviderCandidate {
     pub version: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Question {
     Conflict {
         incoming: String,
@@ -44,7 +44,7 @@ pub enum Question {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Answer {
     Conflict {
         incoming: String,

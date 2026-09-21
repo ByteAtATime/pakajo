@@ -1,12 +1,13 @@
-use alpm_utils::DbListExt;
 use anyhow::Context as _;
 
 use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem, send_done};
 use crate::dispatch::operation::{ChildOperation, PrivilegedOperation};
 use crate::dispatch::protocol::Decider;
-use crate::dispatch::remove::Preview;
 use crate::dispatch::session::{PhasePlan, run_phases};
-use crate::resolve::{ConflictReport, Decisions, Plan, RepoInstall};
+use crate::question::model::Question;
+use crate::question::review::Review;
+use crate::resolve::{ConflictReport, Decisions, Plan};
+use crate::tx::driver::{Finish, RunKind, RunSpec};
 
 pub struct InstallRequest {
     pub targets: Vec<String>,
@@ -21,18 +22,59 @@ pub struct InstallRequest {
     pub json: bool,
 }
 
+pub struct InstallPreview {
+    pub review: Review,
+    pub aur: Vec<crate::upgrade::AurUpgradeCandidate>,
+    pub pkgbuild_diffs: Vec<crate::pkgbuild::PkgbuildDiff>,
+    pub prepare_error: Option<crate::tx::convert::PrepareFailure>,
+}
+
+impl InstallPreview {
+    pub fn question_set(&self) -> crate::question::QuestionSet {
+        let mut qs = crate::question::QuestionSet::default();
+        for question in &self.review.part1 {
+            match question {
+                Question::Conflict {
+                    incoming,
+                    removable,
+                } => qs.conflicts.push(crate::question::Conflict {
+                    incoming: incoming.clone(),
+                    removable: removable.clone(),
+                }),
+                Question::SelectProvider { depend, candidates } => {
+                    qs.providers.push(crate::question::ProviderPrompt {
+                        depend: depend.clone(),
+                        candidates: candidates.clone(),
+                    });
+                }
+                Question::Replace { .. }
+                | Question::InstallIgnorepkg { .. }
+                | Question::RemovePkgs { .. } => {
+                    qs.had_unsupported_question = true;
+                    qs.unsupported_summary.push_str(match question {
+                        Question::Replace { .. } => "replace; ",
+                        Question::InstallIgnorepkg { .. } => "install-ignorepkg; ",
+                        _ => "remove-pkgs; ",
+                    });
+                }
+                _ => {}
+            }
+        }
+        qs
+    }
+}
+
 pub fn install(request: InstallRequest) -> DispatchStream {
     let (tx, rx) = futures::channel::mpsc::channel(256);
     std::thread::spawn(move || run_install(request, tx));
     rx
 }
 
-pub fn install_preview(request: &InstallRequest) -> anyhow::Result<Preview> {
+pub fn install_preview(request: &InstallRequest) -> anyhow::Result<InstallPreview> {
     let config = crate::pacman::config()?;
     let mut handle = crate::pacman::handle_with_config(&config)?;
     crate::upgrade::apply_ignores(&mut handle, &config, &request.ignores);
-    let state = crate::dry_run::attach_recorder(&mut handle);
-    let outcome = run_install_preview(&mut handle, request, &state);
+    let outcome = run_install_preview(&mut handle, request);
     let _ = handle.trans_release();
     outcome
 }
@@ -40,48 +82,86 @@ pub fn install_preview(request: &InstallRequest) -> anyhow::Result<Preview> {
 pub(crate) fn run_install_preview(
     handle: &mut alpm::Alpm,
     request: &InstallRequest,
-    state: &std::rc::Rc<std::cell::RefCell<crate::dry_run::RecorderState>>,
-) -> anyhow::Result<Preview> {
+) -> anyhow::Result<InstallPreview> {
     let expanded = expand_install_groups(handle, &request.targets, request.tty);
     let (files, names) = peel_file_targets(&expanded);
     let plan = resolve_combined_plan(&names, request.no_check)?;
-    handle
-        .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
-        .context("failed to init install preview transaction")?;
-    queue_file_targets(handle, &files)?;
-    queue_plan_repo_installs(handle, plan.as_ref())?;
-    queue_stub_targets(handle, plan.as_ref())?;
-    let prepare_error = handle
-        .trans_prepare()
-        .err()
-        .map(crate::dry_run::extract_prepare_failure);
-    let mut questions = crate::dry_run::snapshot(state);
-    let engine_sourced = plan
-        .as_ref()
-        .map(|plan| plan_conflicts_to_questions(&plan.conflicts))
-        .unwrap_or_default();
-    questions.conflicts = merge_conflicts(&questions.conflicts, &engine_sourced);
-    let summary = crate::install::build_summary(handle);
-    Ok(Preview {
-        summary,
-        questions,
-        prepare_error,
+    let (_stub_dir, stubs) = build_stubs(plan.as_ref())?;
+    let mut targets = files;
+    targets.extend(repo_target_names(plan.as_ref())?);
+    let spec = RunSpec {
+        kind: RunKind::Sync,
+        targets,
+        stub_targets: stubs,
+        explore: true,
+        as_deps: request.as_deps,
+        reinstall: request.reinstall,
+    };
+    let outcome = crate::tx::compose::preview(handle, spec)?;
+    let review = outcome
+        .review
+        .context("install preview produced no review")?;
+    let review = merge_plan_conflicts(review, plan.as_ref());
+    let prepare_error = match outcome.finish {
+        Finish::PrepareFailed(failure) => Some(failure),
+        _ => None,
+    };
+    Ok(InstallPreview {
+        review,
         aur: Vec::new(),
         pkgbuild_diffs: Vec::new(),
+        prepare_error,
     })
 }
 
-fn merge_conflicts(
-    existing: &[crate::question::Conflict],
-    engine_sourced: &[crate::question::Conflict],
-) -> Vec<crate::question::Conflict> {
-    let mut merged = existing.to_vec();
-    for conflict in engine_sourced {
-        if !merged.contains(conflict) {
-            merged.push(conflict.clone());
+fn repo_target_names(plan: Option<&Plan>) -> anyhow::Result<Vec<String>> {
+    let Some(plan) = plan else {
+        return Ok(Vec::new());
+    };
+    plan.repo_installs
+        .iter()
+        .map(|row| {
+            if row.db.is_empty() {
+                anyhow::bail!("resolver produced no database for package {}", row.name);
+            }
+            Ok(format!("{}/{}={}", row.db, row.name, row.version))
+        })
+        .collect()
+}
+
+fn merge_plan_conflicts(mut review: Review, plan: Option<&Plan>) -> Review {
+    let Some(plan) = plan else {
+        return review;
+    };
+    for conflict in plan_conflicts_to_questions(&plan.conflicts) {
+        let question = Question::Conflict {
+            incoming: conflict.incoming,
+            removable: conflict.removable,
+        };
+        if !review.part1.contains(&question) {
+            review.part1.push(question);
         }
     }
-    merged
+    review
+}
+
+pub(crate) fn build_stubs(
+    plan: Option<&Plan>,
+) -> anyhow::Result<(Option<tempfile::TempDir>, Vec<String>)> {
+    let Some(plan) = plan else {
+        return Ok((None, Vec::new()));
+    };
+    let stub_dir = tempfile::tempdir().context("failed to create stub work dir")?;
+    let mut paths = Vec::new();
+    for (_, members) in plan.aur_builds() {
+        for member in members {
+            let path =
+                crate::stub_pkg::build_stub_pkg(&member.name, &member.version, stub_dir.path())
+                    .with_context(|| format!("failed to build stub for {}", member.name))?;
+            paths.push(path.to_string_lossy().into_owned());
+        }
+    }
+    Ok((Some(stub_dir), paths))
 }
 
 fn resolve_combined_plan(names: &[String], no_check: bool) -> anyhow::Result<Option<Plan>> {
@@ -90,79 +170,6 @@ fn resolve_combined_plan(names: &[String], no_check: bool) -> anyhow::Result<Opt
     }
     let plan = crate::resolve::resolve_plan(names, no_check, Decisions::Default)?;
     Ok(Some(plan))
-}
-
-fn queue_file_targets(handle: &mut alpm::Alpm, files: &[String]) -> anyhow::Result<()> {
-    for target in files {
-        let loaded = handle
-            .pkg_load(
-                target.as_str(),
-                true,
-                crate::pacman::local_file_siglevel(handle),
-            )
-            .context("failed to load package file")?;
-        handle
-            .trans_add_pkg(loaded)
-            .map_err(alpm::Error::from)
-            .context("failed to queue package file for installation")?;
-    }
-    Ok(())
-}
-
-fn queue_plan_repo_installs(handle: &mut alpm::Alpm, plan: Option<&Plan>) -> anyhow::Result<()> {
-    let Some(plan) = plan else {
-        return Ok(());
-    };
-    for row in &plan.repo_installs {
-        let pkg = plan_repo_pkg(handle, row)?;
-        handle
-            .trans_add_pkg(pkg)
-            .map_err(alpm::Error::from)
-            .context("failed to queue package for installation")?;
-    }
-    Ok(())
-}
-
-fn plan_repo_pkg<'a>(
-    handle: &'a alpm::Alpm,
-    row: &RepoInstall,
-) -> anyhow::Result<&'a alpm::Package> {
-    if row.db.is_empty() {
-        return handle
-            .syncdbs()
-            .pkg(row.name.as_str())
-            .map_err(|_| anyhow::anyhow!("package '{}' not found in any repository", row.name));
-    }
-    let pin = format!("{}/{}", row.db, row.name);
-    handle
-        .syncdbs()
-        .find_target(pin.as_str())
-        .map_err(|_| anyhow::anyhow!("package '{}' not found in any repository", row.name))
-}
-
-pub(crate) fn queue_stub_targets(
-    handle: &mut alpm::Alpm,
-    plan: Option<&Plan>,
-) -> anyhow::Result<()> {
-    let Some(plan) = plan else {
-        return Ok(());
-    };
-    let stub_dir = tempfile::tempdir().context("failed to create stub work dir")?;
-    for (_, members) in plan.aur_builds() {
-        for member in members {
-            let path =
-                crate::stub_pkg::build_stub_pkg(&member.name, &member.version, stub_dir.path())
-                    .with_context(|| format!("failed to build stub for {}", member.name))?;
-            let loaded = handle
-                .pkg_load(path.to_string_lossy().as_ref(), false, alpm::SigLevel::NONE)
-                .with_context(|| format!("failed to load stub for {}", member.name))?;
-            handle
-                .trans_add_pkg(loaded)
-                .map_err(alpm::Error::from)
-                .with_context(|| format!("failed to queue stub for {}", member.name))?;
-        }
-    }
-    Ok(())
 }
 
 fn unwrap_or_fail<T>(
@@ -466,33 +473,40 @@ mod tests {
     }
 
     #[test]
-    fn merge_conflicts_dedupes_while_preserving_order() {
-        let linux = crate::question::Conflict {
+    fn merge_plan_conflicts_dedupes_while_preserving_order() {
+        let linux = Question::Conflict {
             incoming: "linux".to_string(),
             removable: "linux-lts".to_string(),
         };
-        let nvidia = crate::question::Conflict {
+        let nvidia = Question::Conflict {
             incoming: "nvidia-470xx-utils".to_string(),
             removable: "nvidia-utils".to_string(),
         };
-        let cava = crate::question::Conflict {
-            incoming: "cava-git".to_string(),
-            removable: "cava".to_string(),
+        let plan = Plan {
+            conflicts: conflicting_report(),
+            ..Default::default()
         };
-        let existing = [linux.clone()];
-        let engine = [nvidia.clone(), cava.clone()];
+        let review = Review {
+            part1: vec![linux.clone()],
+            ..Default::default()
+        };
         assert_eq!(
-            merge_conflicts(&existing, &engine),
-            [linux.clone(), nvidia.clone(), cava.clone()]
+            merge_plan_conflicts(review, Some(&plan)).part1,
+            [
+                linux.clone(),
+                nvidia.clone(),
+                Question::Conflict {
+                    incoming: "cava-git".to_string(),
+                    removable: "cava".to_string(),
+                },
+                Question::Conflict {
+                    incoming: "cava-git".to_string(),
+                    removable: "cava-old".to_string(),
+                },
+            ]
         );
-        let existing = [nvidia.clone()];
-        assert_eq!(
-            merge_conflicts(&existing, &engine),
-            [nvidia.clone(), cava.clone()]
-        );
-        let existing = [linux.clone(), nvidia.clone()];
-        let engine = [nvidia.clone()];
-        assert_eq!(merge_conflicts(&existing, &engine), [linux, nvidia]);
+        let empty = Review::default();
+        assert!(merge_plan_conflicts(empty, None).part1.is_empty());
     }
 
     #[test]
@@ -516,6 +530,145 @@ mod tests {
             ]
         );
         assert!(plan_conflicts_to_questions(&ConflictReport::default()).is_empty());
+    }
+
+    #[test]
+    fn question_set_adapter_maps_known_questions_and_gates_rest() {
+        let qs = InstallPreview {
+            review: Review {
+                part1: vec![
+                    Question::Conflict {
+                        incoming: "cava-git".to_string(),
+                        removable: "cava".to_string(),
+                    },
+                    Question::SelectProvider {
+                        depend: "virt".to_string(),
+                        candidates: vec![crate::question::model::ProviderCandidate {
+                            name: "provider-one".to_string(),
+                            repo: Some("core".to_string()),
+                            version: Some("1.0-1".to_string()),
+                        }],
+                    },
+                ],
+                ..Default::default()
+            },
+            aur: Vec::new(),
+            pkgbuild_diffs: Vec::new(),
+            prepare_error: None,
+        }
+        .question_set();
+        assert_eq!(
+            qs.conflicts,
+            vec![crate::question::legacy::Conflict {
+                incoming: "cava-git".to_string(),
+                removable: "cava".to_string(),
+            }]
+        );
+        assert_eq!(
+            qs.providers,
+            vec![crate::question::legacy::ProviderPrompt {
+                depend: "virt".to_string(),
+                candidates: vec![crate::question::model::ProviderCandidate {
+                    name: "provider-one".to_string(),
+                    repo: Some("core".to_string()),
+                    version: Some("1.0-1".to_string()),
+                }],
+            }]
+        );
+        assert_eq!(qs.providers[0].depend, "virt");
+        assert!(!qs.had_unsupported_question);
+        assert!(qs.held.is_empty());
+        for (part1, gate, summary) in [
+            (
+                vec![Question::Replace {
+                    old: "gcc-multilib".to_string(),
+                    new: "gcc".to_string(),
+                    repo: Some("core".to_string()),
+                }],
+                true,
+                "replace; ",
+            ),
+            (
+                vec![Question::InstallIgnorepkg {
+                    name: "glibc".to_string(),
+                }],
+                true,
+                "install-ignorepkg; ",
+            ),
+            (
+                vec![
+                    Question::Replace {
+                        old: "gcc-multilib".to_string(),
+                        new: "gcc".to_string(),
+                        repo: Some("core".to_string()),
+                    },
+                    Question::InstallIgnorepkg {
+                        name: "glibc".to_string(),
+                    },
+                ],
+                true,
+                "replace; install-ignorepkg; ",
+            ),
+            (
+                vec![Question::RemovePkgs {
+                    names: vec!["nvidia-utils".to_string()],
+                }],
+                true,
+                "remove-pkgs; ",
+            ),
+            (vec![], false, ""),
+        ] {
+            let gated = preview_with(part1.clone()).question_set();
+            assert_eq!(gated.had_unsupported_question, gate, "{part1:?}");
+            assert_eq!(gated.unsupported_summary, summary, "{part1:?}");
+        }
+    }
+
+    fn preview_with(part1: Vec<Question>) -> InstallPreview {
+        InstallPreview {
+            review: Review {
+                part1,
+                ..Default::default()
+            },
+            aur: Vec::new(),
+            pkgbuild_diffs: Vec::new(),
+            prepare_error: None,
+        }
+    }
+
+    #[test]
+    fn repo_target_names_pins_database_and_rejects_empty_rows() {
+        let plan = Plan {
+            repo_installs: vec![crate::resolve::RepoInstall {
+                name: "neovim".to_string(),
+                version: "0.10.0-1".to_string(),
+                db: "extra".to_string(),
+                make: false,
+                target: true,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            repo_target_names(Some(&plan)).unwrap(),
+            vec!["extra/neovim=0.10.0-1".to_string()]
+        );
+        assert!(repo_target_names(None).unwrap().is_empty());
+        let plan = Plan {
+            repo_installs: vec![crate::resolve::RepoInstall {
+                name: "neovim".to_string(),
+                version: "0.10.0-1".to_string(),
+                db: String::new(),
+                make: false,
+                target: true,
+            }],
+            ..Default::default()
+        };
+        let error = repo_target_names(Some(&plan)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("resolver produced no database for package neovim")
+        );
     }
 
     fn engine_handle() -> (tempfile::TempDir, alpm::Alpm) {

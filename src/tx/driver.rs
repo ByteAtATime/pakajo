@@ -25,6 +25,7 @@ pub enum RunKind {
 pub struct RunSpec {
     pub kind: RunKind,
     pub targets: Vec<String>,
+    pub stub_targets: Vec<String>,
     pub explore: bool,
     pub as_deps: bool,
     pub reinstall: bool,
@@ -34,6 +35,7 @@ pub struct RunSpec {
 pub struct RunOutcome {
     pub summary: TransactionSummary,
     pub finish: Finish,
+    pub review: Option<crate::question::review::Review>,
 }
 
 #[derive(Debug)]
@@ -122,7 +124,12 @@ fn drive(
     events: &Rc<RefCell<Box<dyn InstallSink>>>,
 ) -> anyhow::Result<RunOutcome> {
     let session = QuestionSession::attach(handle, source);
-    if spec.targets.iter().any(|target| is_file_target(target)) {
+    if spec
+        .stub_targets
+        .iter()
+        .chain(spec.targets.iter())
+        .any(|target| is_file_target(target))
+    {
         events.borrow_mut().event(InstallEvent::LoadingPackages);
     }
     queue_targets(handle, spec, &session)?;
@@ -134,7 +141,7 @@ fn drive(
                 message: "there is nothing to do".to_string(),
             });
         }
-        return Ok(outcome(handle, Finish::Stopped));
+        return outcome(handle, Finish::Stopped, spec, &session);
     }
     let failure = match handle.trans_prepare() {
         Ok(()) => None,
@@ -142,7 +149,7 @@ fn drive(
     };
     if let Some(failure) = failure {
         fail_on_denied(&session.borrow())?;
-        return Ok(outcome(handle, Finish::PrepareFailed(failure)));
+        return outcome(handle, Finish::PrepareFailed(failure), spec, &session);
     }
     fail_on_denied(&session.borrow())?;
     let summary = build_summary(handle);
@@ -151,10 +158,12 @@ fn drive(
             .borrow_mut()
             .event(InstallEvent::TransactionSummary(summary.clone()));
     }
+    let review = maybe_review(handle, spec, &session, &summary)?;
     if spec.explore || !ask_proceed(&session, &summary)? {
         return Ok(RunOutcome {
             summary,
             finish: Finish::Stopped,
+            review,
         });
     }
     during_commit(|| handle.trans_commit()).context("failed to commit transaction")?;
@@ -162,6 +171,7 @@ fn drive(
     Ok(RunOutcome {
         summary,
         finish: Finish::Committed,
+        review,
     })
 }
 
@@ -189,6 +199,10 @@ fn queue_targets(
     spec: &RunSpec,
     session: &Rc<RefCell<QuestionSession>>,
 ) -> anyhow::Result<()> {
+    for target in &spec.stub_targets {
+        queue_stub(handle, target)?;
+        fail_on_denied(&session.borrow())?;
+    }
     for target in &spec.targets {
         if is_file_target(target) {
             queue_file(handle, target)?;
@@ -207,13 +221,31 @@ fn is_file_target(target: &str) -> bool {
 }
 
 fn queue_file(handle: &alpm::Alpm, target: &str) -> anyhow::Result<()> {
+    queue_loaded(
+        handle,
+        target,
+        crate::pacman::local_file_siglevel(handle),
+        "package file",
+    )
+}
+
+fn queue_stub(handle: &alpm::Alpm, target: &str) -> anyhow::Result<()> {
+    queue_loaded(handle, target, alpm::SigLevel::NONE, "stub package file")
+}
+
+fn queue_loaded(
+    handle: &alpm::Alpm,
+    target: &str,
+    siglevel: alpm::SigLevel,
+    description: &str,
+) -> anyhow::Result<()> {
     let loaded = handle
-        .pkg_load(target, true, crate::pacman::local_file_siglevel(handle))
-        .context("failed to load package file")?;
+        .pkg_load(target, true, siglevel)
+        .with_context(|| format!("failed to load {description}"))?;
     handle
         .trans_add_pkg(loaded)
         .map_err(alpm::Error::from)
-        .context("failed to queue package file for installation")?;
+        .with_context(|| format!("failed to queue {description} for installation"))?;
     Ok(())
 }
 
@@ -279,11 +311,68 @@ fn queue_named(handle: &alpm::Alpm, target: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn outcome(handle: &alpm::Alpm, finish: Finish) -> RunOutcome {
-    RunOutcome {
-        summary: build_summary(handle),
+fn explore_review(
+    handle: &alpm::Alpm,
+    session: &Rc<RefCell<QuestionSession>>,
+    summary: &TransactionSummary,
+) -> anyhow::Result<crate::question::review::Review> {
+    Ok(crate::question::review::Review {
+        part1: session
+            .borrow()
+            .recorded()
+            .into_iter()
+            .map(|(q, _)| q)
+            .collect(),
+        part2: summary.clone(),
+        generated_by: explore_stamp(handle)?,
+    })
+}
+
+fn outcome(
+    handle: &alpm::Alpm,
+    finish: Finish,
+    spec: &RunSpec,
+    session: &Rc<RefCell<QuestionSession>>,
+) -> anyhow::Result<RunOutcome> {
+    let summary = build_summary(handle);
+    Ok(RunOutcome {
+        review: maybe_review(handle, spec, session, &summary)?,
+        summary,
         finish,
+    })
+}
+
+fn maybe_review(
+    handle: &alpm::Alpm,
+    spec: &RunSpec,
+    session: &Rc<RefCell<QuestionSession>>,
+    summary: &TransactionSummary,
+) -> anyhow::Result<Option<crate::question::review::Review>> {
+    if !spec.explore {
+        return Ok(None);
     }
+    explore_review(handle, session, summary).map(Some)
+}
+
+fn explore_stamp(handle: &alpm::Alpm) -> anyhow::Result<crate::question::review::ExploreStamp> {
+    let sync_dir = std::path::Path::new(handle.dbpath()).join("sync");
+    let mut dbs = std::collections::BTreeMap::new();
+    for db in handle.syncdbs().iter() {
+        let path = sync_dir.join(format!("{}.db", db.name()));
+        let mtime = std::fs::metadata(&path)
+            .with_context(|| format!("failed to stat {}", path.display()))?
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        dbs.insert(
+            db.name().to_string(),
+            crate::question::review::DbMark {
+                packages: db.pkgs().iter().count(),
+                mtime,
+            },
+        );
+    }
+    Ok(crate::question::review::ExploreStamp { dbs })
 }
 
 fn fail_on_denied(session: &QuestionSession) -> anyhow::Result<()> {
@@ -385,6 +474,7 @@ mod tests {
         RunSpec {
             kind: RunKind::Sync,
             targets: targets.iter().map(|t| t.to_string()).collect(),
+            stub_targets: Vec::new(),
             explore,
             as_deps: false,
             reinstall: false,
@@ -548,6 +638,94 @@ mod tests {
     }
 
     #[test]
+    fn explore_review_surfaces_matrix_questions_and_stamp() {
+        use crate::question::source::ExploreDefaults;
+
+        let conflicting = Pkg {
+            version: "2.0-1",
+            conflicts: vec!["oldpkg"],
+            ..plain("newpkg")
+        };
+        let (_dir, mut handle) = fixture_full(&[("core", vec![conflicting])], &[plain("oldpkg")]);
+        let outcome = run(
+            &mut handle,
+            &spec(&["newpkg"], true),
+            Box::new(ExploreDefaults),
+            discard(),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        let review = outcome.review.as_ref().expect("explore carries a review");
+        assert_eq!(review.part1.len(), 1);
+        assert!(matches!(review.part1[0], Question::Conflict { .. }));
+        assert!(
+            review
+                .part2
+                .packages
+                .iter()
+                .any(|package| package.name == "oldpkg" && package.is_removal)
+        );
+        let mark = review.generated_by.dbs.get("core").unwrap();
+        assert_eq!(mark.packages, 1);
+        assert!(mark.mtime > 0);
+        assert!(handle.localdb().pkg("oldpkg").is_ok());
+        release(&mut handle);
+
+        let providers = vec![
+            make("provider-one", "1.0-1", &[], &["virt"], &[]),
+            make("provider-two", "1.0-1", &[], &["virt"], &[]),
+        ];
+        let (_dir, mut handle) = fixture(&providers);
+        let outcome = run(
+            &mut handle,
+            &spec(&["virt"], true),
+            Box::new(ExploreDefaults),
+            discard(),
+        )
+        .unwrap();
+        let review = outcome.review.as_ref().expect("explore carries a review");
+        assert!(matches!(review.part1[0], Question::SelectProvider { .. }));
+        assert_eq!(review.part2.packages.len(), 1);
+        release(&mut handle);
+
+        let (_dir, mut handle) = fixture(&[plain("skipme")]);
+        handle.add_ignorepkg("skipme").unwrap();
+        let outcome = run(
+            &mut handle,
+            &spec(&["skipme"], true),
+            Box::new(ExploreDefaults),
+            discard(),
+        )
+        .unwrap();
+        let review = outcome.review.as_ref().expect("explore carries a review");
+        assert!(matches!(review.part1[0], Question::InstallIgnorepkg { .. }));
+        assert!(review.part2.packages.is_empty());
+        release(&mut handle);
+
+        let (_dir, mut handle) = tools_fixture();
+        let outcome = run(
+            &mut handle,
+            &spec(&["tools"], true),
+            Box::new(ExploreDefaults),
+            discard(),
+        )
+        .unwrap();
+        let review = outcome.review.as_ref().expect("explore carries a review");
+        assert!(matches!(review.part1[0], Question::GroupMembers { .. }));
+        assert_eq!(
+            summary_names(&outcome),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+        release(&mut handle);
+
+        let (_dir, mut handle) = fixture(&[plain("solo")]);
+        let outcome = run(&mut handle, &spec(&["solo"], false), proceed(), discard()).unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert!(outcome.review.is_none());
+        release(&mut handle);
+    }
+
+    #[test]
     fn init_flags_derive_from_spec() {
         use alpm::TransFlag as F;
         for (explore, as_deps, reinstall, expected) in [
@@ -604,21 +782,24 @@ mod tests {
     }
 
     #[test]
-    fn file_target_loads_and_queues() {
-        let (_dir, mut handle) = fixture(&[]);
+    fn file_and_stub_targets_split_siglevel() {
         let stub_dir = tempfile::tempdir().unwrap();
         let stub =
             crate::stub_pkg::build_stub_pkg("cava-git", "0.10.4-1", stub_dir.path()).unwrap();
         let target = stub.to_string_lossy().into_owned();
+        let strict = |handle: &mut alpm::Alpm| {
+            handle
+                .set_local_file_siglevel(alpm::SigLevel::PACKAGE)
+                .unwrap()
+        };
+
+        let (_dir, mut handle) = fixture(&[]);
+        strict(&mut handle);
         let recorder = Recorder::default();
         let seen = recorder.seen.clone();
-        let outcome = run(
-            &mut handle,
-            &spec(&[&target], true),
-            stop(),
-            Box::new(recorder),
-        )
-        .unwrap();
+        let mut stubbed = spec(&[], true);
+        stubbed.stub_targets = vec![target.clone()];
+        let outcome = run(&mut handle, &stubbed, stop(), Box::new(recorder)).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert_eq!(summary_names(&outcome), vec!["cava-git".to_string()]);
         assert!(
@@ -626,6 +807,12 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, InstallEvent::LoadingPackages))
         );
+        release(&mut handle);
+
+        let (_dir, mut handle) = fixture(&[]);
+        strict(&mut handle);
+        let error = run(&mut handle, &spec(&[&target], true), stop(), discard()).unwrap_err();
+        assert!(format!("{error:#}").contains("failed to load package file"));
         release(&mut handle);
     }
 

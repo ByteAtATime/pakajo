@@ -181,6 +181,7 @@ impl ChildOperation {
                         let spec = crate::tx::driver::RunSpec {
                             kind: crate::tx::driver::RunKind::Sync,
                             targets: targets.clone(),
+                            stub_targets: Vec::new(),
                             explore: false,
                             as_deps: *as_deps,
                             reinstall: *reinstall,
