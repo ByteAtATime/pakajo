@@ -106,7 +106,50 @@ pub(crate) fn convert_event(any_event: alpm::AnyEvent) -> Option<InstallEvent> {
         }),
         alpm::Event::TransactionDone => Some(InstallEvent::TransactionDone),
         alpm::Event::TransactionStart => Some(InstallEvent::ProcessingChanges),
-        _ => None,
+        alpm::Event::ResolveDepsDone => Some(InstallEvent::ResolveDepsDone),
+        alpm::Event::CheckDepsDone => Some(InstallEvent::CheckDepsDone),
+        alpm::Event::InterConflictsDone => Some(InstallEvent::InterConflictsDone),
+        alpm::Event::FileConflictsDone => Some(InstallEvent::FileConflictsDone),
+        alpm::Event::IntegrityDone => Some(InstallEvent::IntegrityDone),
+        alpm::Event::LoadStart => Some(InstallEvent::LoadingPackages),
+        alpm::Event::LoadDone => Some(InstallEvent::LoadDone),
+        alpm::Event::DiskSpaceDone => Some(InstallEvent::DiskSpaceDone),
+        alpm::Event::KeyringDone => Some(InstallEvent::KeyringDone),
+        alpm::Event::KeyDownloadStart => Some(InstallEvent::KeyDownloadStart),
+        alpm::Event::KeyDownloadDone => Some(InstallEvent::KeyDownloadDone),
+        alpm::Event::RetrieveStart => Some(InstallEvent::RetrieveStart),
+        alpm::Event::RetrieveDone => Some(InstallEvent::RetrieveDone),
+        alpm::Event::RetrieveFailed => Some(InstallEvent::RetrieveFailed),
+        alpm::Event::PkgRetrieveDone(e) => Some(InstallEvent::PkgRetrieveDone {
+            num: e.num(),
+            total_bytes: e.total_size(),
+        }),
+        alpm::Event::PkgRetrieveFailed(e) => Some(InstallEvent::PkgRetrieveFailed {
+            num: e.num(),
+            total_bytes: e.total_size(),
+        }),
+        alpm::Event::PackageOperationDone(e) => {
+            let (operation, package, _, _) = convert_package_operation(e.operation());
+            Some(InstallEvent::PackageOperationEnd { operation, package })
+        }
+        alpm::Event::HookDone(e) => Some(InstallEvent::HookDone {
+            pre: e.when() == alpm::HookWhen::PreTransaction,
+        }),
+        alpm::Event::HookRunDone(_) => Some(InstallEvent::HookRunDone),
+        alpm::Event::OptDepRemoval(e) => Some(InstallEvent::OptDepRemoval {
+            package: e.pkg().name().to_string(),
+            optdep: e.optdep().to_string(),
+        }),
+        alpm::Event::DatabaseMissing(e) => Some(InstallEvent::DatabaseMissing {
+            dbname: e.dbname().to_string(),
+        }),
+        alpm::Event::PacnewCreated(e) => Some(InstallEvent::PacnewCreated {
+            from_noupgrade: e.from_noupgrade(),
+            file: e.file().to_string(),
+        }),
+        alpm::Event::PacsaveCreated(e) => Some(InstallEvent::PacsaveCreated {
+            file: e.file().to_string(),
+        }),
     }
 }
 

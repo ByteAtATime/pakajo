@@ -80,6 +80,14 @@ pub fn terminal_cols() -> usize {
     terminal_winsize().ws_col as usize
 }
 
+pub fn pacnew_warning(file: &str) -> String {
+    format!("{file} installed as {file}.pacnew")
+}
+
+pub fn pacsave_warning(file: &str) -> String {
+    format!("{file} saved as {file}.pacsave")
+}
+
 pub fn format_rate(value: f64) -> String {
     if value < 9.995 {
         format!("{value:>4.2}")

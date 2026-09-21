@@ -113,6 +113,49 @@ pub enum InstallEvent {
         packages: Vec<String>,
     },
     WaitingForDatabaseLock,
+    ResolveDepsDone,
+    CheckDepsDone,
+    InterConflictsDone,
+    FileConflictsDone,
+    IntegrityDone,
+    LoadDone,
+    DiskSpaceDone,
+    KeyringDone,
+    KeyDownloadStart,
+    KeyDownloadDone,
+    RetrieveStart,
+    RetrieveDone,
+    RetrieveFailed,
+    PkgRetrieveDone {
+        num: usize,
+        total_bytes: i64,
+    },
+    PkgRetrieveFailed {
+        num: usize,
+        total_bytes: i64,
+    },
+    PackageOperationEnd {
+        operation: PackageOp,
+        package: String,
+    },
+    HookDone {
+        pre: bool,
+    },
+    HookRunDone,
+    OptDepRemoval {
+        package: String,
+        optdep: String,
+    },
+    DatabaseMissing {
+        dbname: String,
+    },
+    PacnewCreated {
+        from_noupgrade: bool,
+        file: String,
+    },
+    PacsaveCreated {
+        file: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

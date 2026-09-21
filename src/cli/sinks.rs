@@ -257,6 +257,58 @@ impl ConsoleSink {
                     );
                 }
             }
+            InstallEvent::ResolveDepsDone
+            | InstallEvent::CheckDepsDone
+            | InstallEvent::InterConflictsDone
+            | InstallEvent::FileConflictsDone
+            | InstallEvent::IntegrityDone
+            | InstallEvent::LoadDone
+            | InstallEvent::DiskSpaceDone
+            | InstallEvent::KeyringDone
+            | InstallEvent::KeyDownloadDone
+            | InstallEvent::RetrieveStart
+            | InstallEvent::RetrieveDone
+            | InstallEvent::RetrieveFailed
+            | InstallEvent::PkgRetrieveDone { .. }
+            | InstallEvent::PkgRetrieveFailed { .. }
+            | InstallEvent::PackageOperationEnd { .. }
+            | InstallEvent::HookDone { .. }
+            | InstallEvent::HookRunDone => {}
+            InstallEvent::KeyDownloadStart => {
+                println!(
+                    "{}",
+                    color::colon(self.color, "downloading required keys...")
+                );
+            }
+            InstallEvent::OptDepRemoval { package, optdep } => {
+                println!(
+                    "{}",
+                    color::colon(
+                        self.color,
+                        &format!("{package} optionally requires {optdep}")
+                    )
+                );
+            }
+            InstallEvent::DatabaseMissing { dbname } => {
+                eprintln!(
+                    "{} database file for '{dbname}' does not exist (use '-Sy' to download)",
+                    color::paint(self.stderr_color, color::YELLOW, "warning:")
+                );
+            }
+            InstallEvent::PacnewCreated { file, .. } => {
+                eprintln!(
+                    "{} {}",
+                    color::paint(self.stderr_color, color::YELLOW, "warning:"),
+                    crate::utils::pacnew_warning(file)
+                );
+            }
+            InstallEvent::PacsaveCreated { file } => {
+                eprintln!(
+                    "{} {}",
+                    color::paint(self.stderr_color, color::YELLOW, "warning:"),
+                    crate::utils::pacsave_warning(file)
+                );
+            }
         }
     }
 
@@ -395,6 +447,29 @@ impl InstallSink for EscalatedSink {
                     "{} {}",
                     color::paint(color::stderr_color(), color::RED, "error:"),
                     message.trim_end()
+                );
+            }
+            InstallEvent::OptDepRemoval { package, optdep } => {
+                eprintln!("{package} optionally requires {optdep}");
+            }
+            InstallEvent::DatabaseMissing { dbname } => {
+                eprintln!(
+                    "{} database file for '{dbname}' does not exist (use '-Sy' to download)",
+                    color::paint(color::stderr_color(), color::YELLOW, "warning:")
+                );
+            }
+            InstallEvent::PacnewCreated { file, .. } => {
+                eprintln!(
+                    "{} {}",
+                    color::paint(color::stderr_color(), color::YELLOW, "warning:"),
+                    crate::utils::pacnew_warning(&file)
+                );
+            }
+            InstallEvent::PacsaveCreated { file } => {
+                eprintln!(
+                    "{} {}",
+                    color::paint(color::stderr_color(), color::YELLOW, "warning:"),
+                    crate::utils::pacsave_warning(&file)
                 );
             }
             other => {

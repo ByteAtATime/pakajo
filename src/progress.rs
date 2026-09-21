@@ -212,16 +212,30 @@ pub fn event_stage(ev: &InstallEvent) -> Option<RepoStage> {
         | LoadingPackages
         | KeyringStart => Some(Validate),
         Progress { phase, .. } if !is_install_phase(phase) => Some(Validate),
-        Progress { .. } => Some(Install),
         RetrievingPackages { .. }
         | DownloadInit { .. }
         | DownloadProgress { .. }
         | DownloadRetry { .. }
-        | DownloadCompleted { .. } => Some(Download),
-        PackageOperation { .. } => Some(Install),
-        HookStart { .. } | HookRun { .. } | ScriptletInfo { .. } | TransactionDone => {
-            Some(Finalize)
-        }
+        | DownloadCompleted { .. }
+        | RetrieveStart
+        | RetrieveDone
+        | RetrieveFailed
+        | PkgRetrieveDone { .. }
+        | PkgRetrieveFailed { .. } => Some(Download),
+        Progress { .. } | PackageOperation { .. } | PackageOperationEnd { .. } => Some(Install),
+        HookStart { .. }
+        | HookRun { .. }
+        | ScriptletInfo { .. }
+        | TransactionDone
+        | HookDone { .. }
+        | HookRunDone
+        | OptDepRemoval { .. }
+        | DatabaseMissing { .. }
+        | PacnewCreated { .. }
+        | PacsaveCreated { .. } => Some(Finalize),
+        ResolveDepsDone | CheckDepsDone | InterConflictsDone | FileConflictsDone
+        | IntegrityDone | LoadDone | DiskSpaceDone | KeyringDone | KeyDownloadStart
+        | KeyDownloadDone => None,
         _ => None,
     }
 }
@@ -259,12 +273,39 @@ fn apply_install(state: &mut InstallState, ev: &InstallEvent) {
                 entry.completed = *percent >= 100;
             }
         }
+        InstallEvent::PackageOperationEnd { package, .. } => {
+            if let Some(entry) = state.packages.get_mut(package) {
+                entry.percent = 100.0;
+                entry.completed = true;
+            }
+        }
         _ => {}
     }
 }
 
 fn apply_finalize(state: &mut FinalizeState, ev: &InstallEvent) {
     match ev {
+        InstallEvent::OptDepRemoval { package, optdep } => {
+            state
+                .lines
+                .push(format!("{package} optionally requires {optdep}"));
+        }
+        InstallEvent::DatabaseMissing { dbname } => {
+            state.alerts.push((
+                LogLevel::Warning,
+                format!("database file for '{dbname}' does not exist (use '-Sy' to download)"),
+            ));
+        }
+        InstallEvent::PacnewCreated { file, .. } => {
+            state
+                .alerts
+                .push((LogLevel::Warning, crate::utils::pacnew_warning(file)));
+        }
+        InstallEvent::PacsaveCreated { file } => {
+            state
+                .alerts
+                .push((LogLevel::Warning, crate::utils::pacsave_warning(file)));
+        }
         InstallEvent::HookRun {
             position,
             total,
@@ -332,6 +373,11 @@ fn apply_download(state: &mut DownloadState, ev: &InstallEvent, now: Instant) {
             }
             state.done += 1;
         }
+        InstallEvent::RetrieveStart
+        | InstallEvent::RetrieveDone
+        | InstallEvent::RetrieveFailed
+        | InstallEvent::PkgRetrieveDone { .. }
+        | InstallEvent::PkgRetrieveFailed { .. } => {}
         _ => {}
     }
 }
@@ -582,6 +628,25 @@ mod tests {
             level,
             message: message.to_string(),
         }
+    }
+
+    #[test]
+    fn pacnew_created_surfaces_as_finalize_warning_alert() {
+        let mut state = RepoState::default();
+        apply_repo_event(
+            &mut state,
+            &InstallEvent::PacnewCreated {
+                from_noupgrade: false,
+                file: "/etc/pacman.conf".to_string(),
+            },
+        );
+        assert_eq!(
+            state.finalize.alerts,
+            vec![(
+                LogLevel::Warning,
+                "/etc/pacman.conf installed as /etc/pacman.conf.pacnew".to_string()
+            )]
+        );
     }
 
     fn aur_dep(package: &str) -> InstallEvent {
