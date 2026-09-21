@@ -4,7 +4,7 @@ use crate::build::BuildDecision;
 use crate::dispatch::protocol::Decider;
 use crate::pkgbuild::PkgbuildInfo;
 use crate::question::approvals::{SealedApprovals, validate};
-use crate::question::model::{Answer, QuestionKey};
+use crate::question::model::{Answer, Question};
 use crate::resolve::{ConflictReport, Plan};
 
 pub struct SealedDecider {
@@ -17,10 +17,11 @@ pub fn sealed_decider(sealed: SealedApprovals) -> SealedDecider {
 
 impl SealedDecider {
     fn conflict_removed(&self, incoming: &str, removable: &str) -> bool {
-        let key = QuestionKey::Conflict {
-            first: incoming.min(removable).to_string(),
-            second: incoming.max(removable).to_string(),
-        };
+        let key = Question::Conflict {
+            incoming: incoming.to_string(),
+            removable: removable.to_string(),
+        }
+        .key();
         let Ok(index) = self
             .sealed
             .answers
@@ -287,6 +288,25 @@ mod tests {
         let report = conflicted_report();
         assert!(sealed_decider(conflict_seal("cava", "cava-git", true)).confirm_conflicts(&report));
         assert!(sealed_decider(conflict_seal("cava-git", "cava", true)).confirm_conflicts(&report));
+    }
+
+    #[test]
+    fn rejects_non_canonical_conflict_key() {
+        let pairs = vec![(
+            QuestionKey::Conflict {
+                first: s("foo"),
+                second: s("bar"),
+            },
+            Answer::Conflict {
+                incoming: s("bar"),
+                removable: s("foo"),
+                remove: true,
+            },
+        )];
+        let error =
+            decode_seal(&encode_pairs(&pairs, true)).expect_err("non-canonical key rejected");
+        assert!(error.to_string().contains("does not fit"));
+        assert!(error.to_string().contains("Conflict"));
     }
 
     #[test]

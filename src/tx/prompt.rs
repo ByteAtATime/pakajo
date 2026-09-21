@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::io::{BufRead, Write};
+use std::rc::Rc;
 
 use crate::color;
 use crate::question::model::{Answer, Question};
@@ -205,56 +206,83 @@ fn decide(question: &Question, line: &str) -> SourceDecision {
     }
 }
 
+enum Exchange {
+    Line(String),
+    End,
+    WriteFailed,
+    ReadFailed,
+    RehideFailed,
+}
+
+fn exchange<R: BufRead, W: Write>(
+    input: &Rc<RefCell<R>>,
+    output: &RefCell<W>,
+    hide: &str,
+    show: &str,
+    text: &str,
+) -> Exchange {
+    {
+        let mut output = output.borrow_mut();
+        let written = output.write_all(hide.as_bytes()).is_ok()
+            && output.write_all(text.as_bytes()).is_ok()
+            && output.write_all(show.as_bytes()).is_ok()
+            && output.flush().is_ok();
+        if !written {
+            return Exchange::WriteFailed;
+        }
+    }
+    let mut line = String::new();
+    let read = input.borrow_mut().read_line(&mut line);
+    let mut output = output.borrow_mut();
+    let rehidden = output
+        .write_all(hide.as_bytes())
+        .and_then(|_| output.flush())
+        .is_ok();
+    match read {
+        Ok(0) => Exchange::End,
+        Ok(_) if rehidden => Exchange::Line(line),
+        Ok(_) => Exchange::RehideFailed,
+        Err(_) => Exchange::ReadFailed,
+    }
+}
+
+fn hide_show(colored: bool) -> (&'static str, &'static str) {
+    if colored {
+        (color::HIDE_CURSOR, color::SHOW_CURSOR)
+    } else {
+        ("", "")
+    }
+}
+
 pub struct InteractiveSource<R, W> {
-    input: RefCell<R>,
+    input: Rc<RefCell<R>>,
     output: RefCell<W>,
     colored: bool,
 }
 
 impl<R: BufRead, W: Write> InteractiveSource<R, W> {
-    pub fn new(input: R, output: W, colored: bool) -> Self {
+    pub fn new(input: Rc<RefCell<R>>, output: W, colored: bool) -> Self {
         Self {
-            input: RefCell::new(input),
+            input,
             output: RefCell::new(output),
             colored,
         }
     }
 
-    pub fn into_parts(self) -> (R, W) {
-        (self.input.into_inner(), self.output.into_inner())
+    pub fn into_output(self) -> W {
+        self.output.into_inner()
     }
 
     fn prompt(&self, question: &Question) -> Result<String, String> {
+        let (hide, show) = hide_show(self.colored);
         let text = render(question, self.colored);
-        let (hide, show) = if self.colored {
-            (color::HIDE_CURSOR, color::SHOW_CURSOR)
-        } else {
-            ("", "")
-        };
-        {
-            let mut output = self.output.borrow_mut();
-            let mut send = |bytes: &str| {
-                output
-                    .write_all(bytes.as_bytes())
-                    .map_err(|_| "failed to write prompt".to_string())
-            };
-            send(hide)?;
-            send(&text)?;
-            send(show)?;
-            output
-                .flush()
-                .map_err(|_| "failed to write prompt".to_string())?;
-        }
-        let mut line = String::new();
-        let read = self.input.borrow_mut().read_line(&mut line);
-        let mut output = self.output.borrow_mut();
-        let rehide = output.write_all(hide.as_bytes());
-        let flushed = rehide.and_then(|_| output.flush());
-        match read {
-            Ok(0) => Err("end of input".to_string()),
-            Ok(_) if flushed.is_err() => Err("failed to write prompt".to_string()),
-            Ok(_) => Ok(line),
-            Err(_) => Err("failed to read answer".to_string()),
+        match exchange(&self.input, &self.output, hide, show, &text) {
+            Exchange::Line(line) => Ok(line),
+            Exchange::End => Err("end of input".to_string()),
+            Exchange::WriteFailed | Exchange::RehideFailed => {
+                Err("failed to write prompt".to_string())
+            }
+            Exchange::ReadFailed => Err("failed to read answer".to_string()),
         }
     }
 }
@@ -275,40 +303,26 @@ impl<R: BufRead, W: Write> AnswerSource for InteractiveSource<R, W> {
 }
 
 pub struct TtyImportPrompter<R, W> {
-    input: RefCell<R>,
+    input: Rc<RefCell<R>>,
     output: RefCell<W>,
     colored: bool,
 }
 
 impl<R: BufRead, W: Write> TtyImportPrompter<R, W> {
-    pub fn new(input: R, output: W, colored: bool) -> Self {
+    pub fn new(input: Rc<RefCell<R>>, output: W, colored: bool) -> Self {
         Self {
-            input: RefCell::new(input),
+            input,
             output: RefCell::new(output),
             colored,
         }
     }
 
     fn ask(&self, fingerprint: &str, uid: &str) -> bool {
-        let (hide, show) = if self.colored {
-            (color::HIDE_CURSOR, color::SHOW_CURSOR)
-        } else {
-            ("", "")
-        };
-        let mut output = self.output.borrow_mut();
+        let (hide, show) = hide_show(self.colored);
         let rendered = render_import_key(fingerprint, uid, self.colored);
-        let written = output.write_all(hide.as_bytes()).is_ok()
-            && output.write_all(rendered.as_bytes()).is_ok()
-            && output.write_all(show.as_bytes()).is_ok()
-            && output.flush().is_ok();
-        if !written {
-            return false;
-        }
-        let mut line = String::new();
-        match self.input.borrow_mut().read_line(&mut line) {
-            Ok(0) => false,
-            Ok(_) => confirm(&line, true),
-            Err(_) => false,
+        match exchange(&self.input, &self.output, hide, show, &rendered) {
+            Exchange::Line(line) => confirm(&line, true),
+            _ => false,
         }
     }
 }
@@ -352,26 +366,6 @@ pub fn tty_runtime_source<R: BufRead + 'static, W: Write + 'static>(
     Box::new(RuntimeSource::new(Box::new(source), prompter))
 }
 
-pub fn execute(
-    handle: &mut alpm::Alpm,
-    spec: &RunSpec,
-    sink: Box<dyn crate::events::InstallSink>,
-) -> anyhow::Result<RunOutcome> {
-    let source = tty_runtime_source(
-        InteractiveSource::new(
-            std::io::BufReader::new(std::io::stdin()),
-            std::io::stdout(),
-            color::stdout_color(),
-        ),
-        TtyImportPrompter::new(
-            std::io::BufReader::new(std::io::stdin()),
-            std::io::stdout(),
-            color::stdout_color(),
-        ),
-    );
-    execute_with_source(source, handle, spec, sink)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,9 +392,13 @@ mod tests {
     }
 
     fn ask(question: &Question, input: &[u8], colored: bool) -> (SourceDecision, String) {
-        let source = InteractiveSource::new(Cursor::new(input.to_vec()), Vec::new(), colored);
+        let source = InteractiveSource::new(
+            Rc::new(RefCell::new(Cursor::new(input.to_vec()))),
+            Vec::new(),
+            colored,
+        );
         let decision = source.answer(question);
-        let (_, output) = source.into_parts();
+        let output = source.into_output();
         (decision, String::from_utf8(output).unwrap())
     }
 
@@ -634,7 +632,11 @@ mod tests {
     }
 
     fn ask_prompter(input: &[u8], uid: &str) -> (bool, String) {
-        let prompter = TtyImportPrompter::new(Cursor::new(input.to_vec()), Vec::new(), false);
+        let prompter = TtyImportPrompter::new(
+            Rc::new(RefCell::new(Cursor::new(input.to_vec()))),
+            Vec::new(),
+            false,
+        );
         let verdict = prompter.import_key("ABCDEF", uid);
         let output = prompter.output.into_inner();
         (verdict, String::from_utf8(output).unwrap())
@@ -671,7 +673,7 @@ mod tests {
             }
             fn consume(&mut self, _: usize) {}
         }
-        let prompter = TtyImportPrompter::new(Broken, Vec::new(), false);
+        let prompter = TtyImportPrompter::new(Rc::new(RefCell::new(Broken)), Vec::new(), false);
         assert!(!prompter.import_key("ABCDEF", ""));
     }
 
@@ -683,11 +685,15 @@ mod tests {
         };
         let source = RuntimeSource::new(
             Box::new(InteractiveSource::new(
-                Cursor::new(b"\n".to_vec()),
+                Rc::new(RefCell::new(Cursor::new(b"\n".to_vec()))),
                 Vec::new(),
                 false,
             )),
-            TtyImportPrompter::new(Cursor::new(b"\n".to_vec()), Vec::new(), false),
+            TtyImportPrompter::new(
+                Rc::new(RefCell::new(Cursor::new(b"\n".to_vec()))),
+                Vec::new(),
+                false,
+            ),
         );
         match source.answer(&question) {
             SourceDecision::Answer(Answer::ImportKey {
@@ -697,6 +703,26 @@ mod tests {
                 assert_eq!(fingerprint, "ABCDEF");
                 assert!(import);
             }
+            other => panic!("expected import key answer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shared_input_feeds_collectable_answer_then_import_key_prompter() {
+        let input = Rc::new(RefCell::new(Cursor::new(b"y\ny\n".to_vec())));
+        let source = RuntimeSource::new(
+            Box::new(InteractiveSource::new(Rc::clone(&input), Vec::new(), false)),
+            TtyImportPrompter::new(input, Vec::new(), false),
+        );
+        match source.answer(&conflict()) {
+            SourceDecision::Answer(Answer::Conflict { remove, .. }) => assert!(remove),
+            other => panic!("expected conflict answer, got {other:?}"),
+        }
+        match source.answer(&Question::ImportKey {
+            fingerprint: "ABCDEF".to_string(),
+            uid: "Packager <pack@example.com>".to_string(),
+        }) {
+            SourceDecision::Answer(Answer::ImportKey { import, .. }) => assert!(import),
             other => panic!("expected import key answer, got {other:?}"),
         }
     }

@@ -187,16 +187,19 @@ impl ChildOperation {
                             as_deps: *as_deps,
                             reinstall: *reinstall,
                         };
+                        let input = std::rc::Rc::new(std::cell::RefCell::new(
+                            std::io::BufReader::new(std::io::stdin()),
+                        ));
                         let outcome = if matches!(presentation, Presentation::InteractiveStream) {
                             let source = engine_source(
                                 preconfirmed,
                                 crate::tx::prompt::InteractiveSource::new(
-                                    std::io::BufReader::new(std::io::stdin()),
+                                    std::rc::Rc::clone(&input),
                                     std::io::stderr(),
                                     crate::color::stderr_color(),
                                 ),
                                 crate::tx::prompt::TtyImportPrompter::new(
-                                    std::io::BufReader::new(std::io::stdin()),
+                                    std::rc::Rc::clone(&input),
                                     std::io::stderr(),
                                     crate::color::stderr_color(),
                                 ),
@@ -211,12 +214,12 @@ impl ChildOperation {
                             let source = engine_source(
                                 preconfirmed,
                                 crate::tx::prompt::InteractiveSource::new(
-                                    std::io::BufReader::new(std::io::stdin()),
+                                    std::rc::Rc::clone(&input),
                                     std::io::stdout(),
                                     crate::color::stdout_color(),
                                 ),
                                 crate::tx::prompt::TtyImportPrompter::new(
-                                    std::io::BufReader::new(std::io::stdin()),
+                                    std::rc::Rc::clone(&input),
                                     std::io::stdout(),
                                     crate::color::stdout_color(),
                                 ),

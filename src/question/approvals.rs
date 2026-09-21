@@ -120,7 +120,7 @@ fn answer_fits_key(answer: &Answer, key: &QuestionKey) -> bool {
                 removable,
                 ..
             },
-        ) => is_same_pair(first, second, incoming, removable),
+        ) => first <= second && is_same_pair(first, second, incoming, removable),
         (QuestionKey::SelectProvider { .. }, Answer::SelectProvider { .. }) => true,
         (
             QuestionKey::Replace { old, new },
