@@ -315,6 +315,19 @@ mod tests {
                 .len(),
             1
         );
+        assert!(
+            seal(
+                &[Question::GroupMembers {
+                    group: s("tools"),
+                    members: vec![s("a"), s("b")],
+                }],
+                &[Answer::GroupMembers {
+                    selected: vec![s("c")],
+                }],
+                false
+            )
+            .is_err()
+        );
     }
 
     #[test]

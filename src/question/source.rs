@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use super::approvals::{Sealed, SealedApprovals, match_answer};
 use super::model::{Answer, Question, QuestionKey};
 
 pub trait AnswerSource {
@@ -81,6 +82,78 @@ impl AnswerSource for ExploreDefaults {
     }
 }
 
+pub struct FailClosedSource;
+
+const NO_ANSWER: &str = "fail-closed source has no answer";
+
+impl AnswerSource for FailClosedSource {
+    fn answer(&self, question: &Question) -> SourceDecision {
+        SourceDecision::Abort(FailClosed {
+            key: question.key(),
+            reason: NO_ANSWER.to_string(),
+        })
+    }
+}
+
+pub struct ApprovalsReplay {
+    sealed: SealedApprovals,
+}
+
+impl ApprovalsReplay {
+    pub fn new(sealed: SealedApprovals) -> Self {
+        Self { sealed }
+    }
+}
+
+impl AnswerSource for ApprovalsReplay {
+    fn answer(&self, question: &Question) -> SourceDecision {
+        match match_answer(question, &self.sealed) {
+            Sealed::Answer(answer) => SourceDecision::Answer(answer),
+            Sealed::Ask if matches!(question, Question::Proceed(_)) => {
+                SourceDecision::Answer(Answer::Stop)
+            }
+            Sealed::Ask => SourceDecision::Abort(FailClosed {
+                key: question.key(),
+                reason: "unanswered question".to_string(),
+            }),
+        }
+    }
+}
+
+pub trait RuntimePrompter {
+    fn import_key(&self, fingerprint: &str, uid: &str) -> bool;
+}
+
+pub struct RuntimeSource<P: RuntimePrompter> {
+    inner: Box<dyn AnswerSource>,
+    prompter: P,
+}
+
+impl<P: RuntimePrompter> RuntimeSource<P> {
+    pub fn new(inner: Box<dyn AnswerSource>, prompter: P) -> Self {
+        Self { inner, prompter }
+    }
+}
+
+impl<P: RuntimePrompter> AnswerSource for RuntimeSource<P> {
+    fn answer(&self, question: &Question) -> SourceDecision {
+        match question {
+            Question::ImportKey { fingerprint, uid } => SourceDecision::Answer(Answer::ImportKey {
+                fingerprint: fingerprint.clone(),
+                import: self.prompter.import_key(fingerprint, uid),
+            }),
+            Question::Corrupted { path } => match self.inner.answer(question) {
+                SourceDecision::Abort(_) => SourceDecision::Answer(Answer::Corrupted {
+                    path: path.clone(),
+                    remove: true,
+                }),
+                decision => decision,
+            },
+            question => self.inner.answer(question),
+        }
+    }
+}
+
 pub fn parse_provider_selection(input: &str, candidate_count: usize) -> Option<usize> {
     if candidate_count == 0 {
         return None;
@@ -128,6 +201,7 @@ fn parse_member_number(text: &str, member_count: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::approvals::seal;
     use super::super::model::ProviderCandidate;
     use super::*;
 
@@ -141,6 +215,10 @@ mod tests {
 
     fn summary() -> crate::events::TransactionSummary {
         crate::events::TransactionSummary::default()
+    }
+
+    fn s(value: &str) -> String {
+        value.to_string()
     }
 
     #[test]
@@ -273,5 +351,140 @@ mod tests {
         ] {
             assert_eq!(parse_group_selection(input, count), expected);
         }
+    }
+
+    #[test]
+    fn fail_closed_source_aborts_with_key() {
+        let source = FailClosedSource;
+        for question in [
+            Question::Conflict {
+                incoming: s("foo"),
+                removable: s("bar"),
+            },
+            Question::Proceed(summary()),
+        ] {
+            assert_eq!(
+                source.answer(&question),
+                SourceDecision::Abort(FailClosed {
+                    key: question.key(),
+                    reason: NO_ANSWER.to_string(),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn approvals_replay_answers_aborts_and_maps_proceed() {
+        let conflict = Question::Conflict {
+            incoming: s("foo"),
+            removable: s("bar"),
+        };
+        let answer = Answer::Conflict {
+            incoming: s("foo"),
+            removable: s("bar"),
+            remove: true,
+        };
+        let replay = ApprovalsReplay::new(
+            seal(
+                std::slice::from_ref(&conflict),
+                std::slice::from_ref(&answer),
+                true,
+            )
+            .expect("seal succeeds"),
+        );
+        assert_eq!(replay.answer(&conflict), SourceDecision::Answer(answer));
+        let unsealed = Question::SelectProvider {
+            depend: s("sdl"),
+            candidates: vec![],
+        };
+        assert_eq!(
+            replay.answer(&unsealed),
+            SourceDecision::Abort(FailClosed {
+                key: unsealed.key(),
+                reason: "unanswered question".to_string(),
+            })
+        );
+        assert_eq!(
+            replay.answer(&Question::Proceed(summary())),
+            SourceDecision::Answer(Answer::Proceed)
+        );
+        let declined = ApprovalsReplay::new(seal(&[], &[], false).expect("seal succeeds"));
+        assert_eq!(
+            declined.answer(&Question::Proceed(summary())),
+            SourceDecision::Answer(Answer::Stop)
+        );
+    }
+
+    struct KeepCorrupted;
+
+    impl AnswerSource for KeepCorrupted {
+        fn answer(&self, question: &Question) -> SourceDecision {
+            let Question::Corrupted { path } = question else {
+                return SourceDecision::Abort(FailClosed {
+                    key: question.key(),
+                    reason: s("unexpected"),
+                });
+            };
+            SourceDecision::Answer(Answer::Corrupted {
+                path: path.clone(),
+                remove: false,
+            })
+        }
+    }
+
+    struct FakePrompter {
+        verdict: bool,
+    }
+
+    impl RuntimePrompter for FakePrompter {
+        fn import_key(&self, _fingerprint: &str, _uid: &str) -> bool {
+            self.verdict
+        }
+    }
+
+    fn runtime_over(inner: Box<dyn AnswerSource>, verdict: bool) -> RuntimeSource<FakePrompter> {
+        RuntimeSource::new(inner, FakePrompter { verdict })
+    }
+
+    #[test]
+    fn runtime_source_handles_runtime_questions_and_delegates_rest() {
+        let import = Question::ImportKey {
+            fingerprint: s("ABC"),
+            uid: s("root"),
+        };
+        for (verdict, expected) in [(true, true), (false, false)] {
+            assert_eq!(
+                runtime_over(Box::new(FailClosedSource), verdict).answer(&import),
+                SourceDecision::Answer(Answer::ImportKey {
+                    fingerprint: s("ABC"),
+                    import: expected,
+                })
+            );
+        }
+        let corrupted = Question::Corrupted {
+            path: s("/cache/p.pkg.tar.zst"),
+        };
+        assert_eq!(
+            runtime_over(Box::new(KeepCorrupted), true).answer(&corrupted),
+            SourceDecision::Answer(Answer::Corrupted {
+                path: s("/cache/p.pkg.tar.zst"),
+                remove: false,
+            })
+        );
+        assert_eq!(
+            runtime_over(Box::new(FailClosedSource), true).answer(&corrupted),
+            SourceDecision::Answer(Answer::Corrupted {
+                path: s("/cache/p.pkg.tar.zst"),
+                remove: true,
+            })
+        );
+        let proceed = Question::Proceed(summary());
+        assert_eq!(
+            runtime_over(Box::new(FailClosedSource), true).answer(&proceed),
+            SourceDecision::Abort(FailClosed {
+                key: QuestionKey::Proceed,
+                reason: NO_ANSWER.to_string(),
+            })
+        );
     }
 }
