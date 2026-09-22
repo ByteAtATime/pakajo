@@ -16,9 +16,16 @@ use crate::tx::convert::{
 use crate::tx::questions::QuestionSession;
 use crate::tx::targets::resolve_targets;
 
+#[derive(Debug, Clone)]
+pub struct RemoveSpec {
+    pub flags: alpm::TransFlag,
+    pub holds: Vec<String>,
+}
+
 #[derive(Debug)]
 pub enum RunKind {
     Sync,
+    Remove(RemoveSpec),
 }
 
 #[derive(Debug)]
@@ -45,18 +52,29 @@ pub enum Finish {
     PrepareFailed(PrepareFailure),
 }
 
-pub fn trans_init_flags(explore: bool, as_deps: bool, reinstall: bool) -> alpm::TransFlag {
-    let mut flags = alpm::TransFlag::NONE;
-    if !reinstall {
-        flags |= alpm::TransFlag::NEEDED;
+pub fn trans_init_flags(spec: &RunSpec) -> alpm::TransFlag {
+    match &spec.kind {
+        RunKind::Sync => {
+            let mut flags = alpm::TransFlag::NONE;
+            if !spec.reinstall {
+                flags |= alpm::TransFlag::NEEDED;
+            }
+            if spec.as_deps {
+                flags |= alpm::TransFlag::ALL_DEPS;
+            }
+            if spec.explore {
+                flags |= alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK;
+            }
+            flags
+        }
+        RunKind::Remove(remove) => {
+            let mut flags = remove.flags;
+            if spec.explore {
+                flags |= alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK;
+            }
+            flags
+        }
     }
-    if as_deps {
-        flags |= alpm::TransFlag::ALL_DEPS;
-    }
-    if explore {
-        flags |= alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK;
-    }
-    flags
 }
 
 pub fn run(
@@ -69,7 +87,7 @@ pub fn run(
     forward_alpm_events(handle, &events);
     cleanup_on_signal(handle);
     lock_retry(
-        || handle.trans_init(trans_init_flags(spec.explore, spec.as_deps, spec.reinstall)),
+        || handle.trans_init(trans_init_flags(spec)),
         || {
             events
                 .borrow_mut()
@@ -124,19 +142,28 @@ fn drive(
     events: &Rc<RefCell<Box<dyn InstallSink>>>,
 ) -> anyhow::Result<RunOutcome> {
     let session = QuestionSession::attach(handle, source);
-    if spec
-        .stub_targets
-        .iter()
-        .chain(spec.targets.iter())
-        .any(|target| is_file_target(target))
+    if matches!(spec.kind, RunKind::Sync)
+        && spec
+            .stub_targets
+            .iter()
+            .chain(spec.targets.iter())
+            .any(|target| is_file_target(target))
     {
         events.borrow_mut().event(InstallEvent::LoadingPackages);
     }
-    if let Err(error) = queue_targets(handle, spec, &session) {
+    let queue_result = match &spec.kind {
+        RunKind::Sync => queue_targets(handle, spec, &session),
+        RunKind::Remove(_) => queue_remove_targets(handle, &spec.targets),
+    };
+    if let Err(error) = queue_result {
         fail_closed(&session, events)?;
         return Err(error);
     }
-    if handle.trans_add().is_empty() {
+    let nothing_queued = match &spec.kind {
+        RunKind::Sync => handle.trans_add().is_empty(),
+        RunKind::Remove(_) => handle.trans_remove().is_empty(),
+    };
+    if nothing_queued {
         fail_closed(&session, events)?;
         if !spec.explore {
             events.borrow_mut().event(InstallEvent::Log {
@@ -155,6 +182,16 @@ fn drive(
         return outcome(handle, Finish::PrepareFailed(failure), spec, &session);
     }
     fail_closed(&session, events)?;
+    if let RunKind::Remove(remove) = &spec.kind {
+        let names: Vec<String> = handle
+            .trans_remove()
+            .iter()
+            .map(|pkg| pkg.name().to_string())
+            .collect();
+        if !crate::holdpkg::held_packages(&names, &remove.holds).is_empty() {
+            anyhow::bail!("held package(s) require explicit override");
+        }
+    }
     let summary = build_summary(handle);
     if !spec.explore {
         events
@@ -163,7 +200,7 @@ fn drive(
     }
     let review = maybe_review(handle, spec, &session, &summary)?;
     let commit = !spec.explore
-        && match ask_proceed(&session, &summary) {
+        && match ask_proceed(&session, &summary, &spec.kind) {
             Ok(proceed) => proceed,
             Err(error) => {
                 fail_closed(&session, events)?;
@@ -189,10 +226,15 @@ fn drive(
 fn ask_proceed(
     session: &Rc<RefCell<QuestionSession>>,
     summary: &TransactionSummary,
+    kind: &RunKind,
 ) -> anyhow::Result<bool> {
+    let mapped = match kind {
+        RunKind::Sync => TransactionKind::Install,
+        RunKind::Remove(_) => TransactionKind::Remove,
+    };
     let question = Question::Proceed {
         summary: summary.clone(),
-        kind: TransactionKind::Install,
+        kind: mapped,
     };
     let key = question.key();
     let asked = session.borrow_mut().ask_direct(&question)?;
@@ -226,6 +268,37 @@ fn queue_targets(
             queue_named(handle, target)?;
         }
         fail_on_denied(&session.borrow())?;
+    }
+    Ok(())
+}
+
+fn queue_remove_targets(handle: &alpm::Alpm, targets: &[String]) -> anyhow::Result<()> {
+    let mut missing = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for target in targets {
+        let name = target.strip_prefix("local/").unwrap_or(target);
+        if let Ok(pkg) = handle.localdb().pkg(name) {
+            if seen.insert(name.to_string()) {
+                handle
+                    .trans_remove_pkg(pkg)
+                    .context("failed to queue package for removal")?;
+            }
+            continue;
+        }
+        if let Ok(group) = handle.localdb().group(name) {
+            for pkg in group.packages().iter() {
+                if seen.insert(pkg.name().to_string()) {
+                    handle
+                        .trans_remove_pkg(pkg)
+                        .context("failed to queue package for removal")?;
+                }
+            }
+            continue;
+        }
+        missing.push(name.to_string());
+    }
+    if !missing.is_empty() {
+        anyhow::bail!("target not found: {}", missing.join(", "));
     }
     Ok(())
 }
@@ -755,6 +828,31 @@ mod tests {
         release(&mut handle);
     }
 
+    fn sync_spec(explore: bool, as_deps: bool, reinstall: bool) -> RunSpec {
+        RunSpec {
+            kind: RunKind::Sync,
+            targets: Vec::new(),
+            stub_targets: Vec::new(),
+            explore,
+            as_deps,
+            reinstall,
+        }
+    }
+
+    fn remove_spec(flags: alpm::TransFlag, explore: bool, targets: &[&str]) -> RunSpec {
+        RunSpec {
+            kind: RunKind::Remove(RemoveSpec {
+                flags,
+                holds: Vec::new(),
+            }),
+            targets: targets.iter().map(|t| t.to_string()).collect(),
+            stub_targets: Vec::new(),
+            explore,
+            as_deps: false,
+            reinstall: false,
+        }
+    }
+
     #[test]
     fn init_flags_derive_from_spec() {
         use alpm::TransFlag as F;
@@ -773,8 +871,57 @@ mod tests {
             ),
             (true, true, true, F::ALL_DEPS | F::DB_ONLY | F::NO_LOCK),
         ] {
-            assert_eq!(trans_init_flags(explore, as_deps, reinstall), expected);
+            assert_eq!(
+                trans_init_flags(&sync_spec(explore, as_deps, reinstall)),
+                expected
+            );
         }
+        assert_eq!(trans_init_flags(&remove_spec(F::NONE, false, &[])), F::NONE);
+        assert_eq!(
+            trans_init_flags(&remove_spec(F::NONE, true, &[])),
+            F::DB_ONLY | F::NO_LOCK
+        );
+        assert_eq!(
+            trans_init_flags(&remove_spec(F::NEEDED, false, &[])),
+            F::NEEDED
+        );
+    }
+
+    #[test]
+    fn remove_queues_local_group_members() {
+        let local = [make("member", "1.0-1", &[], &[], &["fakegrp"])];
+        let (_dir, mut handle) = fixture_full(&[], &local);
+        let outcome = run(
+            &mut handle,
+            &remove_spec(alpm::TransFlag::NONE, false, &["fakegrp"]),
+            proceed(),
+            discard(),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert!(
+            outcome
+                .summary
+                .packages
+                .iter()
+                .any(|package| package.name == "member" && package.is_removal)
+        );
+        assert!(handle.localdb().pkg("member").is_err());
+        release(&mut handle);
+    }
+
+    #[test]
+    fn remove_missing_target_bails() {
+        let (_dir, mut handle) = fixture_full(&[], &[]);
+        let error = run(
+            &mut handle,
+            &remove_spec(alpm::TransFlag::NONE, false, &["ghost"]),
+            proceed(),
+            discard(),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("target not found: ghost"));
+        release(&mut handle);
     }
 
     #[test]

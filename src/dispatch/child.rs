@@ -1,6 +1,6 @@
 use crate::cli::{
     ConsoleSink, EscalatedSink, JsonSink, PromptStream, answerer_for, classify_target,
-    confirm_hold_remove, confirm_remove, confirm_remove_stderr, privs,
+    confirm_hold_remove, confirm_remove, privs,
 };
 use crate::dispatch::operation::ChildOperation;
 use crate::events::{InstallEvent, InstallSink};
@@ -71,7 +71,7 @@ fn read_seal(
         .transpose()
 }
 
-fn finish_install(outcome: crate::tx::driver::RunOutcome) -> anyhow::Result<()> {
+fn finish_transaction(outcome: crate::tx::driver::RunOutcome) -> anyhow::Result<()> {
     if let crate::tx::driver::Finish::PrepareFailed(failure) = outcome.finish {
         anyhow::bail!("failed to prepare transaction: {failure}")
     }
@@ -132,14 +132,46 @@ impl ChildOperation {
                     .map(|a| a.approved_held.clone())
                     .unwrap_or_default();
                 match select_remove_presentation(*stream, privs::stdin_is_tty()) {
-                    Presentation::InteractiveStream => crate::remove::run_remove(
-                        targets,
-                        EscalatedSink::new(),
-                        confirm_remove_stderr,
-                        answerer_for(None),
-                        &approved_held,
-                        || confirm_hold_remove(PromptStream::Stderr),
-                    ),
+                    Presentation::InteractiveStream => {
+                        let mut handle = crate::pacman::handle()?;
+                        let holds = crate::pacman::config()?.hold_pkg;
+                        let spec = crate::tx::driver::RunSpec {
+                            kind: crate::tx::driver::RunKind::Remove(
+                                crate::tx::driver::RemoveSpec {
+                                    flags: alpm::TransFlag::NONE,
+                                    holds,
+                                },
+                            ),
+                            targets: targets.clone(),
+                            stub_targets: Vec::new(),
+                            explore: false,
+                            as_deps: false,
+                            reinstall: false,
+                        };
+                        let input = std::rc::Rc::new(std::cell::RefCell::new(
+                            std::io::BufReader::new(std::io::stdin()),
+                        ));
+                        let source = engine_source(
+                            false,
+                            crate::tx::prompt::InteractiveSource::new(
+                                std::rc::Rc::clone(&input),
+                                std::io::stderr(),
+                                crate::color::stderr_color(),
+                            ),
+                            crate::tx::prompt::TtyImportPrompter::new(
+                                std::rc::Rc::clone(&input),
+                                std::io::stderr(),
+                                crate::color::stderr_color(),
+                            ),
+                        );
+                        let outcome = crate::tx::prompt::execute_with_source(
+                            source,
+                            &mut handle,
+                            &spec,
+                            Box::new(EscalatedSink::new()),
+                        )?;
+                        finish_transaction(outcome)
+                    }
                     Presentation::SilentStream => crate::remove::run_remove(
                         targets,
                         JsonSink::new(),
@@ -241,7 +273,7 @@ impl ChildOperation {
                                 Box::new(ConsoleSink::new()),
                             )?
                         };
-                        finish_install(outcome)
+                        finish_transaction(outcome)
                     }
                     Presentation::SilentStream => {
                         let spec = crate::tx::driver::RunSpec {
@@ -267,7 +299,7 @@ impl ChildOperation {
                             &spec,
                             Box::new(JsonSink::new()),
                         )?;
-                        finish_install(outcome)
+                        finish_transaction(outcome)
                     }
                 }
             }

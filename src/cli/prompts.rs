@@ -8,13 +8,11 @@ use crate::{build::BuildDecision, color};
 
 pub(crate) enum PromptStream {
     Stdout,
-    Stderr,
 }
 
 fn read_confirmation(message: &str, stream: PromptStream, default_yes: bool) -> bool {
     let c = match stream {
         PromptStream::Stdout => color::stdout_color(),
-        PromptStream::Stderr => color::stderr_color(),
     };
     let hint = if default_yes { "[Y/n]" } else { "[y/N]" };
     let line = format!(
@@ -26,10 +24,6 @@ fn read_confirmation(message: &str, stream: PromptStream, default_yes: bool) -> 
         PromptStream::Stdout => {
             print!("{line}");
             let _ = std::io::stdout().flush();
-        }
-        PromptStream::Stderr => {
-            eprint!("{line}");
-            let _ = std::io::stderr().flush();
         }
     }
     let mut input = String::new();
@@ -345,15 +339,6 @@ fn print_conflict_section(title: &str, items: &[Conflict]) {
         eprintln!("    {}: {details}", conflict.pkg);
     }
     eprintln!();
-}
-
-pub fn confirm_remove_stderr() -> bool {
-    eprintln!();
-    read_confirmation(
-        "Do you want to remove these packages?",
-        PromptStream::Stderr,
-        true,
-    )
 }
 
 pub fn confirm_hold_remove(stream: PromptStream) -> bool {
