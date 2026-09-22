@@ -73,7 +73,7 @@ fn read_seal(
 
 fn finish_install(outcome: crate::tx::driver::RunOutcome) -> anyhow::Result<()> {
     if let crate::tx::driver::Finish::PrepareFailed(failure) = outcome.finish {
-        anyhow::bail!("failed to prepare transaction: {failure:?}")
+        anyhow::bail!("failed to prepare transaction: {failure}")
     }
     Ok(())
 }

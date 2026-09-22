@@ -249,6 +249,37 @@ pub enum PrepareFailure {
 pub struct UnsatisfiedDep {
     pub depend: String,
     pub target: String,
+    pub causing_pkg: Option<String>,
+}
+
+impl std::fmt::Display for PrepareFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Other(message) => write!(f, "{message}"),
+            Self::Unsatisfied(missing) => {
+                let mut first = true;
+                for dep in missing {
+                    if !first {
+                        writeln!(f)?;
+                    }
+                    first = false;
+                    match dep.causing_pkg.as_deref() {
+                        Some(cause) => write!(
+                            f,
+                            "removing {cause} breaks dependency '{}' required by {}",
+                            dep.depend, dep.target
+                        )?,
+                        None => write!(
+                            f,
+                            "unable to satisfy dependency '{}' required by {}",
+                            dep.depend, dep.target
+                        )?,
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 pub(crate) fn extract_prepare_failure(err: alpm::PrepareError) -> PrepareFailure {
@@ -258,10 +289,68 @@ pub(crate) fn extract_prepare_failure(err: alpm::PrepareError) -> PrepareFailure
                 .map(|d| UnsatisfiedDep {
                     depend: d.depend().name().to_string(),
                     target: d.target().to_string(),
+                    causing_pkg: d.causing_pkg().map(str::to_string),
                 })
                 .collect(),
         ),
         Some(other) => PrepareFailure::Other(format!("{other:?}")),
         None => PrepareFailure::Other(format!("{}", err.error())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsatisfied_with_cause_reports_removal_breakage() {
+        let failure = PrepareFailure::Unsatisfied(vec![UnsatisfiedDep {
+            depend: "libfoo".to_string(),
+            target: "sl".to_string(),
+            causing_pkg: Some("glibc".to_string()),
+        }]);
+        assert_eq!(
+            failure.to_string(),
+            "removing glibc breaks dependency 'libfoo' required by sl"
+        );
+    }
+
+    #[test]
+    fn unsatisfied_without_cause_reports_unable_to_satisfy() {
+        let failure = PrepareFailure::Unsatisfied(vec![UnsatisfiedDep {
+            depend: "libfoo".to_string(),
+            target: "sl".to_string(),
+            causing_pkg: None,
+        }]);
+        assert_eq!(
+            failure.to_string(),
+            "unable to satisfy dependency 'libfoo' required by sl"
+        );
+    }
+
+    #[test]
+    fn unsatisfied_multiple_misses_render_one_line_each() {
+        let failure = PrepareFailure::Unsatisfied(vec![
+            UnsatisfiedDep {
+                depend: "libfoo".to_string(),
+                target: "sl".to_string(),
+                causing_pkg: Some("glibc".to_string()),
+            },
+            UnsatisfiedDep {
+                depend: "libbar".to_string(),
+                target: "vlc".to_string(),
+                causing_pkg: None,
+            },
+        ]);
+        assert_eq!(
+            failure.to_string(),
+            "removing glibc breaks dependency 'libfoo' required by sl\nunable to satisfy dependency 'libbar' required by vlc"
+        );
+    }
+
+    #[test]
+    fn other_renders_message_as_is() {
+        let failure = PrepareFailure::Other("database not found".to_string());
+        assert_eq!(failure.to_string(), "database not found");
     }
 }
