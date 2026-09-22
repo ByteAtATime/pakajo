@@ -75,7 +75,7 @@ fn run_remove_preview(
             .collect();
         questions.held = crate::holdpkg::held_packages(&names, patterns);
     }
-    let summary = crate::install::build_summary(handle);
+    let summary = crate::tx::convert::build_summary(handle);
     Ok(Preview {
         summary,
         questions,

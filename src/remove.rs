@@ -89,7 +89,7 @@ fn run_remove_transaction<S: InstallSink, F: FnOnce() -> bool, G: FnOnce() -> bo
 
     enforce_hold_gate(handle, sink, gate, confirm_hold)?;
 
-    let summary = crate::install::build_summary(handle);
+    let summary = crate::tx::convert::build_summary(handle);
     sink.borrow_mut()
         .event(InstallEvent::TransactionSummary(summary));
 
@@ -154,21 +154,17 @@ mod tests {
     use super::*;
     use crate::answerer::DenyAllAnswerer;
     use crate::cli::ConsoleSink;
-    use crate::install::{InstallTarget, install_into, setup_fake_root};
+    use crate::install::{OfflinePkg, drive_sync, offline_pkg, offline_root};
+    use crate::question::source::ExploreDefaults;
+
+    fn preapproved() -> Box<dyn crate::question::source::AnswerSource> {
+        crate::tx::prompt::with_preapproved_proceed(Box::new(ExploreDefaults))
+    }
 
     #[test]
-    #[ignore]
     fn test_remove() {
-        let mut handle = setup_fake_root("remove");
-        install_into(
-            &mut handle,
-            &[InstallTarget::Repo("sl".to_string())],
-            false,
-            ConsoleSink::new(),
-            || true,
-            Box::new(DenyAllAnswerer),
-        )
-        .expect("sl should install first");
+        let (_dir, mut handle) = offline_root(&[offline_pkg("sl")]);
+        drive_sync(&mut handle, &["sl"], preapproved()).expect("sl should install first");
         assert!(
             handle.localdb().pkg("sl").is_ok(),
             "sl must be installed before remove"
@@ -188,21 +184,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_remove_multiple() {
-        let mut handle = setup_fake_root("remove_multiple");
-        install_into(
-            &mut handle,
-            &[
-                InstallTarget::Repo("sl".to_string()),
-                InstallTarget::Repo("figlet".to_string()),
-            ],
-            false,
-            ConsoleSink::new(),
-            || true,
-            Box::new(DenyAllAnswerer),
-        )
-        .expect("sl and figlet should install first");
+        let (_dir, mut handle) = offline_root(&[offline_pkg("sl"), offline_pkg("figlet")]);
+        drive_sync(&mut handle, &["sl", "figlet"], preapproved())
+            .expect("sl and figlet should install first");
         assert!(
             handle.localdb().pkg("sl").is_ok(),
             "sl must be installed before remove"
@@ -230,9 +215,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_remove_uninstalled_errors() {
-        let mut handle = setup_fake_root("remove_uninstalled");
+        let (_dir, mut handle) = offline_root(&[]);
         let result = remove_into(
             &mut handle,
             &["definitely-not-installed".to_string()],
@@ -250,18 +234,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_remove_needed_by_other_errors() {
-        let mut handle = setup_fake_root("remove_needed");
-        install_into(
-            &mut handle,
-            &[InstallTarget::Repo("vlc".to_string())],
-            false,
-            ConsoleSink::new(),
-            || true,
-            Box::new(DenyAllAnswerer),
-        )
-        .expect("vlc should install (pulls ffmpeg)");
+        let vlc = OfflinePkg {
+            name: "vlc",
+            depends: &["ffmpeg"],
+            ..offline_pkg("vlc")
+        };
+        let (_dir, mut handle) = offline_root(&[vlc, offline_pkg("ffmpeg")]);
+        drive_sync(&mut handle, &["vlc"], preapproved())
+            .expect("vlc should install (pulls ffmpeg)");
         assert!(
             handle.localdb().pkg("ffmpeg").is_ok(),
             "ffmpeg must be installed as a vlc dep"
@@ -284,18 +265,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_remove_held_declined_keeps_package() {
-        let mut handle = setup_fake_root("remove_held_declined");
-        install_into(
-            &mut handle,
-            &[InstallTarget::Repo("sl".to_string())],
-            false,
-            ConsoleSink::new(),
-            || true,
-            Box::new(DenyAllAnswerer),
-        )
-        .expect("sl should install first");
+        let (_dir, mut handle) = offline_root(&[offline_pkg("sl")]);
+        drive_sync(&mut handle, &["sl"], preapproved()).expect("sl should install first");
         let patterns = ["sl".to_string()];
         let result = remove_into(
             &mut handle,
@@ -318,18 +290,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_remove_held_prompt_accept_removes_package() {
-        let mut handle = setup_fake_root("remove_held_prompt_accept");
-        install_into(
-            &mut handle,
-            &[InstallTarget::Repo("sl".to_string())],
-            false,
-            ConsoleSink::new(),
-            || true,
-            Box::new(DenyAllAnswerer),
-        )
-        .expect("sl should install first");
+        let (_dir, mut handle) = offline_root(&[offline_pkg("sl")]);
+        drive_sync(&mut handle, &["sl"], preapproved()).expect("sl should install first");
         let patterns = ["sl".to_string()];
         remove_into(
             &mut handle,

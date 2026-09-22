@@ -64,10 +64,6 @@ impl AutomaticDecider {
         }
     }
 
-    pub fn with_approvals(approvals: crate::question::Approvals) -> Self {
-        Self { approvals }
-    }
-
     fn conflict_approved(&self, incoming: &str, removable: &str) -> bool {
         self.approvals.approved_conflicts.iter().any(|approved| {
             (approved.incoming == incoming && approved.removable == removable)
@@ -166,7 +162,7 @@ mod tests {
             approved_held: Vec::new(),
             approved_groups: Default::default(),
         };
-        assert!(AutomaticDecider::with_approvals(approvals).confirm_conflicts(&report));
+        assert!(AutomaticDecider { approvals }.confirm_conflicts(&report));
     }
 
     #[test]

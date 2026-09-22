@@ -471,9 +471,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn find_groups_resolves_base_devel() {
-        let handle = crate::install::setup_fake_root("find_groups");
+        use crate::install::{offline_pkg, offline_root};
+        let make = crate::install::OfflinePkg {
+            name: "make",
+            groups: &["base-devel"],
+            ..offline_pkg("make")
+        };
+        let (_dir, handle) = offline_root(&[make]);
         let groups = find_groups(&handle, "base-devel");
         assert!(!groups.is_empty(), "base-devel group must resolve");
         let members: Vec<String> = groups
@@ -488,9 +493,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn group_index_includes_base_devel() {
-        let handle = crate::install::setup_fake_root("group_index");
+        use crate::install::{offline_pkg, offline_root};
+        let make = crate::install::OfflinePkg {
+            name: "make",
+            groups: &["base-devel"],
+            ..offline_pkg("make")
+        };
+        let (_dir, handle) = offline_root(&[make]);
         let index = group_index(&handle);
         assert!(
             index.iter().any(|(name, _)| name == "base-devel"),
@@ -499,20 +509,23 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn local_group_lists_installed_members() {
-        let mut handle = crate::install::setup_fake_root("local_group");
+        use crate::install::{drive_sync, offline_pkg, offline_root};
+        use crate::question::source::ExploreDefaults;
+        let make = crate::install::OfflinePkg {
+            name: "make",
+            groups: &["base-devel"],
+            ..offline_pkg("make")
+        };
+        let (_dir, mut handle) = offline_root(&[make]);
         assert!(
             local_group(&handle, "base-devel").is_none(),
             "local base-devel must be absent before any member is installed"
         );
-        crate::install::install_into(
+        drive_sync(
             &mut handle,
-            &[crate::install::InstallTarget::Repo("make".to_string())],
-            false,
-            crate::cli::ConsoleSink::new(),
-            || true,
-            Box::new(crate::answerer::DenyAllAnswerer),
+            &["make"],
+            crate::tx::prompt::with_preapproved_proceed(Box::new(ExploreDefaults)),
         )
         .expect("make should install first");
         let group = local_group(&handle, "base-devel")

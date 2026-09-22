@@ -8,6 +8,7 @@ use crate::question::model::Question;
 use crate::question::review::Review;
 use crate::resolve::{ConflictReport, Decisions, Plan};
 use crate::tx::driver::{Finish, RunKind, RunSpec};
+use crate::tx::targets::peel_file_targets;
 
 pub struct InstallRequest {
     pub targets: Vec<String>,
@@ -27,41 +28,6 @@ pub struct InstallPreview {
     pub aur: Vec<crate::upgrade::AurUpgradeCandidate>,
     pub pkgbuild_diffs: Vec<crate::pkgbuild::PkgbuildDiff>,
     pub prepare_error: Option<crate::tx::convert::PrepareFailure>,
-}
-
-impl InstallPreview {
-    pub fn question_set(&self) -> crate::question::QuestionSet {
-        let mut qs = crate::question::QuestionSet::default();
-        for question in &self.review.part1 {
-            match question {
-                Question::Conflict {
-                    incoming,
-                    removable,
-                } => qs.conflicts.push(crate::question::Conflict {
-                    incoming: incoming.clone(),
-                    removable: removable.clone(),
-                }),
-                Question::SelectProvider { depend, candidates } => {
-                    qs.providers.push(crate::question::ProviderPrompt {
-                        depend: depend.clone(),
-                        candidates: candidates.clone(),
-                    });
-                }
-                Question::Replace { .. }
-                | Question::InstallIgnorepkg { .. }
-                | Question::RemovePkgs { .. } => {
-                    qs.had_unsupported_question = true;
-                    qs.unsupported_summary.push_str(match question {
-                        Question::Replace { .. } => "replace; ",
-                        Question::InstallIgnorepkg { .. } => "install-ignorepkg; ",
-                        _ => "remove-pkgs; ",
-                    });
-                }
-                _ => {}
-            }
-        }
-        qs
-    }
 }
 
 const JSON_SEAL_REQUIRED: &str = "--json requires sealed approvals";
@@ -438,27 +404,6 @@ fn expand_install_groups(handle: &alpm::Alpm, positionals: &[String], tty: bool)
     out
 }
 
-fn peel_file_targets(positionals: &[String]) -> (Vec<String>, Vec<String>) {
-    let mut files: Vec<String> = Vec::new();
-    let mut names: Vec<String> = Vec::new();
-    for s in positionals {
-        if file_suffix_path(s).is_some() {
-            files.push(s.clone());
-        } else {
-            names.push(s.clone());
-        }
-    }
-    (files, names)
-}
-
-fn file_suffix_path(target: &str) -> Option<&str> {
-    const FILE_SUFFIXES: &[&str] = &[".pkg.tar", ".pkg.tar.gz", ".pkg.tar.zst", ".pkg.tar.xz"];
-    FILE_SUFFIXES
-        .iter()
-        .any(|suffix| target.ends_with(suffix))
-        .then_some(target)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,17 +448,6 @@ mod tests {
             NON_INTERACTIVE_SEAL_REQUIRED,
             "non-interactive install requires sealed approvals"
         );
-    }
-
-    #[test]
-    fn peel_file_targets_separates_suffix_paths_from_names() {
-        let (files, names) = peel_file_targets(&[
-            "neovim".to_string(),
-            "/tmp/foo-1.0-1-x86_64.pkg.tar.zst".to_string(),
-            "yay-bin".to_string(),
-        ]);
-        assert_eq!(files, vec!["/tmp/foo-1.0-1-x86_64.pkg.tar.zst".to_string()]);
-        assert_eq!(names, vec!["neovim".to_string(), "yay-bin".to_string()]);
     }
 
     #[test]
@@ -574,110 +508,6 @@ mod tests {
             ]
         );
         assert!(plan_conflicts_to_questions(&ConflictReport::default()).is_empty());
-    }
-
-    #[test]
-    fn question_set_adapter_maps_known_questions_and_gates_rest() {
-        let qs = InstallPreview {
-            review: Review {
-                part1: vec![
-                    Question::Conflict {
-                        incoming: "cava-git".to_string(),
-                        removable: "cava".to_string(),
-                    },
-                    Question::SelectProvider {
-                        depend: "virt".to_string(),
-                        candidates: vec![crate::question::model::ProviderCandidate {
-                            name: "provider-one".to_string(),
-                            repo: Some("core".to_string()),
-                            version: Some("1.0-1".to_string()),
-                        }],
-                    },
-                ],
-                ..Default::default()
-            },
-            aur: Vec::new(),
-            pkgbuild_diffs: Vec::new(),
-            prepare_error: None,
-        }
-        .question_set();
-        assert_eq!(
-            qs.conflicts,
-            vec![crate::question::legacy::Conflict {
-                incoming: "cava-git".to_string(),
-                removable: "cava".to_string(),
-            }]
-        );
-        assert_eq!(
-            qs.providers,
-            vec![crate::question::legacy::ProviderPrompt {
-                depend: "virt".to_string(),
-                candidates: vec![crate::question::model::ProviderCandidate {
-                    name: "provider-one".to_string(),
-                    repo: Some("core".to_string()),
-                    version: Some("1.0-1".to_string()),
-                }],
-            }]
-        );
-        assert_eq!(qs.providers[0].depend, "virt");
-        assert!(!qs.had_unsupported_question);
-        assert!(qs.held.is_empty());
-        for (part1, gate, summary) in [
-            (
-                vec![Question::Replace {
-                    old: "gcc-multilib".to_string(),
-                    new: "gcc".to_string(),
-                    repo: Some("core".to_string()),
-                }],
-                true,
-                "replace; ",
-            ),
-            (
-                vec![Question::InstallIgnorepkg {
-                    name: "glibc".to_string(),
-                }],
-                true,
-                "install-ignorepkg; ",
-            ),
-            (
-                vec![
-                    Question::Replace {
-                        old: "gcc-multilib".to_string(),
-                        new: "gcc".to_string(),
-                        repo: Some("core".to_string()),
-                    },
-                    Question::InstallIgnorepkg {
-                        name: "glibc".to_string(),
-                    },
-                ],
-                true,
-                "replace; install-ignorepkg; ",
-            ),
-            (
-                vec![Question::RemovePkgs {
-                    names: vec!["nvidia-utils".to_string()],
-                }],
-                true,
-                "remove-pkgs; ",
-            ),
-            (vec![], false, ""),
-        ] {
-            let gated = preview_with(part1.clone()).question_set();
-            assert_eq!(gated.had_unsupported_question, gate, "{part1:?}");
-            assert_eq!(gated.unsupported_summary, summary, "{part1:?}");
-        }
-    }
-
-    fn preview_with(part1: Vec<Question>) -> InstallPreview {
-        InstallPreview {
-            review: Review {
-                part1,
-                ..Default::default()
-            },
-            aur: Vec::new(),
-            pkgbuild_diffs: Vec::new(),
-            prepare_error: None,
-        }
     }
 
     #[test]

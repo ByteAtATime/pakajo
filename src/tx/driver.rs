@@ -602,6 +602,7 @@ mod tests {
                     package.version,
                     &package.depends,
                     &package.conflicts,
+                    &package.groups,
                 );
             }
         }

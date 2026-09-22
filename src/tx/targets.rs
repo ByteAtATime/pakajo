@@ -97,6 +97,27 @@ fn split_pin(target: &str) -> Option<(&str, &str)> {
     }
 }
 
+pub fn peel_file_targets(positionals: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut files: Vec<String> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    for s in positionals {
+        if file_suffix_path(s).is_some() {
+            files.push(s.clone());
+        } else {
+            names.push(s.clone());
+        }
+    }
+    (files, names)
+}
+
+fn file_suffix_path(target: &str) -> Option<&str> {
+    const FILE_SUFFIXES: &[&str] = &[".pkg.tar", ".pkg.tar.gz", ".pkg.tar.zst", ".pkg.tar.xz"];
+    FILE_SUFFIXES
+        .iter()
+        .any(|suffix| target.ends_with(suffix))
+        .then_some(target)
+}
+
 #[cfg(test)]
 pub(crate) fn filename(name: &str, version: &str) -> String {
     format!("{name}-{version}-any.pkg.tar.gz")
@@ -109,6 +130,7 @@ pub(crate) fn write_cachedir_stub(
     version: &str,
     depends: &[&str],
     conflicts: &[&str],
+    groups: &[&str],
 ) {
     use std::fmt::Write as _;
     use std::io::Cursor;
@@ -121,6 +143,9 @@ pub(crate) fn write_cachedir_stub(
     }
     for conflict in conflicts {
         writeln!(pkginfo, "conflict = {conflict}").unwrap();
+    }
+    for group in groups {
+        writeln!(pkginfo, "group = {group}").unwrap();
     }
     let path = cachedir.join(filename(name, version));
     let file = std::fs::File::create(&path).unwrap();
@@ -270,6 +295,17 @@ mod tests {
     fn unresolvable(handle: &Alpm, targets: &[&str]) -> Option<String> {
         let owned: Vec<String> = targets.iter().map(|t| t.to_string()).collect();
         unresolvable_target(handle, &owned)
+    }
+
+    #[test]
+    fn peel_file_targets_separates_suffix_paths_from_names() {
+        let (files, names) = peel_file_targets(&[
+            "neovim".to_string(),
+            "/tmp/foo-1.0-1-x86_64.pkg.tar.zst".to_string(),
+            "yay-bin".to_string(),
+        ]);
+        assert_eq!(files, vec!["/tmp/foo-1.0-1-x86_64.pkg.tar.zst".to_string()]);
+        assert_eq!(names, vec!["neovim".to_string(), "yay-bin".to_string()]);
     }
 
     #[test]

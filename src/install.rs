@@ -1,18 +1,13 @@
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::Rc;
 
-use anyhow::Context;
-
-use crate::events::{InstallEvent, InstallSink, LogLevel};
+use crate::events::{InstallEvent, InstallSink};
 use crate::tx::convert::{
     convert_download, convert_event, convert_log_level, convert_progress_phase,
 };
 
-pub use crate::tx::convert::build_summary;
-
 #[cfg(test)]
-pub use tests::setup_fake_root;
+pub use tests::{OfflinePkg, drive_sync, offline_pkg, offline_root, setup_fake_root};
 
 pub struct QuestionState {
     pub deny_flag: bool,
@@ -32,23 +27,7 @@ impl QuestionState {
 
 pub enum InstallTarget {
     Repo(String),
-    File(PathBuf),
-}
-
-pub fn install_into<S: InstallSink + 'static, F: FnOnce() -> bool>(
-    handle: &mut alpm::Alpm,
-    targets: &[InstallTarget],
-    as_deps: bool,
-    sink: S,
-    confirm: F,
-    answerer: Box<dyn crate::answerer::QuestionAnswerer>,
-) -> anyhow::Result<()> {
-    let sink = Rc::new(RefCell::new(sink));
-    let qstate = Rc::new(RefCell::new(QuestionState::new(answerer)));
-    register_callbacks(handle, sink.clone(), qstate.clone());
-    let result = run_transaction(handle, targets, as_deps, &sink, &qstate, confirm);
-    crate::pacman::lock::finish_transaction(handle);
-    result
+    File(std::path::PathBuf),
 }
 
 pub fn register_callbacks<S: InstallSink + 'static>(
@@ -174,118 +153,11 @@ pub fn register_callbacks<S: InstallSink + 'static>(
     );
 }
 
-fn run_transaction<S: InstallSink, F: FnOnce() -> bool>(
-    handle: &mut alpm::Alpm,
-    targets: &[InstallTarget],
-    as_deps: bool,
-    sink: &Rc<RefCell<S>>,
-    qstate: &Rc<RefCell<QuestionState>>,
-    confirm: F,
-) -> anyhow::Result<()> {
-    crate::pacman::lock::cleanup_on_signal(handle);
-
-    crate::pacman::lock::lock_retry(
-        || handle.trans_init(alpm::TransFlag::NONE),
-        || {
-            sink.borrow_mut()
-                .event(InstallEvent::WaitingForDatabaseLock);
-        },
-        crate::pacman::lock::LOCK_POLL_INTERVAL,
-    )
-    .context("failed to initialize transaction")?;
-
-    if targets.iter().any(|t| matches!(t, InstallTarget::File(_))) {
-        sink.borrow_mut().event(InstallEvent::LoadingPackages);
-    }
-
-    let repo_names: Vec<String> = targets
-        .iter()
-        .filter_map(|target| match target {
-            InstallTarget::Repo(name) => Some(name.clone()),
-            InstallTarget::File(_) => None,
-        })
-        .collect();
-    let resolved = crate::tx::targets::resolve_targets(handle, &repo_names)?;
-    for skipped in &resolved.skipped {
-        sink.borrow_mut().event(InstallEvent::Log {
-            level: LogLevel::Warning,
-            message: format!("skipping target: {skipped}"),
-        });
-    }
-
-    let mut added_names: Vec<String> = Vec::with_capacity(targets.len());
-    for pkg in resolved.packages {
-        added_names.push(pkg.name().to_string());
-        handle
-            .trans_add_pkg(pkg)
-            .map_err(alpm::Error::from)
-            .context("failed to queue package for installation")?;
-    }
-    for path in targets.iter().filter_map(|target| match target {
-        InstallTarget::File(path) => Some(path),
-        InstallTarget::Repo(_) => None,
-    }) {
-        let loaded = handle
-            .pkg_load(
-                path.to_string_lossy().as_ref(),
-                true,
-                crate::pacman::local_file_siglevel(handle),
-            )
-            .context("failed to load package file")?;
-        added_names.push(loaded.name().to_string());
-        handle
-            .trans_add_pkg(loaded)
-            .map_err(alpm::Error::from)
-            .context("failed to queue package file for installation")?;
-    }
-
-    if handle.trans_add().is_empty() {
-        sink.borrow_mut().event(InstallEvent::Log {
-            level: LogLevel::Warning,
-            message: "there is nothing to do".to_string(),
-        });
-        return Ok(());
-    }
-
-    let prepare_result = handle.trans_prepare();
-    if qstate.borrow().deny_flag {
-        anyhow::bail!("aborted: {}", qstate.borrow().detail);
-    }
-    prepare_result
-        .map_err(alpm::Error::from)
-        .context("failed to prepare transaction")?;
-
-    let summary = build_summary(handle);
-    sink.borrow_mut()
-        .event(InstallEvent::TransactionSummary(summary));
-
-    if !confirm() {
-        return Ok(());
-    }
-
-    let commit = crate::pacman::lock::during_commit(|| handle.trans_commit());
-    commit.context("failed to commit transaction")?;
-    if qstate.borrow().deny_flag {
-        anyhow::bail!("aborted: {}", qstate.borrow().detail);
-    }
-
-    if as_deps {
-        for name in &added_names {
-            if let Ok(pkg) = handle.localdb().pkg(name.as_str()) {
-                pkg.set_reason(alpm::PackageReason::Depend)
-                    .context("failed to mark package as dependency")?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::cli::ConsoleSink;
-    use crate::resolve::{Base, Member, Plan};
+    use crate::question::model::{Answer, Question};
+    use crate::question::source::{AnswerSource, ExploreDefaults, SourceDecision};
+    use crate::tx::driver::{Finish, RunKind, RunOutcome, RunSpec};
     use std::fs;
 
     pub fn setup_fake_root(suffix: &str) -> alpm::Alpm {
@@ -309,19 +181,150 @@ mod tests {
         handle
     }
 
-    #[test]
-    #[ignore]
-    fn test_install() {
-        let mut handle = setup_fake_root("install");
-        let result = install_into(
-            &mut handle,
-            &[InstallTarget::Repo("sl".to_string())],
-            false,
-            ConsoleSink::new(),
-            || true,
-            Box::new(crate::answerer::DenyAllAnswerer),
+    pub struct OfflinePkg {
+        pub name: &'static str,
+        pub depends: &'static [&'static str],
+        pub provides: &'static [&'static str],
+        pub conflicts: &'static [&'static str],
+        pub groups: &'static [&'static str],
+    }
+
+    pub fn offline_pkg(name: &'static str) -> OfflinePkg {
+        OfflinePkg {
+            name,
+            depends: &[],
+            provides: &[],
+            conflicts: &[],
+            groups: &[],
+        }
+    }
+
+    pub fn offline_root(packages: &[OfflinePkg]) -> (tempfile::TempDir, alpm::Alpm) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let db = dir.path().join("db");
+        let cache = dir.path().join("cache");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(db.join("local")).unwrap();
+        fs::create_dir_all(db.join("sync")).unwrap();
+        fs::create_dir_all(&cache).unwrap();
+        let mut handle = alpm::Alpm::new(
+            root.to_string_lossy().as_ref(),
+            db.to_string_lossy().as_ref(),
+        )
+        .unwrap();
+        let file = fs::File::create(db.join("sync").join("core.db")).unwrap();
+        let mut builder = tar::Builder::new(file);
+        for package in packages {
+            let content = offline_desc(package);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(
+                    &mut header,
+                    format!("{}-1.0-1/desc", package.name),
+                    content.as_slice(),
+                )
+                .unwrap();
+        }
+        builder.into_inner().unwrap();
+        for package in packages {
+            crate::tx::targets::write_cachedir_stub(
+                &cache,
+                package.name,
+                "1.0-1",
+                package.depends,
+                package.conflicts,
+                package.groups,
+            );
+        }
+        handle
+            .register_syncdb_mut("core", alpm::SigLevel::NONE)
+            .unwrap()
+            .add_server("file:///pakajo-offline-stub")
+            .unwrap();
+        handle
+            .add_cachedir(cache.to_string_lossy().as_ref())
+            .unwrap();
+        (dir, handle)
+    }
+
+    fn offline_desc(package: &OfflinePkg) -> Vec<u8> {
+        let mut out = format!(
+            "%NAME%\n{}\n\n%VERSION%\n1.0-1\n\n%FILENAME%\n{}\n\n",
+            package.name,
+            crate::tx::targets::filename(package.name, "1.0-1"),
         );
-        result.expect("install should succeed");
+        for (tag, entries) in [
+            ("%DEPENDS%\n", package.depends),
+            ("%CONFLICTS%\n", package.conflicts),
+            ("%PROVIDES%\n", package.provides),
+            ("%GROUPS%\n", package.groups),
+        ] {
+            if entries.is_empty() {
+                continue;
+            }
+            out.push_str(tag);
+            for entry in entries {
+                out.push_str(entry);
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+        out.into_bytes()
+    }
+
+    struct Discard;
+
+    impl crate::events::InstallSink for Discard {
+        fn event(&mut self, _event: crate::events::InstallEvent) {}
+    }
+
+    pub fn drive_sync(
+        handle: &mut alpm::Alpm,
+        targets: &[&str],
+        source: Box<dyn AnswerSource>,
+    ) -> anyhow::Result<RunOutcome> {
+        let spec = RunSpec {
+            kind: RunKind::Sync,
+            targets: targets.iter().map(|target| target.to_string()).collect(),
+            stub_targets: Vec::new(),
+            explore: false,
+            as_deps: false,
+            reinstall: false,
+        };
+        crate::tx::driver::run(handle, &spec, source, Box::new(Discard))
+    }
+
+    fn preapproved() -> Box<dyn AnswerSource> {
+        crate::tx::prompt::with_preapproved_proceed(Box::new(ExploreDefaults))
+    }
+
+    struct DeclineConflicts;
+
+    impl AnswerSource for DeclineConflicts {
+        fn answer(&self, question: &Question) -> SourceDecision {
+            match question {
+                Question::Conflict {
+                    incoming,
+                    removable,
+                } => SourceDecision::Answer(Answer::Conflict {
+                    incoming: incoming.clone(),
+                    removable: removable.clone(),
+                    remove: false,
+                }),
+                other => ExploreDefaults.answer(other),
+            }
+        }
+    }
+
+    #[test]
+    fn engine_install_commits_single_package() {
+        let (_dir, mut handle) = offline_root(&[offline_pkg("sl")]);
+        let outcome = drive_sync(&mut handle, &["sl"], preapproved()).unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
         assert!(
             handle.localdb().pkg("sl").is_ok(),
             "sl should be installed in the local db"
@@ -329,21 +332,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn test_install_multiple() {
-        let mut handle = setup_fake_root("install_multiple");
-        let result = install_into(
-            &mut handle,
-            &[
-                InstallTarget::Repo("sl".to_string()),
-                InstallTarget::Repo("figlet".to_string()),
-            ],
-            false,
-            ConsoleSink::new(),
-            || true,
-            Box::new(crate::answerer::DenyAllAnswerer),
-        );
-        result.expect("install should succeed");
+    fn engine_install_commits_multiple_targets() {
+        let (_dir, mut handle) = offline_root(&[offline_pkg("sl"), offline_pkg("figlet")]);
+        let outcome = drive_sync(&mut handle, &["sl", "figlet"], preapproved()).unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
         assert!(
             handle.localdb().pkg("sl").is_ok(),
             "sl should be installed in the local db"
@@ -355,221 +347,102 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn test_install_aborted() {
-        let mut handle = setup_fake_root("abort");
-        let result = install_into(
-            &mut handle,
-            &[InstallTarget::Repo("sl".to_string())],
-            false,
-            ConsoleSink::new(),
-            || false,
-            Box::new(crate::answerer::DenyAllAnswerer),
-        );
-        result.expect("aborted install should not error");
+    fn engine_install_stopped_leaves_localdb_empty() {
+        let (_dir, mut handle) = offline_root(&[offline_pkg("sl")]);
+        let outcome = drive_sync(&mut handle, &["sl"], Box::new(ExploreDefaults)).unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
         assert!(
             handle.localdb().pkg("sl").is_err(),
-            "sl must NOT be installed after an aborted confirm"
+            "sl must NOT be installed after a stopped confirm"
         );
     }
 
     #[test]
-    #[ignore]
-    fn test_conflict_surfaces_as_named_abort() {
-        let mut handle = setup_fake_root("conflict_abort");
-        install_into(
-            &mut handle,
-            &[InstallTarget::Repo("vim".to_string())],
-            false,
-            ConsoleSink::new(),
-            || true,
-            Box::new(crate::answerer::DenyAllAnswerer),
-        )
-        .expect("vim should install first");
+    fn engine_conflict_decline_fails_without_committing() {
+        let gvim = OfflinePkg {
+            name: "gvim",
+            conflicts: &["vim"],
+            ..offline_pkg("gvim")
+        };
+        let (_dir, mut handle) = offline_root(&[offline_pkg("vim"), gvim]);
+        drive_sync(&mut handle, &["vim"], preapproved()).unwrap();
         assert!(
             handle.localdb().pkg("vim").is_ok(),
             "vim should be installed before the conflict test"
         );
 
-        let result = install_into(
-            &mut handle,
-            &[InstallTarget::Repo("gvim".to_string())],
-            false,
-            ConsoleSink::new(),
-            || true,
-            Box::new(crate::answerer::DenyAllAnswerer),
-        );
-        let err = result.expect_err("gvim install should abort due to vim conflict");
-        let msg = format!("{err:#}");
+        let outcome = drive_sync(&mut handle, &["gvim"], Box::new(DeclineConflicts)).unwrap();
         assert!(
-            msg.contains("declined to remove vim"),
-            "error must name vim (the installed package) as removable: {msg}"
-        );
-        assert!(
-            !msg.contains("failed to prepare transaction"),
-            "friendly detail must win over the generic context: {msg}"
+            matches!(outcome.finish, Finish::PrepareFailed(_)),
+            "declined conflict must fail prepare, got {:?}",
+            outcome.finish
         );
         assert!(
             handle.localdb().pkg("gvim").is_err(),
-            "gvim must NOT be installed after the aborted conflict"
+            "gvim must NOT be installed after the declined conflict"
         );
     }
 
     #[test]
-    #[ignore]
-    fn stub_targets_queue_without_conflict_metadata() {
-        let mut handle = setup_fake_root("dryrun_conflict");
-        install_into(
-            &mut handle,
-            &[InstallTarget::Repo("cava".to_string())],
-            false,
-            ConsoleSink::new(),
-            || true,
-            Box::new(crate::answerer::DenyAllAnswerer),
-        )
-        .expect("cava should install first");
-        assert!(
-            handle.localdb().pkg("cava").is_ok(),
-            "cava should be installed before the stub conflict test"
-        );
-        let plan = Plan {
-            bases: vec![Base::Aur {
-                base: "cava-git".into(),
-                build: true,
-                members: vec![Member {
-                    name: "cava-git".into(),
-                    version: "0.10.4-1".into(),
-                    make: false,
-                    target: true,
-                }],
-            }],
-            ..Default::default()
-        };
-
-        let state = crate::dry_run::attach_recorder(&mut handle);
-        handle
-            .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
-            .expect("failed to init stub preview transaction");
-        let (stub_dir, stubs) = crate::dispatch::install::build_stubs(Some(&plan))
-            .expect("stub building should succeed");
-        for stub in &stubs {
-            let loaded = handle
-                .pkg_load(stub.as_str(), false, alpm::SigLevel::NONE)
-                .expect("stub should load");
-            handle.trans_add_pkg(loaded).expect("stub should queue");
-        }
-        drop(stub_dir);
-        handle
-            .trans_prepare()
-            .expect("stub transaction should prepare");
-        let qs = crate::dry_run::snapshot(&state);
-        let _ = handle.trans_release();
-        assert!(
-            qs.conflicts.is_empty(),
-            "stubs carry no conflict metadata; got {qs:?}"
-        );
-    }
-
-    #[test]
-    #[ignore]
-    fn stub_seed_without_metadata_installs_clean() {
-        let mut handle = setup_fake_root("dryrun_repo_conflict");
-
-        use crate::stub_pkg::build_stub_pkg;
-        let stub_dir = tempfile::tempdir().unwrap();
-        let stub = build_stub_pkg("cava-git", "0.10.4-1", stub_dir.path()).unwrap();
-        handle.trans_init(alpm::TransFlag::NONE).unwrap();
-        let loaded = handle
-            .pkg_load(stub.to_string_lossy().as_ref(), false, alpm::SigLevel::NONE)
-            .unwrap();
-        handle.trans_add_pkg(loaded).unwrap();
-        handle.trans_prepare().unwrap();
-        handle.trans_commit().unwrap();
-        handle.trans_release().unwrap();
-        handle
-            .localdb()
-            .pkg("cava-git")
-            .expect("cava-git should be installed in localdb after seeding");
-
-        let request = crate::dispatch::InstallRequest {
-            targets: vec!["cava".to_string()],
-            as_deps: false,
-            reinstall: false,
-            no_check: false,
-            ignores: vec![],
-            prefer_aur: false,
-            decider: Box::new(crate::dispatch::protocol::AutomaticDecider::new()),
-            approvals: None,
-            tty: false,
-            json: false,
-        };
-        let preview = crate::dispatch::install::run_install_preview(&mut handle, &request)
-            .expect("install preview should succeed");
-        let _ = handle.trans_release();
-        let qs = preview.question_set();
-        assert!(
-            qs.conflicts.is_empty(),
-            "stubs carry no conflict metadata; got {qs:?}"
-        );
-    }
-
-    #[test]
-    #[ignore]
-    fn test_provider_surfaces_choice() {
+    fn engine_provider_choice_is_recorded() {
         use std::sync::{Arc, Mutex};
 
-        use crate::answerer::{ConflictDecision, ProviderDecision, QuestionAnswerer};
-        use crate::question::ProviderCandidate;
+        type RecordedProviders = Arc<Mutex<Vec<(String, usize)>>>;
 
-        type RecordedProviders = Arc<Mutex<Vec<(String, Vec<ProviderCandidate>)>>>;
-
-        struct RecordingAnswerer {
+        struct RecordingProvider {
             recorded: RecordedProviders,
         }
 
-        impl QuestionAnswerer for RecordingAnswerer {
-            fn answer_conflict(
-                &self,
-                _incoming: &str,
-                _incoming_version: &str,
-                _removable: &str,
-                _removable_version: &str,
-            ) -> ConflictDecision {
-                ConflictDecision::Decline
-            }
-
-            fn answer_provider(
-                &self,
-                depend: &str,
-                candidates: &[ProviderCandidate],
-            ) -> ProviderDecision {
-                self.recorded
-                    .lock()
-                    .unwrap()
-                    .push((depend.to_string(), candidates.to_vec()));
-                ProviderDecision::Choose(0)
+        impl AnswerSource for RecordingProvider {
+            fn answer(&self, question: &Question) -> SourceDecision {
+                match question {
+                    Question::SelectProvider { depend, candidates } => {
+                        self.recorded
+                            .lock()
+                            .unwrap()
+                            .push((depend.clone(), candidates.len()));
+                        let first = &candidates[0];
+                        SourceDecision::Answer(Answer::SelectProvider {
+                            name: first.name.clone(),
+                            repo: first.repo.clone(),
+                        })
+                    }
+                    other => ExploreDefaults.answer(other),
+                }
             }
         }
 
+        let netapp = OfflinePkg {
+            name: "netapp",
+            depends: &["sdl"],
+            ..offline_pkg("netapp")
+        };
+        let sdl_one = OfflinePkg {
+            name: "sdl-one",
+            provides: &["sdl"],
+            ..offline_pkg("sdl-one")
+        };
+        let sdl_two = OfflinePkg {
+            name: "sdl-two",
+            provides: &["sdl"],
+            ..offline_pkg("sdl-two")
+        };
+        let (_dir, mut handle) = offline_root(&[netapp, sdl_one, sdl_two]);
         let recorded: RecordedProviders = Arc::new(Mutex::new(Vec::new()));
-        let mut handle = setup_fake_root("provider");
-        let result = install_into(
+        let outcome = drive_sync(
             &mut handle,
-            &[InstallTarget::Repo("sdl_net".to_string())],
-            false,
-            ConsoleSink::new(),
-            || false,
-            Box::new(RecordingAnswerer {
+            &["netapp"],
+            Box::new(RecordingProvider {
                 recorded: recorded.clone(),
             }),
-        );
-        result.expect("install_into should succeed even when confirm aborts before commit");
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
         let captured = recorded.lock().unwrap().clone();
-        println!("recorded provider prompts: {captured:?}");
         assert!(
             captured
                 .iter()
-                .any(|(depend, cands)| depend == "sdl" && cands.len() >= 2),
+                .any(|(depend, count)| depend == "sdl" && *count >= 2),
             "expected a SelectProvider for \"sdl\" with >=2 candidates; got {captured:?}"
         );
     }
