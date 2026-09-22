@@ -46,8 +46,8 @@ pub fn seal(
 
 pub fn match_answer(question: &Question, sealed: &SealedApprovals) -> Sealed {
     match question {
-        Question::Proceed(_) if sealed.proceed => Sealed::Answer(Answer::Proceed),
-        Question::Proceed(_) => Sealed::Ask,
+        Question::Proceed { .. } if sealed.proceed => Sealed::Answer(Answer::Proceed),
+        Question::Proceed { .. } => Sealed::Ask,
         question if question.is_runtime() => Sealed::Ask,
         question => replay_answer(question, sealed),
     }
@@ -169,6 +169,7 @@ mod tests {
     use super::*;
     use crate::events::TransactionSummary;
     use crate::question::model::ProviderCandidate;
+    use crate::question::model::TransactionKind;
     use serde_json::{from_value, to_value};
 
     fn s(value: &str) -> String {
@@ -246,6 +247,7 @@ mod tests {
             (
                 Question::RemovePkgs {
                     names: vec![s("b"), s("a")],
+                    kind: TransactionKind::Install,
                 },
                 Answer::RemovePkgs {
                     names: vec![s("a"), s("b")],
@@ -300,7 +302,10 @@ mod tests {
         );
         assert!(
             seal(
-                &[Question::Proceed(summary())],
+                &[Question::Proceed {
+                    summary: summary(),
+                    kind: TransactionKind::Install,
+                }],
                 &[answers[4].clone()],
                 false
             )
@@ -424,7 +429,13 @@ mod tests {
         };
         validate(&sealed).expect("empty proceed seal is valid");
         assert_eq!(
-            match_answer(&Question::Proceed(summary()), &sealed),
+            match_answer(
+                &Question::Proceed {
+                    summary: summary(),
+                    kind: TransactionKind::Install,
+                },
+                &sealed
+            ),
             Sealed::Answer(Answer::Proceed)
         );
         assert_eq!(
@@ -444,7 +455,10 @@ mod tests {
         let fixture = collectable_fixture();
         let (questions, answers) = split(&fixture);
         let sealed = seal(&questions, &answers, true).expect("seal succeeds");
-        let proceed = Question::Proceed(summary());
+        let proceed = Question::Proceed {
+            summary: summary(),
+            kind: TransactionKind::Install,
+        };
         assert_eq!(
             match_answer(&proceed, &sealed),
             Sealed::Answer(Answer::Proceed)
@@ -480,6 +494,7 @@ mod tests {
         );
         let reordered = Question::RemovePkgs {
             names: vec![s("a"), s("b")],
+            kind: TransactionKind::Install,
         };
         assert_eq!(
             match_answer(&reordered, &sealed),

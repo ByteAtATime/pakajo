@@ -9,6 +9,12 @@ pub struct ProviderCandidate {
     pub version: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransactionKind {
+    Install,
+    Remove,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Question {
     Conflict {
@@ -29,6 +35,7 @@ pub enum Question {
     },
     RemovePkgs {
         names: Vec<String>,
+        kind: TransactionKind,
     },
     Corrupted {
         path: String,
@@ -37,7 +44,10 @@ pub enum Question {
         fingerprint: String,
         uid: String,
     },
-    Proceed(TransactionSummary),
+    Proceed {
+        summary: TransactionSummary,
+        kind: TransactionKind,
+    },
     GroupMembers {
         group: String,
         members: Vec<String>,
@@ -116,7 +126,7 @@ impl Question {
             Question::InstallIgnorepkg { name } => {
                 QuestionKey::InstallIgnorepkg { name: name.clone() }
             }
-            Question::RemovePkgs { names } => {
+            Question::RemovePkgs { names, .. } => {
                 let mut ordered = names.clone();
                 ordered.sort();
                 QuestionKey::RemovePkgs { names: ordered }
@@ -125,7 +135,7 @@ impl Question {
             Question::ImportKey { fingerprint, .. } => QuestionKey::ImportKey {
                 fingerprint: fingerprint.clone(),
             },
-            Question::Proceed(_) => QuestionKey::Proceed,
+            Question::Proceed { .. } => QuestionKey::Proceed,
             Question::GroupMembers { group, .. } => QuestionKey::GroupMembers {
                 group: group.clone(),
             },
@@ -143,7 +153,7 @@ impl Question {
         if self.is_runtime() {
             return false;
         }
-        !matches!(self, Question::Proceed(_))
+        !matches!(self, Question::Proceed { .. })
     }
 }
 
@@ -191,6 +201,7 @@ mod tests {
         );
         let shuffled = Question::RemovePkgs {
             names: vec!["b".to_string(), "a".to_string()],
+            kind: TransactionKind::Install,
         };
         assert_eq!(
             shuffled.key(),
@@ -219,7 +230,10 @@ mod tests {
             Question::InstallIgnorepkg {
                 name: "glibc".to_string(),
             },
-            Question::RemovePkgs { names: vec![] },
+            Question::RemovePkgs {
+                names: vec![],
+                kind: TransactionKind::Install,
+            },
             Question::GroupMembers {
                 group: "base-devel".to_string(),
                 members: vec![],
@@ -241,7 +255,17 @@ mod tests {
             assert!(question.is_runtime());
             assert!(!question.is_collectable());
         }
-        assert!(!Question::Proceed(summary()).is_collectable());
-        assert!(!Question::Proceed(summary()).is_runtime());
+        let install = Question::Proceed {
+            summary: summary(),
+            kind: TransactionKind::Install,
+        };
+        assert!(!install.is_collectable());
+        assert!(!install.is_runtime());
+        let remove = Question::Proceed {
+            summary: summary(),
+            kind: TransactionKind::Remove,
+        };
+        assert!(!remove.is_collectable());
+        assert!(!remove.is_runtime());
     }
 }

@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::question::model::{Answer, ProviderCandidate, Question, QuestionKey};
+use crate::question::model::{Answer, ProviderCandidate, Question, QuestionKey, TransactionKind};
 use crate::question::source::{AnswerSource, FailClosed, SourceDecision};
 
 pub struct QuestionSession {
@@ -101,9 +101,15 @@ impl QuestionSession {
                     .iter()
                     .map(|pkg| pkg.name().to_string())
                     .collect();
-                self.decide_bool(Question::RemovePkgs { names }, |skip| {
-                    asked.set_skip(skip);
-                });
+                self.decide_bool(
+                    Question::RemovePkgs {
+                        names,
+                        kind: TransactionKind::Install,
+                    },
+                    |skip| {
+                        asked.set_skip(skip);
+                    },
+                );
             }
             alpm::Question::SelectProvider(mut asked) => {
                 self.answer_provider(&mut asked);
@@ -220,6 +226,8 @@ fn provider_candidates(asked: &alpm::SelectProviderQuestion<'_>) -> Vec<Provider
 mod tests {
     use super::*;
 
+    use crate::question::model::TransactionKind;
+
     fn candidate(name: &str, repo: &str) -> ProviderCandidate {
         ProviderCandidate {
             name: name.into(),
@@ -243,7 +251,10 @@ mod tests {
                 selected: vec!["a".to_string(), "b".to_string()]
             })
         );
-        let proceed = Question::Proceed(crate::events::TransactionSummary::default());
+        let proceed = Question::Proceed {
+            summary: crate::events::TransactionSummary::default(),
+            kind: TransactionKind::Install,
+        };
         assert_eq!(session.ask_direct(&proceed).unwrap(), None);
         assert_eq!(session.recorded(), vec![(group, answered.unwrap())]);
     }

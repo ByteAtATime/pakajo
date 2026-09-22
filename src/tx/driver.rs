@@ -7,7 +7,7 @@ use crate::events::{InstallEvent, InstallSink, LogLevel, TransactionSummary};
 use crate::pacman::lock::{
     LOCK_POLL_INTERVAL, cleanup_on_signal, during_commit, finish_transaction, lock_retry,
 };
-use crate::question::model::{Answer, Question};
+use crate::question::model::{Answer, Question, TransactionKind};
 use crate::question::source::AnswerSource;
 use crate::tx::convert::{
     PrepareFailure, build_summary, convert_download, convert_event, convert_log_level,
@@ -190,7 +190,10 @@ fn ask_proceed(
     session: &Rc<RefCell<QuestionSession>>,
     summary: &TransactionSummary,
 ) -> anyhow::Result<bool> {
-    let question = Question::Proceed(summary.clone());
+    let question = Question::Proceed {
+        summary: summary.clone(),
+        kind: TransactionKind::Install,
+    };
     let key = question.key();
     let asked = session.borrow_mut().ask_direct(&question)?;
     let Some(answer) = asked else {
@@ -448,7 +451,7 @@ mod tests {
 
     fn proceed() -> Box<dyn AnswerSource> {
         script(|question| match question {
-            Question::Proceed(_) => SourceDecision::Answer(Answer::Proceed),
+            Question::Proceed { .. } => SourceDecision::Answer(Answer::Proceed),
             _ => SourceDecision::Answer(Answer::Stop),
         })
     }
@@ -1075,7 +1078,7 @@ mod tests {
                 removable: removable.clone(),
                 remove: true,
             }),
-            Question::Proceed(_) => SourceDecision::Answer(Answer::Proceed),
+            Question::Proceed { .. } => SourceDecision::Answer(Answer::Proceed),
             _ => SourceDecision::Answer(Answer::Stop),
         });
         let outcome = run(&mut handle, &spec(&["newpkg"], false), source, discard()).unwrap();
@@ -1181,7 +1184,7 @@ mod tests {
         let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let asked = log.clone();
         let source = script(move |question| {
-            if matches!(question, Question::Proceed(_)) {
+            if matches!(question, Question::Proceed { .. }) {
                 asked.borrow_mut().push("question".to_string());
                 SourceDecision::Answer(Answer::Proceed)
             } else {

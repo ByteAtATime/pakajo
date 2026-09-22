@@ -62,7 +62,7 @@ impl AnswerSource for ExploreDefaults {
                     install: false,
                 })
             }
-            Question::RemovePkgs { names } => SourceDecision::Answer(Answer::RemovePkgs {
+            Question::RemovePkgs { names, .. } => SourceDecision::Answer(Answer::RemovePkgs {
                 names: names.clone(),
                 skip: true,
             }),
@@ -71,7 +71,7 @@ impl AnswerSource for ExploreDefaults {
                     selected: members.clone(),
                 })
             }
-            Question::Proceed(_) => SourceDecision::Answer(Answer::Stop),
+            Question::Proceed { .. } => SourceDecision::Answer(Answer::Stop),
             Question::Corrupted { .. } | Question::ImportKey { .. } => {
                 SourceDecision::Abort(FailClosed {
                     key: question.key(),
@@ -109,7 +109,7 @@ impl AnswerSource for ApprovalsReplay {
     fn answer(&self, question: &Question) -> SourceDecision {
         match match_answer(question, &self.sealed) {
             Sealed::Answer(answer) => SourceDecision::Answer(answer),
-            Sealed::Ask if matches!(question, Question::Proceed(_)) => {
+            Sealed::Ask if matches!(question, Question::Proceed { .. }) => {
                 SourceDecision::Answer(Answer::Stop)
             }
             Sealed::Ask => SourceDecision::Abort(FailClosed {
@@ -203,6 +203,7 @@ fn parse_member_number(text: &str, member_count: usize) -> Option<usize> {
 mod tests {
     use super::super::approvals::seal;
     use super::super::model::ProviderCandidate;
+    use super::super::model::TransactionKind;
     use super::*;
 
     fn provider(name: &str, repo: &str) -> ProviderCandidate {
@@ -273,6 +274,7 @@ mod tests {
             (
                 Question::RemovePkgs {
                     names: vec!["gone".to_string(), "also-gone".to_string()],
+                    kind: TransactionKind::Install,
                 },
                 Answer::RemovePkgs {
                     names: vec!["gone".to_string(), "also-gone".to_string()],
@@ -293,7 +295,10 @@ mod tests {
             assert_eq!(explore.answer(&question), SourceDecision::Answer(expected));
         }
         assert_eq!(
-            explore.answer(&Question::Proceed(summary())),
+            explore.answer(&Question::Proceed {
+                summary: summary(),
+                kind: TransactionKind::Install,
+            }),
             SourceDecision::Answer(Answer::Stop)
         );
         for question in [
@@ -361,7 +366,10 @@ mod tests {
                 incoming: s("foo"),
                 removable: s("bar"),
             },
-            Question::Proceed(summary()),
+            Question::Proceed {
+                summary: summary(),
+                kind: TransactionKind::Install,
+            },
         ] {
             assert_eq!(
                 source.answer(&question),
@@ -405,12 +413,18 @@ mod tests {
             })
         );
         assert_eq!(
-            replay.answer(&Question::Proceed(summary())),
+            replay.answer(&Question::Proceed {
+                summary: summary(),
+                kind: TransactionKind::Install,
+            }),
             SourceDecision::Answer(Answer::Proceed)
         );
         let declined = ApprovalsReplay::new(seal(&[], &[], false).expect("seal succeeds"));
         assert_eq!(
-            declined.answer(&Question::Proceed(summary())),
+            declined.answer(&Question::Proceed {
+                summary: summary(),
+                kind: TransactionKind::Install,
+            }),
             SourceDecision::Answer(Answer::Stop)
         );
     }
@@ -478,7 +492,10 @@ mod tests {
                 remove: true,
             })
         );
-        let proceed = Question::Proceed(summary());
+        let proceed = Question::Proceed {
+            summary: summary(),
+            kind: TransactionKind::Install,
+        };
         assert_eq!(
             runtime_over(Box::new(FailClosedSource), true).answer(&proceed),
             SourceDecision::Abort(FailClosed {

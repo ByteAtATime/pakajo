@@ -82,7 +82,7 @@ pub fn decode_seal(payload: &str) -> anyhow::Result<SealedApprovals> {
 mod tests {
     use super::*;
     use crate::question::approvals::{Sealed, match_answer, seal};
-    use crate::question::model::{Answer, Question, QuestionKey};
+    use crate::question::model::{Answer, Question, QuestionKey, TransactionKind};
 
     fn s(value: &str) -> String {
         value.to_string()
@@ -98,6 +98,7 @@ mod tests {
                 Question::InstallIgnorepkg { name: s("glibc") },
                 Question::RemovePkgs {
                     names: vec![s("b"), s("a")],
+                    kind: TransactionKind::Install,
                 },
             ],
             vec![
@@ -141,12 +142,15 @@ mod tests {
         }
         assert_eq!(
             match_answer(
-                &Question::Proceed(crate::events::TransactionSummary {
-                    packages: vec![],
-                    total_download_size: 0,
-                    total_installed_size: 0,
-                    total_removed_size: 0,
-                }),
+                &Question::Proceed {
+                    summary: crate::events::TransactionSummary {
+                        packages: vec![],
+                        total_download_size: 0,
+                        total_installed_size: 0,
+                        total_removed_size: 0,
+                    },
+                    kind: TransactionKind::Install,
+                },
                 &decoded
             ),
             Sealed::Answer(Answer::Proceed)

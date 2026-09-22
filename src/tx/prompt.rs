@@ -3,7 +3,7 @@ use std::io::{BufRead, Write};
 use std::rc::Rc;
 
 use crate::color;
-use crate::question::model::{Answer, Question};
+use crate::question::model::{Answer, Question, TransactionKind};
 use crate::question::source::{
     AnswerSource, FailClosed, RuntimeSource, SourceDecision, parse_group_selection,
     parse_provider_selection,
@@ -24,10 +24,10 @@ pub fn render(question: &Question, colored: bool) -> String {
         }
         Question::Replace { old, new, repo } => render_replace(old, new, repo.as_deref(), colored),
         Question::InstallIgnorepkg { name } => render_ignorepkg(name, colored),
-        Question::RemovePkgs { names } => render_remove_pkgs(names, colored),
+        Question::RemovePkgs { names, kind } => render_remove_pkgs(names, *kind, colored),
         Question::Corrupted { path } => render_corrupted(path, colored),
         Question::ImportKey { fingerprint, uid } => render_import_key(fingerprint, uid, colored),
-        Question::Proceed(summary) => render_proceed(summary, colored),
+        Question::Proceed { summary, kind } => render_proceed(summary, *kind, colored),
         Question::GroupMembers { group, members } => render_group(group, members, colored),
     }
 }
@@ -79,22 +79,33 @@ fn render_ignorepkg(name: &str, colored: bool) -> String {
     )
 }
 
-fn render_remove_pkgs(names: &[String], colored: bool) -> String {
+fn render_remove_pkgs(names: &[String], kind: TransactionKind, colored: bool) -> String {
     let single = names.len() == 1;
     let package_word = if single { "package" } else { "packages" };
-    let mut out = colon_text(
-        colored,
-        &format!(
-            "The following {package_word} cannot be upgraded due to unresolvable dependencies:\n"
+    let mut out = match kind {
+        TransactionKind::Install => colon_text(
+            colored,
+            &format!(
+                "The following {package_word} cannot be upgraded due to unresolvable dependencies:\n"
+            ),
         ),
-    );
+        TransactionKind::Remove => colon_text(
+            colored,
+            &format!("The following {package_word} were not found:\n"),
+        ),
+    };
     for name in names {
         out.push_str(&format!("  {name}\n"));
     }
-    out.push_str(&colon_text(
-        colored,
-        &format!("Do you want to skip the above {package_word} for this upgrade? [y/N] "),
-    ));
+    let tail = match kind {
+        TransactionKind::Install => {
+            format!("Do you want to skip the above {package_word} for this upgrade? [y/N] ")
+        }
+        TransactionKind::Remove => {
+            format!("Do you want to skip the above {package_word} for this removal? [y/N] ")
+        }
+    };
+    out.push_str(&colon_text(colored, &tail));
     out
 }
 
@@ -116,8 +127,17 @@ fn render_import_key(fingerprint: &str, uid: &str, colored: bool) -> String {
     }
 }
 
-fn render_proceed(_summary: &crate::events::TransactionSummary, colored: bool) -> String {
-    colon_text(colored, "Proceed with installation? [Y/n] ")
+fn render_proceed(
+    _summary: &crate::events::TransactionSummary,
+    kind: TransactionKind,
+    colored: bool,
+) -> String {
+    match kind {
+        TransactionKind::Install => colon_text(colored, "Proceed with installation? [Y/n] "),
+        TransactionKind::Remove => {
+            colon_text(colored, "Do you want to remove these packages? [Y/n] ")
+        }
+    }
 }
 
 fn render_group(group: &str, members: &[String], colored: bool) -> String {
@@ -173,7 +193,7 @@ fn decide(question: &Question, line: &str) -> SourceDecision {
             name: name.clone(),
             install: confirm(line, true),
         }),
-        Question::RemovePkgs { names } => SourceDecision::Answer(Answer::RemovePkgs {
+        Question::RemovePkgs { names, .. } => SourceDecision::Answer(Answer::RemovePkgs {
             names: names.clone(),
             skip: confirm(line, false),
         }),
@@ -185,7 +205,7 @@ fn decide(question: &Question, line: &str) -> SourceDecision {
             key: question.key(),
             reason: IMPORT_KEY_NOT_ANSWERED.to_string(),
         }),
-        Question::Proceed(_) => {
+        Question::Proceed { .. } => {
             if confirm(line, true) {
                 SourceDecision::Answer(Answer::Proceed)
             } else {
@@ -392,7 +412,7 @@ struct PreapprovedProceed {
 impl AnswerSource for PreapprovedProceed {
     fn answer(&self, question: &Question) -> SourceDecision {
         match question {
-            Question::Proceed(_) => SourceDecision::Answer(Answer::Proceed),
+            Question::Proceed { .. } => SourceDecision::Answer(Answer::Proceed),
             other => self.inner.answer(other),
         }
     }
@@ -469,7 +489,10 @@ mod tests {
     fn preapproved_proceed_answers_proceed_and_delegates_rest() {
         let source = with_preapproved_proceed(Box::new(Script));
         assert!(matches!(
-            source.answer(&Question::Proceed(summary())),
+            source.answer(&Question::Proceed {
+                summary: summary(),
+                kind: TransactionKind::Install,
+            }),
             SourceDecision::Answer(Answer::Proceed)
         ));
         assert!(matches!(
@@ -507,8 +530,18 @@ mod tests {
                 "There are 3 members in group tools:\n  1) a\n  2) b\n  3) c\n\nEnter a selection (default=all): ",
             ),
             (
-                Question::Proceed(summary()),
+                Question::Proceed {
+                    summary: summary(),
+                    kind: TransactionKind::Install,
+                },
                 "Proceed with installation? [Y/n] ",
+            ),
+            (
+                Question::Proceed {
+                    summary: summary(),
+                    kind: TransactionKind::Remove,
+                },
+                "Do you want to remove these packages? [Y/n] ",
             ),
             (
                 Question::Corrupted {
@@ -547,8 +580,23 @@ mod tests {
             (
                 Question::RemovePkgs {
                     names: vec!["a".to_string(), "b".to_string()],
+                    kind: TransactionKind::Install,
                 },
                 "The following packages cannot be upgraded due to unresolvable dependencies:\n  a\n  b\nDo you want to skip the above packages for this upgrade? [y/N] ",
+            ),
+            (
+                Question::RemovePkgs {
+                    names: vec!["a".to_string(), "b".to_string()],
+                    kind: TransactionKind::Remove,
+                },
+                "The following packages were not found:\n  a\n  b\nDo you want to skip the above packages for this removal? [y/N] ",
+            ),
+            (
+                Question::RemovePkgs {
+                    names: vec!["a".to_string()],
+                    kind: TransactionKind::Remove,
+                },
+                "The following package were not found:\n  a\nDo you want to skip the above package for this removal? [y/N] ",
             ),
         ];
         for (question, expected) in cases {
@@ -626,12 +674,28 @@ mod tests {
             SourceDecision::Answer(Answer::Conflict { remove, .. }) => assert!(!remove),
             other => panic!("expected conflict answer, got {other:?}"),
         }
+        let install_proceed = Question::Proceed {
+            summary: summary(),
+            kind: TransactionKind::Install,
+        };
+        let remove_proceed = Question::Proceed {
+            summary: summary(),
+            kind: TransactionKind::Remove,
+        };
         assert!(matches!(
-            ask(&Question::Proceed(summary()), b"\n", false).0,
+            ask(&install_proceed, b"\n", false).0,
             SourceDecision::Answer(Answer::Proceed)
         ));
         assert!(matches!(
-            ask(&Question::Proceed(summary()), b"n\n", false).0,
+            ask(&install_proceed, b"n\n", false).0,
+            SourceDecision::Answer(Answer::Stop)
+        ));
+        assert!(matches!(
+            ask(&remove_proceed, b"\n", false).0,
+            SourceDecision::Answer(Answer::Proceed)
+        ));
+        assert!(matches!(
+            ask(&remove_proceed, b"n\n", false).0,
             SourceDecision::Answer(Answer::Stop)
         ));
         for (question, check) in [

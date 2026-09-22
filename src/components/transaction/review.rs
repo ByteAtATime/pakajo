@@ -306,12 +306,12 @@ impl InstallReview {
                 name: name.clone(),
                 install: self.ignorepkg_checks.get(i).copied().unwrap_or(true),
             },
-            Question::RemovePkgs { names } => Answer::RemovePkgs {
+            Question::RemovePkgs { names, .. } => Answer::RemovePkgs {
                 names: names.clone(),
                 skip: self.removepkgs_checks.get(i).copied().unwrap_or(false),
             },
             Question::GroupMembers { .. } => Answer::GroupMembers { selected: vec![] },
-            Question::Proceed(_) => Answer::Proceed,
+            Question::Proceed { .. } => Answer::Proceed,
             Question::Corrupted { path } => Answer::Corrupted {
                 path: path.clone(),
                 remove: false,
@@ -443,7 +443,7 @@ fn part1_body<'a>(
                         .on_toggle(move |_| ReviewMessage::ToggleIgnorepkg(i)),
                 );
             }
-            Question::RemovePkgs { names } => {
+            Question::RemovePkgs { names, .. } => {
                 let label = format!(
                     "Skip unresolvable packages and continue without them: {}",
                     names.join(", ")
@@ -468,7 +468,7 @@ fn part1_body<'a>(
 #[cfg(test)]
 mod install_review_tests {
     use super::*;
-    use pakajo::question::model::{Answer, ProviderCandidate, QuestionKey};
+    use pakajo::question::model::{Answer, ProviderCandidate, QuestionKey, TransactionKind};
 
     fn s(value: &str) -> String {
         value.to_string()
@@ -500,6 +500,7 @@ mod install_review_tests {
             Question::InstallIgnorepkg { name: s("glibc") },
             Question::RemovePkgs {
                 names: vec![s("nvidia-utils")],
+                kind: TransactionKind::Install,
             },
         ]
     }
