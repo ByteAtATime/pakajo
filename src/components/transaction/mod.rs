@@ -336,6 +336,7 @@ impl Transaction {
             }
             TransactionMessage::PkgbuildResult(result) => {
                 self.model.review = None;
+                self.model.install_review = None;
                 match result {
                     Err(e) => {
                         eprintln!("[pakajo] pkgbuild fetch failed, showing checkout: {e}");
@@ -530,4 +531,34 @@ fn dialog_backdrop(content: Element<'_>, padding: f32) -> Element<'_> {
             ..Default::default()
         })
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pkgbuild_result_clears_install_review() {
+        let mut transaction = Transaction {
+            model: TransactionModel::batch(
+                s("paru"),
+                vec![s("paru")],
+                vec![s("paru")],
+                false,
+                InstallKind::Install,
+            ),
+        };
+        transaction.model.install_review =
+            Some(InstallReview::new(vec![Question::InstallIgnorepkg {
+                name: s("glibc"),
+            }]));
+
+        transaction.update(TransactionMessage::PkgbuildResult(Ok(vec![])));
+
+        assert!(transaction.model.install_review.is_none());
+    }
+
+    fn s(value: &str) -> String {
+        value.to_string()
+    }
 }
