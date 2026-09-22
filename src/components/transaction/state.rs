@@ -10,7 +10,7 @@ use pakajo::progress::{
 };
 
 use super::pkgbuild::PkgbuildModel;
-use super::review::ReviewModel;
+use super::review::{InstallReview, ReviewModel};
 
 #[derive(Clone, Debug)]
 pub(crate) enum TransactionStatus {
@@ -35,6 +35,7 @@ pub(crate) struct TransactionModel {
     pub(crate) kind: InstallKind,
     pub(crate) now: std::time::Instant,
     pub(super) review: Option<ReviewModel>,
+    pub(super) install_review: Option<InstallReview>,
     pub(super) pending_approvals: Option<String>,
     pub(super) pkgbuild_review: Option<PkgbuildModel>,
     pub(super) failure_message: Option<String>,
@@ -77,6 +78,7 @@ impl TransactionModel {
             kind,
             now: std::time::Instant::now(),
             review: None,
+            install_review: None,
             pending_approvals: None,
             pkgbuild_review: None,
             failure_message: None,

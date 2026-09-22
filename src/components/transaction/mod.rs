@@ -9,6 +9,7 @@ use pakajo::events::InstallEvent;
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::progress::InstallKind;
+use pakajo::question::model::Question;
 use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
 
 use crate::Element;
@@ -41,7 +42,7 @@ pub(crate) use pkgbuild::ReviewedDiff;
 use pkgbuild::{PkgbuildMessage, PkgbuildModel};
 
 pub(crate) mod review;
-use review::{ReviewMessage, ReviewModel};
+use review::{InstallReview, ReviewMessage, ReviewModel};
 
 #[derive(Clone, Debug)]
 pub enum TransactionMessage {
@@ -51,6 +52,7 @@ pub enum TransactionMessage {
     InstallEvent(InstallEvent),
     InstallDone(ChildOutcome),
     DryRunResult(Result<QuestionSet, String>),
+    InstallDryRunResult(Result<Vec<Question>, String>),
     ToggleStage(usize),
     ToggleBuildCard(String),
     Tick(std::time::Instant),
@@ -80,6 +82,19 @@ fn review_approvals(review: &ReviewModel) -> Option<String> {
         &review.qs.held,
     )
     .and_then(|approvals| encode_approvals(&approvals))
+    {
+        Ok(payload) => Some(payload),
+        Err(e) => {
+            eprintln!("[pakajo] approval encoding failed: {e}");
+            None
+        }
+    }
+}
+
+fn install_review_approvals(review: &InstallReview) -> Option<String> {
+    match review
+        .seal()
+        .and_then(|sealed| review::bridge_approvals(&sealed))
     {
         Ok(payload) => Some(payload),
         Err(e) => {
@@ -189,10 +204,12 @@ impl Transaction {
                     tty: false,
                     json: false,
                 };
-                pakajo::dispatch::install_preview(&request).map(|preview| preview.question_set())
+                pakajo::dispatch::install_preview(&request).map(|preview| preview.review.part1)
             },
             "dry-run channel closed",
-            |result| crate::Message::Transaction(TransactionMessage::DryRunResult(result)).into(),
+            |result| {
+                crate::Message::Transaction(TransactionMessage::InstallDryRunResult(result)).into()
+            },
         );
         (Self { model }, task)
     }
@@ -238,12 +255,12 @@ impl Transaction {
                 }
             }
             TransactionMessage::DryRunResult(result) => match result {
-                Err(e) if self.model.kind == InstallKind::Remove => {
+                Err(e) => {
                     eprintln!("[pakajo] remove dry-run failed: {e}");
                     self.model.finish(ChildOutcome::Failed(e));
                     Action::None
                 }
-                Ok(qs) if self.model.kind == InstallKind::Remove => {
+                Ok(qs) => {
                     if qs.held.is_empty() {
                         return self.launch_remove_subprocess(None);
                     }
@@ -252,24 +269,18 @@ impl Transaction {
                     self.model.review = Some(review);
                     Action::None
                 }
+            },
+            TransactionMessage::InstallDryRunResult(result) => match result {
                 Err(e) => {
                     eprintln!("[pakajo] dry-run failed, proceeding with install: {e}");
                     self.launch_subprocess(None)
                 }
-                Ok(qs) => {
-                    let needs_review = !qs.conflicts.is_empty()
-                        || !qs.providers.is_empty()
-                        || qs.had_unsupported_question;
-                    if !needs_review {
+                Ok(part1) => {
+                    if !review::install_needs_review(&part1) {
                         return self.proceed_after_conflicts(None);
                     }
-                    eprintln!(
-                        "[pakajo] review required ({} conflicts, {} providers)",
-                        qs.conflicts.len(),
-                        qs.providers.len()
-                    );
-                    let review = ReviewModel::new(qs);
-                    self.model.review = Some(review);
+                    eprintln!("[pakajo] review required ({} questions)", part1.len());
+                    self.model.install_review = Some(InstallReview::new(part1));
                     Action::None
                 }
             },
@@ -287,6 +298,9 @@ impl Transaction {
             }
             TransactionMessage::Review(m) => {
                 if let Some(r) = self.model.review.as_mut() {
+                    r.update(m.clone());
+                }
+                if let Some(r) = self.model.install_review.as_mut() {
                     r.update(m);
                 }
                 Action::None
@@ -301,14 +315,14 @@ impl Transaction {
                     let approvals = review_approvals(&review);
                     return self.launch_remove_subprocess(approvals);
                 }
-                let mut review = match self.model.review.take() {
+                let mut review = match self.model.install_review.take() {
                     Some(r) => r,
                     None => return Action::None,
                 };
-                let approvals = review_approvals(&review);
+                let approvals = install_review_approvals(&review);
                 if matches!(self.model.source, PackageSource::Aur) {
                     review.approving = true;
-                    self.model.review = Some(review);
+                    self.model.install_review = Some(review);
                 }
                 self.proceed_after_conflicts(approvals)
             }
@@ -439,7 +453,9 @@ impl Transaction {
     }
 
     pub(crate) fn dialog(&self) -> Option<Element<'_>> {
-        let content = if let Some(r) = self.model.review.as_ref() {
+        let content = if let Some(r) = self.model.install_review.as_ref() {
+            r.view(&self.model.name)
+        } else if let Some(r) = self.model.review.as_ref() {
             r.view(&self.model.name, self.model.kind)
         } else {
             self.model.pkgbuild_review.as_ref().map(|p| p.view())?
