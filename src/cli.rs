@@ -112,7 +112,15 @@ fn install_subcommand(args: InstallArgs) -> i32 {
         usage_error();
     }
 
-    let tty = stdin_is_tty() && !args.json;
+    let stdin_tty = stdin_is_tty();
+    let tty = stdin_tty && !args.json;
+    let approvals = match piped_seal_payload(stdin_tty, std::io::stdin().lock()) {
+        Ok(payload) => payload,
+        Err(error) => {
+            eprintln!("{error:#}");
+            return 1;
+        }
+    };
     let request = crate::dispatch::InstallRequest {
         targets: positionals,
         as_deps: args.as_deps,
@@ -121,7 +129,7 @@ fn install_subcommand(args: InstallArgs) -> i32 {
         ignores: vec![],
         prefer_aur: false,
         decider: Box::new(TerminalDecider::new(args.json, args.skip_review, tty)),
-        approvals: None,
+        approvals,
         tty,
         json: args.json,
     };
@@ -182,6 +190,44 @@ fn sink_for(json: bool) -> Box<dyn InstallSink> {
     }
 }
 
+pub(crate) const INVALID_PIPED_SEAL: &str = "seal payload from stdin is invalid";
+pub(crate) const SEAL_PAYLOAD_TOO_LARGE: &str = "seal payload from stdin exceeds 1 MiB";
+const MAX_SEAL_BYTES: u64 = 1024 * 1024;
+
+pub(crate) fn piped_seal_payload(
+    stdin_tty: bool,
+    reader: impl std::io::Read,
+) -> anyhow::Result<Option<String>> {
+    if stdin_tty {
+        return Ok(None);
+    }
+    read_piped_payload(reader)
+}
+
+fn read_piped_payload(reader: impl std::io::Read) -> anyhow::Result<Option<String>> {
+    let payload = read_fully(reader)?;
+    let trimmed = payload.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    crate::dispatch::seal::decode_seal(trimmed)
+        .map_err(|error| anyhow::anyhow!("{INVALID_PIPED_SEAL}: {error:#}"))?;
+    Ok(Some(trimmed.to_string()))
+}
+
+fn read_fully(reader: impl std::io::Read) -> anyhow::Result<String> {
+    use std::io::Read as _;
+    let mut payload = String::new();
+    reader
+        .take(MAX_SEAL_BYTES + 1)
+        .read_to_string(&mut payload)
+        .map_err(|error| anyhow::anyhow!("failed to read seal payload from stdin: {error:#}"))?;
+    if payload.len() as u64 > MAX_SEAL_BYTES {
+        anyhow::bail!("{SEAL_PAYLOAD_TOO_LARGE}");
+    }
+    Ok(payload)
+}
+
 pub(crate) fn classify_target(s: &str) -> InstallTarget {
     const FILE_SUFFIXES: &[&str] = &[".pkg.tar", ".pkg.tar.gz", ".pkg.tar.zst", ".pkg.tar.xz"];
     if FILE_SUFFIXES.iter().any(|suffix| s.ends_with(suffix)) {
@@ -226,10 +272,12 @@ fn exit_with_result(result: anyhow::Result<()>) -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::classify_target;
+    use super::{INVALID_PIPED_SEAL, SEAL_PAYLOAD_TOO_LARGE, classify_target, piped_seal_payload};
     use crate::cli::args::{Cli, Command};
+    use crate::dispatch::install::json_seal_missing;
     use crate::install::InstallTarget;
     use clap::Parser as _;
+    use std::io::Cursor;
 
     #[test]
     fn install_reinstall_flag_defaults_off_and_parses() {
@@ -243,6 +291,73 @@ mod tests {
             panic!("expected install command");
         };
         assert!(args.reinstall);
+    }
+
+    #[test]
+    fn piped_seal_payload_attaches_non_empty_input() {
+        let sealed = crate::dispatch::seal::proceed_only_seal().expect("encodes seal");
+        let payload =
+            piped_seal_payload(false, Cursor::new(sealed.clone())).expect("valid seal accepted");
+        assert_eq!(payload, Some(sealed.clone()));
+        let trailed = piped_seal_payload(false, Cursor::new(format!("{sealed}\n")))
+            .expect("trailing newline accepted");
+        assert_eq!(trailed, Some(sealed));
+    }
+
+    #[test]
+    fn piped_seal_payload_empty_stdin_yields_no_approvals() {
+        assert_eq!(
+            piped_seal_payload(false, Cursor::new(String::new())).expect("empty accepted"),
+            None
+        );
+        assert_eq!(
+            piped_seal_payload(false, Cursor::new("  \n\t ")).expect("blank accepted"),
+            None
+        );
+    }
+
+    #[test]
+    fn piped_seal_payload_never_reads_from_tty() {
+        struct ExplodingReader;
+        impl std::io::Read for ExplodingReader {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                panic!("tty stdin must never be read");
+            }
+        }
+        assert_eq!(
+            piped_seal_payload(true, ExplodingReader).expect("tty yields none"),
+            None
+        );
+    }
+
+    #[test]
+    fn piped_seal_payload_rejects_garbage_loudly() {
+        let error =
+            piped_seal_payload(false, Cursor::new("not a seal")).expect_err("garbage rejected");
+        assert!(
+            error.to_string().contains(INVALID_PIPED_SEAL),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn piped_seal_payload_satisfies_json_guard() {
+        let sealed = crate::dispatch::seal::proceed_only_seal().expect("encodes seal");
+        let approvals =
+            piped_seal_payload(false, Cursor::new(sealed)).expect("valid seal accepted");
+        assert!(!json_seal_missing(true, approvals.as_deref()));
+        assert!(json_seal_missing(true, None));
+    }
+
+    #[test]
+    fn piped_seal_payload_rejects_over_limit_input_loudly() {
+        let oversized = "x".repeat(1024 * 1024 + 1);
+        let error =
+            piped_seal_payload(false, Cursor::new(oversized)).expect_err("over-limit rejected");
+        assert!(
+            error.to_string().contains(SEAL_PAYLOAD_TOO_LARGE),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]
