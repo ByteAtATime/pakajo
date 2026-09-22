@@ -1,5 +1,5 @@
 use crate::dispatch::exec::{ChildOutcome, DispatchStream};
-use crate::dispatch::protocol::TerminalDecider;
+use crate::dispatch::protocol::{Decider, TerminalDecider};
 use crate::events::InstallSink;
 use crate::install::InstallTarget;
 use anyhow::Context as _;
@@ -128,7 +128,13 @@ fn install_subcommand(args: InstallArgs) -> i32 {
         no_check: false,
         ignores: vec![],
         prefer_aur: false,
-        decider: Box::new(TerminalDecider::new(args.json, args.skip_review, tty)),
+        decider: match decider_for(tty, args.json, args.skip_review, approvals.as_deref()) {
+            Ok(decider) => decider,
+            Err(error) => {
+                eprintln!("{error:#}");
+                return 1;
+            }
+        },
         approvals,
         tty,
         json: args.json,
@@ -193,6 +199,25 @@ fn sink_for(json: bool) -> Box<dyn InstallSink> {
 pub(crate) const INVALID_PIPED_SEAL: &str = "seal payload from stdin is invalid";
 pub(crate) const SEAL_PAYLOAD_TOO_LARGE: &str = "seal payload from stdin exceeds 1 MiB";
 const MAX_SEAL_BYTES: u64 = 1024 * 1024;
+
+pub(crate) fn sealed_decider_required(tty: bool, approvals: Option<&str>) -> bool {
+    !tty && approvals.is_some()
+}
+
+pub(crate) fn decider_for(
+    tty: bool,
+    json: bool,
+    skip_review: bool,
+    approvals: Option<&str>,
+) -> anyhow::Result<Box<dyn Decider + Send>> {
+    if !sealed_decider_required(tty, approvals) {
+        return Ok(Box::new(TerminalDecider::new(json, skip_review, tty)));
+    }
+    let payload = approvals.expect("sealed decider requires approvals");
+    let sealed = crate::dispatch::seal::decode_seal(payload)
+        .map_err(|error| anyhow::anyhow!("{INVALID_PIPED_SEAL}: {error:#}"))?;
+    Ok(Box::new(crate::dispatch::seal::sealed_decider(sealed)))
+}
 
 pub(crate) fn piped_seal_payload(
     stdin_tty: bool,
@@ -348,7 +373,6 @@ mod tests {
         assert!(!json_seal_missing(true, approvals.as_deref()));
         assert!(json_seal_missing(true, None));
     }
-
     #[test]
     fn piped_seal_payload_rejects_over_limit_input_loudly() {
         let oversized = "x".repeat(1024 * 1024 + 1);
@@ -356,6 +380,87 @@ mod tests {
             piped_seal_payload(false, Cursor::new(oversized)).expect_err("over-limit rejected");
         assert!(
             error.to_string().contains(SEAL_PAYLOAD_TOO_LARGE),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    fn conflict_seal_payload(incoming: &str, removable: &str, remove: bool) -> String {
+        use crate::question::approvals::seal;
+        use crate::question::model::{Answer, Question};
+        let sealed = seal(
+            &[Question::Conflict {
+                incoming: incoming.to_string(),
+                removable: removable.to_string(),
+            }],
+            &[Answer::Conflict {
+                incoming: incoming.to_string(),
+                removable: removable.to_string(),
+                remove,
+            }],
+            true,
+        )
+        .expect("seal succeeds");
+        crate::dispatch::seal::encode_seal(&sealed).expect("encodes")
+    }
+
+    fn conflicted_report() -> crate::resolve::ConflictReport {
+        crate::resolve::ConflictReport {
+            local: vec![crate::resolve::Conflict {
+                pkg: "cava-git".to_string(),
+                conflicting: vec![crate::resolve::Conflicting {
+                    pkg: "cava".to_string(),
+                    conflict: Some("cava".to_string()),
+                }],
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn decider_for_keeps_terminal_on_tty_despite_seal() {
+        use super::decider_for;
+        use crate::build::BuildDecision;
+        use crate::resolve::Plan;
+        let sealed = conflict_seal_payload("cava-git", "cava", true);
+        let decider = decider_for(true, true, false, Some(sealed.as_str())).expect("decider");
+        assert_eq!(
+            decider.confirm_build(&Plan::default()),
+            BuildDecision::Review
+        );
+        assert!(!decider.confirm_conflicts(&conflicted_report()));
+    }
+
+    #[test]
+    fn decider_for_honors_sealed_conflict_answer_without_json() {
+        use super::decider_for;
+        use crate::build::BuildDecision;
+        use crate::resolve::Plan;
+        for json in [false, true] {
+            let approving = conflict_seal_payload("cava-git", "cava", true);
+            let decider =
+                decider_for(false, json, false, Some(approving.as_str())).expect("decider");
+            assert_eq!(
+                decider.confirm_build(&Plan::default()),
+                BuildDecision::Proceed
+            );
+            assert!(decider.confirm_conflicts(&conflicted_report()));
+            assert!(decider.review_pkgbuilds(&[]));
+            let refusing = conflict_seal_payload("cava-git", "cava", false);
+            let decider =
+                decider_for(false, json, false, Some(refusing.as_str())).expect("decider");
+            assert!(!decider.confirm_conflicts(&conflicted_report()));
+        }
+    }
+
+    #[test]
+    fn decider_for_rejects_corrupt_seal_loudly() {
+        use super::{INVALID_PIPED_SEAL, decider_for};
+        let error = match decider_for(false, false, false, Some("not a seal")) {
+            Ok(_) => panic!("corrupt seal accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains(INVALID_PIPED_SEAL),
             "unexpected error: {error:#}"
         );
     }
