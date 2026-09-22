@@ -236,6 +236,7 @@ mod tests {
                 package.name,
                 "1.0-1",
                 package.depends,
+                package.provides,
                 package.conflicts,
                 package.groups,
             );

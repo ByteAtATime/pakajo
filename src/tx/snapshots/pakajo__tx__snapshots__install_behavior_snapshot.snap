@@ -1,0 +1,41 @@
+---
+source: src/tx/snapshots.rs
+expression: rendered
+---
+== single-package install ==
+finish: Committed
+summary:
+  sl 1.0-1
+installed:
+  sl 1.0-1 Explicit
+
+== dependency chain ==
+finish: Committed
+summary:
+  app 1.0-1
+  lib 1.0-1
+installed:
+  app 1.0-1 Explicit
+  lib 1.0-1 Depend
+
+== conflict vim/gvim ==
+finish: Committed
+summary:
+  gvim 1.0-1
+  vim 1.0-1 (removal)
+installed:
+  gvim 1.0-1 Explicit
+
+== provider netapp sdl ==
+finish: Committed
+summary:
+  netapp 1.0-1
+  sdl-one 1.0-1
+installed:
+  netapp 1.0-1 Explicit
+  sdl-one 1.0-1 Depend
+
+== ignorepkg skipme ==
+finish: Stopped
+summary:
+installed:

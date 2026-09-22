@@ -129,6 +129,7 @@ pub(crate) fn write_cachedir_stub(
     name: &str,
     version: &str,
     depends: &[&str],
+    provides: &[&str],
     conflicts: &[&str],
     groups: &[&str],
 ) {
@@ -140,6 +141,9 @@ pub(crate) fn write_cachedir_stub(
     writeln!(pkginfo, "arch = any").unwrap();
     for depend in depends {
         writeln!(pkginfo, "depend = {depend}").unwrap();
+    }
+    for provided in provides {
+        writeln!(pkginfo, "provides = {provided}").unwrap();
     }
     for conflict in conflicts {
         writeln!(pkginfo, "conflict = {conflict}").unwrap();

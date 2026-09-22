@@ -601,6 +601,7 @@ mod tests {
                     package.name,
                     package.version,
                     &package.depends,
+                    &package.provides,
                     &package.conflicts,
                     &package.groups,
                 );

@@ -30,9 +30,10 @@ pub struct InstallPreview {
     pub prepare_error: Option<crate::tx::convert::PrepareFailure>,
 }
 
-const JSON_SEAL_REQUIRED: &str = "--json requires sealed approvals";
+pub(crate) const JSON_SEAL_REQUIRED: &str = "--json requires sealed approvals";
 
-const NON_INTERACTIVE_SEAL_REQUIRED: &str = "non-interactive install requires sealed approvals";
+pub(crate) const NON_INTERACTIVE_SEAL_REQUIRED: &str =
+    "non-interactive install requires sealed approvals";
 
 pub(crate) fn json_seal_missing(json: bool, approvals: Option<&str>) -> bool {
     json && approvals.is_none()

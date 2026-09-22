@@ -37,6 +37,7 @@ two-face = { version = "0.4", default-features = false, features = ["syntect-def
 
 [dev-dependencies]
 criterion = "0.8.2"
+insta = { version = "1.48.0", features = ["filters", "redactions"] }
 
 [features]
 debug = ["libcosmic/debug"]
