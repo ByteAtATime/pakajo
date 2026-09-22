@@ -14,6 +14,9 @@ use crate::Element;
 #[derive(Clone, Debug)]
 pub enum ReviewMessage {
     ToggleConflict(usize),
+    ToggleReplace(usize),
+    ToggleIgnorepkg(usize),
+    ToggleRemovepkgs(usize),
     SelectProvider { depend: String, idx: usize },
 }
 
@@ -97,6 +100,9 @@ impl ReviewModel {
                     *check = !*check;
                 }
             }
+            ReviewMessage::ToggleReplace(_)
+            | ReviewMessage::ToggleIgnorepkg(_)
+            | ReviewMessage::ToggleRemovepkgs(_) => {}
             ReviewMessage::SelectProvider { depend, idx } => {
                 self.provider_choices.insert(depend, idx);
             }
@@ -204,6 +210,9 @@ fn unsupported_banner(summary: &str) -> cosmic::Element<'_, ReviewSelection> {
 pub(crate) struct InstallReview {
     pub(crate) questions: Vec<Question>,
     pub(crate) conflict_checks: Vec<bool>,
+    pub(crate) replace_checks: Vec<bool>,
+    pub(crate) ignorepkg_checks: Vec<bool>,
+    pub(crate) removepkgs_checks: Vec<bool>,
     pub(crate) provider_choices: HashMap<String, usize>,
     pub(super) approving: bool,
 }
@@ -212,6 +221,12 @@ impl InstallReview {
     pub(crate) fn new(questions: Vec<Question>) -> Self {
         Self {
             conflict_checks: vec![false; questions.len()],
+            replace_checks: questions
+                .iter()
+                .map(|question| matches!(question, Question::Replace { .. }))
+                .collect(),
+            ignorepkg_checks: vec![false; questions.len()],
+            removepkgs_checks: vec![false; questions.len()],
             provider_choices: questions
                 .iter()
                 .filter_map(|question| match question {
@@ -228,6 +243,21 @@ impl InstallReview {
         match message {
             ReviewMessage::ToggleConflict(i) => {
                 if let Some(check) = self.conflict_checks.get_mut(i) {
+                    *check = !*check;
+                }
+            }
+            ReviewMessage::ToggleReplace(i) => {
+                if let Some(check) = self.replace_checks.get_mut(i) {
+                    *check = !*check;
+                }
+            }
+            ReviewMessage::ToggleIgnorepkg(i) => {
+                if let Some(check) = self.ignorepkg_checks.get_mut(i) {
+                    *check = !*check;
+                }
+            }
+            ReviewMessage::ToggleRemovepkgs(i) => {
+                if let Some(check) = self.removepkgs_checks.get_mut(i) {
                     *check = !*check;
                 }
             }
@@ -262,15 +292,15 @@ impl InstallReview {
             Question::Replace { old, new, .. } => Answer::Replace {
                 old: old.clone(),
                 new: new.clone(),
-                replace: true,
+                replace: self.replace_checks.get(i).copied().unwrap_or(true),
             },
             Question::InstallIgnorepkg { name } => Answer::InstallIgnorepkg {
                 name: name.clone(),
-                install: false,
+                install: self.ignorepkg_checks.get(i).copied().unwrap_or(false),
             },
             Question::RemovePkgs { names } => Answer::RemovePkgs {
                 names: names.clone(),
-                skip: false,
+                skip: self.removepkgs_checks.get(i).copied().unwrap_or(false),
             },
             Question::GroupMembers { .. } => Answer::GroupMembers { selected: vec![] },
             Question::Proceed(_) => Answer::Proceed,
@@ -299,6 +329,9 @@ impl InstallReview {
         let body = part1_body(
             &self.questions,
             &self.conflict_checks,
+            &self.replace_checks,
+            &self.ignorepkg_checks,
+            &self.removepkgs_checks,
             &self.provider_choices,
         )
         .map(|message| crate::Message::Transaction(TransactionMessage::Review(message)));
@@ -326,14 +359,6 @@ pub(crate) fn install_needs_review(part1: &[Question]) -> bool {
 
 fn info_caption(question: &Question) -> Option<String> {
     match question {
-        Question::Replace { old, new, .. } => Some(format!("{old} will be replaced by {new}")),
-        Question::InstallIgnorepkg { name } => {
-            Some(format!("{name} is in IgnorePkg and will be skipped"))
-        }
-        Question::RemovePkgs { names } => Some(format!(
-            "Unresolvable packages will abort the transaction: {}",
-            names.join(", ")
-        )),
         Question::GroupMembers { group, members } => Some(format!(
             "Group {group} was pre-expanded into its members: {}",
             members.join(", ")
@@ -345,6 +370,9 @@ fn info_caption(question: &Question) -> Option<String> {
 fn part1_body<'a>(
     questions: &'a [Question],
     checks: &'a [bool],
+    replace_checks: &'a [bool],
+    ignorepkg_checks: &'a [bool],
+    removepkgs_checks: &'a [bool],
     choices: &'a HashMap<String, usize>,
 ) -> cosmic::Element<'a, ReviewMessage> {
     let mut body = Column::new().spacing(16);
@@ -388,6 +416,36 @@ fn part1_body<'a>(
                         },
                     ));
                 }
+            }
+            Question::Replace { old, new, .. } => {
+                let label = format!("Replace {old} with {new}");
+                let checked = replace_checks.get(i).copied().unwrap_or(true);
+                body = body.push(
+                    checkbox(checked)
+                        .label(label)
+                        .on_toggle(move |_| ReviewMessage::ToggleReplace(i)),
+                );
+            }
+            Question::InstallIgnorepkg { name } => {
+                let label = format!("Install {name} anyway (in IgnorePkg)");
+                let checked = ignorepkg_checks.get(i).copied().unwrap_or(false);
+                body = body.push(
+                    checkbox(checked)
+                        .label(label)
+                        .on_toggle(move |_| ReviewMessage::ToggleIgnorepkg(i)),
+                );
+            }
+            Question::RemovePkgs { names } => {
+                let label = format!(
+                    "Skip unresolvable packages and continue without them: {}",
+                    names.join(", ")
+                );
+                let checked = removepkgs_checks.get(i).copied().unwrap_or(false);
+                body = body.push(
+                    checkbox(checked)
+                        .label(label)
+                        .on_toggle(move |_| ReviewMessage::ToggleRemovepkgs(i)),
+                );
             }
             other => {
                 if let Some(caption) = info_caption(other) {
@@ -496,6 +554,88 @@ mod install_review_tests {
             (
                 QuestionKey::SelectProvider { .. },
                 Answer::SelectProvider { .. }
+            )
+        )));
+        assert!(decoded.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::Replace { .. },
+                Answer::Replace { replace: true, .. }
+            )
+        )));
+        assert!(decoded.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::InstallIgnorepkg { .. },
+                Answer::InstallIgnorepkg { install: false, .. }
+            )
+        )));
+        assert!(decoded.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::RemovePkgs { .. },
+                Answer::RemovePkgs { skip: false, .. }
+            )
+        )));
+    }
+
+    #[test]
+    fn fresh_model_defaults_three_kinds() {
+        let model = InstallReview::new(questions());
+        assert!(model.replace_checks[2]);
+        assert!(!model.ignorepkg_checks[3]);
+        assert!(!model.removepkgs_checks[4]);
+
+        let sealed = model.seal().expect("seal succeeds");
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::Replace { .. },
+                Answer::Replace { replace: true, .. }
+            )
+        )));
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::InstallIgnorepkg { .. },
+                Answer::InstallIgnorepkg { install: false, .. }
+            )
+        )));
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::RemovePkgs { .. },
+                Answer::RemovePkgs { skip: false, .. }
+            )
+        )));
+    }
+
+    #[test]
+    fn toggles_flip_three_kinds() {
+        let mut model = InstallReview::new(questions());
+        model.update(ReviewMessage::ToggleReplace(2));
+        model.update(ReviewMessage::ToggleIgnorepkg(3));
+        model.update(ReviewMessage::ToggleRemovepkgs(4));
+        let sealed = model.seal().expect("seal succeeds");
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::Replace { .. },
+                Answer::Replace { replace: false, .. }
+            )
+        )));
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::InstallIgnorepkg { .. },
+                Answer::InstallIgnorepkg { install: true, .. }
+            )
+        )));
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::RemovePkgs { .. },
+                Answer::RemovePkgs { skip: true, .. }
             )
         )));
     }
