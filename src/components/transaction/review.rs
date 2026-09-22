@@ -213,10 +213,7 @@ pub(crate) struct InstallReview {
 impl InstallReview {
     pub(crate) fn new(questions: Vec<Question>) -> Self {
         Self {
-            conflict_checks: questions
-                .iter()
-                .map(|question| matches!(question, Question::Conflict { .. }))
-                .collect(),
+            conflict_checks: vec![false; questions.len()],
             provider_choices: questions
                 .iter()
                 .filter_map(|question| match question {
@@ -546,6 +543,38 @@ mod install_review_tests {
             approvals.approved_providers[0].provider_name, "qemu",
             "first candidate is the presented default"
         );
+    }
+
+    #[test]
+    fn fresh_model_leaves_conflicts_unchecked() {
+        let model = InstallReview::new(questions());
+        assert!(model.conflict_checks.iter().all(|checked| !checked));
+
+        let sealed = model.seal().expect("seal succeeds");
+        let conflict = sealed
+            .answers
+            .iter()
+            .find_map(|(key, answer)| match (key, answer) {
+                (
+                    QuestionKey::Conflict { .. },
+                    Answer::Conflict {
+                        incoming,
+                        removable,
+                        remove,
+                    },
+                ) => Some((incoming.clone(), removable.clone(), *remove)),
+                _ => None,
+            });
+        assert_eq!(
+            conflict,
+            Some((s("cava-git"), s("cava"), false)),
+            "conflict is sealed as remove: false"
+        );
+
+        let approvals: Approvals =
+            serde_json::from_str(&bridge_approvals(&sealed).expect("bridge succeeds"))
+                .expect("decodes");
+        assert!(approvals.approved_conflicts.is_empty());
     }
 
     #[test]
