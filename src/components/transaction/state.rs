@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use pakajo::dispatch::exec::ChildOutcome;
-use pakajo::events::InstallEvent;
+use pakajo::events::{InstallEvent, TransactionSummary};
 use pakajo::package::PackageSource;
 use pakajo::progress::{
     AurStage, AurState, BuildStatus, DownloadState, InstallKind, InstallState, RepoStage,
@@ -9,6 +9,7 @@ use pakajo::progress::{
     ordered_aur_stages, ordered_stages,
 };
 
+use super::checkout::CheckoutModel;
 use super::pkgbuild::PkgbuildModel;
 use super::review::{InstallReview, ReviewModel};
 
@@ -36,6 +37,8 @@ pub(crate) struct TransactionModel {
     pub(crate) now: std::time::Instant,
     pub(super) review: Option<ReviewModel>,
     pub(super) install_review: Option<InstallReview>,
+    pub(super) summary: Option<TransactionSummary>,
+    pub(super) checkout: Option<CheckoutModel>,
     pub(super) pending_approvals: Option<String>,
     pub(super) pkgbuild_review: Option<PkgbuildModel>,
     pub(super) failure_message: Option<String>,
@@ -79,6 +82,8 @@ impl TransactionModel {
             now: std::time::Instant::now(),
             review: None,
             install_review: None,
+            summary: None,
+            checkout: None,
             pending_approvals: None,
             pkgbuild_review: None,
             failure_message: None,

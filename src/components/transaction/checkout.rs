@@ -1,0 +1,178 @@
+use cosmic::iced::{Length, alignment::Vertical};
+use cosmic::widget::{Column, Row, button, dialog, scrollable, space, text};
+
+use pakajo::events::{SummaryAction, TransactionSummary, classify_action, target_version};
+use pakajo::utils::format_bytes;
+
+use super::TransactionMessage;
+use super::shared::{
+    BadgeColor, accent_color, destructive_color, mono_text, muted, pill, success_color,
+    version_change,
+};
+use crate::Element;
+
+pub(crate) struct CheckoutModel {
+    pub(crate) summary: TransactionSummary,
+}
+
+impl CheckoutModel {
+    pub(crate) fn new(summary: TransactionSummary) -> Self {
+        Self { summary }
+    }
+
+    pub(crate) fn view(&self, name: &str) -> Element<'_> {
+        let mut body = Column::new().spacing(8);
+        for pkg in &self.summary.packages {
+            body = body.push(package_row(pkg));
+        }
+        body = body.push(text("Totals"));
+        body = body.push(muted(text(format!(
+            "Download: {}",
+            format_bytes(self.summary.total_download_size)
+        ))));
+        body = body.push(muted(text(format!(
+            "Installed: +{}",
+            format_bytes(self.summary.total_installed_size)
+        ))));
+        body = body.push(muted(text(format!(
+            "Removed: {}",
+            format_bytes(self.summary.total_removed_size)
+        ))));
+        dialog()
+            .title(format!("Confirm installation of {name}"))
+            .control(scrollable(body).height(Length::Fixed(400.0)))
+            .primary_action(
+                button::suggested("Proceed").on_press(crate::Message::Transaction(
+                    TransactionMessage::ApproveCheckout,
+                )),
+            )
+            .secondary_action(
+                button::standard("Cancel").on_press(crate::Message::Transaction(
+                    TransactionMessage::CancelCheckout,
+                )),
+            )
+            .into()
+    }
+}
+
+fn action_color(action: SummaryAction) -> BadgeColor {
+    match action {
+        SummaryAction::Install | SummaryAction::Reinstall => success_color,
+        SummaryAction::Upgrade | SummaryAction::Downgrade => accent_color,
+        SummaryAction::Remove => destructive_color,
+    }
+}
+
+fn package_row(pkg: &pakajo::events::SummaryPackage) -> Element<'_> {
+    let action = classify_action(pkg);
+    let mut row = Row::new()
+        .align_y(Vertical::Center)
+        .spacing(8)
+        .push(mono_text(&pkg.name))
+        .push(pill(format!("{action:?}"), action_color(action)));
+    if let Some(repo) = &pkg.repository {
+        row = row.push(muted(text(repo.clone())));
+    }
+    row = row
+        .push(space::horizontal())
+        .push(muted(text::monotext(version_change(
+            pkg.old_version.as_deref(),
+            Some(target_version(pkg)),
+        ))));
+    row.into()
+}
+
+#[cfg(test)]
+mod checkout_tests {
+    use super::*;
+    use crate::components::transaction::review::InstallReview;
+    use crate::components::transaction::state::{TransactionModel, TransactionStatus};
+    use crate::components::transaction::{Action, Transaction};
+    use pakajo::events::SummaryPackage;
+    use pakajo::progress::InstallKind;
+    use pakajo::question::model::Question;
+    use pakajo::question::{Approvals, Conflict};
+
+    fn s(value: &str) -> String {
+        value.to_string()
+    }
+
+    fn summary() -> TransactionSummary {
+        TransactionSummary {
+            packages: vec![SummaryPackage {
+                name: s("firefox"),
+                repository: Some(s("extra")),
+                new_version: s("1.0"),
+                old_version: None,
+                download_size: 1,
+                installed_size: 2,
+                old_installed_size: 0,
+                is_removal: false,
+            }],
+            total_download_size: 1,
+            total_installed_size: 2,
+            total_removed_size: 0,
+        }
+    }
+
+    fn install_model() -> Transaction {
+        let model = TransactionModel::batch(
+            s("firefox"),
+            vec![s("firefox")],
+            vec![],
+            false,
+            InstallKind::Install,
+        );
+        Transaction { model }
+    }
+
+    #[test]
+    fn empty_part1_goes_straight_to_checkout() {
+        let mut tx = install_model();
+        tx.update(TransactionMessage::InstallDryRunResult(Ok((
+            vec![],
+            summary(),
+        ))));
+        assert!(tx.model.install_review.is_none());
+        assert_eq!(
+            tx.model.checkout.as_ref().expect("checkout shown").summary,
+            summary()
+        );
+    }
+
+    #[test]
+    fn checkout_proceed_launches_with_bridged_payload() {
+        let mut tx = install_model();
+        tx.model.install_review = Some(InstallReview::new(vec![Question::Conflict {
+            incoming: s("cava-git"),
+            removable: s("cava"),
+        }]));
+        tx.update(TransactionMessage::ApproveReview);
+        assert!(tx.model.checkout.is_some());
+        let approvals: Approvals = serde_json::from_str(
+            tx.model
+                .pending_approvals
+                .as_deref()
+                .expect("payload bridged"),
+        )
+        .expect("decodes");
+        assert_eq!(
+            approvals.approved_conflicts,
+            vec![Conflict {
+                incoming: s("cava-git"),
+                removable: s("cava"),
+            }]
+        );
+        tx.update(TransactionMessage::ApproveCheckout);
+        assert!(matches!(tx.model.status, TransactionStatus::Running));
+    }
+
+    #[test]
+    fn checkout_cancel_does_not_launch() {
+        let mut tx = install_model();
+        tx.model.checkout = Some(CheckoutModel::new(summary()));
+        let action = tx.update(TransactionMessage::CancelCheckout);
+        assert!(matches!(action, Action::Finished));
+        assert!(!matches!(tx.model.status, TransactionStatus::Running));
+    }
+}

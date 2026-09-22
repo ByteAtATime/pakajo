@@ -5,7 +5,7 @@ use futures::StreamExt as _;
 
 use pakajo::dispatch::exec::{ChildOutcome, StreamItem};
 use pakajo::dispatch::protocol::AutomaticDecider;
-use pakajo::events::InstallEvent;
+use pakajo::events::{InstallEvent, TransactionSummary};
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::progress::InstallKind;
@@ -41,6 +41,9 @@ pub(crate) use diff::diff_rows_column;
 pub(crate) use pkgbuild::ReviewedDiff;
 use pkgbuild::{PkgbuildMessage, PkgbuildModel};
 
+pub(crate) mod checkout;
+use checkout::CheckoutModel;
+
 pub(crate) mod review;
 use review::{InstallReview, ReviewMessage, ReviewModel};
 
@@ -52,7 +55,7 @@ pub enum TransactionMessage {
     InstallEvent(InstallEvent),
     InstallDone(ChildOutcome),
     DryRunResult(Result<QuestionSet, String>),
-    InstallDryRunResult(Result<Vec<Question>, String>),
+    InstallDryRunResult(Result<(Vec<Question>, TransactionSummary), String>),
     ToggleStage(usize),
     ToggleBuildCard(String),
     Tick(std::time::Instant),
@@ -63,6 +66,8 @@ pub enum TransactionMessage {
     ApprovePkgbuild,
     CancelPkgbuild,
     Pkgbuild(PkgbuildMessage),
+    ApproveCheckout,
+    CancelCheckout,
     Close,
 }
 
@@ -204,7 +209,8 @@ impl Transaction {
                     tty: false,
                     json: false,
                 };
-                pakajo::dispatch::install_preview(&request).map(|preview| preview.review.part1)
+                pakajo::dispatch::install_preview(&request)
+                    .map(|preview| (preview.review.part1, preview.review.part2))
             },
             "dry-run channel closed",
             |result| {
@@ -275,9 +281,11 @@ impl Transaction {
                     eprintln!("[pakajo] dry-run failed, proceeding with install: {e}");
                     self.launch_subprocess(None)
                 }
-                Ok(part1) => {
+                Ok((part1, summary)) => {
+                    self.model.summary = Some(summary);
                     if !review::install_needs_review(&part1) {
-                        return self.proceed_after_conflicts(None);
+                        eprintln!("[pakajo] no questions, showing checkout");
+                        return self.show_checkout();
                     }
                     eprintln!("[pakajo] review required ({} questions)", part1.len());
                     self.model.install_review = Some(InstallReview::new(part1));
@@ -330,14 +338,10 @@ impl Transaction {
                 self.model.review = None;
                 match result {
                     Err(e) => {
-                        eprintln!("[pakajo] pkgbuild fetch failed, proceeding with install: {e}");
-                        let approvals = self.model.pending_approvals.take();
-                        self.launch_subprocess(approvals)
+                        eprintln!("[pakajo] pkgbuild fetch failed, showing checkout: {e}");
+                        self.show_checkout()
                     }
-                    Ok(diffs) if diffs.is_empty() => {
-                        let approvals = self.model.pending_approvals.take();
-                        self.launch_subprocess(approvals)
-                    }
+                    Ok(diffs) if diffs.is_empty() => self.show_checkout(),
                     Ok(diffs) => {
                         self.model.pkgbuild_review = Some(PkgbuildModel::new(diffs));
                         Action::None
@@ -360,6 +364,14 @@ impl Transaction {
                 self.launch_subprocess(approvals)
             }
             TransactionMessage::CancelPkgbuild => Action::Finished,
+            TransactionMessage::ApproveCheckout => {
+                if self.model.checkout.take().is_none() {
+                    return Action::None;
+                }
+                let approvals = self.model.pending_approvals.take();
+                self.launch_subprocess(approvals)
+            }
+            TransactionMessage::CancelCheckout => Action::Finished,
             TransactionMessage::Close => {
                 if self.model.is_sysupgrade() {
                     Action::Finished
@@ -384,9 +396,14 @@ impl Transaction {
             );
             Action::Run(task)
         } else {
-            let approvals = self.model.pending_approvals.take();
-            self.launch_subprocess(approvals)
+            self.show_checkout()
         }
+    }
+
+    fn show_checkout(&mut self) -> Action {
+        let summary = self.model.summary.clone().unwrap_or_default();
+        self.model.checkout = Some(CheckoutModel::new(summary));
+        Action::None
     }
 
     fn launch_subprocess(&mut self, approvals: Option<String>) -> Action {
@@ -455,6 +472,8 @@ impl Transaction {
     pub(crate) fn dialog(&self) -> Option<Element<'_>> {
         let content = if let Some(r) = self.model.install_review.as_ref() {
             r.view(&self.model.name)
+        } else if let Some(c) = self.model.checkout.as_ref() {
+            c.view(&self.model.name)
         } else if let Some(r) = self.model.review.as_ref() {
             r.view(&self.model.name, self.model.kind)
         } else {
