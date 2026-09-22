@@ -57,6 +57,19 @@ fn read_approvals(
         .transpose()
 }
 
+fn read_seal(
+    approvals_path: Option<&str>,
+) -> anyhow::Result<Option<crate::question::approvals::SealedApprovals>> {
+    approvals_path
+        .map(|path| {
+            let payload = std::fs::read_to_string(path)
+                .with_context(|| format!("failed to read seal file {path}"))?;
+            crate::dispatch::seal::decode_seal(&payload)
+                .with_context(|| format!("failed to decode seal file {path}"))
+        })
+        .transpose()
+}
+
 fn finish_install(outcome: crate::tx::driver::RunOutcome) -> anyhow::Result<()> {
     if let crate::tx::driver::Finish::PrepareFailed(failure) = outcome.finish {
         anyhow::bail!("failed to prepare transaction: {failure:?}")
@@ -152,7 +165,7 @@ impl ChildOperation {
                 approvals_path,
                 stream,
             } => {
-                let approvals = read_approvals(approvals_path.as_deref())?;
+                let sealed = read_seal(approvals_path.as_deref())?;
                 let mut handle = crate::pacman::handle()?;
                 let classified = targets
                     .iter()
@@ -170,12 +183,8 @@ impl ChildOperation {
                         "cannot build packages as root; re-run without privilege escalation"
                     );
                 }
-                let presentation = select_install_presentation(
-                    *stream,
-                    approvals.is_some(),
-                    privs::stdin_is_tty(),
-                );
-                let answerer = answerer_for(approvals);
+                let presentation =
+                    select_install_presentation(*stream, sealed.is_some(), privs::stdin_is_tty());
                 let preconfirmed = *preconfirmed;
                 match presentation {
                     Presentation::InteractiveStream | Presentation::Console => {
@@ -233,13 +242,33 @@ impl ChildOperation {
                         };
                         finish_install(outcome)
                     }
-                    Presentation::SilentStream => crate::install::run_install(
-                        &classified,
-                        *as_deps,
-                        JsonSink::new(),
-                        || true,
-                        answerer,
-                    ),
+                    Presentation::SilentStream => {
+                        let spec = crate::tx::driver::RunSpec {
+                            kind: crate::tx::driver::RunKind::Sync,
+                            targets: targets.clone(),
+                            stub_targets: Vec::new(),
+                            explore: false,
+                            as_deps: *as_deps,
+                            reinstall: *reinstall,
+                        };
+                        let inner: Box<dyn crate::question::source::AnswerSource> = match sealed {
+                            Some(sealed) => {
+                                Box::new(crate::question::source::ApprovalsReplay::new(sealed))
+                            }
+                            None => Box::new(crate::question::source::FailClosedSource),
+                        };
+                        let source = Box::new(crate::question::source::RuntimeSource::new(
+                            inner,
+                            crate::tx::prompt::HeadlessImportPrompter,
+                        ));
+                        let outcome = crate::tx::prompt::execute_with_source(
+                            source,
+                            &mut handle,
+                            &spec,
+                            Box::new(JsonSink::new()),
+                        )?;
+                        finish_install(outcome)
+                    }
                 }
             }
             ChildOperation::UpgradeRepo {
@@ -342,5 +371,29 @@ mod tests {
         let result = read_approvals(Some(&path.to_string_lossy()));
         let _ = std::fs::remove_file(&path);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_seal_round_trips_sealed_payload() {
+        use crate::question::approvals::seal;
+        use crate::question::model::{Answer, Question};
+        let question = Question::Conflict {
+            incoming: "cava-git".to_string(),
+            removable: "cava".to_string(),
+        };
+        let answer = Answer::Conflict {
+            incoming: "cava-git".to_string(),
+            removable: "cava".to_string(),
+            remove: true,
+        };
+        let sealed = seal(std::slice::from_ref(&question), &[answer], true).expect("seal succeeds");
+        let payload = crate::dispatch::seal::encode_seal(&sealed).expect("encodes");
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("pakajo-test-seal-{}.json", std::process::id()));
+        std::fs::write(&path, payload).expect("write seal");
+        let decoded = read_seal(Some(&path.to_string_lossy())).expect("reads seal");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(decoded, Some(sealed));
+        assert!(read_seal(None).expect("no path is no seal").is_none());
     }
 }

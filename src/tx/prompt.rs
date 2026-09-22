@@ -333,6 +333,14 @@ impl<R: BufRead, W: Write> crate::question::source::RuntimePrompter for TtyImpor
     }
 }
 
+pub struct HeadlessImportPrompter;
+
+impl crate::question::source::RuntimePrompter for HeadlessImportPrompter {
+    fn import_key(&self, _fingerprint: &str, _uid: &str) -> bool {
+        false
+    }
+}
+
 pub fn with_preapproved_proceed(inner: Box<dyn AnswerSource>) -> Box<dyn AnswerSource> {
     Box::new(PreapprovedProceed { inner })
 }

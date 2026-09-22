@@ -61,6 +61,13 @@ impl Decider for SealedDecider {
     }
 }
 
+pub fn proceed_only_seal() -> anyhow::Result<String> {
+    encode_seal(&SealedApprovals {
+        answers: Vec::new(),
+        proceed: true,
+    })
+}
+
 pub fn encode_seal(sealed: &SealedApprovals) -> anyhow::Result<String> {
     serde_json::to_string(sealed).context("failed to encode seal")
 }

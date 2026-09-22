@@ -5,10 +5,8 @@ use cosmic::widget::{Column, button, checkbox, container, dialog, radio, scrolla
 
 use pakajo::progress::InstallKind;
 use pakajo::question::approvals::{SealedApprovals, seal as seal_answers};
-use pakajo::question::model::{Answer, Question, QuestionKey};
-use pakajo::question::{
-    Approvals, Conflict, ProviderApproval, ProviderCandidate, QuestionSet, encode_approvals,
-};
+use pakajo::question::model::{Answer, Question};
+use pakajo::question::{ProviderCandidate, QuestionSet};
 
 use super::TransactionMessage;
 use crate::Element;
@@ -326,39 +324,6 @@ pub(crate) fn install_needs_review(part1: &[Question]) -> bool {
     !part1.is_empty()
 }
 
-pub(crate) fn bridge_approvals(sealed: &SealedApprovals) -> anyhow::Result<String> {
-    let mut approved_conflicts = Vec::new();
-    let mut approved_providers = Vec::new();
-    for (key, answer) in &sealed.answers {
-        match (key, answer) {
-            (
-                QuestionKey::Conflict { .. },
-                Answer::Conflict {
-                    incoming,
-                    removable,
-                    remove: true,
-                },
-            ) => approved_conflicts.push(Conflict {
-                incoming: incoming.clone(),
-                removable: removable.clone(),
-            }),
-            (QuestionKey::SelectProvider { depend }, Answer::SelectProvider { name, repo }) => {
-                approved_providers.push(ProviderApproval {
-                    depend: depend.clone(),
-                    provider_name: name.clone(),
-                    provider_repo: repo.clone(),
-                })
-            }
-            _ => {}
-        }
-    }
-    encode_approvals(&Approvals {
-        approved_conflicts,
-        approved_providers,
-        ..Default::default()
-    })
-}
-
 fn info_caption(question: &Question) -> Option<String> {
     match question {
         Question::Replace { old, new, .. } => Some(format!("{old} will be replaced by {new}")),
@@ -437,7 +402,7 @@ fn part1_body<'a>(
 #[cfg(test)]
 mod install_review_tests {
     use super::*;
-    use pakajo::question::model::{Answer, ProviderCandidate};
+    use pakajo::question::model::{Answer, ProviderCandidate, QuestionKey};
 
     fn s(value: &str) -> String {
         value.to_string()
@@ -512,37 +477,27 @@ mod install_review_tests {
     }
 
     #[test]
-    fn bridge_emits_exact_legacy_fields_and_omits_unchecked() {
+    fn seal_payload_decodes_back_with_choices_and_proceed() {
         let sealed = model_with(true, 1).seal().expect("seal succeeds");
-        let payload = bridge_approvals(&sealed).expect("bridge succeeds");
-        let approvals: Approvals = serde_json::from_str(&payload).expect("decodes");
-        assert_eq!(
-            approvals.approved_conflicts,
-            vec![Conflict {
-                incoming: s("cava-git"),
-                removable: s("cava"),
-            }]
-        );
-        assert_eq!(
-            approvals.approved_providers,
-            vec![ProviderApproval {
-                depend: s("virt"),
-                provider_name: s("virtualbox"),
-                provider_repo: Some(s("extra")),
-            }]
-        );
-        assert!(approvals.approved_held.is_empty());
-        assert!(approvals.approved_groups.is_empty());
-
-        let unbound = model_with(false, 0).seal().expect("seal succeeds");
-        let approvals: Approvals =
-            serde_json::from_str(&bridge_approvals(&unbound).expect("bridge succeeds"))
-                .expect("decodes");
-        assert!(approvals.approved_conflicts.is_empty());
-        assert_eq!(
-            approvals.approved_providers[0].provider_name, "qemu",
-            "first candidate is the presented default"
-        );
+        let payload = pakajo::dispatch::seal::encode_seal(&sealed).expect("encodes");
+        let decoded = pakajo::dispatch::seal::decode_seal(&payload).expect("decodes");
+        assert_eq!(decoded, sealed);
+        assert!(decoded.proceed);
+        assert_eq!(decoded.answers.len(), 5);
+        assert!(decoded.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::Conflict { .. },
+                Answer::Conflict { remove: true, .. }
+            )
+        )));
+        assert!(decoded.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::SelectProvider { .. },
+                Answer::SelectProvider { .. }
+            )
+        )));
     }
 
     #[test]
@@ -570,11 +525,6 @@ mod install_review_tests {
             Some((s("cava-git"), s("cava"), false)),
             "conflict is sealed as remove: false"
         );
-
-        let approvals: Approvals =
-            serde_json::from_str(&bridge_approvals(&sealed).expect("bridge succeeds"))
-                .expect("decodes");
-        assert!(approvals.approved_conflicts.is_empty());
     }
 
     #[test]

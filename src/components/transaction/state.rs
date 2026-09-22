@@ -101,6 +101,9 @@ impl TransactionModel {
     }
 
     pub(crate) fn apply_event(&mut self, ev: &InstallEvent) {
+        if let InstallEvent::FailClosed { key, reason } = ev {
+            self.failure_message = Some(format!("{key:?}: {reason}"));
+        }
         if self.is_aur() {
             apply_aur_counters(&mut self.aur, ev, std::time::Instant::now());
             return;
@@ -138,7 +141,9 @@ impl TransactionModel {
         if self.is_aur() || self.is_sysupgrade() {
             finish_aur(&mut self.aur, &outcome, std::time::Instant::now());
         }
-        if let ChildOutcome::Failed(message) | ChildOutcome::NotFound(message) = &outcome {
+        if let ChildOutcome::Failed(message) | ChildOutcome::NotFound(message) = &outcome
+            && self.failure_message.is_none()
+        {
             self.failure_message = Some(message.clone());
         }
         if matches!(outcome, ChildOutcome::Success) {
@@ -728,6 +733,28 @@ mod tests {
         );
         assert_eq!(model.aur.finalize.alerts.len(), 1);
         assert!(!model.aur.finalize.is_empty());
+    }
+
+    #[test]
+    fn fail_closed_event_records_failure_note() {
+        let mut model = TransactionModel::new(
+            "firefox".to_string(),
+            PackageSource::Repo,
+            InstallKind::Install,
+        );
+        model.apply_event(&InstallEvent::FailClosed {
+            key: pakajo::question::model::QuestionKey::Proceed,
+            reason: "denied in test".to_string(),
+        });
+        assert_eq!(
+            model.failure_message.as_deref(),
+            Some("Proceed: denied in test")
+        );
+        model.finish(ChildOutcome::Failed("install failed".to_string()));
+        assert_eq!(
+            model.failure_message.as_deref(),
+            Some("Proceed: denied in test")
+        );
     }
 
     #[test]

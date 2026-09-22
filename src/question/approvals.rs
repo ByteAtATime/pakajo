@@ -417,6 +417,29 @@ mod tests {
     }
 
     #[test]
+    fn empty_proceed_seal_answers_proceed_and_defers_the_rest() {
+        let sealed = SealedApprovals {
+            answers: Vec::new(),
+            proceed: true,
+        };
+        validate(&sealed).expect("empty proceed seal is valid");
+        assert_eq!(
+            match_answer(&Question::Proceed(summary()), &sealed),
+            Sealed::Answer(Answer::Proceed)
+        );
+        assert_eq!(
+            match_answer(
+                &Question::Conflict {
+                    incoming: s("foo"),
+                    removable: s("bar"),
+                },
+                &sealed
+            ),
+            Sealed::Ask
+        );
+    }
+
+    #[test]
     fn defers_runtime_and_proceed_and_normalizes_key_order() {
         let fixture = collectable_fixture();
         let (questions, answers) = split(&fixture);

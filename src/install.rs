@@ -30,31 +30,9 @@ impl QuestionState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum InstallProgress {
-    Idle,
-    Running,
-    Failed(String),
-    ConflictReview(crate::question::QuestionSet),
-    PkgbuildReview,
-    Completed,
-    Cancelled,
-}
-
 pub enum InstallTarget {
     Repo(String),
     File(PathBuf),
-}
-
-pub fn run_install<S: InstallSink + 'static, F: FnOnce() -> bool>(
-    targets: &[InstallTarget],
-    as_deps: bool,
-    sink: S,
-    confirm: F,
-    answerer: Box<dyn crate::answerer::QuestionAnswerer>,
-) -> anyhow::Result<()> {
-    let mut handle = crate::pacman::handle()?;
-    install_into(&mut handle, targets, as_deps, sink, confirm, answerer)
 }
 
 pub fn install_into<S: InstallSink + 'static, F: FnOnce() -> bool>(

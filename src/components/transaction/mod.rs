@@ -96,15 +96,25 @@ fn review_approvals(review: &ReviewModel) -> Option<String> {
     }
 }
 
-fn install_review_approvals(review: &InstallReview) -> Option<String> {
+fn install_review_seal(review: &InstallReview) -> Option<String> {
     match review
         .seal()
-        .and_then(|sealed| review::bridge_approvals(&sealed))
+        .and_then(|sealed| pakajo::dispatch::seal::encode_seal(&sealed))
     {
         Ok(payload) => Some(payload),
         Err(e) => {
-            eprintln!("[pakajo] approval encoding failed: {e}");
+            eprintln!("[pakajo] seal encoding failed: {e}");
             None
+        }
+    }
+}
+
+fn proceed_only_seal() -> String {
+    match pakajo::dispatch::seal::proceed_only_seal() {
+        Ok(payload) => payload,
+        Err(e) => {
+            eprintln!("[pakajo] seal encoding failed: {e}");
+            String::new()
         }
     }
 }
@@ -279,7 +289,7 @@ impl Transaction {
             TransactionMessage::InstallDryRunResult(result) => match result {
                 Err(e) => {
                     eprintln!("[pakajo] dry-run failed, proceeding with install: {e}");
-                    self.launch_subprocess(None)
+                    self.launch_subprocess(proceed_only_seal())
                 }
                 Ok((part1, summary)) => {
                     self.model.summary = Some(summary);
@@ -327,7 +337,7 @@ impl Transaction {
                     Some(r) => r,
                     None => return Action::None,
                 };
-                let approvals = install_review_approvals(&review);
+                let approvals = install_review_seal(&review);
                 if matches!(self.model.source, PackageSource::Aur) {
                     review.approving = true;
                     self.model.install_review = Some(review);
@@ -362,7 +372,7 @@ impl Transaction {
                     }
                 }
                 let approvals = self.model.pending_approvals.take();
-                self.launch_subprocess(approvals)
+                self.launch_subprocess(approvals.unwrap_or_else(proceed_only_seal))
             }
             TransactionMessage::CancelPkgbuild => Action::Finished,
             TransactionMessage::ApproveCheckout => {
@@ -370,7 +380,7 @@ impl Transaction {
                     return Action::None;
                 }
                 let approvals = self.model.pending_approvals.take();
-                self.launch_subprocess(approvals)
+                self.launch_subprocess(approvals.unwrap_or_else(proceed_only_seal))
             }
             TransactionMessage::CancelCheckout => Action::Finished,
             TransactionMessage::Close => {
@@ -407,18 +417,19 @@ impl Transaction {
         Action::None
     }
 
-    fn launch_subprocess(&mut self, approvals: Option<String>) -> Action {
+    fn launch_subprocess(&mut self, approvals: String) -> Action {
         let targets = self.model.targets.clone();
         let prefer_aur = self.model.prefer_aur;
         self.model.status = TransactionStatus::Running;
-        let decider = match AutomaticDecider::from_payload(approvals.as_deref()) {
-            Ok(decider) => Box::new(decider),
-            Err(error) => {
-                self.model
-                    .finish(ChildOutcome::Failed(format!("{error:#}")));
-                return Action::None;
-            }
-        };
+        let decider: Box<dyn pakajo::dispatch::protocol::Decider + Send> =
+            match pakajo::dispatch::seal::decode_seal(&approvals) {
+                Ok(sealed) => Box::new(pakajo::dispatch::seal::sealed_decider(sealed)),
+                Err(error) => {
+                    self.model
+                        .finish(ChildOutcome::Failed(format!("{error:#}")));
+                    return Action::None;
+                }
+            };
         let request = pakajo::dispatch::InstallRequest {
             targets,
             as_deps: false,
@@ -427,7 +438,7 @@ impl Transaction {
             ignores: vec![],
             prefer_aur,
             decider,
-            approvals,
+            approvals: Some(approvals),
             tty: false,
             json: false,
         };

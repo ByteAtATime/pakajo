@@ -64,9 +64,37 @@ impl InstallPreview {
     }
 }
 
+const JSON_SEAL_REQUIRED: &str = "--json requires sealed approvals";
+
+const NON_INTERACTIVE_SEAL_REQUIRED: &str = "non-interactive install requires sealed approvals";
+
+fn json_seal_missing(json: bool, approvals: Option<&str>) -> bool {
+    json && approvals.is_none()
+}
+
+fn non_interactive_seal_missing(json: bool, tty: bool, approvals: Option<&str>) -> bool {
+    !json && !tty && approvals.is_none()
+}
+
 pub fn install(request: InstallRequest) -> DispatchStream {
-    let (tx, rx) = futures::channel::mpsc::channel(256);
-    std::thread::spawn(move || run_install(request, tx));
+    let (mut tx, rx) = futures::channel::mpsc::channel(256);
+    std::thread::spawn(move || {
+        if json_seal_missing(request.json, request.approvals.as_deref()) {
+            send_done(
+                &mut tx,
+                ChildOutcome::Failed(JSON_SEAL_REQUIRED.to_string()),
+            );
+            return;
+        }
+        if non_interactive_seal_missing(request.json, request.tty, request.approvals.as_deref()) {
+            send_done(
+                &mut tx,
+                ChildOutcome::Failed(NON_INTERACTIVE_SEAL_REQUIRED.to_string()),
+            );
+            return;
+        }
+        run_install(request, tx);
+    });
     rx
 }
 
@@ -459,6 +487,22 @@ mod tests {
                 ],
             }],
         }
+    }
+
+    #[test]
+    fn missing_seals_are_rejected_with_exact_messages() {
+        assert!(json_seal_missing(true, None));
+        assert!(!json_seal_missing(true, Some("{}")));
+        assert!(!json_seal_missing(false, None));
+        assert_eq!(JSON_SEAL_REQUIRED, "--json requires sealed approvals");
+        assert!(non_interactive_seal_missing(false, false, None));
+        assert!(!non_interactive_seal_missing(false, true, None));
+        assert!(!non_interactive_seal_missing(true, false, None));
+        assert!(!non_interactive_seal_missing(false, false, Some("{}")));
+        assert_eq!(
+            NON_INTERACTIVE_SEAL_REQUIRED,
+            "non-interactive install requires sealed approvals"
+        );
     }
 
     #[test]

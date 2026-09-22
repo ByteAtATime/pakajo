@@ -68,17 +68,6 @@ impl AutomaticDecider {
         Self { approvals }
     }
 
-    pub fn from_payload(payload: Option<&str>) -> anyhow::Result<Self> {
-        let approvals: crate::question::Approvals = payload
-            .map(|text| {
-                serde_json::from_str(text)
-                    .map_err(|error| anyhow::anyhow!("failed to parse approvals payload: {error}"))
-            })
-            .transpose()?
-            .unwrap_or_default();
-        Ok(Self::with_approvals(approvals))
-    }
-
     fn conflict_approved(&self, incoming: &str, removable: &str) -> bool {
         self.approvals.approved_conflicts.iter().any(|approved| {
             (approved.incoming == incoming && approved.removable == removable)
@@ -178,33 +167,6 @@ mod tests {
             approved_groups: Default::default(),
         };
         assert!(AutomaticDecider::with_approvals(approvals).confirm_conflicts(&report));
-    }
-
-    #[test]
-    fn automatic_decider_parses_payload_honestly() {
-        let payload = r#"{"approved_conflicts":[{"incoming":"cava","removable":"cava-git"}]}"#;
-        assert!(
-            AutomaticDecider::from_payload(Some(payload))
-                .expect("valid payload parses")
-                .confirm_conflicts(&conflicted_report())
-        );
-        assert!(
-            !AutomaticDecider::from_payload(None)
-                .expect("missing payload means no approvals")
-                .confirm_conflicts(&conflicted_report())
-        );
-    }
-
-    #[test]
-    fn automatic_decider_rejects_corrupt_payload_loudly() {
-        let error = AutomaticDecider::from_payload(Some("not json"))
-            .err()
-            .expect("corrupt payload must fail, not silently clear approvals");
-        let message = format!("{error:#}");
-        assert!(
-            message.contains("failed to parse approvals payload"),
-            "error must name the payload problem: {message}"
-        );
     }
 
     #[test]

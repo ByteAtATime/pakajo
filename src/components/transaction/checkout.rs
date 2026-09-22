@@ -91,7 +91,6 @@ mod checkout_tests {
     use pakajo::events::SummaryPackage;
     use pakajo::progress::InstallKind;
     use pakajo::question::model::Question;
-    use pakajo::question::{Approvals, Conflict};
 
     fn s(value: &str) -> String {
         value.to_string()
@@ -141,7 +140,7 @@ mod checkout_tests {
     }
 
     #[test]
-    fn checkout_proceed_launches_with_bridged_payload() {
+    fn checkout_proceed_launches_with_sealed_payload() {
         let mut tx = install_model();
         tx.model.install_review = Some(InstallReview::new(vec![Question::Conflict {
             incoming: s("cava-git"),
@@ -150,20 +149,22 @@ mod checkout_tests {
         tx.update(TransactionMessage::Review(ReviewMessage::ToggleConflict(0)));
         tx.update(TransactionMessage::ApproveReview);
         assert!(tx.model.checkout.is_some());
-        let approvals: Approvals = serde_json::from_str(
+        let sealed = pakajo::dispatch::seal::decode_seal(
             tx.model
                 .pending_approvals
                 .as_deref()
-                .expect("payload bridged"),
+                .expect("payload sealed"),
         )
         .expect("decodes");
-        assert_eq!(
-            approvals.approved_conflicts,
-            vec![Conflict {
-                incoming: s("cava-git"),
-                removable: s("cava"),
-            }]
-        );
+        assert!(sealed.proceed);
+        assert_eq!(sealed.answers.len(), 1);
+        assert!(matches!(
+            sealed.answers[0],
+            (
+                pakajo::question::model::QuestionKey::Conflict { .. },
+                pakajo::question::model::Answer::Conflict { remove: true, .. }
+            )
+        ));
         tx.update(TransactionMessage::ApproveCheckout);
         assert!(matches!(tx.model.status, TransactionStatus::Running));
     }
