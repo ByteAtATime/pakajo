@@ -7,7 +7,7 @@ use anyhow::Context as _;
 
 use crate::aur::AurInfo;
 use crate::cli::prompts::CliAsk;
-use crate::dispatch::exec::{ChildOutcome, StreamItem};
+use crate::dispatch::exec::ChildOutcome;
 use crate::dispatch::protocol::Decider;
 use crate::events::{InstallEvent, InstallSink, PkgbuildReviewEntry};
 use crate::pkgbuild::PkgbuildInfo;
@@ -460,7 +460,6 @@ fn run_install_child<S: InstallSink + ?Sized>(
     preconfirmed: bool,
     tty: bool,
 ) -> anyhow::Result<()> {
-    use futures::StreamExt as _;
     let sealed = approvals
         .map(|payload| crate::dispatch::approvals::ApprovalsFile::write(payload.as_bytes()))
         .transpose()
@@ -472,24 +471,15 @@ fn run_install_child<S: InstallSink + ?Sized>(
         preconfirmed,
         approvals: sealed,
     };
-    let mut stream = operation.dispatch(tty);
-    while let Some(item) = futures::executor::block_on(stream.next()) {
-        match item {
-            StreamItem::Event(event) => sink.event(event),
-            StreamItem::Done(ChildOutcome::Success) => return Ok(()),
-            StreamItem::Done(outcome) => {
-                anyhow::bail!(
-                    "privileged install of [{}] failed: {}",
-                    targets.join(", "),
-                    outcome.reason()
-                );
-            }
-        }
+    let stream = operation.dispatch(tty);
+    match crate::dispatch::exec::drain_declining(stream, sink) {
+        ChildOutcome::Success => Ok(()),
+        outcome => anyhow::bail!(
+            "privileged install of [{}] failed: {}",
+            targets.join(", "),
+            outcome.reason()
+        ),
     }
-    anyhow::bail!(
-        "privileged install of [{}] failed: stream ended",
-        targets.join(", ")
-    );
 }
 
 #[cfg(test)]

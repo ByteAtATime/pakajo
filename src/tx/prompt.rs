@@ -333,12 +333,52 @@ impl<R: BufRead, W: Write> crate::question::source::RuntimePrompter for TtyImpor
     }
 }
 
-pub struct HeadlessImportPrompter;
+pub struct ChannelImportPrompter<R> {
+    input: Rc<RefCell<R>>,
+    emit: Box<dyn Fn(Question)>,
+}
 
-impl crate::question::source::RuntimePrompter for HeadlessImportPrompter {
-    fn import_key(&self, _fingerprint: &str, _uid: &str) -> bool {
-        false
+impl<R: BufRead> ChannelImportPrompter<R> {
+    pub fn new(input: Rc<RefCell<R>>, emit: impl Fn(Question) + 'static) -> Self {
+        Self {
+            input,
+            emit: Box::new(emit),
+        }
     }
+
+    fn read_answer(&self) -> bool {
+        let mut line = String::new();
+        self.input
+            .borrow_mut()
+            .read_line(&mut line)
+            .map(|n| n > 0 && parse_channel_answer(&line))
+            .unwrap_or(false)
+    }
+}
+
+impl<R: BufRead> crate::question::source::RuntimePrompter for ChannelImportPrompter<R> {
+    fn import_key(&self, fingerprint: &str, uid: &str) -> bool {
+        (self.emit)(Question::ImportKey {
+            fingerprint: fingerprint.to_string(),
+            uid: uid.to_string(),
+        });
+        self.read_answer()
+    }
+}
+
+fn parse_channel_answer(line: &str) -> bool {
+    matches!(line.trim().to_lowercase().as_str(), "yes" | "y")
+}
+
+pub fn stdin_channel_source(
+    inner: Box<dyn AnswerSource>,
+    emit: impl Fn(Question) + 'static,
+) -> Box<dyn AnswerSource> {
+    let input = Rc::new(RefCell::new(std::io::BufReader::new(std::io::stdin())));
+    Box::new(crate::question::source::RuntimeSource::new(
+        inner,
+        ChannelImportPrompter::new(Rc::clone(&input), emit),
+    ))
 }
 
 pub fn with_preapproved_proceed(inner: Box<dyn AnswerSource>) -> Box<dyn AnswerSource> {
@@ -663,6 +703,38 @@ mod tests {
         assert_eq!(prompt, "Import PGP key ABCDEF? [Y/n] ");
         for (input, expected) in [(b"y\n".as_slice(), true), (b"yes\n", true), (b"n\n", false)] {
             assert_eq!(ask_prompter(input, "u").0, expected, "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn channel_import_prompter_emits_prompt_and_parses_answers() {
+        use std::cell::RefCell as Cell;
+        let seen = Rc::new(Cell::new(Vec::new()));
+        let emit_seen = Rc::clone(&seen);
+        let prompter = ChannelImportPrompter::new(
+            Rc::new(RefCell::new(Cursor::new(b"yes\n".to_vec()))),
+            move |question| emit_seen.borrow_mut().push(question),
+        );
+        assert!(prompter.import_key("ABCDEF", "Packager <pack@example.com>"));
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &[Question::ImportKey {
+                fingerprint: "ABCDEF".to_string(),
+                uid: "Packager <pack@example.com>".to_string(),
+            }]
+        );
+        fn ask(input: &[u8]) -> bool {
+            let prompter = ChannelImportPrompter::new(
+                Rc::new(RefCell::new(Cursor::new(input.to_vec()))),
+                |_| {},
+            );
+            prompter.import_key("ABCDEF", "")
+        }
+        for input in [b"yes\n".as_slice(), b"y\n", b"YES\n"] {
+            assert!(ask(input), "accept {input:?}");
+        }
+        for input in [b"no\n".as_slice(), b"\n", b"maybe\n", b""] {
+            assert!(!ask(input), "decline {input:?}");
         }
     }
 

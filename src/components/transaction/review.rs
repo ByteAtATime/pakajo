@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, button, checkbox, container, dialog, radio, scrollable, text};
@@ -219,13 +219,21 @@ pub(crate) struct InstallReview {
 
 impl InstallReview {
     pub(crate) fn new(questions: Vec<Question>) -> Self {
+        let mut seen = HashSet::new();
+        let questions: Vec<Question> = questions
+            .into_iter()
+            .filter(|question| seen.insert(question.key()))
+            .collect();
         Self {
             conflict_checks: vec![false; questions.len()],
             replace_checks: questions
                 .iter()
                 .map(|question| matches!(question, Question::Replace { .. }))
                 .collect(),
-            ignorepkg_checks: vec![false; questions.len()],
+            ignorepkg_checks: questions
+                .iter()
+                .map(|question| matches!(question, Question::InstallIgnorepkg { .. }))
+                .collect(),
             removepkgs_checks: vec![false; questions.len()],
             provider_choices: questions
                 .iter()
@@ -296,7 +304,7 @@ impl InstallReview {
             },
             Question::InstallIgnorepkg { name } => Answer::InstallIgnorepkg {
                 name: name.clone(),
-                install: self.ignorepkg_checks.get(i).copied().unwrap_or(false),
+                install: self.ignorepkg_checks.get(i).copied().unwrap_or(true),
             },
             Question::RemovePkgs { names } => Answer::RemovePkgs {
                 names: names.clone(),
@@ -525,7 +533,7 @@ mod install_review_tests {
                 (
                     QuestionKey::InstallIgnorepkg { .. },
                     Answer::InstallIgnorepkg { install, .. },
-                ) => assert!(!*install),
+                ) => assert!(*install),
                 (QuestionKey::RemovePkgs { .. }, Answer::RemovePkgs { skip, .. }) => {
                     assert!(!*skip)
                 }
@@ -567,7 +575,7 @@ mod install_review_tests {
             (key, answer),
             (
                 QuestionKey::InstallIgnorepkg { .. },
-                Answer::InstallIgnorepkg { install: false, .. }
+                Answer::InstallIgnorepkg { install: true, .. }
             )
         )));
         assert!(decoded.answers.iter().any(|(key, answer)| matches!(
@@ -583,7 +591,7 @@ mod install_review_tests {
     fn fresh_model_defaults_three_kinds() {
         let model = InstallReview::new(questions());
         assert!(model.replace_checks[2]);
-        assert!(!model.ignorepkg_checks[3]);
+        assert!(model.ignorepkg_checks[3]);
         assert!(!model.removepkgs_checks[4]);
 
         let sealed = model.seal().expect("seal succeeds");
@@ -598,7 +606,7 @@ mod install_review_tests {
             (key, answer),
             (
                 QuestionKey::InstallIgnorepkg { .. },
-                Answer::InstallIgnorepkg { install: false, .. }
+                Answer::InstallIgnorepkg { install: true, .. }
             )
         )));
         assert!(sealed.answers.iter().any(|(key, answer)| matches!(
@@ -628,7 +636,7 @@ mod install_review_tests {
             (key, answer),
             (
                 QuestionKey::InstallIgnorepkg { .. },
-                Answer::InstallIgnorepkg { install: true, .. }
+                Answer::InstallIgnorepkg { install: false, .. }
             )
         )));
         assert!(sealed.answers.iter().any(|(key, answer)| matches!(
@@ -671,5 +679,60 @@ mod install_review_tests {
     fn gate_requires_non_empty_part1() {
         assert!(!install_needs_review(&[]));
         assert!(install_needs_review(&questions()));
+    }
+
+    fn duplicate_questions() -> Vec<Question> {
+        vec![
+            Question::Conflict {
+                incoming: s("cava-git"),
+                removable: s("cava"),
+            },
+            Question::Conflict {
+                incoming: s("cava-git"),
+                removable: s("cava"),
+            },
+            Question::InstallIgnorepkg { name: s("glibc") },
+            Question::InstallIgnorepkg { name: s("glibc") },
+        ]
+    }
+
+    #[test]
+    fn duplicate_questions_dedup_to_one_row_each() {
+        let model = InstallReview::new(duplicate_questions());
+        assert_eq!(model.questions.len(), 2);
+        assert_eq!(model.conflict_checks.len(), 2);
+        assert_eq!(model.ignorepkg_checks.len(), 2);
+        assert_eq!(model.replace_checks.len(), 2);
+        assert_eq!(model.removepkgs_checks.len(), 2);
+        assert!(!model.conflict_checks[0]);
+        assert!(model.ignorepkg_checks[1]);
+    }
+
+    #[test]
+    fn toggling_deduped_row_seals_single_consistent_answer() {
+        let mut model = InstallReview::new(duplicate_questions());
+        model.update(ReviewMessage::ToggleConflict(0));
+        let sealed = model.seal().expect("seal succeeds");
+        assert_eq!(sealed.answers.len(), 2);
+        let conflict_rows = sealed
+            .answers
+            .iter()
+            .filter(|(key, _)| matches!(key, QuestionKey::Conflict { .. }))
+            .count();
+        assert_eq!(conflict_rows, 1);
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::Conflict { .. },
+                Answer::Conflict { remove: true, .. }
+            )
+        )));
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::InstallIgnorepkg { .. },
+                Answer::InstallIgnorepkg { install: true, .. }
+            )
+        )));
     }
 }

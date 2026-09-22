@@ -1,5 +1,6 @@
-use std::io::{self, BufReader};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::io::{self, BufReader, Write as _};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::sync::{Arc, Mutex};
 
 use futures::SinkExt as _;
 
@@ -29,10 +30,72 @@ impl ChildOutcome {
 
 pub enum StreamItem {
     Event(InstallEvent),
+    AnswerChannel(AnswerWriter),
     Done(ChildOutcome),
 }
 
+#[derive(Clone, Debug)]
+pub struct AnswerWriter {
+    writer: Arc<Mutex<ChildStdin>>,
+}
+
+impl AnswerWriter {
+    pub fn from_stdin(stdin: ChildStdin) -> Self {
+        Self {
+            writer: Arc::new(Mutex::new(stdin)),
+        }
+    }
+
+    pub fn answer(&self, yes: bool) {
+        let line = if yes { "yes\n" } else { "no\n" };
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = writer.write_all(line.as_bytes());
+        let _ = writer.flush();
+    }
+}
+
+#[derive(Default)]
+struct PromptDecliner {
+    writer: Option<AnswerWriter>,
+}
+
+impl PromptDecliner {
+    fn channel(&mut self, writer: AnswerWriter) {
+        self.writer = Some(writer);
+    }
+
+    fn on_event(&self, event: &InstallEvent) {
+        if matches!(event, InstallEvent::RuntimePrompt { .. })
+            && let Some(writer) = self.writer.as_ref()
+        {
+            writer.answer(false);
+        }
+    }
+}
+
 pub type DispatchStream = futures::channel::mpsc::Receiver<StreamItem>;
+
+pub fn drain_declining(
+    mut stream: DispatchStream,
+    sink: &mut (impl InstallSink + ?Sized),
+) -> ChildOutcome {
+    use futures::StreamExt as _;
+    let mut answers = PromptDecliner::default();
+    while let Some(item) = futures::executor::block_on(stream.next()) {
+        match item {
+            StreamItem::Event(event) => {
+                answers.on_event(&event);
+                sink.event(event);
+            }
+            StreamItem::AnswerChannel(writer) => answers.channel(writer),
+            StreamItem::Done(outcome) => return outcome,
+        }
+    }
+    ChildOutcome::Failed("stream ended".to_string())
+}
 
 pub fn send_done(tx: &mut futures::channel::mpsc::Sender<StreamItem>, outcome: ChildOutcome) {
     send_item(tx, StreamItem::Done(outcome));
@@ -149,7 +212,7 @@ fn spawn_privileged_child(
     exe: &str,
     tty: bool,
     tx: &mut futures::channel::mpsc::Sender<StreamItem>,
-) -> Option<(Child, &'static str)> {
+) -> Option<(Child, &'static str, Option<AnswerWriter>)> {
     let (mut cmd, escalator) = escalation(exe, tty);
     cmd.arg(MARKER);
     for arg in argv {
@@ -158,11 +221,20 @@ fn spawn_privileged_child(
     if tty {
         cmd.stdin(Stdio::inherit());
     } else {
-        cmd.stdin(Stdio::null());
+        cmd.stdin(Stdio::piped());
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::inherit());
     match cmd.spawn() {
-        Ok(child) => Some((child, escalator)),
+        Ok(mut child) => {
+            let writer = child
+                .stdin
+                .take()
+                .filter(|_| !tty)
+                .map(|stdin| AnswerWriter {
+                    writer: Arc::new(Mutex::new(stdin)),
+                });
+            Some((child, escalator, writer))
+        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             send_item(
                 tx,
@@ -210,10 +282,14 @@ fn run_privileged(
             return;
         }
     };
-    let Some((child, escalator)) = spawn_privileged_child(&argv, &exe.to_string_lossy(), tty, tx)
+    let Some((child, escalator, writer)) =
+        spawn_privileged_child(&argv, &exe.to_string_lossy(), tty, tx)
     else {
         return;
     };
+    if let Some(writer) = writer {
+        send_item(tx, StreamItem::AnswerChannel(writer));
+    }
     let mut sink = ChannelSink::new(tx.clone());
     let status = stream_child(child, &mut sink);
     send_item(tx, StreamItem::Done(map_outcome(status, escalator)));

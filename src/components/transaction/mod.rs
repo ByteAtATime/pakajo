@@ -1,9 +1,10 @@
 use cosmic::app::Task;
 use cosmic::iced::{Background, Color, Length, stream::channel};
-use cosmic::widget::container;
+use cosmic::widget::Column;
+use cosmic::widget::{button, container, dialog, text};
 use futures::StreamExt as _;
 
-use pakajo::dispatch::exec::{ChildOutcome, StreamItem};
+use pakajo::dispatch::exec::{AnswerWriter, ChildOutcome, StreamItem};
 use pakajo::dispatch::protocol::AutomaticDecider;
 use pakajo::events::{InstallEvent, TransactionSummary};
 use pakajo::package::PackageSource;
@@ -68,6 +69,8 @@ pub enum TransactionMessage {
     Pkgbuild(PkgbuildMessage),
     ApproveCheckout,
     CancelCheckout,
+    AnswerChannel(AnswerWriter),
+    AnswerImportKey(bool),
     Close,
 }
 
@@ -126,27 +129,16 @@ fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::M
             use futures::SinkExt as _;
             let mut done_seen = false;
             while let Some(item) = rx.next().await {
-                match item {
-                    StreamItem::Event(ev) => {
-                        let _ = tx
-                            .send(
-                                crate::Message::Transaction(TransactionMessage::InstallEvent(ev))
-                                    .into(),
-                            )
-                            .await;
-                    }
-                    StreamItem::Done(outcome) => {
-                        done_seen = true;
-                        let _ = tx
-                            .send(
-                                crate::Message::Transaction(TransactionMessage::InstallDone(
-                                    outcome,
-                                ))
-                                .into(),
-                            )
-                            .await;
-                        break;
-                    }
+                let done = matches!(item, StreamItem::Done(_));
+                let message = match item {
+                    StreamItem::Event(ev) => TransactionMessage::InstallEvent(ev),
+                    StreamItem::AnswerChannel(writer) => TransactionMessage::AnswerChannel(writer),
+                    StreamItem::Done(outcome) => TransactionMessage::InstallDone(outcome),
+                };
+                let _ = tx.send(crate::Message::Transaction(message).into()).await;
+                if done {
+                    done_seen = true;
+                    break;
                 }
             }
             if !done_seen {
@@ -383,6 +375,14 @@ impl Transaction {
                 self.launch_subprocess(approvals.unwrap_or_else(proceed_only_seal))
             }
             TransactionMessage::CancelCheckout => Action::Finished,
+            TransactionMessage::AnswerChannel(writer) => {
+                self.model.set_answer_channel(writer);
+                Action::None
+            }
+            TransactionMessage::AnswerImportKey(yes) => {
+                self.model.answer_import_key(yes);
+                Action::None
+            }
             TransactionMessage::Close => {
                 if self.model.is_sysupgrade() {
                     Action::Finished
@@ -482,6 +482,9 @@ impl Transaction {
     }
 
     pub(crate) fn dialog(&self) -> Option<Element<'_>> {
+        if let Some(prompt) = self.model.pending_import_key.as_ref() {
+            return Some(dialog_backdrop(import_key_dialog(prompt), 32.0));
+        }
         let content = if let Some(r) = self.model.install_review.as_ref() {
             r.view(&self.model.name)
         } else if let Some(c) = self.model.checkout.as_ref() {
@@ -528,6 +531,30 @@ impl Transaction {
     pub(crate) fn name(&self) -> &str {
         &self.model.name
     }
+}
+
+fn import_key_dialog(prompt: &Question) -> Element<'_> {
+    let Question::ImportKey { fingerprint, uid } = prompt else {
+        return dialog_backdrop(text("Unknown prompt").into(), 32.0);
+    };
+    let mut body = Column::new()
+        .spacing(8)
+        .push(text(format!("Import PGP key {fingerprint}?")));
+    if !uid.is_empty() {
+        body = body.push(text(uid.clone()));
+    }
+    dialog()
+        .title("Import PGP key")
+        .control(body)
+        .primary_action(
+            button::suggested("Yes").on_press(crate::Message::Transaction(
+                TransactionMessage::AnswerImportKey(true),
+            )),
+        )
+        .secondary_action(button::standard("No").on_press(crate::Message::Transaction(
+            TransactionMessage::AnswerImportKey(false),
+        )))
+        .into()
 }
 
 fn dialog_backdrop(content: Element<'_>, padding: f32) -> Element<'_> {

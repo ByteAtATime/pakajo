@@ -1,10 +1,9 @@
-use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem};
+use crate::dispatch::exec::{ChildOutcome, DispatchStream};
 use crate::dispatch::protocol::TerminalDecider;
 use crate::events::InstallSink;
 use crate::install::InstallTarget;
 use anyhow::Context as _;
 use clap::Parser;
-use futures::StreamExt as _;
 
 mod args;
 use self::args::{
@@ -64,15 +63,8 @@ pub fn dispatch(cli: Cli) {
     }
 }
 
-fn drain(mut stream: DispatchStream, json: bool) -> ChildOutcome {
-    let mut sink = sink_for(json);
-    while let Some(item) = futures::executor::block_on(stream.next()) {
-        match item {
-            StreamItem::Event(event) => sink.event(event),
-            StreamItem::Done(outcome) => return outcome,
-        }
-    }
-    ChildOutcome::Failed("stream ended".to_string())
+fn drain(stream: DispatchStream, json: bool) -> ChildOutcome {
+    crate::dispatch::exec::drain_declining(stream, sink_for(json).as_mut())
 }
 
 fn outcome_code(outcome: &ChildOutcome) -> i32 {

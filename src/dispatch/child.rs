@@ -3,6 +3,7 @@ use crate::cli::{
     confirm_hold_remove, confirm_remove, confirm_remove_stderr, privs,
 };
 use crate::dispatch::operation::ChildOperation;
+use crate::events::{InstallEvent, InstallSink};
 use crate::install::InstallTarget;
 use anyhow::Context as _;
 
@@ -257,10 +258,9 @@ impl ChildOperation {
                             }
                             None => Box::new(crate::question::source::FailClosedSource),
                         };
-                        let source = Box::new(crate::question::source::RuntimeSource::new(
-                            inner,
-                            crate::tx::prompt::HeadlessImportPrompter,
-                        ));
+                        let source = crate::tx::prompt::stdin_channel_source(inner, |question| {
+                            JsonSink::new().event(InstallEvent::RuntimePrompt { question })
+                        });
                         let outcome = crate::tx::prompt::execute_with_source(
                             source,
                             &mut handle,

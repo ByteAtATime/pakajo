@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use pakajo::dispatch::exec::ChildOutcome;
+use pakajo::dispatch::exec::{AnswerWriter, ChildOutcome};
 use pakajo::events::{InstallEvent, TransactionSummary};
 use pakajo::package::PackageSource;
 use pakajo::progress::{
@@ -8,6 +8,7 @@ use pakajo::progress::{
     RepoState, VALIDATE_TOTAL, apply_aur_counters, apply_repo_counters, event_stage, finish_aur,
     ordered_aur_stages, ordered_stages,
 };
+use pakajo::question::model::Question;
 
 use super::checkout::CheckoutModel;
 use super::pkgbuild::PkgbuildModel;
@@ -42,6 +43,8 @@ pub(crate) struct TransactionModel {
     pub(super) pending_approvals: Option<String>,
     pub(super) pkgbuild_review: Option<PkgbuildModel>,
     pub(super) failure_message: Option<String>,
+    pub(super) answer_channel: Option<AnswerWriter>,
+    pub(super) pending_import_key: Option<Question>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +90,8 @@ impl TransactionModel {
             pending_approvals: None,
             pkgbuild_review: None,
             failure_message: None,
+            answer_channel: None,
+            pending_import_key: None,
         }
     }
 
@@ -103,6 +108,11 @@ impl TransactionModel {
     pub(crate) fn apply_event(&mut self, ev: &InstallEvent) {
         if let InstallEvent::FailClosed { key, reason } = ev {
             self.failure_message = Some(format!("{key:?}: {reason}"));
+        }
+        if let InstallEvent::RuntimePrompt { question } = ev
+            && self.answer_channel.is_some()
+        {
+            self.pending_import_key = Some(question.clone());
         }
         if self.is_aur() {
             apply_aur_counters(&mut self.aur, ev, std::time::Instant::now());
@@ -150,6 +160,20 @@ impl TransactionModel {
             self.current_idx = self.stages.len();
         }
         self.status = TransactionStatus::Done(outcome);
+        self.pending_import_key = None;
+        self.answer_channel = None;
+    }
+
+    pub(crate) fn set_answer_channel(&mut self, writer: AnswerWriter) {
+        self.answer_channel = Some(writer);
+        self.pending_import_key = None;
+    }
+
+    pub(crate) fn answer_import_key(&mut self, yes: bool) {
+        if let Some(channel) = self.answer_channel.as_ref() {
+            channel.answer(yes);
+        }
+        self.pending_import_key = None;
     }
 
     pub(crate) fn build_owns_failure(&self) -> bool {
@@ -755,6 +779,92 @@ mod tests {
             model.failure_message.as_deref(),
             Some("Proceed: denied in test")
         );
+    }
+
+    #[test]
+    fn runtime_prompt_stores_pending_import_key_until_answered() {
+        let mut model = TransactionModel::new(
+            "firefox".to_string(),
+            PackageSource::Repo,
+            InstallKind::Install,
+        );
+        model.set_answer_channel(test_writer());
+        model.apply_event(&InstallEvent::RuntimePrompt {
+            question: pakajo::question::model::Question::ImportKey {
+                fingerprint: "ABCDEF".to_string(),
+                uid: "Packager <pack@example.com>".to_string(),
+            },
+        });
+        let pending = model.pending_import_key.as_ref().expect("pending prompt");
+        assert!(matches!(
+            pending,
+            Question::ImportKey { fingerprint, uid }
+            if fingerprint == "ABCDEF" && uid == "Packager <pack@example.com>"
+        ));
+        model.answer_import_key(true);
+        assert!(model.pending_import_key.is_none());
+    }
+
+    fn test_writer() -> AnswerWriter {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("true")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("spawn true");
+        let writer = AnswerWriter::from_stdin(child.stdin.take().expect("piped stdin"));
+        let _ = child.wait();
+        writer
+    }
+
+    fn import_key_event() -> InstallEvent {
+        InstallEvent::RuntimePrompt {
+            question: pakajo::question::model::Question::ImportKey {
+                fingerprint: "ABCDEF".to_string(),
+                uid: "Packager <pack@example.com>".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn runtime_prompt_without_channel_stores_nothing() {
+        let mut model = TransactionModel::new(
+            "firefox".to_string(),
+            PackageSource::Repo,
+            InstallKind::Install,
+        );
+        model.apply_event(&import_key_event());
+        assert!(model.pending_import_key.is_none());
+    }
+
+    #[test]
+    fn new_channel_drops_previous_pending_prompt() {
+        let mut model = TransactionModel::new(
+            "firefox".to_string(),
+            PackageSource::Repo,
+            InstallKind::Install,
+        );
+        model.set_answer_channel(test_writer());
+        model.apply_event(&import_key_event());
+        assert!(model.pending_import_key.is_some());
+        model.set_answer_channel(test_writer());
+        assert!(model.pending_import_key.is_none());
+        assert!(model.answer_channel.is_some());
+    }
+
+    #[test]
+    fn finish_clears_pending_prompt_and_channel() {
+        let mut model = TransactionModel::new(
+            "firefox".to_string(),
+            PackageSource::Repo,
+            InstallKind::Install,
+        );
+        model.set_answer_channel(test_writer());
+        model.apply_event(&import_key_event());
+        assert!(model.pending_import_key.is_some());
+        model.finish(ChildOutcome::Failed("done".to_string()));
+        assert!(model.pending_import_key.is_none());
+        assert!(model.answer_channel.is_none());
     }
 
     #[test]

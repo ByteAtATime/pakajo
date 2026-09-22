@@ -90,12 +90,12 @@ fn forward(
 ) -> ForwardEnd {
     while let Some(item) = futures::executor::block_on(inner.next()) {
         match item {
-            StreamItem::Event(event) => {
-                if futures::executor::block_on(tx.send(StreamItem::Event(event))).is_err() {
+            StreamItem::Done(outcome) => return ForwardEnd::Done(outcome),
+            item => {
+                if futures::executor::block_on(tx.send(item)).is_err() {
                     return ForwardEnd::ReceiverGone;
                 }
             }
-            StreamItem::Done(outcome) => return ForwardEnd::Done(outcome),
         }
     }
     ForwardEnd::InnerEnded
