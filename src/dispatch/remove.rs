@@ -48,7 +48,7 @@ fn run_remove_preview(
     state: &std::rc::Rc<std::cell::RefCell<crate::dry_run::RecorderState>>,
 ) -> anyhow::Result<Preview> {
     let config = crate::pacman::config()?;
-    let targets = expand_remove_groups(handle, &request.targets, request.tty);
+    let targets = expand_remove_groups(handle, &request.targets);
     handle
         .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
         .context("failed to init remove preview transaction")?;
@@ -106,7 +106,11 @@ fn run_remove(request: RemoveRequest, mut tx: futures::channel::mpsc::Sender<Str
             return;
         }
     };
-    let targets = expand_remove_groups(&handle, &request.targets, request.tty);
+    let targets = if request.tty {
+        request.targets.clone()
+    } else {
+        expand_remove_groups(&handle, &request.targets)
+    };
     drop(handle);
     let sealed = match seal_approvals(&request.approvals) {
         Ok(sealed) => sealed,
@@ -137,7 +141,11 @@ fn run_root_remove(request: RemoveRequest, tx: &mut futures::channel::mpsc::Send
             return;
         }
     };
-    let targets = expand_remove_groups(&handle, &request.targets, request.tty);
+    let targets = if request.tty {
+        request.targets.clone()
+    } else {
+        expand_remove_groups(&handle, &request.targets)
+    };
     drop(handle);
     let sealed = match seal_approvals(&request.approvals) {
         Ok(sealed) => sealed,
@@ -161,11 +169,7 @@ fn run_root_remove(request: RemoveRequest, tx: &mut futures::channel::mpsc::Send
     send_done(tx, outcome);
 }
 
-fn expand_remove_groups(
-    handle: &alpm::Alpm,
-    positionals: &[String],
-    interactive: bool,
-) -> Vec<String> {
+fn expand_remove_groups(handle: &alpm::Alpm, positionals: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for s in positionals {
@@ -176,11 +180,7 @@ fn expand_remove_groups(
             continue;
         }
         if let Some(group) = crate::package::local_group(handle, s) {
-            let members: Vec<String> = if interactive {
-                crate::cli::prompts::select_group_members(s, std::slice::from_ref(&group))
-            } else {
-                group.members.iter().map(|m| m.name.clone()).collect()
-            };
+            let members: Vec<String> = group.members.iter().map(|m| m.name.clone()).collect();
             for name in members {
                 if seen.insert(name.clone()) {
                     out.push(name);

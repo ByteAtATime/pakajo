@@ -102,18 +102,6 @@ fn select_group_indices(group_name: &str, groups: &[crate::package::PackageGroup
     }
 }
 
-pub fn select_group_members(
-    group_name: &str,
-    groups: &[crate::package::PackageGroup],
-) -> Vec<String> {
-    let flat: Vec<&crate::package::GroupMember> =
-        groups.iter().flat_map(|g| g.members.iter()).collect();
-    select_group_indices(group_name, groups)
-        .into_iter()
-        .filter_map(|i| flat.get(i).map(|m| m.name.clone()))
-        .collect()
-}
-
 pub(crate) struct CliAsk;
 
 fn group_packages(members: &[GroupMember]) -> Vec<PackageGroup> {
