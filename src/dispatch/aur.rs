@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::path::Path;
+
 use anyhow::Context as _;
 
 use crate::aur::AurInfo;
@@ -7,7 +10,7 @@ use crate::dispatch::exec::ChildOutcome;
 use crate::dispatch::protocol::Decider;
 use crate::events::{InstallEvent, InstallSink, PkgbuildReviewEntry};
 use crate::pkgbuild::PkgbuildInfo;
-use crate::resolve::{Decisions, Member, Plan};
+use crate::resolve::{Decisions, Member, Plan, RepoInstall};
 
 pub struct BuildParams<'a> {
     pub targets: &'a [String],
@@ -33,7 +36,8 @@ pub fn install_aur<S: InstallSink + ?Sized>(
     let pkgbuilds = crate::pkgbuild::collect_for_review(&plan, sink)?;
     review_if_requested(decision, &pkgbuilds, sink, decider)?;
     let arch = alpm.architectures().first();
-    install_repo_packages(&plan, &params, !plan.bases.is_empty(), sink)?;
+    let stale = stale_repo_deps(&alpm, &plan, arch);
+    install_repo_packages(&plan, &params, !plan.bases.is_empty(), sink, &stale)?;
     reject_pkgbuild_bases(&plan)?;
     for (pkgbase, members) in plan.aur_builds() {
         install_aur_base(pkgbase, members, &params, arch, sink)?;
@@ -125,7 +129,8 @@ fn install_aur_base<S: InstallSink + ?Sized>(
             info.package_base
         );
     }
-    let (explicit, dep_names) = explicit_and_deps(members);
+    let (explicit, mut dep_names) = explicit_and_deps(members);
+    dep_names.extend(split_dep_names(&built.artifacts, members));
     run_install_child(
         &built.artifacts,
         params,
@@ -149,15 +154,108 @@ fn explicit_and_deps(members: &[Member]) -> (bool, Vec<String>) {
     (explicit, deps)
 }
 
+fn split_dep_names(artifacts: &[String], members: &[Member]) -> Vec<String> {
+    let targets: HashSet<&str> = members
+        .iter()
+        .filter(|member| member.target)
+        .map(|member| member.name.as_str())
+        .collect();
+    artifacts
+        .iter()
+        .filter_map(|artifact| {
+            let basename = Path::new(artifact)
+                .file_name()?
+                .to_string_lossy()
+                .into_owned();
+            let (name, _) = crate::build::parse_package_filename(&basename)?;
+            (!targets.contains(name.as_str())).then_some(name)
+        })
+        .collect()
+}
+
+fn base_runtime_deps(srcinfo: &srcinfo::Srcinfo, arch: &str) -> Vec<String> {
+    srcinfo
+        .pkg
+        .depends
+        .arch(arch)
+        .chain(srcinfo.pkgs().iter().flat_map(|pkg| pkg.depends.arch(arch)))
+        .map(str::to_string)
+        .collect()
+}
+
+fn sync_newer(sync_version: &str, local_version: &str) -> bool {
+    alpm::vercmp(sync_version.to_string(), local_version.to_string()) == std::cmp::Ordering::Greater
+}
+
+fn stale_repo_deps(handle: &alpm::Alpm, plan: &Plan, arch: Option<&str>) -> Vec<RepoInstall> {
+    let Some(arch) = arch else {
+        eprintln!("warning: skipping stale dep check: unknown architectures");
+        return Vec::new();
+    };
+    let planned: HashSet<&str> = plan
+        .repo_installs
+        .iter()
+        .map(|row| row.name.as_str())
+        .chain(plan.all_members().map(|member| member.name.as_str()))
+        .collect();
+    let mut stale = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for (pkgbase, _) in plan.aur_builds() {
+        let dir = match crate::build::clone_dir(pkgbase) {
+            Ok(dir) => dir,
+            Err(_) => continue,
+        };
+        let srcinfo = match crate::srcinfo_io::read_from_dir(&dir)
+            .or_else(|_| crate::srcinfo_io::generate(&dir))
+        {
+            Ok(srcinfo) => srcinfo,
+            Err(error) => {
+                eprintln!("warning: skipping stale dep check for {pkgbase}: {error:#}");
+                continue;
+            }
+        };
+        for dep in base_runtime_deps(&srcinfo, arch) {
+            let Some(sync) = handle.syncdbs().find_satisfier(dep.as_str()) else {
+                continue;
+            };
+            let name = sync.name().to_string();
+            if planned.contains(name.as_str()) || !seen.insert(name.clone()) {
+                continue;
+            }
+            let Some(local) = handle.localdb().pkgs().find_satisfier(dep.as_str()) else {
+                continue;
+            };
+            if !sync_newer(sync.version(), local.version()) {
+                continue;
+            }
+            stale.push(RepoInstall {
+                name,
+                version: sync.version().to_string(),
+                db: sync
+                    .db()
+                    .map(|db| db.name().to_string())
+                    .unwrap_or_default(),
+                make: false,
+                target: false,
+            });
+        }
+    }
+    stale
+}
+
+fn repo_target(row: &RepoInstall) -> String {
+    if row.db.is_empty() {
+        row.name.clone()
+    } else {
+        format!("{}/{}", row.db, row.name)
+    }
+}
+
 fn repo_child_inputs(plan: &Plan, files: &[String]) -> (Vec<String>, Vec<String>) {
     let mut targets = files.to_vec();
     let mut deps = Vec::new();
     for row in &plan.repo_installs {
-        if row.db.is_empty() {
-            targets.push(row.name.clone());
-        } else {
-            targets.push(format!("{}/{}", row.db, row.name));
-        }
+        targets.push(repo_target(row));
         if !row.target {
             deps.push(row.name.clone());
         }
@@ -170,8 +268,15 @@ fn install_repo_packages<S: InstallSink + ?Sized>(
     params: &BuildParams<'_>,
     preconfirmed: bool,
     sink: &mut S,
+    stale: &[RepoInstall],
 ) -> anyhow::Result<()> {
-    let (targets, deps) = repo_child_inputs(plan, params.files);
+    let (mut targets, mut deps) = repo_child_inputs(plan, params.files);
+    for row in stale {
+        targets.push(repo_target(row));
+        if !row.target {
+            deps.push(row.name.clone());
+        }
+    }
     if targets.is_empty() {
         return Ok(());
     }
@@ -305,5 +410,76 @@ fn run_install_child<S: InstallSink + ?Sized>(
             targets.join(", "),
             outcome.reason()
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(name: &str, target: bool) -> Member {
+        Member {
+            name: name.to_string(),
+            version: "1.0-1".to_string(),
+            make: false,
+            target,
+        }
+    }
+
+    #[test]
+    fn split_dep_names_marks_only_non_target_artifacts() {
+        let members = vec![member("bitbake", true)];
+        let artifacts = vec![
+            "/cache/bitbake-6.0-4-x86_64.pkg.tar.zst".to_string(),
+            "/cache/bitbake-vim-6.0-4-x86_64.pkg.tar.zst".to_string(),
+        ];
+        assert_eq!(
+            split_dep_names(&artifacts, &members),
+            vec!["bitbake-vim".to_string()]
+        );
+    }
+
+    #[test]
+    fn split_dep_names_ignores_targets_and_unparseable_files() {
+        let members = vec![member("foo", true), member("foo-doc", false)];
+        let artifacts = vec![
+            "/cache/foo-2.5-1-x86_64.pkg.tar.zst".to_string(),
+            "/cache/foo-doc-2.5-1-x86_64.pkg.tar.zst".to_string(),
+            "/cache/README".to_string(),
+        ];
+        assert_eq!(
+            split_dep_names(&artifacts, &members),
+            vec!["foo-doc".to_string()]
+        );
+    }
+
+    #[test]
+    fn sync_newer_compares_versions_with_epoch() {
+        assert!(sync_newer("2.3.2-1", "2.3.1-1"));
+        assert!(sync_newer("1:84.0.0-1", "84.0.0-1"));
+        assert!(!sync_newer("2.3.1-1", "2.3.1-1"));
+        assert!(!sync_newer("2.3.1-1", "2.3.2-1"));
+    }
+
+    #[test]
+    fn base_runtime_deps_collects_shared_and_split_depends() {
+        let srcinfo: srcinfo::Srcinfo = [
+            "pkgbase = pw",
+            "pkgver = 1.3",
+            "pkgrel = 1",
+            "depends = bash",
+            "",
+            "pkgname = pw",
+            "depends = tree",
+            "depends = gnupg",
+            "",
+        ]
+        .join("\n")
+        .parse()
+        .expect("fixture srcinfo parses");
+        assert_eq!(
+            base_runtime_deps(&srcinfo, "x86_64"),
+            vec!["bash".to_string(), "tree".to_string(), "gnupg".to_string()]
+        );
     }
 }
