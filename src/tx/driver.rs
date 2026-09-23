@@ -151,11 +151,18 @@ fn drive(
     {
         events.borrow_mut().event(InstallEvent::LoadingPackages);
     }
-    let queue_result = match &spec.kind {
-        RunKind::Sync => queue_targets(handle, spec, &session),
+    let queue_result: anyhow::Result<Vec<String>> = match &spec.kind {
+        RunKind::Sync => queue_targets(handle, spec, &session).map(|()| Vec::new()),
         RunKind::Remove(_) => queue_remove_targets(handle, &spec.targets),
     };
-    if let Err(error) = queue_result {
+    let missing = match queue_result {
+        Ok(missing) => missing,
+        Err(error) => {
+            fail_closed(&session, events)?;
+            return Err(error);
+        }
+    };
+    if let Err(error) = ask_missing_removal(&session, &missing) {
         fail_closed(&session, events)?;
         return Err(error);
     }
@@ -272,7 +279,34 @@ fn queue_targets(
     Ok(())
 }
 
-fn queue_remove_targets(handle: &alpm::Alpm, targets: &[String]) -> anyhow::Result<()> {
+fn ask_missing_removal(
+    session: &Rc<RefCell<QuestionSession>>,
+    missing: &[String],
+) -> anyhow::Result<()> {
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let question = Question::RemovePkgs {
+        names: missing.to_vec(),
+        kind: TransactionKind::Remove,
+    };
+    let key = question.key();
+    match session.borrow_mut().ask_direct(&question)? {
+        Some(Answer::RemovePkgs { skip: true, .. }) => Ok(()),
+        Some(Answer::RemovePkgs { .. }) => {
+            anyhow::bail!("target not found: {}", missing.join(", "))
+        }
+        None => anyhow::bail!("target not found: {}", missing.join(", ")),
+        Some(_) => {
+            session
+                .borrow_mut()
+                .deny(key, "answer did not match question");
+            return fail_on_denied(&session.borrow());
+        }
+    }
+}
+
+fn queue_remove_targets(handle: &alpm::Alpm, targets: &[String]) -> anyhow::Result<Vec<String>> {
     let mut missing = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for target in targets {
@@ -297,10 +331,7 @@ fn queue_remove_targets(handle: &alpm::Alpm, targets: &[String]) -> anyhow::Resu
         }
         missing.push(name.to_string());
     }
-    if !missing.is_empty() {
-        anyhow::bail!("target not found: {}", missing.join(", "));
-    }
-    Ok(())
+    Ok(missing)
 }
 
 fn is_file_target(target: &str) -> bool {
@@ -921,6 +952,94 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{error:#}").contains("target not found: ghost"));
+        release(&mut handle);
+    }
+
+    fn missing_answer(skip: bool) -> Box<dyn AnswerSource> {
+        script(move |question| match question {
+            Question::RemovePkgs { names, .. } => SourceDecision::Answer(Answer::RemovePkgs {
+                names: names.clone(),
+                skip,
+            }),
+            Question::Proceed { .. } => SourceDecision::Answer(Answer::Proceed),
+            _ => SourceDecision::Answer(Answer::Stop),
+        })
+    }
+
+    #[test]
+    fn missing_target_skip_continues() {
+        let (_dir, mut handle) = fixture_full(&[], &[plain("sl")]);
+        let outcome = run(
+            &mut handle,
+            &remove_spec(alpm::TransFlag::NONE, false, &["ghost", "sl"]),
+            missing_answer(true),
+            discard(),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert!(handle.localdb().pkg("sl").is_err());
+        assert!(!summary_names(&outcome).contains(&"ghost".to_string()));
+        release(&mut handle);
+    }
+
+    #[test]
+    fn missing_target_decline_aborts() {
+        let (_dir, mut handle) = fixture_full(&[], &[plain("sl")]);
+        let error = run(
+            &mut handle,
+            &remove_spec(alpm::TransFlag::NONE, false, &["ghost", "sl"]),
+            missing_answer(false),
+            discard(),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("target not found: ghost"));
+        assert!(handle.localdb().pkg("sl").is_ok());
+        release(&mut handle);
+    }
+
+    #[test]
+    fn nothing_to_do_when_all_missing_skipped() {
+        let (_dir, mut handle) = fixture_full(&[], &[]);
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let outcome = run(
+            &mut handle,
+            &remove_spec(alpm::TransFlag::NONE, false, &["ghost"]),
+            missing_answer(true),
+            Box::new(recorder),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        assert!(seen.borrow().iter().any(|event| matches!(
+            event,
+            InstallEvent::Log {
+                level: LogLevel::Warning,
+                message,
+            } if message == "there is nothing to do"
+        )));
+        release(&mut handle);
+    }
+
+    #[test]
+    fn explore_records_missing_question() {
+        use crate::question::source::ExploreDefaults;
+
+        let (_dir, mut handle) = fixture_full(&[], &[plain("sl")]);
+        let outcome = run(
+            &mut handle,
+            &remove_spec(alpm::TransFlag::NONE, true, &["ghost", "sl"]),
+            Box::new(ExploreDefaults),
+            discard(),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        let review = outcome.review.as_ref().expect("explore carries a review");
+        assert!(review.part1.iter().any(|question| matches!(
+            question,
+            Question::RemovePkgs { names, kind: TransactionKind::Remove }
+            if names == &vec!["ghost".to_string()]
+        )));
+        assert!(handle.localdb().pkg("sl").is_ok());
         release(&mut handle);
     }
 
