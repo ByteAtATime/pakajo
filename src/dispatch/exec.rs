@@ -326,6 +326,7 @@ impl BuildOperation {
                     reinstall: self.reinstall,
                     approvals: approvals.as_deref(),
                     tty,
+                    interactive: self.interactive,
                 },
                 &mut sink,
                 decider.as_ref(),

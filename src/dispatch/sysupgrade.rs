@@ -119,6 +119,7 @@ fn run_sysupgrade(request: SysupgradeRequest, mut tx: futures::channel::mpsc::Se
             approvals_payload: request.approvals,
             decider: request.decider,
             tty: request.tty,
+            interactive: request.tty && !request.json,
         },
         &mut tx,
     );
@@ -179,6 +180,7 @@ fn run_root_sysupgrade(
             approvals_payload: request.approvals,
             decider: request.decider,
             tty: request.tty,
+            interactive: request.tty && !request.json,
         },
         tx,
     );

@@ -16,6 +16,7 @@ pub struct PhasePlan {
     pub approvals_payload: Option<String>,
     pub decider: Box<dyn Decider + Send>,
     pub tty: bool,
+    pub interactive: bool,
 }
 
 enum ForwardEnd {
@@ -55,6 +56,7 @@ pub fn run_phases(plan: PhasePlan, tx: &mut futures::channel::mpsc::Sender<Strea
         as_deps: plan.as_deps,
         reinstall: plan.reinstall,
         no_check: plan.no_check,
+        interactive: plan.interactive,
     };
     match forward(
         operation.dispatch(plan.decider, plan.approvals_payload, plan.tty),

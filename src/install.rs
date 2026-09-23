@@ -295,6 +295,7 @@ mod tests {
             explore: false,
             as_deps: false,
             reinstall: false,
+            dep_names: Vec::new(),
         };
         crate::tx::driver::run(handle, &spec, source, Box::new(Discard))
     }

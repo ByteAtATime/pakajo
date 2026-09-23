@@ -19,6 +19,7 @@ struct AurBuildConfig {
     as_deps: bool,
     reinstall: bool,
     tty: bool,
+    interactive: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -36,6 +37,7 @@ pub struct BuildParams<'a> {
     pub reinstall: bool,
     pub approvals: Option<&'a str>,
     pub tty: bool,
+    pub interactive: bool,
 }
 
 pub fn run_build<S: InstallSink + ?Sized>(
@@ -51,6 +53,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
         reinstall,
         approvals,
         tty,
+        interactive,
     } = params;
     let (alpm, plan) = resolve_and_report(targets, no_check, sink, tty)?;
 
@@ -91,6 +94,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
         as_deps,
         reinstall,
         tty,
+        interactive,
     };
     install_repo_packages(&plan, files, repo_config, approvals, spine_confirmed, sink)?;
 
@@ -118,6 +122,7 @@ pub fn run_build<S: InstallSink + ?Sized>(
             as_deps,
             reinstall: reinstall && explicit,
             tty,
+            interactive,
         };
         build_and_install_aur(&info, &dir, config, approvals, arch, sink)?;
     }
@@ -154,24 +159,38 @@ fn install_repo_packages<S: InstallSink + ?Sized>(
     let (explicit, deps) = partition_repo_targets(plan, files);
     if !explicit.is_empty() {
         run_install_child(
-            &explicit,
-            config.as_deps,
-            config.reinstall,
+            InstallChildParams {
+                targets: &explicit,
+                as_deps: config.as_deps,
+                reinstall: config.reinstall,
+                preconfirmed,
+                dep_names: &[],
+                interactive: config.interactive,
+                approvals,
+                tty: config.tty,
+            },
             sink,
-            approvals,
-            preconfirmed,
-            config.tty,
         )?;
     }
     if !deps.is_empty() {
+        let dep_names: Vec<String> = plan
+            .repo_installs
+            .iter()
+            .filter(|row| !row.target)
+            .map(|row| row.name.clone())
+            .collect();
         run_install_child(
-            &deps,
-            true,
-            false,
+            InstallChildParams {
+                targets: &deps,
+                as_deps: config.as_deps,
+                reinstall: false,
+                preconfirmed,
+                dep_names: &dep_names,
+                interactive: config.interactive,
+                approvals,
+                tty: config.tty,
+            },
             sink,
-            approvals,
-            preconfirmed,
-            config.tty,
         )?;
     }
     Ok(())
@@ -308,13 +327,17 @@ fn build_and_install_aur<S: InstallSink + ?Sized>(
     }
 
     run_install_child(
-        &artifacts,
-        config.as_deps,
-        config.reinstall,
+        InstallChildParams {
+            targets: &artifacts,
+            as_deps: config.as_deps,
+            reinstall: config.reinstall,
+            preconfirmed: true,
+            dep_names: &[],
+            interactive: config.interactive,
+            approvals,
+            tty: config.tty,
+        },
         sink,
-        approvals,
-        true,
-        config.tty,
     )?;
     Ok(())
 }
@@ -451,32 +474,51 @@ fn makepkg_command(dir: &Path, no_check: bool) -> std::process::Command {
     cmd
 }
 
-fn run_install_child<S: InstallSink + ?Sized>(
-    targets: &[String],
+struct InstallChildParams<'a> {
+    targets: &'a [String],
     as_deps: bool,
     reinstall: bool,
-    sink: &mut S,
-    approvals: Option<&str>,
     preconfirmed: bool,
+    dep_names: &'a [String],
+    interactive: bool,
+    approvals: Option<&'a str>,
     tty: bool,
+}
+
+fn compose_child_seal(
+    approvals: Option<&str>,
+    dep_names: &[String],
+) -> anyhow::Result<crate::dispatch::approvals::ApprovalsFile> {
+    let payload = approvals
+        .map(|seal| {
+            crate::dispatch::seal::decode_seal(seal).context("failed to decode approvals seal")
+        })
+        .transpose()?;
+    let composed = crate::question::approvals::seal_with_deps(payload.as_ref(), dep_names);
+    let encoded = crate::dispatch::seal::encode_seal(&composed).context("failed to encode seal")?;
+    crate::dispatch::approvals::ApprovalsFile::write(encoded.as_bytes())
+        .context("failed to write approvals file")
+}
+
+fn run_install_child<S: InstallSink + ?Sized>(
+    params: InstallChildParams<'_>,
+    sink: &mut S,
 ) -> anyhow::Result<()> {
-    let sealed = approvals
-        .map(|payload| crate::dispatch::approvals::ApprovalsFile::write(payload.as_bytes()))
-        .transpose()
-        .context("failed to write approvals file")?;
+    let sealed = compose_child_seal(params.approvals, params.dep_names)?;
     let operation = crate::dispatch::operation::PrivilegedOperation::Install {
-        targets: targets.to_vec(),
-        as_deps,
-        reinstall,
-        preconfirmed,
-        approvals: sealed,
+        targets: params.targets.to_vec(),
+        as_deps: params.as_deps,
+        reinstall: params.reinstall,
+        preconfirmed: params.preconfirmed,
+        interactive: params.interactive,
+        approvals: Some(sealed),
     };
-    let stream = operation.dispatch(tty);
+    let stream = operation.dispatch(params.tty);
     match crate::dispatch::exec::drain_declining(stream, sink) {
         ChildOutcome::Success => Ok(()),
         outcome => anyhow::bail!(
             "privileged install of [{}] failed: {}",
-            targets.join(", "),
+            params.targets.join(", "),
             outcome.reason()
         ),
     }

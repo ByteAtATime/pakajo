@@ -30,6 +30,7 @@ mod tests {
             explore: true,
             as_deps: false,
             reinstall: false,
+            dep_names: Vec::new(),
         }
     }
 

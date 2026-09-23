@@ -24,6 +24,7 @@ pub enum PrivilegedOperation {
         as_deps: bool,
         reinstall: bool,
         preconfirmed: bool,
+        interactive: bool,
         approvals: Option<crate::dispatch::approvals::ApprovalsFile>,
     },
     UpgradeRepo {
@@ -41,6 +42,7 @@ pub struct BuildOperation {
     pub as_deps: bool,
     pub reinstall: bool,
     pub no_check: bool,
+    pub interactive: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -56,6 +58,7 @@ pub enum ChildOperation {
         as_deps: bool,
         reinstall: bool,
         preconfirmed: bool,
+        interactive: bool,
         approvals_path: Option<String>,
         stream: bool,
     },
@@ -96,9 +99,13 @@ impl PrivilegedOperation {
                 as_deps,
                 reinstall,
                 preconfirmed,
+                interactive,
                 ..
             } => {
                 let mut argv = vec![INSTALL.to_string(), STREAM.to_string()];
+                if *interactive {
+                    argv.push(INTERACTIVE.to_string());
+                }
                 if *as_deps {
                     argv.push(AS_DEPS.to_string());
                 }
@@ -185,6 +192,7 @@ fn decode_install(argv: &[String]) -> Option<ChildOperation> {
     let mut as_deps = false;
     let mut reinstall = false;
     let mut preconfirmed = false;
+    let mut interactive = false;
     let mut approvals_path = None;
     let mut targets = Vec::new();
     let mut parts = argv.iter();
@@ -194,6 +202,7 @@ fn decode_install(argv: &[String]) -> Option<ChildOperation> {
             AS_DEPS => as_deps = true,
             REINSTALL => reinstall = true,
             PRECONFIRMED => preconfirmed = true,
+            INTERACTIVE => interactive = true,
             APPROVALS_FILE => approvals_path = Some(parts.next()?.clone()),
             _ => {
                 if arg.starts_with('-') {
@@ -208,6 +217,7 @@ fn decode_install(argv: &[String]) -> Option<ChildOperation> {
         as_deps,
         reinstall,
         preconfirmed,
+        interactive,
         approvals_path,
         stream,
     })
@@ -330,6 +340,7 @@ mod tests {
             as_deps: true,
             reinstall: false,
             preconfirmed: false,
+            interactive: false,
             approvals: None,
         };
         let argv = operation.wire_args(Some("/tmp/pakajo-approvals-1.json"), None);
@@ -352,6 +363,7 @@ mod tests {
                 as_deps: true,
                 reinstall: false,
                 preconfirmed: false,
+                interactive: false,
                 approvals_path: Some("/tmp/pakajo-approvals-1.json".to_string()),
                 stream: true,
             })
@@ -360,15 +372,17 @@ mod tests {
 
     #[test]
     fn install_flag_wire_round_trip() {
-        for (as_deps, reinstall, preconfirmed, flag) in [
-            (false, true, false, "--reinstall"),
-            (false, false, true, "--preconfirmed"),
+        for (as_deps, reinstall, preconfirmed, interactive, flag) in [
+            (false, true, false, false, "--reinstall"),
+            (false, false, true, false, "--preconfirmed"),
+            (false, false, false, true, "--interactive"),
         ] {
             let operation = PrivilegedOperation::Install {
                 targets: vec!["sl".to_string()],
                 as_deps,
                 reinstall,
                 preconfirmed,
+                interactive,
                 approvals: None,
             };
             let argv = operation.wire_args(None, None);
@@ -380,6 +394,7 @@ mod tests {
                     as_deps,
                     reinstall,
                     preconfirmed,
+                    interactive,
                     approvals_path: None,
                     stream: true,
                 })

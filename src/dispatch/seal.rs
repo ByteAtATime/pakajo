@@ -65,6 +65,7 @@ pub fn proceed_only_seal() -> anyhow::Result<String> {
     encode_seal(&SealedApprovals {
         answers: Vec::new(),
         proceed: true,
+        deps: Vec::new(),
     })
 }
 
@@ -123,6 +124,7 @@ mod tests {
         encode_seal(&SealedApprovals {
             answers: pairs.to_vec(),
             proceed,
+            deps: Vec::new(),
         })
         .expect("encodes")
     }
@@ -250,6 +252,7 @@ mod tests {
                 },
             )],
             proceed: true,
+            deps: Vec::new(),
         }
     }
 

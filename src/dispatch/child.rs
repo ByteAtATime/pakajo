@@ -26,11 +26,11 @@ pub fn select_remove_presentation(stream: bool, tty: bool) -> Presentation {
     }
 }
 
-pub fn select_install_presentation(stream: bool, has_approvals: bool, tty: bool) -> Presentation {
+pub fn select_install_presentation(stream: bool, interactive: bool, tty: bool) -> Presentation {
     if !stream {
         return Presentation::Console;
     }
-    if !has_approvals && tty {
+    if interactive && tty {
         Presentation::InteractiveStream
     } else {
         Presentation::SilentStream
@@ -148,6 +148,7 @@ impl ChildOperation {
                             explore: false,
                             as_deps: false,
                             reinstall: false,
+                            dep_names: Vec::new(),
                         };
                         let input = std::rc::Rc::new(std::cell::RefCell::new(
                             std::io::BufReader::new(std::io::stdin()),
@@ -197,6 +198,7 @@ impl ChildOperation {
                                 explore: false,
                                 as_deps: false,
                                 reinstall: false,
+                                dep_names: Vec::new(),
                             };
                             let input = std::rc::Rc::new(std::cell::RefCell::new(
                                 std::io::BufReader::new(std::io::stdin()),
@@ -239,10 +241,15 @@ impl ChildOperation {
                 as_deps,
                 reinstall,
                 preconfirmed,
+                interactive,
                 approvals_path,
                 stream,
             } => {
                 let sealed = read_seal(approvals_path.as_deref())?;
+                let dep_names = sealed
+                    .as_ref()
+                    .map(|sealed| sealed.deps.clone())
+                    .unwrap_or_default();
                 let mut handle = crate::pacman::handle()?;
                 let classified = targets
                     .iter()
@@ -261,7 +268,7 @@ impl ChildOperation {
                     );
                 }
                 let presentation =
-                    select_install_presentation(*stream, sealed.is_some(), privs::stdin_is_tty());
+                    select_install_presentation(*stream, *interactive, privs::stdin_is_tty());
                 let preconfirmed = *preconfirmed;
                 match presentation {
                     Presentation::InteractiveStream | Presentation::Console => {
@@ -272,6 +279,7 @@ impl ChildOperation {
                             explore: false,
                             as_deps: *as_deps,
                             reinstall: *reinstall,
+                            dep_names: dep_names.clone(),
                         };
                         let input = std::rc::Rc::new(std::cell::RefCell::new(
                             std::io::BufReader::new(std::io::stdin()),
@@ -327,6 +335,7 @@ impl ChildOperation {
                             explore: false,
                             as_deps: *as_deps,
                             reinstall: *reinstall,
+                            dep_names,
                         };
                         let inner: Box<dyn crate::question::source::AnswerSource> = match sealed {
                             Some(sealed) => {
@@ -405,23 +414,23 @@ mod tests {
     }
 
     #[test]
-    fn install_presentation_requires_no_approvals_plus_terminal() {
+    fn install_presentation_keys_on_interactive_plus_terminal() {
         use Presentation::{Console, InteractiveStream, SilentStream};
         let cases = [
-            ((true, false, true), InteractiveStream),
-            ((true, true, true), SilentStream),
-            ((true, false, false), SilentStream),
+            ((true, true, true), InteractiveStream),
+            ((true, false, true), SilentStream),
             ((true, true, false), SilentStream),
+            ((true, false, false), SilentStream),
             ((false, false, true), Console),
             ((false, true, true), Console),
             ((false, false, false), Console),
             ((false, true, false), Console),
         ];
-        for ((stream, has_approvals, tty), expected) in cases {
+        for ((stream, interactive, tty), expected) in cases {
             assert_eq!(
-                select_install_presentation(stream, has_approvals, tty),
+                select_install_presentation(stream, interactive, tty),
                 expected,
-                "select_install_presentation(stream={stream}, has_approvals={has_approvals}, tty={tty})"
+                "select_install_presentation(stream={stream}, interactive={interactive}, tty={tty})"
             );
         }
     }

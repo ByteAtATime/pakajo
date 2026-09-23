@@ -8,6 +8,8 @@ use super::model::{Answer, Question, QuestionKey};
 pub struct SealedApprovals {
     pub answers: Vec<(QuestionKey, Answer)>,
     pub proceed: bool,
+    #[serde(default)]
+    pub deps: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +43,7 @@ pub fn seal(
     Ok(SealedApprovals {
         answers: keyed.into_iter().collect(),
         proceed,
+        deps: Vec::new(),
     })
 }
 
@@ -79,6 +82,21 @@ fn validate_pair(question: &Question, answer: &Answer) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn seal_with_deps(payload: Option<&SealedApprovals>, deps: &[String]) -> SealedApprovals {
+    let mut ordered: Vec<String> = deps.to_vec();
+    ordered.sort_unstable();
+    ordered.dedup();
+    let base = payload.cloned().unwrap_or(SealedApprovals {
+        answers: Vec::new(),
+        proceed: true,
+        deps: Vec::new(),
+    });
+    SealedApprovals {
+        deps: ordered,
+        ..base
+    }
+}
+
 pub fn validate(sealed: &SealedApprovals) -> anyhow::Result<()> {
     let mut previous: Option<&QuestionKey> = None;
     for (key, answer) in &sealed.answers {
@@ -100,6 +118,13 @@ pub fn validate(sealed: &SealedApprovals) -> anyhow::Result<()> {
             }
         }
         previous = Some(key);
+    }
+    for pair in sealed.deps.windows(2) {
+        match pair[0].cmp(&pair[1]) {
+            std::cmp::Ordering::Less => {}
+            std::cmp::Ordering::Equal => anyhow::bail!("duplicate dep {:?}", pair[0]),
+            std::cmp::Ordering::Greater => anyhow::bail!("deps are not sorted at {:?}", pair[1]),
+        }
     }
     Ok(())
 }
@@ -440,6 +465,7 @@ mod tests {
         let sealed = SealedApprovals {
             answers: Vec::new(),
             proceed: true,
+            deps: Vec::new(),
         };
         validate(&sealed).expect("empty proceed seal is valid");
         assert_eq!(
@@ -514,5 +540,44 @@ mod tests {
             match_answer(&reordered, &sealed),
             Sealed::Answer(fixture[5].1.clone())
         );
+    }
+
+    #[test]
+    fn dep_seals_stay_sorted_unique_and_legacy_compatible() {
+        for deps in [vec![s("b"), s("a")], vec![s("a"), s("a")]] {
+            assert!(
+                validate(&SealedApprovals {
+                    answers: Vec::new(),
+                    proceed: true,
+                    deps
+                })
+                .is_err()
+            );
+        }
+        validate(&SealedApprovals {
+            answers: Vec::new(),
+            proceed: true,
+            deps: vec![s("a"), s("b")],
+        })
+        .expect("sorted unique deps are valid");
+        let composed = seal_with_deps(None, &[s("b"), s("a"), s("b")]);
+        assert_eq!(composed.deps, vec![s("a"), s("b")]);
+        assert!(composed.proceed && composed.answers.is_empty());
+        let legacy = serde_json::json!({"answers": [], "proceed": true});
+        let decoded: SealedApprovals = from_value(legacy).expect("legacy seal decodes");
+        assert!(decoded.deps.is_empty());
+        validate(&decoded).expect("legacy seal validates");
+    }
+
+    #[test]
+    fn seal_with_deps_preserves_payload_answers_and_proceed() {
+        let fixture = collectable_fixture();
+        let (questions, answers) = split(&fixture);
+        let payload = seal(&questions, &answers, false).expect("seal succeeds");
+        let composed = seal_with_deps(Some(&payload), &[s("lib")]);
+        assert_eq!(composed.answers, payload.answers);
+        assert!(!composed.proceed);
+        assert_eq!(composed.deps, vec![s("lib")]);
+        validate(&composed).expect("composed seal validates");
     }
 }

@@ -36,6 +36,7 @@ pub struct RunSpec {
     pub explore: bool,
     pub as_deps: bool,
     pub reinstall: bool,
+    pub dep_names: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -223,13 +224,44 @@ fn drive(
             review,
         });
     }
+    let fresh: Vec<&String> = spec
+        .dep_names
+        .iter()
+        .filter(|name| handle.localdb().pkg(name.as_str()).is_err())
+        .collect();
     during_commit(|| handle.trans_commit()).context("failed to commit transaction")?;
+    apply_dep_reasons(handle, &fresh, events);
     fail_closed(&session, events)?;
     Ok(RunOutcome {
         summary,
         finish: Finish::Committed,
         review,
     })
+}
+
+fn apply_dep_reasons(
+    handle: &alpm::Alpm,
+    fresh_deps: &[&String],
+    events: &Rc<RefCell<Box<dyn InstallSink>>>,
+) {
+    for name in fresh_deps {
+        let outcome = handle
+            .localdb()
+            .pkg(name.as_str())
+            .map_err(|error| anyhow::anyhow!("package {name} is not installed: {error}"))
+            .and_then(|pkg| {
+                pkg.set_reason(alpm::PackageReason::Depend)
+                    .map_err(|error| {
+                        anyhow::anyhow!("failed to mark {name} as dependency: {error}")
+                    })
+            });
+        if let Err(error) = outcome {
+            events.borrow_mut().event(InstallEvent::Log {
+                level: LogLevel::Warning,
+                message: format!("{error:#}"),
+            });
+        }
+    }
 }
 
 fn ask_proceed(
@@ -623,6 +655,7 @@ mod tests {
             explore,
             as_deps: false,
             reinstall: false,
+            dep_names: Vec::new(),
         }
     }
 
@@ -880,6 +913,7 @@ mod tests {
             explore,
             as_deps,
             reinstall,
+            dep_names: Vec::new(),
         }
     }
 
@@ -894,6 +928,7 @@ mod tests {
             explore,
             as_deps: false,
             reinstall: false,
+            dep_names: Vec::new(),
         }
     }
 
@@ -908,6 +943,7 @@ mod tests {
             explore,
             as_deps: false,
             reinstall: false,
+            dep_names: Vec::new(),
         }
     }
 
@@ -1448,6 +1484,92 @@ mod tests {
             handle.localdb().pkg("solo").unwrap().reason(),
             alpm::PackageReason::Depend
         );
+        release(&mut handle);
+    }
+
+    fn dep_spec(targets: &[&str], dep_names: &[&str]) -> RunSpec {
+        RunSpec {
+            targets: targets.iter().map(|target| target.to_string()).collect(),
+            dep_names: dep_names.iter().map(|name| name.to_string()).collect(),
+            ..spec(&[], false)
+        }
+    }
+
+    fn reason_of(handle: &alpm::Alpm, name: &str) -> alpm::PackageReason {
+        handle.localdb().pkg(name).unwrap().reason()
+    }
+
+    fn committed(
+        spec: &RunSpec,
+        source: Box<dyn AnswerSource>,
+        sink: Box<dyn InstallSink>,
+        handle: &mut alpm::Alpm,
+    ) -> RunOutcome {
+        let outcome = run(handle, spec, source, sink).unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        outcome
+    }
+
+    #[test]
+    fn dep_names_mark_only_fresh_installs_depend() {
+        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
+        committed(
+            &dep_spec(&["solo"], &["solo"]),
+            proceed(),
+            discard(),
+            &mut handle,
+        );
+        assert_eq!(reason_of(&handle, "solo"), alpm::PackageReason::Depend);
+        release(&mut handle);
+        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[plain("solo")]);
+        let reinstall = RunSpec {
+            reinstall: true,
+            ..dep_spec(&["solo"], &["solo"])
+        };
+        committed(&reinstall, proceed(), discard(), &mut handle);
+        assert_eq!(reason_of(&handle, "solo"), alpm::PackageReason::Explicit);
+        release(&mut handle);
+        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
+        committed(&dep_spec(&["solo"], &[]), proceed(), discard(), &mut handle);
+        assert_eq!(reason_of(&handle, "solo"), alpm::PackageReason::Explicit);
+        release(&mut handle);
+    }
+
+    #[test]
+    fn as_deps_still_marks_upgraded_package_depend() {
+        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[plain("solo")]);
+        assert_eq!(reason_of(&handle, "solo"), alpm::PackageReason::Explicit);
+        let as_deps = RunSpec {
+            as_deps: true,
+            reinstall: true,
+            ..dep_spec(&["solo"], &[])
+        };
+        committed(&as_deps, proceed(), discard(), &mut handle);
+        assert_eq!(reason_of(&handle, "solo"), alpm::PackageReason::Depend);
+        release(&mut handle);
+    }
+
+    #[test]
+    fn stopped_or_unknown_deps_install_nothing_unexpected() {
+        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
+        let outcome = run(
+            &mut handle,
+            &dep_spec(&["solo"], &["solo"]),
+            stop(),
+            discard(),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        assert!(handle.localdb().pkg("solo").is_err());
+        release(&mut handle);
+        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
+        committed(
+            &dep_spec(&["solo"], &["ghost"]),
+            proceed(),
+            Box::new(Recorder::default()),
+            &mut handle,
+        );
+        assert_eq!(reason_of(&handle, "solo"), alpm::PackageReason::Explicit);
         release(&mut handle);
     }
 

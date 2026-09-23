@@ -91,6 +91,7 @@ pub(crate) fn run_install_preview(
         explore: true,
         as_deps: request.as_deps,
         reinstall: request.reinstall,
+        dep_names: Vec::new(),
     };
     let outcome = crate::tx::compose::preview(handle, spec)?;
     let review = outcome
@@ -223,6 +224,7 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
                 approvals_payload: request.approvals,
                 decider: request.decider,
                 tty: request.tty,
+                interactive: request.tty && !request.json,
             },
             &mut tx,
         );
@@ -245,6 +247,7 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
                 as_deps: request.as_deps,
                 reinstall: peeled.reinstall,
                 preconfirmed: false,
+                interactive: request.tty && !request.json,
                 approvals: sealed,
             }),
             aur_targets: Vec::new(),
@@ -256,6 +259,7 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
             approvals_payload: request.approvals,
             decider: request.decider,
             tty: request.tty,
+            interactive: request.tty && !request.json,
         },
         &mut tx,
     );
@@ -290,6 +294,7 @@ fn run_root_install(request: InstallRequest, tx: &mut futures::channel::mpsc::Se
             as_deps: request.as_deps,
             reinstall: peeled.reinstall,
             preconfirmed: false,
+            interactive: request.tty && !request.json,
             approvals_path: sealed
                 .as_ref()
                 .map(|file| file.path().to_string_lossy().into_owned()),
@@ -314,6 +319,7 @@ fn run_root_install(request: InstallRequest, tx: &mut futures::channel::mpsc::Se
             approvals_payload: request.approvals,
             decider: request.decider,
             tty: request.tty,
+            interactive: request.tty && !request.json,
         },
         tx,
     );
