@@ -5,7 +5,7 @@ use cosmic::widget::{Column, button, checkbox, container, dialog, radio, scrolla
 
 use pakajo::progress::InstallKind;
 use pakajo::question::approvals::{SealedApprovals, seal as seal_answers};
-use pakajo::question::model::{Answer, Question, QuestionKey};
+use pakajo::question::model::{Answer, Question, QuestionKey, TransactionKind};
 use pakajo::question::revalidate::ReviewDrift;
 use pakajo::question::{ProviderCandidate, QuestionSet};
 
@@ -18,6 +18,7 @@ pub enum ReviewMessage {
     ToggleReplace(usize),
     ToggleIgnorepkg(usize),
     ToggleRemovepkgs(usize),
+    ToggleHoldpkgs(usize),
     SelectProvider { depend: String, idx: usize },
 }
 
@@ -103,7 +104,8 @@ impl ReviewModel {
             }
             ReviewMessage::ToggleReplace(_)
             | ReviewMessage::ToggleIgnorepkg(_)
-            | ReviewMessage::ToggleRemovepkgs(_) => {}
+            | ReviewMessage::ToggleRemovepkgs(_)
+            | ReviewMessage::ToggleHoldpkgs(_) => {}
             ReviewMessage::SelectProvider { depend, idx } => {
                 self.provider_choices.insert(depend, idx);
             }
@@ -214,6 +216,7 @@ pub(crate) struct InstallReview {
     pub(crate) replace_checks: Vec<bool>,
     pub(crate) ignorepkg_checks: Vec<bool>,
     pub(crate) removepkgs_checks: Vec<bool>,
+    pub(crate) holdpkgs_checks: Vec<bool>,
     pub(crate) provider_choices: HashMap<String, usize>,
     pub(crate) highlighted: BTreeSet<QuestionKey>,
     pub(crate) added: BTreeSet<QuestionKey>,
@@ -235,6 +238,7 @@ impl InstallReview {
                 .collect(),
             ignorepkg_checks: vec![false; questions.len()],
             removepkgs_checks: vec![true; questions.len()],
+            holdpkgs_checks: vec![false; questions.len()],
             provider_choices: questions
                 .iter()
                 .filter_map(|question| match question {
@@ -263,6 +267,7 @@ impl InstallReview {
         let mut replace_checks = Vec::with_capacity(fresh.len());
         let mut ignorepkg_checks = Vec::with_capacity(fresh.len());
         let mut removepkgs_checks = Vec::with_capacity(fresh.len());
+        let mut holdpkgs_checks = Vec::with_capacity(fresh.len());
         let mut provider_choices = HashMap::with_capacity(fresh.len());
         for question in &fresh {
             let restored = preserved
@@ -276,6 +281,7 @@ impl InstallReview {
             );
             ignorepkg_checks.push(restored_ignorepkg(question, restored).unwrap_or(false));
             removepkgs_checks.push(restored_removepkgs(question, restored).unwrap_or(true));
+            holdpkgs_checks.push(restored_holdpkgs(question, restored).unwrap_or(false));
             if let Question::SelectProvider { depend, candidates } = question {
                 provider_choices.insert(
                     depend.clone(),
@@ -288,6 +294,7 @@ impl InstallReview {
         self.replace_checks = replace_checks;
         self.ignorepkg_checks = ignorepkg_checks;
         self.removepkgs_checks = removepkgs_checks;
+        self.holdpkgs_checks = holdpkgs_checks;
         self.provider_choices = provider_choices;
         self.highlighted = drift.added.union(&drift.changed).cloned().collect();
         self.added = drift.added.clone();
@@ -313,6 +320,11 @@ impl InstallReview {
             }
             ReviewMessage::ToggleRemovepkgs(i) => {
                 if let Some(check) = self.removepkgs_checks.get_mut(i) {
+                    *check = !*check;
+                }
+            }
+            ReviewMessage::ToggleHoldpkgs(i) => {
+                if let Some(check) = self.holdpkgs_checks.get_mut(i) {
                     *check = !*check;
                 }
             }
@@ -359,7 +371,7 @@ impl InstallReview {
             },
             Question::HoldPkgs { names } => Answer::HoldPkgs {
                 names: names.clone(),
-                proceed: false,
+                proceed: self.holdpkgs_checks.get(i).copied().unwrap_or(false),
             },
             Question::GroupMembers { members, .. } => Answer::GroupMembers {
                 selected: members.clone(),
@@ -388,29 +400,56 @@ impl InstallReview {
         seal_answers(&self.questions, &self.answers(), true)
     }
 
-    pub(crate) fn view(&self, name: &str) -> Element<'_> {
+    pub(crate) fn can_confirm(&self) -> bool {
+        self.questions
+            .iter()
+            .enumerate()
+            .all(|(i, question)| match question {
+                Question::HoldPkgs { .. } => self.holdpkgs_checks.get(i).copied().unwrap_or(false),
+                Question::RemovePkgs { .. } => {
+                    self.removepkgs_checks.get(i).copied().unwrap_or(false)
+                }
+                _ => true,
+            })
+    }
+
+    pub(crate) fn view(&self, name: &str, kind: InstallKind) -> Element<'_> {
         let body = part1_body(RowInputs {
             questions: &self.questions,
             checks: &self.conflict_checks,
             replace_checks: &self.replace_checks,
             ignorepkg_checks: &self.ignorepkg_checks,
             removepkgs_checks: &self.removepkgs_checks,
+            holdpkgs_checks: &self.holdpkgs_checks,
             choices: &self.provider_choices,
             highlighted: &self.highlighted,
             added: &self.added,
         })
         .map(|message| crate::Message::Transaction(TransactionMessage::Review(message)));
         let approve = crate::Message::Transaction(TransactionMessage::ApproveReview);
+        let gated = self.can_confirm();
         let confirm: Element<'_> = if self.approving {
             button::suggested("Loading...").into()
+        } else if matches!(kind, InstallKind::Remove) {
+            let action = button::destructive(install_confirm_label(kind));
+            if gated {
+                action.on_press(approve).into()
+            } else {
+                action.into()
+            }
         } else {
-            button::suggested("Confirm").on_press(approve).into()
+            let action = button::suggested(install_confirm_label(kind));
+            if gated {
+                action.on_press(approve).into()
+            } else {
+                action.into()
+            }
         };
         let cancel = button::standard("Cancel").on_press(crate::Message::Transaction(
             TransactionMessage::CancelReview,
         ));
         dialog()
-            .title(format!("Review installation of {name}"))
+            .title(install_review_title(name, kind))
             .control(scrollable(body).height(Length::Fixed(400.0)))
             .primary_action(confirm)
             .secondary_action(cancel)
@@ -460,6 +499,44 @@ fn restored_removepkgs(question: &Question, restored: Option<&Answer>) -> Option
         (Question::RemovePkgs { .. }, Some(Answer::RemovePkgs { skip, .. })) => Some(*skip),
         _ => None,
     }
+}
+
+fn restored_holdpkgs(question: &Question, restored: Option<&Answer>) -> Option<bool> {
+    match (question, restored) {
+        (Question::HoldPkgs { .. }, Some(Answer::HoldPkgs { proceed, .. })) => Some(*proceed),
+        _ => None,
+    }
+}
+
+fn install_review_title(name: &str, kind: InstallKind) -> String {
+    match kind {
+        InstallKind::Remove => format!("Review removal of {name}"),
+        InstallKind::Install | InstallKind::Upgrade => format!("Review installation of {name}"),
+    }
+}
+
+fn install_confirm_label(kind: InstallKind) -> &'static str {
+    match kind {
+        InstallKind::Remove => "Confirm removal",
+        InstallKind::Install | InstallKind::Upgrade => "Confirm",
+    }
+}
+
+fn removepkgs_label(names: &[String], kind: &TransactionKind) -> String {
+    match kind {
+        TransactionKind::Remove => format!(
+            "Skip missing packages and continue without them: {}",
+            names.join(", ")
+        ),
+        TransactionKind::Install => format!(
+            "Skip unresolvable packages and continue without them: {}",
+            names.join(", ")
+        ),
+    }
+}
+
+fn holdpkgs_label(names: &[String]) -> String {
+    format!("Remove held packages anyway: {}", names.join(", "))
 }
 
 fn restored_provider(
@@ -521,6 +598,7 @@ struct RowInputs<'a> {
     replace_checks: &'a [bool],
     ignorepkg_checks: &'a [bool],
     removepkgs_checks: &'a [bool],
+    holdpkgs_checks: &'a [bool],
     choices: &'a HashMap<String, usize>,
     highlighted: &'a BTreeSet<QuestionKey>,
     added: &'a BTreeSet<QuestionKey>,
@@ -533,6 +611,7 @@ fn part1_body<'a>(inputs: RowInputs<'a>) -> cosmic::Element<'a, ReviewMessage> {
         replace_checks,
         ignorepkg_checks,
         removepkgs_checks,
+        holdpkgs_checks,
         choices,
         highlighted,
         added,
@@ -613,16 +692,34 @@ fn part1_body<'a>(inputs: RowInputs<'a>) -> cosmic::Element<'a, ReviewMessage> {
                     None => row,
                 });
             }
-            Question::RemovePkgs { names, .. } => {
-                let label = format!(
-                    "Skip unresolvable packages and continue without them: {}",
-                    names.join(", ")
-                );
-                let checked = removepkgs_checks.get(i).copied().unwrap_or(false);
+            Question::RemovePkgs { names, kind } => {
+                let label = removepkgs_label(names, kind);
+                let checked = removepkgs_checks.get(i).copied().unwrap_or(true);
                 let row: cosmic::Element<'a, ReviewMessage> = checkbox(checked)
                     .label(label)
                     .on_toggle(move |_| ReviewMessage::ToggleRemovepkgs(i))
                     .into();
+                body = body.push(match caption {
+                    Some(note) => highlight_wrap(row, note),
+                    None => row,
+                });
+            }
+            Question::HoldPkgs { names } => {
+                let label = holdpkgs_label(names);
+                let checked = holdpkgs_checks.get(i).copied().unwrap_or(false);
+                let mut group = Column::new().spacing(8);
+                group = group.push(
+                    checkbox(checked)
+                        .label(label)
+                        .on_toggle(move |_| ReviewMessage::ToggleHoldpkgs(i)),
+                );
+                group = group.push(text::body(
+                    "These packages are protected by HoldPkg config on purpose because they are critical to your system.",
+                ));
+                group = group.push(text::body(
+                    "Removing them can break your system. Unless you are sure you know what you are doing, this is probably not what you want.",
+                ));
+                let row: cosmic::Element<'a, ReviewMessage> = group.into();
                 body = body.push(match caption {
                     Some(note) => highlight_wrap(row, note),
                     None => row,
@@ -886,6 +983,7 @@ mod install_review_tests {
         assert_eq!(model.ignorepkg_checks.len(), 2);
         assert_eq!(model.replace_checks.len(), 2);
         assert_eq!(model.removepkgs_checks.len(), 2);
+        assert_eq!(model.holdpkgs_checks.len(), 2);
         assert!(model.conflict_checks[0]);
         assert!(!model.ignorepkg_checks[1]);
     }
@@ -1014,6 +1112,93 @@ mod install_review_tests {
         model.refresh(stable, &empty_drift());
         assert!(model.highlighted.is_empty());
         assert!(model.added.is_empty());
+    }
+
+    fn holdpkgs_questions() -> Vec<Question> {
+        vec![
+            Question::HoldPkgs {
+                names: vec![s("linux"), s("linux-headers")],
+            },
+            Question::RemovePkgs {
+                names: vec![s("ghost-pkg")],
+                kind: TransactionKind::Remove,
+            },
+            Question::RemovePkgs {
+                names: vec![s("broken-dep")],
+                kind: TransactionKind::Install,
+            },
+        ]
+    }
+
+    #[test]
+    fn toggle_holdpkgs_seals_proceed_for_toggled_only() {
+        let mut model = InstallReview::new(vec![
+            Question::HoldPkgs {
+                names: vec![s("linux")],
+            },
+            Question::HoldPkgs {
+                names: vec![s("nvidia")],
+            },
+        ]);
+        model.update(ReviewMessage::ToggleHoldpkgs(0));
+        assert!(model.holdpkgs_checks[0]);
+        assert!(!model.holdpkgs_checks[1]);
+        let sealed = model.seal().expect("seal succeeds");
+        let proceeded: Vec<(Vec<String>, bool)> = sealed
+            .answers
+            .iter()
+            .filter_map(|(_, answer)| match answer {
+                Answer::HoldPkgs { names, proceed } => Some((names.clone(), *proceed)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            proceeded,
+            vec![(vec![s("linux")], true), (vec![s("nvidia")], false)]
+        );
+    }
+
+    #[test]
+    fn refresh_preserves_holdpkgs_toggles_on_identical_questions() {
+        let mut model = InstallReview::new(holdpkgs_questions());
+        model.update(ReviewMessage::ToggleHoldpkgs(0));
+        let before = model.answers();
+        model.refresh(holdpkgs_questions(), &empty_drift());
+        assert_eq!(model.answers(), before);
+        assert!(model.holdpkgs_checks[0]);
+        assert!(model.highlighted.is_empty());
+    }
+
+    #[test]
+    fn refresh_changed_holdpkgs_names_reset_and_highlight() {
+        let mut model = InstallReview::new(holdpkgs_questions());
+        model.update(ReviewMessage::ToggleHoldpkgs(0));
+        let changed = Question::HoldPkgs {
+            names: vec![s("linux-lts")],
+        };
+        let mut fresh = holdpkgs_questions();
+        fresh[0] = changed.clone();
+        model.refresh(fresh, &drift_with(Vec::new(), vec![changed.key()]));
+        assert!(!model.holdpkgs_checks[0]);
+        assert!(model.highlighted.contains(&changed.key()));
+    }
+
+    #[test]
+    fn can_confirm_requires_gated_checks() {
+        let mut model = InstallReview::new(holdpkgs_questions());
+        assert!(!model.can_confirm());
+        model.update(ReviewMessage::ToggleHoldpkgs(0));
+        assert!(model.can_confirm());
+        model.update(ReviewMessage::ToggleRemovepkgs(1));
+        assert!(!model.can_confirm());
+        model.update(ReviewMessage::ToggleRemovepkgs(1));
+        assert!(model.can_confirm());
+    }
+
+    #[test]
+    fn can_confirm_true_without_gated_questions() {
+        let model = InstallReview::new(vec![Question::InstallIgnorepkg { name: s("glibc") }]);
+        assert!(model.can_confirm());
     }
 
     #[test]

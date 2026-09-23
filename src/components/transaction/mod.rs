@@ -397,6 +397,14 @@ impl Transaction {
                 }
                 self.model.review_notice = None;
                 self.model.unstables = 0;
+                if self
+                    .model
+                    .install_review
+                    .as_ref()
+                    .is_some_and(|review| !review.can_confirm())
+                {
+                    return Action::None;
+                }
                 let mut review = match self.model.install_review.take() {
                     Some(r) => r,
                     None => return Action::None,
@@ -676,7 +684,7 @@ impl Transaction {
             return Some(dialog_backdrop(import_key_dialog(prompt), 32.0));
         }
         let content = if let Some(r) = self.model.install_review.as_ref() {
-            r.view(&self.model.name)
+            r.view(&self.model.name, self.model.kind)
         } else if let Some(c) = self.model.checkout.as_ref() {
             c.view(&self.model.name)
         } else if let Some(r) = self.model.review.as_ref() {
