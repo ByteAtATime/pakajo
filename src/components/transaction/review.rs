@@ -326,14 +326,16 @@ impl InstallReview {
         }
     }
 
-    pub(crate) fn seal(&self) -> anyhow::Result<SealedApprovals> {
-        let answers = self
-            .questions
+    pub(crate) fn answers(&self) -> Vec<Answer> {
+        self.questions
             .iter()
             .enumerate()
             .map(|(i, question)| self.answer_for(i, question))
-            .collect::<Vec<_>>();
-        seal_answers(&self.questions, &answers, true)
+            .collect()
+    }
+
+    pub(crate) fn seal(&self) -> anyhow::Result<SealedApprovals> {
+        seal_answers(&self.questions, &self.answers(), true)
     }
 
     pub(crate) fn view(&self, name: &str) -> Element<'_> {

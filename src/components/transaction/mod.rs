@@ -6,17 +6,20 @@ use futures::StreamExt as _;
 
 use pakajo::dispatch::exec::{AnswerWriter, ChildOutcome, StreamItem};
 use pakajo::dispatch::protocol::AutomaticDecider;
-use pakajo::dispatch::revalidate::{RevalidationRun, ReviewLoop, ReviewStep};
+use pakajo::dispatch::revalidate::{RevalidationRun, ReviewLoop, ReviewOrigin, ReviewStep};
 use pakajo::events::InstallEvent;
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::progress::InstallKind;
 use pakajo::question::model::Question;
+use pakajo::question::revalidate::{Verdict, converge, revalidate};
 use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
 
 use crate::Element;
 
 pub(super) const SYSTEM_AUR_NAME: &str = "system-aur";
+
+const REVIEW_LOOP_ENDED: &str = "review loop ended";
 
 mod state;
 
@@ -100,19 +103,6 @@ fn review_approvals(review: &ReviewModel) -> Option<String> {
     }
 }
 
-fn install_review_seal(review: &InstallReview) -> Option<String> {
-    match review
-        .seal()
-        .and_then(|sealed| pakajo::dispatch::seal::encode_seal(&sealed))
-    {
-        Ok(payload) => Some(payload),
-        Err(e) => {
-            eprintln!("[pakajo] seal encoding failed: {e}");
-            None
-        }
-    }
-}
-
 fn proceed_only_seal() -> String {
     match pakajo::dispatch::seal::proceed_only_seal() {
         Ok(payload) => payload,
@@ -180,7 +170,7 @@ fn review_stream(
             let _ = tx
                 .send(
                     crate::Message::Transaction(TransactionMessage::Explored(Err(
-                        "review loop ended".to_string(),
+                        REVIEW_LOOP_ENDED.to_string(),
                     )))
                     .into(),
                 )
@@ -209,7 +199,7 @@ pub(crate) fn partition_batch_targets(
 
 pub(crate) struct Transaction {
     model: TransactionModel,
-    _review_loop: Option<ReviewLoop>,
+    review_loop: Option<ReviewLoop>,
 }
 
 impl Transaction {
@@ -253,7 +243,7 @@ impl Transaction {
         (
             Self {
                 model,
-                _review_loop: Some(review_loop),
+                review_loop: Some(review_loop),
             },
             review_stream(rx),
         )
@@ -281,7 +271,7 @@ impl Transaction {
         (
             Self {
                 model,
-                _review_loop: None,
+                review_loop: None,
             },
             task,
         )
@@ -323,22 +313,23 @@ impl Transaction {
             },
             TransactionMessage::Explored(result) => match result {
                 Err(e) => {
+                    if e == REVIEW_LOOP_ENDED
+                        && (self.model.install_review.is_some() || self.model.checkout.is_some())
+                    {
+                        return Action::None;
+                    }
                     eprintln!("[pakajo] review failed: {e}");
                     self.model.failure_message = Some(e);
+                    if let Some(review) = self.model.install_review.as_mut() {
+                        review.approving = false;
+                    }
                     Action::None
                 }
                 Ok(run) => {
-                    self.model.summary = Some(run.summary);
-                    if !review::install_needs_review(&run.questions) {
-                        eprintln!("[pakajo] no questions, showing checkout");
-                        return self.show_checkout();
+                    if run.origin == ReviewOrigin::Revalidation {
+                        return self.apply_revalidation(run);
                     }
-                    eprintln!(
-                        "[pakajo] review required ({} questions)",
-                        run.questions.len()
-                    );
-                    self.model.install_review = Some(InstallReview::new(run.questions));
-                    Action::None
+                    self.accept_initial(run)
                 }
             },
             TransactionMessage::ToggleStage(i) => {
@@ -376,12 +367,21 @@ impl Transaction {
                     Some(r) => r,
                     None => return Action::None,
                 };
-                let approvals = install_review_seal(&review);
-                if matches!(self.model.source, PackageSource::Aur) {
-                    review.approving = true;
-                    self.model.install_review = Some(review);
+                let sealed = match review.seal() {
+                    Ok(sealed) => sealed,
+                    Err(e) => return self.fail_seal(review, format!("{e:#}")),
+                };
+                let approvals = match pakajo::dispatch::seal::encode_seal(&sealed) {
+                    Ok(payload) => payload,
+                    Err(e) => return self.fail_seal(review, format!("{e:#}")),
+                };
+                review.approving = true;
+                self.model.install_review = Some(review);
+                self.model.pending_approvals = Some(approvals);
+                if let Some(review_loop) = self.review_loop.as_ref() {
+                    review_loop.send(ReviewStep::Sealed(sealed));
                 }
-                self.proceed_after_conflicts(approvals)
+                Action::None
             }
             TransactionMessage::PkgbuildResult(result) => {
                 self.model.review = None;
@@ -438,6 +438,83 @@ impl Transaction {
                 }
             }
             TransactionMessage::StartRemove => Action::None,
+        }
+    }
+
+    fn fail_seal(&mut self, mut review: InstallReview, message: String) -> Action {
+        eprintln!("[pakajo] seal encoding failed: {message}");
+        self.model.failure_message = Some(message);
+        review.approving = false;
+        self.model.install_review = Some(review);
+        Action::None
+    }
+
+    fn accept_initial(&mut self, run: RevalidationRun) -> Action {
+        self.model.summary = Some(run.summary);
+        self.model.revalidations = 0;
+        self.model.review_notice = None;
+        if !review::install_needs_review(&run.questions) {
+            eprintln!("[pakajo] no questions, showing checkout");
+            return self.show_checkout();
+        }
+        eprintln!(
+            "[pakajo] review required ({} questions)",
+            run.questions.len()
+        );
+        self.model.install_review = Some(InstallReview::new(run.questions));
+        Action::None
+    }
+
+    fn apply_revalidation(&mut self, run: RevalidationRun) -> Action {
+        let outcome = match (
+            self.model.install_review.as_ref(),
+            self.model.summary.as_ref(),
+        ) {
+            (Some(review), Some(summary)) => revalidate(
+                &review.questions,
+                &review.answers(),
+                summary,
+                &run.questions,
+                &run.answers,
+                &run.summary,
+            ),
+            _ => return self.accept_initial(run),
+        };
+        match converge(self.model.revalidations, &outcome) {
+            Verdict::Converged => {
+                self.model.summary = Some(run.summary);
+                self.model.install_review.take();
+                match self.model.pending_approvals.take() {
+                    Some(payload) => self.proceed_after_conflicts(Some(payload)),
+                    None => {
+                        eprintln!("[pakajo] revalidation converged without pending approvals");
+                        self.model.failure_message =
+                            Some("revalidation converged without pending approvals".to_string());
+                        Action::None
+                    }
+                }
+            }
+            Verdict::Diverged(drift) => {
+                self.model.revalidations += 1;
+                self.model.summary = Some(run.summary);
+                self.model.install_review = Some(InstallReview::new(run.questions));
+                eprintln!(
+                    "[pakajo] review drifted ({} added, {} changed, {} removed)",
+                    drift.added.len(),
+                    drift.changed.len(),
+                    drift.removed.len()
+                );
+                Action::None
+            }
+            Verdict::Unstable => {
+                self.model.revalidations = 0;
+                self.model.review_notice = Some("review did not stabilize".to_string());
+                eprintln!("[pakajo] review did not stabilize");
+                if let Some(review_loop) = self.review_loop.as_ref() {
+                    review_loop.send(ReviewStep::Defaults);
+                }
+                Action::None
+            }
         }
     }
 
@@ -513,7 +590,7 @@ impl Transaction {
                 PackageSource::Repo,
                 InstallKind::Upgrade,
             ),
-            _review_loop: None,
+            review_loop: None,
         };
         transaction.model.status = TransactionStatus::Running;
         (
@@ -541,6 +618,13 @@ impl Transaction {
             r.view(&self.model.name, self.model.kind)
         } else {
             self.model.pkgbuild_review.as_ref().map(|p| p.view())?
+        };
+        let content = match self.model.review_notice.as_ref() {
+            Some(notice) => Column::new()
+                .push(text(notice.clone()))
+                .push(content)
+                .into(),
+            None => content,
         };
         Some(dialog_backdrop(content, 32.0))
     }
@@ -661,8 +745,61 @@ mod tests {
                 false,
                 InstallKind::Install,
             ),
-            _review_loop: None,
+            review_loop: None,
         }
+    }
+
+    fn repo_transaction() -> Transaction {
+        Transaction {
+            model: TransactionModel::batch(
+                s("firefox"),
+                vec![s("firefox")],
+                Vec::new(),
+                false,
+                InstallKind::Install,
+            ),
+            review_loop: None,
+        }
+    }
+
+    fn ignorepkg_answer(name: &str) -> pakajo::question::model::Answer {
+        pakajo::question::model::Answer::InstallIgnorepkg {
+            name: s(name),
+            install: false,
+        }
+    }
+
+    fn revalidation_run(
+        questions: Vec<Question>,
+        answers: Vec<pakajo::question::model::Answer>,
+    ) -> RevalidationRun {
+        RevalidationRun {
+            origin: ReviewOrigin::Revalidation,
+            questions,
+            answers,
+            summary: test_summary(),
+        }
+    }
+
+    fn approving_transaction(pending: Option<String>, revalidations: usize) -> Transaction {
+        let mut transaction = repo_transaction();
+        let mut review = InstallReview::new(vec![Question::InstallIgnorepkg { name: s("glibc") }]);
+        review.approving = true;
+        transaction.model.install_review = Some(review);
+        transaction.model.summary = Some(test_summary());
+        transaction.model.pending_approvals = pending;
+        transaction.model.revalidations = revalidations;
+        transaction
+    }
+
+    fn drifted_run() -> RevalidationRun {
+        revalidation_run(
+            vec![
+                Question::InstallIgnorepkg { name: s("glibc") },
+                Question::InstallIgnorepkg { name: s("nvidia") },
+            ],
+            vec![ignorepkg_answer("glibc"), ignorepkg_answer("nvidia")],
+        )
     }
 
     #[test]
@@ -712,6 +849,77 @@ mod tests {
         assert!(transaction.model.install_review.is_none());
         assert!(transaction.model.checkout.is_none());
         assert!(transaction.model.pending_approvals.is_none());
+    }
+
+    #[test]
+    fn approve_seals_and_waits_for_revalidation() {
+        let mut transaction = repo_transaction();
+        transaction.model.install_review =
+            Some(InstallReview::new(vec![Question::InstallIgnorepkg {
+                name: s("glibc"),
+            }]));
+        transaction.update(TransactionMessage::ApproveReview);
+        let review = transaction
+            .model
+            .install_review
+            .as_ref()
+            .expect("review kept in place");
+        assert!(review.approving);
+        assert!(transaction.model.pending_approvals.is_some());
+        assert!(transaction.model.checkout.is_none());
+    }
+
+    #[test]
+    fn revalidation_diverges_then_converges_to_checkout() {
+        let mut transaction = approving_transaction(Some(s("sealed-payload")), 0);
+        transaction.update(TransactionMessage::Explored(Ok(drifted_run())));
+        assert_eq!(transaction.model.revalidations, 1);
+        let rebuilt = transaction
+            .model
+            .install_review
+            .as_ref()
+            .expect("review rebuilt");
+        assert_eq!(rebuilt.questions.len(), 2);
+        assert!(!rebuilt.approving);
+
+        transaction.model.install_review = Some({
+            let mut review =
+                InstallReview::new(vec![Question::InstallIgnorepkg { name: s("glibc") }]);
+            review.approving = true;
+            review
+        });
+        let settled = revalidation_run(
+            vec![Question::InstallIgnorepkg { name: s("glibc") }],
+            vec![ignorepkg_answer("glibc")],
+        );
+        transaction.update(TransactionMessage::Explored(Ok(settled)));
+        assert!(transaction.model.install_review.is_none());
+        assert!(transaction.model.checkout.is_some());
+        assert_eq!(
+            transaction.model.pending_approvals.as_deref(),
+            Some("sealed-payload")
+        );
+    }
+
+    #[test]
+    fn unstable_restarts_review_and_teardown_stays_noop() {
+        let mut transaction = approving_transaction(None, 2);
+        transaction.update(TransactionMessage::Explored(Ok(drifted_run())));
+        assert_eq!(transaction.model.revalidations, 0);
+        assert_eq!(
+            transaction.model.review_notice.as_deref(),
+            Some("review did not stabilize")
+        );
+
+        transaction.update(TransactionMessage::Explored(Ok(reviewed())));
+        assert!(transaction.model.review_notice.is_none());
+        assert!(transaction.model.install_review.is_some());
+
+        transaction.update(TransactionMessage::Explored(Err(
+            REVIEW_LOOP_ENDED.to_string()
+        )));
+        assert!(transaction.model.failure_message.is_none());
+        assert!(transaction.model.install_review.is_some());
     }
 
     fn s(value: &str) -> String {

@@ -45,6 +45,8 @@ pub(crate) struct TransactionModel {
     pub(super) failure_message: Option<String>,
     pub(super) answer_channel: Option<AnswerWriter>,
     pub(super) pending_import_key: Option<Question>,
+    pub(super) revalidations: usize,
+    pub(super) review_notice: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +94,8 @@ impl TransactionModel {
             failure_message: None,
             answer_channel: None,
             pending_import_key: None,
+            revalidations: 0,
+            review_notice: None,
         }
     }
 

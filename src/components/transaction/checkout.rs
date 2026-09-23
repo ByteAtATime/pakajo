@@ -124,7 +124,31 @@ mod checkout_tests {
         );
         Transaction {
             model,
-            _review_loop: None,
+            review_loop: None,
+        }
+    }
+
+    fn conflict() -> Question {
+        Question::Conflict {
+            incoming: s("cava-git"),
+            removable: s("cava"),
+        }
+    }
+
+    fn conflict_answer() -> pakajo::question::model::Answer {
+        pakajo::question::model::Answer::Conflict {
+            incoming: s("cava-git"),
+            removable: s("cava"),
+            remove: true,
+        }
+    }
+
+    fn revalidated() -> pakajo::dispatch::RevalidationRun {
+        pakajo::dispatch::RevalidationRun {
+            origin: pakajo::dispatch::ReviewOrigin::Revalidation,
+            questions: vec![conflict()],
+            answers: vec![conflict_answer()],
+            summary: summary(),
         }
     }
 
@@ -149,12 +173,17 @@ mod checkout_tests {
     #[test]
     fn checkout_proceed_launches_with_sealed_payload() {
         let mut tx = install_model();
-        tx.model.install_review = Some(InstallReview::new(vec![Question::Conflict {
-            incoming: s("cava-git"),
-            removable: s("cava"),
-        }]));
+        tx.model.install_review = Some(InstallReview::new(vec![conflict()]));
+        tx.model.summary = Some(summary());
         tx.update(TransactionMessage::ApproveReview);
-        assert!(tx.model.checkout.is_some());
+        assert!(tx.model.checkout.is_none());
+        assert!(
+            tx.model
+                .install_review
+                .as_ref()
+                .expect("review kept")
+                .approving
+        );
         let sealed = pakajo::dispatch::seal::decode_seal(
             tx.model
                 .pending_approvals
@@ -171,6 +200,8 @@ mod checkout_tests {
                 pakajo::question::model::Answer::Conflict { remove: true, .. }
             )
         ));
+        tx.update(TransactionMessage::Explored(Ok(revalidated())));
+        assert!(tx.model.checkout.is_some());
         tx.update(TransactionMessage::ApproveCheckout);
         assert!(matches!(tx.model.status, TransactionStatus::Running));
     }
