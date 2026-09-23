@@ -25,6 +25,7 @@ pub fn render(question: &Question, colored: bool) -> String {
         Question::Replace { old, new, repo } => render_replace(old, new, repo.as_deref(), colored),
         Question::InstallIgnorepkg { name } => render_ignorepkg(name, colored),
         Question::RemovePkgs { names, kind } => render_remove_pkgs(names, *kind, colored),
+        Question::HoldPkgs { names } => render_hold_pkgs(names, colored),
         Question::Corrupted { path } => render_corrupted(path, colored),
         Question::ImportKey { fingerprint, uid } => render_import_key(fingerprint, uid, colored),
         Question::Proceed { summary, kind } => render_proceed(summary, *kind, colored),
@@ -106,6 +107,18 @@ fn render_remove_pkgs(names: &[String], kind: TransactionKind, colored: bool) ->
         }
     };
     out.push_str(&colon_text(colored, &tail));
+    out
+}
+
+fn render_hold_pkgs(names: &[String], colored: bool) -> String {
+    let mut out = String::new();
+    for name in names {
+        out.push_str(&format!("  {name} is designated as a HoldPkg.\n"));
+    }
+    out.push_str(&colon_text(
+        colored,
+        "HoldPkg was found in target list.\nDo you want to continue? [y/N] ",
+    ));
     out
 }
 
@@ -196,6 +209,10 @@ fn decide(question: &Question, line: &str) -> SourceDecision {
         Question::RemovePkgs { names, .. } => SourceDecision::Answer(Answer::RemovePkgs {
             names: names.clone(),
             skip: confirm(line, false),
+        }),
+        Question::HoldPkgs { names } => SourceDecision::Answer(Answer::HoldPkgs {
+            names: names.clone(),
+            proceed: confirm(line, false),
         }),
         Question::Corrupted { path } => SourceDecision::Answer(Answer::Corrupted {
             path: path.clone(),
@@ -598,6 +615,12 @@ mod tests {
                 },
                 "The following package were not found:\n  a\nDo you want to skip the above package for this removal? [y/N] ",
             ),
+            (
+                Question::HoldPkgs {
+                    names: vec!["a".to_string(), "b".to_string()],
+                },
+                "  a is designated as a HoldPkg.\n  b is designated as a HoldPkg.\nHoldPkg was found in target list.\nDo you want to continue? [y/N] ",
+            ),
         ];
         for (question, expected) in cases {
             assert_eq!(render(&question, false), expected);
@@ -666,6 +689,17 @@ mod tests {
 
     #[test]
     fn confirm_answers_follow_presented_defaults() {
+        let held = Question::HoldPkgs {
+            names: vec!["sl".to_string()],
+        };
+        match ask(&held, b"y\n", false).0 {
+            SourceDecision::Answer(Answer::HoldPkgs { proceed, .. }) => assert!(proceed),
+            other => panic!("expected holdpkgs answer, got {other:?}"),
+        }
+        match ask(&held, b"\n", false).0 {
+            SourceDecision::Answer(Answer::HoldPkgs { proceed, .. }) => assert!(!proceed),
+            other => panic!("expected holdpkgs answer, got {other:?}"),
+        }
         match ask(&conflict(), b"y\n", false).0 {
             SourceDecision::Answer(Answer::Conflict { remove, .. }) => assert!(remove),
             other => panic!("expected conflict answer, got {other:?}"),

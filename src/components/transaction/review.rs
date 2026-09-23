@@ -310,6 +310,10 @@ impl InstallReview {
                 names: names.clone(),
                 skip: self.removepkgs_checks.get(i).copied().unwrap_or(false),
             },
+            Question::HoldPkgs { names } => Answer::HoldPkgs {
+                names: names.clone(),
+                proceed: false,
+            },
             Question::GroupMembers { .. } => Answer::GroupMembers { selected: vec![] },
             Question::Proceed { .. } => Answer::Proceed,
             Question::Corrupted { path } => Answer::Corrupted {

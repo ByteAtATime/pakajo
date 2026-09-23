@@ -138,6 +138,11 @@ fn answer_fits_key(answer: &Answer, key: &QuestionKey) -> bool {
             ordered.sort();
             ordered == *names
         }
+        (QuestionKey::HoldPkgs { names }, Answer::HoldPkgs { names: a_names, .. }) => {
+            let mut ordered = a_names.clone();
+            ordered.sort();
+            ordered == *names
+        }
         (QuestionKey::GroupMembers { .. }, Answer::GroupMembers { .. }) => true,
         _ => false,
     }
@@ -252,6 +257,15 @@ mod tests {
                 Answer::RemovePkgs {
                     names: vec![s("a"), s("b")],
                     skip: false,
+                },
+            ),
+            (
+                Question::HoldPkgs {
+                    names: vec![s("b"), s("a")],
+                },
+                Answer::HoldPkgs {
+                    names: vec![s("a"), s("b")],
+                    proceed: true,
                 },
             ),
         ]

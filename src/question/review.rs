@@ -90,6 +90,7 @@ fn answer_tag(answer: &Answer) -> String {
         Answer::Replace { replace, .. } => flag("replace", *replace, "replace", "keep"),
         Answer::InstallIgnorepkg { install, .. } => flag("ignorepkg", *install, "install", "skip"),
         Answer::RemovePkgs { skip, .. } => flag("removepkgs", *skip, "skip", "keep"),
+        Answer::HoldPkgs { proceed, .. } => flag("holdpkgs", *proceed, "continue", "abort"),
         Answer::Corrupted { remove, .. } => flag("corrupted", *remove, "delete", "keep"),
         Answer::ImportKey { import, .. } => flag("importkey", *import, "import", "reject"),
         Answer::Proceed => "proceed".to_string(),

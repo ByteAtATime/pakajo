@@ -7,7 +7,7 @@ use crate::events::{InstallEvent, InstallSink, LogLevel, TransactionSummary};
 use crate::pacman::lock::{
     LOCK_POLL_INTERVAL, cleanup_on_signal, during_commit, finish_transaction, lock_retry,
 };
-use crate::question::model::{Answer, Question, TransactionKind};
+use crate::question::model::{Answer, Question, QuestionKey, TransactionKind};
 use crate::question::source::AnswerSource;
 use crate::tx::convert::{
     PrepareFailure, build_summary, convert_download, convert_event, convert_log_level,
@@ -195,8 +195,10 @@ fn drive(
             .iter()
             .map(|pkg| pkg.name().to_string())
             .collect();
-        if !crate::holdpkg::held_packages(&names, &remove.holds).is_empty() {
-            anyhow::bail!("held package(s) require explicit override");
+        let held = crate::holdpkg::held_packages(&names, &remove.holds);
+        if let Err(error) = ask_held_removal(&session, &held) {
+            fail_closed(&session, events)?;
+            return Err(error);
         }
     }
     let summary = build_summary(handle);
@@ -249,10 +251,7 @@ fn ask_proceed(
         return Ok(false);
     };
     let Answer::Proceed = answer else {
-        session
-            .borrow_mut()
-            .deny(key, "answer did not match question");
-        return Err(fail_on_denied(&session.borrow()).unwrap_err());
+        return Err(deny_mismatch(session, key));
     };
     Ok(true)
 }
@@ -291,19 +290,40 @@ fn ask_missing_removal(
         kind: TransactionKind::Remove,
     };
     let key = question.key();
-    match session.borrow_mut().ask_direct(&question)? {
+    let asked = session.borrow_mut().ask_direct(&question)?;
+    match asked {
         Some(Answer::RemovePkgs { skip: true, .. }) => Ok(()),
         Some(Answer::RemovePkgs { .. }) => {
             anyhow::bail!("target not found: {}", missing.join(", "))
         }
         None => anyhow::bail!("target not found: {}", missing.join(", ")),
-        Some(_) => {
-            session
-                .borrow_mut()
-                .deny(key, "answer did not match question");
-            return fail_on_denied(&session.borrow());
-        }
+        Some(_) => Err(deny_mismatch(session, key)),
     }
+}
+
+fn ask_held_removal(session: &Rc<RefCell<QuestionSession>>, held: &[String]) -> anyhow::Result<()> {
+    if held.is_empty() {
+        return Ok(());
+    }
+    let question = Question::HoldPkgs {
+        names: held.to_vec(),
+    };
+    let key = question.key();
+    let asked = session.borrow_mut().ask_direct(&question)?;
+    match asked {
+        Some(Answer::HoldPkgs { proceed: true, .. }) => Ok(()),
+        Some(Answer::HoldPkgs { .. }) | None => {
+            anyhow::bail!("held package(s) require explicit override")
+        }
+        Some(_) => Err(deny_mismatch(session, key)),
+    }
+}
+
+fn deny_mismatch(session: &Rc<RefCell<QuestionSession>>, key: QuestionKey) -> anyhow::Error {
+    session
+        .borrow_mut()
+        .deny(key, "answer did not match question");
+    fail_on_denied(&session.borrow()).unwrap_err()
 }
 
 fn queue_remove_targets(handle: &alpm::Alpm, targets: &[String]) -> anyhow::Result<Vec<String>> {
@@ -401,10 +421,7 @@ fn queue_group(
         return Ok(());
     };
     let Answer::GroupMembers { selected } = answer else {
-        session
-            .borrow_mut()
-            .deny(key, "answer did not match question");
-        return fail_on_denied(&session.borrow());
+        return Err(deny_mismatch(session, key));
     };
     if let Some(foreign) = selected.iter().find(|name| !members.contains(name)) {
         session
@@ -884,6 +901,116 @@ mod tests {
         }
     }
 
+    fn hold_spec(holds: &[&str], explore: bool, targets: &[&str]) -> RunSpec {
+        RunSpec {
+            kind: RunKind::Remove(RemoveSpec {
+                flags: alpm::TransFlag::NONE,
+                holds: holds.iter().map(|hold| hold.to_string()).collect(),
+            }),
+            targets: targets.iter().map(|t| t.to_string()).collect(),
+            stub_targets: Vec::new(),
+            explore,
+            as_deps: false,
+            reinstall: false,
+        }
+    }
+
+    fn hold_answer(proceed: bool) -> Box<dyn AnswerSource> {
+        script(move |question| match question {
+            Question::HoldPkgs { names } => SourceDecision::Answer(Answer::HoldPkgs {
+                names: names.clone(),
+                proceed,
+            }),
+            Question::Proceed { .. } => SourceDecision::Answer(Answer::Proceed),
+            _ => SourceDecision::Answer(Answer::Stop),
+        })
+    }
+
+    #[test]
+    fn hold_decline_aborts_without_removing() {
+        let (_dir, mut handle) = fixture_full(&[], &[plain("sl")]);
+        let error = run(
+            &mut handle,
+            &hold_spec(&["sl"], false, &["sl"]),
+            hold_answer(false),
+            discard(),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("held package(s) require explicit override"));
+        assert!(handle.localdb().pkg("sl").is_ok());
+        release(&mut handle);
+    }
+
+    #[test]
+    fn hold_accept_commits_removal() {
+        let (_dir, mut handle) = fixture_full(&[], &[plain("sl")]);
+        let outcome = run(
+            &mut handle,
+            &hold_spec(&["sl"], false, &["sl"]),
+            hold_answer(true),
+            discard(),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert!(handle.localdb().pkg("sl").is_err());
+        release(&mut handle);
+    }
+
+    #[test]
+    fn explore_records_hold_question() {
+        use crate::question::source::ExploreDefaults;
+
+        let (_dir, mut handle) = fixture_full(&[], &[plain("sl")]);
+        let outcome = run(
+            &mut handle,
+            &hold_spec(&["sl"], true, &["sl"]),
+            Box::new(ExploreDefaults),
+            discard(),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        let review = outcome.review.as_ref().expect("explore carries a review");
+        assert!(review.part1.iter().any(|question| matches!(
+            question,
+            Question::HoldPkgs { names } if names == &vec!["sl".to_string()]
+        )));
+        assert!(handle.localdb().pkg("sl").is_ok());
+        release(&mut handle);
+    }
+
+    #[test]
+    fn removepkgs_mismatch_fails_closed() {
+        let (_dir, mut handle) = fixture_full(&[], &[plain("sl")]);
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let mismatched = script(|_| {
+            SourceDecision::Answer(Answer::Conflict {
+                incoming: "a".to_string(),
+                removable: "b".to_string(),
+                remove: true,
+            })
+        });
+        let error = run(
+            &mut handle,
+            &remove_spec(alpm::TransFlag::NONE, false, &["ghost", "sl"]),
+            mismatched,
+            Box::new(recorder),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("did not match"));
+        assert_eq!(
+            fail_closed_events(&seen.borrow()),
+            vec![(
+                crate::question::model::QuestionKey::RemovePkgs {
+                    names: vec!["ghost".to_string()]
+                },
+                "answer did not match question".to_string()
+            )]
+        );
+        assert!(handle.localdb().pkg("sl").is_ok());
+        release(&mut handle);
+    }
+
     #[test]
     fn init_flags_derive_from_spec() {
         use alpm::TransFlag as F;
@@ -1039,6 +1166,7 @@ mod tests {
             Question::RemovePkgs { names, kind: TransactionKind::Remove }
             if names == &vec!["ghost".to_string()]
         )));
+        assert!(summary_names(&outcome).contains(&"sl".to_string()));
         assert!(handle.localdb().pkg("sl").is_ok());
         release(&mut handle);
     }

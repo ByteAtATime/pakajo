@@ -66,6 +66,10 @@ impl AnswerSource for ExploreDefaults {
                 names: names.clone(),
                 skip: true,
             }),
+            Question::HoldPkgs { names } => SourceDecision::Answer(Answer::HoldPkgs {
+                names: names.clone(),
+                proceed: true,
+            }),
             Question::GroupMembers { members, .. } => {
                 SourceDecision::Answer(Answer::GroupMembers {
                     selected: members.clone(),
@@ -279,6 +283,15 @@ mod tests {
                 Answer::RemovePkgs {
                     names: vec!["gone".to_string(), "also-gone".to_string()],
                     skip: true,
+                },
+            ),
+            (
+                Question::HoldPkgs {
+                    names: vec!["sl".to_string()],
+                },
+                Answer::HoldPkgs {
+                    names: vec!["sl".to_string()],
+                    proceed: true,
                 },
             ),
             (

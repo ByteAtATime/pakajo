@@ -37,6 +37,9 @@ pub enum Question {
         names: Vec<String>,
         kind: TransactionKind,
     },
+    HoldPkgs {
+        names: Vec<String>,
+    },
     Corrupted {
         path: String,
     },
@@ -78,6 +81,10 @@ pub enum Answer {
         names: Vec<String>,
         skip: bool,
     },
+    HoldPkgs {
+        names: Vec<String>,
+        proceed: bool,
+    },
     Corrupted {
         path: String,
         remove: bool,
@@ -100,6 +107,7 @@ pub enum QuestionKey {
     Replace { old: String, new: String },
     InstallIgnorepkg { name: String },
     RemovePkgs { names: Vec<String> },
+    HoldPkgs { names: Vec<String> },
     Corrupted { path: String },
     ImportKey { fingerprint: String },
     Proceed,
@@ -130,6 +138,11 @@ impl Question {
                 let mut ordered = names.clone();
                 ordered.sort();
                 QuestionKey::RemovePkgs { names: ordered }
+            }
+            Question::HoldPkgs { names } => {
+                let mut ordered = names.clone();
+                ordered.sort();
+                QuestionKey::HoldPkgs { names: ordered }
             }
             Question::Corrupted { path } => QuestionKey::Corrupted { path: path.clone() },
             Question::ImportKey { fingerprint, .. } => QuestionKey::ImportKey {
@@ -209,6 +222,15 @@ mod tests {
                 names: vec!["a".to_string(), "b".to_string()],
             }
         );
+        let held = Question::HoldPkgs {
+            names: vec!["b".to_string(), "a".to_string()],
+        };
+        assert_eq!(
+            held.key(),
+            QuestionKey::HoldPkgs {
+                names: vec!["a".to_string(), "b".to_string()],
+            }
+        );
     }
 
     #[test]
@@ -234,6 +256,7 @@ mod tests {
                 names: vec![],
                 kind: TransactionKind::Install,
             },
+            Question::HoldPkgs { names: vec![] },
             Question::GroupMembers {
                 group: "base-devel".to_string(),
                 members: vec![],
