@@ -130,22 +130,20 @@ pub fn run_build<S: InstallSink + ?Sized>(
     Ok(())
 }
 
-fn partition_repo_targets(plan: &Plan, files: &[String]) -> (Vec<String>, Vec<String>) {
-    let mut explicit = files.to_vec();
-    let mut deps = Vec::new();
+fn repo_child_inputs(plan: &Plan, files: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut targets = files.to_vec();
+    let mut dep_names = Vec::new();
     for row in &plan.repo_installs {
-        let target = if row.db.is_empty() {
-            row.name.clone()
+        if row.db.is_empty() {
+            targets.push(row.name.clone());
         } else {
-            format!("{}/{}", row.db, row.name)
-        };
-        if row.target {
-            explicit.push(target);
-        } else {
-            deps.push(target);
+            targets.push(format!("{}/{}", row.db, row.name));
+        }
+        if !row.target {
+            dep_names.push(row.name.clone());
         }
     }
-    (explicit, deps)
+    (targets, dep_names)
 }
 
 fn install_repo_packages<S: InstallSink + ?Sized>(
@@ -156,44 +154,23 @@ fn install_repo_packages<S: InstallSink + ?Sized>(
     preconfirmed: bool,
     sink: &mut S,
 ) -> anyhow::Result<()> {
-    let (explicit, deps) = partition_repo_targets(plan, files);
-    if !explicit.is_empty() {
-        run_install_child(
-            InstallChildParams {
-                targets: &explicit,
-                as_deps: config.as_deps,
-                reinstall: config.reinstall,
-                preconfirmed,
-                dep_names: &[],
-                interactive: config.interactive,
-                approvals,
-                tty: config.tty,
-            },
-            sink,
-        )?;
+    let (targets, dep_names) = repo_child_inputs(plan, files);
+    if targets.is_empty() {
+        return Ok(());
     }
-    if !deps.is_empty() {
-        let dep_names: Vec<String> = plan
-            .repo_installs
-            .iter()
-            .filter(|row| !row.target)
-            .map(|row| row.name.clone())
-            .collect();
-        run_install_child(
-            InstallChildParams {
-                targets: &deps,
-                as_deps: config.as_deps,
-                reinstall: false,
-                preconfirmed,
-                dep_names: &dep_names,
-                interactive: config.interactive,
-                approvals,
-                tty: config.tty,
-            },
-            sink,
-        )?;
-    }
-    Ok(())
+    run_install_child(
+        InstallChildParams {
+            targets: &targets,
+            as_deps: config.as_deps,
+            reinstall: config.reinstall,
+            preconfirmed,
+            dep_names: &dep_names,
+            interactive: config.interactive,
+            approvals,
+            tty: config.tty,
+        },
+        sink,
+    )
 }
 
 fn resolve_and_report<S: InstallSink + ?Sized>(
@@ -530,7 +507,7 @@ mod tests {
     use crate::resolve::RepoInstall;
 
     #[test]
-    fn partition_repo_targets_pins_explicit_and_deps() {
+    fn repo_child_inputs_merges_files_and_rows_with_dep_names() {
         let plan = Plan {
             repo_installs: vec![
                 RepoInstall {
@@ -553,16 +530,17 @@ mod tests {
             ..Default::default()
         };
         let files = vec!["/tmp/foo-1.0-1-x86_64.pkg.tar.zst".to_string()];
-        let (explicit, deps) = partition_repo_targets(&plan, &files);
+        let (targets, dep_names) = repo_child_inputs(&plan, &files);
         assert_eq!(
-            explicit,
+            targets,
             vec![
                 files[0].clone(),
                 "extra/neovim".to_string(),
-                "bare".to_string()
+                "bare".to_string(),
+                "extra/libtermkey".to_string()
             ]
         );
-        assert_eq!(deps, vec!["extra/libtermkey".to_string()]);
+        assert_eq!(dep_names, vec!["libtermkey".to_string()]);
     }
 
     #[test]

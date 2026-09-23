@@ -1563,13 +1563,20 @@ mod tests {
         assert!(handle.localdb().pkg("solo").is_err());
         release(&mut handle);
         let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
         committed(
             &dep_spec(&["solo"], &["ghost"]),
             proceed(),
-            Box::new(Recorder::default()),
+            Box::new(recorder),
             &mut handle,
         );
         assert_eq!(reason_of(&handle, "solo"), alpm::PackageReason::Explicit);
+        assert!(seen.borrow().iter().any(|event| matches!(
+            event,
+            InstallEvent::Log { level, message }
+                if *level == LogLevel::Warning && message.contains("ghost")
+        )));
         release(&mut handle);
     }
 
