@@ -610,7 +610,7 @@ impl Transaction {
 
     fn show_checkout(&mut self) -> Action {
         let summary = self.model.summary.clone().unwrap_or_default();
-        self.model.checkout = Some(CheckoutModel::new(summary));
+        self.model.checkout = Some(CheckoutModel::new(summary, self.model.kind));
         Action::None
     }
 

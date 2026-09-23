@@ -2,6 +2,7 @@ use cosmic::iced::{Length, alignment::Vertical};
 use cosmic::widget::{Column, Row, button, dialog, scrollable, space, text};
 
 use pakajo::events::{SummaryAction, TransactionSummary, classify_action, target_version};
+use pakajo::progress::InstallKind;
 use pakajo::utils::format_bytes;
 
 use super::TransactionMessage;
@@ -13,11 +14,12 @@ use crate::Element;
 
 pub(crate) struct CheckoutModel {
     pub(crate) summary: TransactionSummary,
+    kind: InstallKind,
 }
 
 impl CheckoutModel {
-    pub(crate) fn new(summary: TransactionSummary) -> Self {
-        Self { summary }
+    pub(crate) fn new(summary: TransactionSummary, kind: InstallKind) -> Self {
+        Self { summary, kind }
     }
 
     pub(crate) fn view(&self, name: &str) -> Element<'_> {
@@ -39,19 +41,45 @@ impl CheckoutModel {
             format_bytes(self.summary.total_removed_size)
         ))));
         dialog()
-            .title(format!("Confirm installation of {name}"))
+            .title(checkout_title(name, self.kind))
             .control(scrollable(body).height(Length::Fixed(400.0)))
-            .primary_action(
-                button::suggested("Proceed").on_press(crate::Message::Transaction(
-                    TransactionMessage::ApproveCheckout,
-                )),
-            )
+            .primary_action(checkout_confirm(self.kind))
             .secondary_action(
                 button::standard("Cancel").on_press(crate::Message::Transaction(
                     TransactionMessage::CancelCheckout,
                 )),
             )
             .into()
+    }
+}
+
+fn checkout_title(name: &str, kind: InstallKind) -> String {
+    match kind {
+        InstallKind::Remove => format!("Confirm removal of {name}"),
+        InstallKind::Install | InstallKind::Upgrade => {
+            format!("Confirm installation of {name}")
+        }
+    }
+}
+
+fn checkout_confirm_label(kind: InstallKind) -> &'static str {
+    match kind {
+        InstallKind::Remove => "Remove",
+        InstallKind::Install | InstallKind::Upgrade => "Proceed",
+    }
+}
+
+fn checkout_confirm(kind: InstallKind) -> Element<'static> {
+    let pressed = crate::Message::Transaction(TransactionMessage::ApproveCheckout);
+    match kind {
+        InstallKind::Remove => button::destructive(checkout_confirm_label(kind))
+            .on_press(pressed)
+            .into(),
+        InstallKind::Install | InstallKind::Upgrade => {
+            button::suggested(checkout_confirm_label(kind))
+                .on_press(pressed)
+                .into()
+        }
     }
 }
 
@@ -209,7 +237,7 @@ mod checkout_tests {
     #[test]
     fn checkout_cancel_does_not_launch() {
         let mut tx = install_model();
-        tx.model.checkout = Some(CheckoutModel::new(summary()));
+        tx.model.checkout = Some(CheckoutModel::new(summary(), InstallKind::Install));
         let action = tx.update(TransactionMessage::CancelCheckout);
         assert!(matches!(action, Action::Finished));
         assert!(!matches!(tx.model.status, TransactionStatus::Running));
