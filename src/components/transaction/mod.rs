@@ -6,7 +6,8 @@ use futures::StreamExt as _;
 
 use pakajo::dispatch::exec::{AnswerWriter, ChildOutcome, StreamItem};
 use pakajo::dispatch::protocol::AutomaticDecider;
-use pakajo::events::{InstallEvent, TransactionSummary};
+use pakajo::dispatch::revalidate::{RevalidationRun, ReviewLoop, ReviewStep};
+use pakajo::events::InstallEvent;
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::progress::InstallKind;
@@ -56,7 +57,7 @@ pub enum TransactionMessage {
     InstallEvent(InstallEvent),
     InstallDone(ChildOutcome),
     DryRunResult(Result<QuestionSet, String>),
-    InstallDryRunResult(Result<(Vec<Question>, TransactionSummary), String>),
+    Explored(Result<RevalidationRun, String>),
     ToggleStage(usize),
     ToggleBuildCard(String),
     Tick(std::time::Instant),
@@ -155,6 +156,39 @@ fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::M
     ))
 }
 
+fn review_stream(
+    rx: std::sync::mpsc::Receiver<Result<RevalidationRun, String>>,
+) -> Task<crate::Message> {
+    Task::stream(channel(
+        256,
+        move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
+            use futures::{SinkExt as _, StreamExt as _};
+            let (bridge, mut forward) =
+                futures::channel::mpsc::unbounded::<Result<RevalidationRun, String>>();
+            std::thread::spawn(move || {
+                while let Ok(result) = rx.recv() {
+                    if bridge.unbounded_send(result).is_err() {
+                        break;
+                    }
+                }
+            });
+            while let Some(result) = forward.next().await {
+                let _ = tx
+                    .send(crate::Message::Transaction(TransactionMessage::Explored(result)).into())
+                    .await;
+            }
+            let _ = tx
+                .send(
+                    crate::Message::Transaction(TransactionMessage::Explored(Err(
+                        "review loop ended".to_string(),
+                    )))
+                    .into(),
+                )
+                .await;
+        },
+    ))
+}
+
 pub(crate) fn partition_batch_targets(
     targets: &[(String, String)],
     resolve: impl Fn(&str, &str) -> Option<String>,
@@ -175,6 +209,7 @@ pub(crate) fn partition_batch_targets(
 
 pub(crate) struct Transaction {
     model: TransactionModel,
+    _review_loop: Option<ReviewLoop>,
 }
 
 impl Transaction {
@@ -194,32 +229,34 @@ impl Transaction {
         prefer_aur: bool,
     ) -> (Self, Task<crate::Message>) {
         let first = names.first().cloned().expect("start_batch needs a target");
-        let dry_targets = names.clone();
-        let model =
-            TransactionModel::batch(first, names, aur_names, prefer_aur, InstallKind::Install);
-        let task = crate::components::task::blocking_task(
-            move || {
-                let request = pakajo::dispatch::InstallRequest {
-                    targets: dry_targets,
-                    as_deps: false,
-                    reinstall: false,
-                    no_check: false,
-                    ignores: vec![],
-                    prefer_aur,
-                    decider: Box::new(AutomaticDecider::new()),
-                    approvals: None,
-                    tty: false,
-                    json: false,
-                };
-                pakajo::dispatch::install_preview(&request)
-                    .map(|preview| (preview.review.part1, preview.review.part2))
-            },
-            "dry-run channel closed",
-            |result| {
-                crate::Message::Transaction(TransactionMessage::InstallDryRunResult(result)).into()
-            },
+        let model = TransactionModel::batch(
+            first,
+            names.clone(),
+            aur_names,
+            prefer_aur,
+            InstallKind::Install,
         );
-        (Self { model }, task)
+        let request = pakajo::dispatch::InstallRequest {
+            targets: names,
+            as_deps: false,
+            reinstall: false,
+            no_check: false,
+            ignores: vec![],
+            prefer_aur,
+            decider: Box::new(AutomaticDecider::new()),
+            approvals: None,
+            tty: false,
+            json: false,
+        };
+        let (review_loop, rx) = ReviewLoop::spawn(request);
+        review_loop.send(ReviewStep::Defaults);
+        (
+            Self {
+                model,
+                _review_loop: Some(review_loop),
+            },
+            review_stream(rx),
+        )
     }
 
     pub(crate) fn start_remove(
@@ -241,7 +278,13 @@ impl Transaction {
             "dry-run channel closed",
             |result| crate::Message::Transaction(TransactionMessage::DryRunResult(result)).into(),
         );
-        (Self { model }, task)
+        (
+            Self {
+                model,
+                _review_loop: None,
+            },
+            task,
+        )
     }
 
     pub(crate) fn update(&mut self, message: TransactionMessage) -> Action {
@@ -278,19 +321,23 @@ impl Transaction {
                     Action::None
                 }
             },
-            TransactionMessage::InstallDryRunResult(result) => match result {
+            TransactionMessage::Explored(result) => match result {
                 Err(e) => {
-                    eprintln!("[pakajo] dry-run failed, proceeding with install: {e}");
-                    self.launch_subprocess(proceed_only_seal())
+                    eprintln!("[pakajo] review failed: {e}");
+                    self.model.failure_message = Some(e);
+                    Action::None
                 }
-                Ok((part1, summary)) => {
-                    self.model.summary = Some(summary);
-                    if !review::install_needs_review(&part1) {
+                Ok(run) => {
+                    self.model.summary = Some(run.summary);
+                    if !review::install_needs_review(&run.questions) {
                         eprintln!("[pakajo] no questions, showing checkout");
                         return self.show_checkout();
                     }
-                    eprintln!("[pakajo] review required ({} questions)", part1.len());
-                    self.model.install_review = Some(InstallReview::new(part1));
+                    eprintln!(
+                        "[pakajo] review required ({} questions)",
+                        run.questions.len()
+                    );
+                    self.model.install_review = Some(InstallReview::new(run.questions));
                     Action::None
                 }
             },
@@ -466,6 +513,7 @@ impl Transaction {
                 PackageSource::Repo,
                 InstallKind::Upgrade,
             ),
+            _review_loop: None,
         };
         transaction.model.status = TransactionStatus::Running;
         (
@@ -574,10 +622,37 @@ fn dialog_backdrop(content: Element<'_>, padding: f32) -> Element<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pakajo::dispatch::revalidate::ReviewOrigin;
+    use pakajo::events::{SummaryPackage, TransactionSummary};
 
-    #[test]
-    fn pkgbuild_result_clears_install_review() {
-        let mut transaction = Transaction {
+    fn test_summary() -> TransactionSummary {
+        TransactionSummary {
+            packages: vec![SummaryPackage {
+                name: s("firefox"),
+                repository: Some(s("extra")),
+                new_version: s("1.0"),
+                old_version: None,
+                download_size: 1,
+                installed_size: 2,
+                old_installed_size: 0,
+                is_removal: false,
+            }],
+            total_download_size: 1,
+            total_installed_size: 2,
+            total_removed_size: 0,
+        }
+    }
+
+    fn reviewed() -> RevalidationRun {
+        RevalidationRun {
+            origin: ReviewOrigin::Initial,
+            questions: vec![Question::InstallIgnorepkg { name: s("glibc") }],
+            summary: test_summary(),
+        }
+    }
+
+    fn batch_transaction() -> Transaction {
+        Transaction {
             model: TransactionModel::batch(
                 s("paru"),
                 vec![s("paru")],
@@ -585,7 +660,13 @@ mod tests {
                 false,
                 InstallKind::Install,
             ),
-        };
+            _review_loop: None,
+        }
+    }
+
+    #[test]
+    fn pkgbuild_result_clears_install_review() {
+        let mut transaction = batch_transaction();
         transaction.model.install_review =
             Some(InstallReview::new(vec![Question::InstallIgnorepkg {
                 name: s("glibc"),
@@ -594,6 +675,41 @@ mod tests {
         transaction.update(TransactionMessage::PkgbuildResult(Ok(vec![])));
 
         assert!(transaction.model.install_review.is_none());
+    }
+
+    #[test]
+    fn explored_run_with_questions_shows_review() {
+        let mut transaction = batch_transaction();
+        transaction.update(TransactionMessage::Explored(Ok(reviewed())));
+        assert!(transaction.model.install_review.is_some());
+        assert!(transaction.model.checkout.is_none());
+        assert_eq!(
+            transaction.model.summary.clone().expect("summary set"),
+            test_summary()
+        );
+    }
+
+    #[test]
+    fn explored_run_without_questions_shows_checkout() {
+        let mut transaction = batch_transaction();
+        let empty = RevalidationRun {
+            origin: ReviewOrigin::Initial,
+            questions: Vec::new(),
+            summary: test_summary(),
+        };
+        transaction.update(TransactionMessage::Explored(Ok(empty)));
+        assert!(transaction.model.install_review.is_none());
+        assert!(transaction.model.checkout.is_some());
+    }
+
+    #[test]
+    fn explored_error_fails_closed_without_review_or_checkout() {
+        let mut transaction = batch_transaction();
+        transaction.update(TransactionMessage::Explored(Err(s("boom"))));
+        assert_eq!(transaction.model.failure_message.as_deref(), Some("boom"));
+        assert!(transaction.model.install_review.is_none());
+        assert!(transaction.model.checkout.is_none());
+        assert!(transaction.model.pending_approvals.is_none());
     }
 
     fn s(value: &str) -> String {

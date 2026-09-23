@@ -122,16 +122,22 @@ mod checkout_tests {
             false,
             InstallKind::Install,
         );
-        Transaction { model }
+        Transaction {
+            model,
+            _review_loop: None,
+        }
     }
 
     #[test]
     fn empty_part1_goes_straight_to_checkout() {
         let mut tx = install_model();
-        tx.update(TransactionMessage::InstallDryRunResult(Ok((
-            vec![],
-            summary(),
-        ))));
+        tx.update(TransactionMessage::Explored(Ok(
+            pakajo::dispatch::RevalidationRun {
+                origin: pakajo::dispatch::ReviewOrigin::Initial,
+                questions: vec![],
+                summary: summary(),
+            },
+        )));
         assert!(tx.model.install_review.is_none());
         assert_eq!(
             tx.model.checkout.as_ref().expect("checkout shown").summary,

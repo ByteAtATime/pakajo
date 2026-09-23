@@ -65,15 +65,6 @@ pub fn install(request: InstallRequest) -> DispatchStream {
     rx
 }
 
-pub fn install_preview(request: &InstallRequest) -> anyhow::Result<InstallPreview> {
-    let config = crate::pacman::config()?;
-    let mut handle = crate::pacman::handle_with_config(&config)?;
-    crate::upgrade::apply_ignores(&mut handle, &config, &request.ignores);
-    let outcome = run_install_preview(&mut handle, request);
-    let _ = handle.trans_release();
-    outcome
-}
-
 pub(crate) fn run_install_preview(
     handle: &mut alpm::Alpm,
     request: &InstallRequest,

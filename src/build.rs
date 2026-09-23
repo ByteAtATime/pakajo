@@ -32,19 +32,14 @@ pub fn build_base(
 }
 
 fn collect_artifacts(dir: &Path, expected: &[String]) -> anyhow::Result<Vec<String>> {
-    let artifacts = present_artifacts(dir, expected);
-    if artifacts.is_empty() {
-        anyhow::bail!("no built artifacts found in {}", dir.display());
-    }
-    Ok(artifacts)
-}
-
-fn present_artifacts(dir: &Path, expected: &[String]) -> Vec<String> {
     expected
         .iter()
-        .filter_map(|basename| {
+        .map(|basename| {
             let path = dir.join(basename);
-            path.exists().then(|| path.to_string_lossy().into_owned())
+            if !path.exists() {
+                anyhow::bail!("expected artifact not found: {}", path.display());
+            }
+            Ok(path.to_string_lossy().into_owned())
         })
         .collect()
 }
@@ -234,37 +229,5 @@ mod tests {
             Some("1.0-1")
         );
         assert!(resolved_version(&["junk".to_string()], "foo").is_none());
-    }
-
-    #[test]
-    fn collect_artifacts_skips_missing_expected_entries() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("pipes-1.5-1-x86_64.pkg.tar.zst"), b"pkg")
-            .expect("touch real artifact");
-        let expected = vec![
-            "pipes-1.5-1-x86_64.pkg.tar.zst".to_string(),
-            "pipes-doc-1.5-1-x86_64.pkg.tar.zst".to_string(),
-        ];
-        let collected = collect_artifacts(dir.path(), &expected).expect("collect");
-        assert_eq!(collected.len(), 1);
-        assert!(collected[0].ends_with("pipes-1.5-1-x86_64.pkg.tar.zst"));
-    }
-
-    #[test]
-    fn collect_artifacts_errors_when_nothing_present() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let expected = vec![
-            "pipes-1.5-1-x86_64.pkg.tar.zst".to_string(),
-            "pipes-doc-1.5-1-x86_64.pkg.tar.zst".to_string(),
-        ];
-        let err = collect_artifacts(dir.path(), &expected).expect_err("must fail");
-        assert!(err.to_string().contains("no built artifacts found"));
-    }
-
-    #[test]
-    fn collect_artifacts_errors_for_empty_expected() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let err = collect_artifacts(dir.path(), &[]).expect_err("must fail");
-        assert!(err.to_string().contains("no built artifacts found"));
     }
 }
