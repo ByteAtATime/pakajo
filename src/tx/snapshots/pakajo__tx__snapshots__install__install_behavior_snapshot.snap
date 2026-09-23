@@ -1,5 +1,5 @@
 ---
-source: src/tx/snapshots.rs
+source: src/tx/snapshots/install.rs
 expression: rendered
 ---
 == single-package install ==

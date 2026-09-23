@@ -1,6 +1,5 @@
+use super::{approved, render_outcome, snapshot_settings};
 use crate::install::{OfflinePkg, drive_sync, offline_pkg, offline_root};
-use crate::question::source::ExploreDefaults;
-use crate::tx::prompt::with_preapproved_proceed;
 
 struct InstallCase {
     name: &'static str,
@@ -77,42 +76,6 @@ fn cases() -> Vec<InstallCase> {
     ]
 }
 
-fn approved() -> Box<dyn crate::question::source::AnswerSource> {
-    with_preapproved_proceed(Box::new(ExploreDefaults))
-}
-
-fn installed_names(handle: &alpm::Alpm) -> Vec<String> {
-    let mut installed: Vec<String> = handle
-        .localdb()
-        .pkgs()
-        .iter()
-        .map(|pkg| format!("{} {} {:?}", pkg.name(), pkg.version(), pkg.reason()))
-        .collect();
-    installed.sort();
-    installed
-}
-
-fn summary_lines(outcome: &crate::tx::driver::RunOutcome) -> Vec<String> {
-    let mut packages: Vec<String> = outcome
-        .summary
-        .packages
-        .iter()
-        .map(|pkg| {
-            if pkg.is_removal {
-                format!(
-                    "{} {} (removal)",
-                    pkg.name,
-                    pkg.old_version.as_deref().unwrap_or("-"),
-                )
-            } else {
-                format!("{} {}", pkg.name, pkg.new_version)
-            }
-        })
-        .collect();
-    packages.sort();
-    packages
-}
-
 fn run_case(case: &InstallCase) -> String {
     let (_dir, mut handle) = offline_root(&case.packages);
     for ignored in &case.ignore {
@@ -121,26 +84,13 @@ fn run_case(case: &InstallCase) -> String {
     for target in &case.preinstall {
         drive_sync(&mut handle, std::slice::from_ref(target), approved()).unwrap();
     }
-    let outcome = drive_sync(&mut handle, &case.targets, approved()).unwrap();
-    let mut rendered = format!("finish: {:?}\n", outcome.finish);
-    rendered.push_str("summary:\n");
-    for line in summary_lines(&outcome) {
-        rendered.push_str(&format!("  {line}\n"));
-    }
-    rendered.push_str("installed:\n");
-    for line in installed_names(&handle) {
-        rendered.push_str(&format!("  {line}\n"));
-    }
-    rendered
+    let result = drive_sync(&mut handle, &case.targets, approved());
+    render_outcome(&result, &handle)
 }
 
-// TODO: ideally this would be an E2E test or something
-// but idk how to do that deterministically and lightweight-ly
 #[test]
 fn install_behavior_snapshot() {
-    let mut settings = insta::Settings::clone_current();
-    settings.add_filter(r"/tmp/\.tmp[a-zA-Z0-9]+", "<tmp>");
-    settings.bind(|| {
+    snapshot_settings().bind(|| {
         let mut rendered = String::new();
         for (index, case) in cases().iter().enumerate() {
             if index > 0 {

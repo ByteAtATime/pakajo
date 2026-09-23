@@ -4,7 +4,7 @@ use crate::dispatch::install::{InstallRequest, run_install_preview, run_install_
 use crate::events::TransactionSummary;
 use crate::question::approvals::SealedApprovals;
 use crate::question::model::{Answer, Question};
-use crate::question::source::{AnswerSource, ExploreDefaults, RevalidateSource, SourceDecision};
+use crate::question::source::{ExploreDefaults, RevalidateSource, derive_answers};
 
 #[derive(Debug, Clone)]
 pub enum ReviewStep {
@@ -54,26 +54,6 @@ pub fn run_step(
             })
         }
     }
-}
-
-fn derive_answers(
-    questions: &[Question],
-    source: &dyn AnswerSource,
-) -> anyhow::Result<Vec<Answer>> {
-    let mut answers = Vec::with_capacity(questions.len());
-    for question in questions {
-        match source.answer(question) {
-            SourceDecision::Answer(answer) => answers.push(answer),
-            SourceDecision::Abort(denied) => {
-                anyhow::bail!(
-                    "revalidation cannot answer {:?}: {}",
-                    question.key(),
-                    denied.reason
-                )
-            }
-        }
-    }
-    Ok(answers)
 }
 
 pub struct ReviewLoop {

@@ -86,6 +86,26 @@ impl AnswerSource for ExploreDefaults {
     }
 }
 
+pub(crate) fn derive_answers(
+    questions: &[Question],
+    source: &dyn AnswerSource,
+) -> anyhow::Result<Vec<Answer>> {
+    let mut answers = Vec::with_capacity(questions.len());
+    for question in questions {
+        match source.answer(question) {
+            SourceDecision::Answer(answer) => answers.push(answer),
+            SourceDecision::Abort(denied) => {
+                anyhow::bail!(
+                    "revalidation cannot answer {:?}: {}",
+                    question.key(),
+                    denied.reason
+                )
+            }
+        }
+    }
+    Ok(answers)
+}
+
 pub struct FailClosedSource;
 
 const NO_ANSWER: &str = "fail-closed source has no answer";

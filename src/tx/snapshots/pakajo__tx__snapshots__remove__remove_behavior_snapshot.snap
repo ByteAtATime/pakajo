@@ -1,0 +1,44 @@
+---
+source: src/tx/snapshots/remove.rs
+expression: rendered
+---
+== hold accept ==
+finish: Committed
+summary:
+  sl 1.0-1 (removal)
+installed:
+
+== hold decline ==
+error: held package(s) require explicit override
+installed:
+  sl 1.0-1 Explicit
+
+== missing skip ==
+finish: Committed
+summary:
+  sl 1.0-1 (removal)
+installed:
+
+== missing abort ==
+error: target not found: ghost
+installed:
+  sl 1.0-1 Explicit
+
+== sealed replay ==
+finish: Committed
+summary:
+  sl 1.0-1 (removal)
+installed:
+
+== group queue-all ==
+finish: Committed
+summary:
+  member-one 1.0-1 (removal)
+  member-two 1.0-1 (removal)
+installed:
+
+== local prefixed target ==
+finish: Committed
+summary:
+  sl 1.0-1 (removal)
+installed:
