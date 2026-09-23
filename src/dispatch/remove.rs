@@ -4,6 +4,7 @@ use futures::StreamExt as _;
 
 use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem, send_done};
 use crate::dispatch::operation::{ChildOperation, PrivilegedOperation};
+use crate::dispatch::seal::{JSON_SEAL_REQUIRED, json_seal_missing, non_interactive_seal_missing};
 
 pub struct RemoveRequest {
     pub targets: Vec<String>,
@@ -12,77 +13,64 @@ pub struct RemoveRequest {
     pub approvals: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Preview {
-    pub summary: crate::events::TransactionSummary,
-    pub questions: crate::question::QuestionSet,
-    pub prepare_error: Option<crate::dry_run::PrepareFailure>,
-    pub aur: Vec<crate::upgrade::AurUpgradeCandidate>,
-    pub pkgbuild_diffs: Vec<crate::pkgbuild::PkgbuildDiff>,
-}
+pub(crate) const NON_INTERACTIVE_SEAL_REQUIRED: &str =
+    "non-interactive remove requires sealed approvals";
 
 pub fn remove(request: RemoveRequest) -> DispatchStream {
-    let (tx, rx) = futures::channel::mpsc::channel(256);
-    std::thread::spawn(move || run_remove(request, tx));
+    let (mut tx, rx) = futures::channel::mpsc::channel(256);
+    std::thread::spawn(move || {
+        if json_seal_missing(request.json, request.approvals.as_deref()) {
+            send_done(
+                &mut tx,
+                ChildOutcome::Failed(JSON_SEAL_REQUIRED.to_string()),
+            );
+            return;
+        }
+        if non_interactive_seal_missing(request.json, request.tty, request.approvals.as_deref()) {
+            send_done(
+                &mut tx,
+                ChildOutcome::Failed(NON_INTERACTIVE_SEAL_REQUIRED.to_string()),
+            );
+            return;
+        }
+        if request.targets.is_empty() {
+            send_done(
+                &mut tx,
+                ChildOutcome::Failed("no remove targets".to_string()),
+            );
+            return;
+        }
+        run_remove(request, tx);
+    });
     rx
 }
 
-pub fn preview(request: &RemoveRequest) -> anyhow::Result<Preview> {
-    let mut handle = crate::pacman::handle_rootless()?;
-    preview_with_handle(&mut handle, request)
+struct DiscardSink;
+
+impl crate::events::InstallSink for DiscardSink {
+    fn event(&mut self, _event: crate::events::InstallEvent) {}
 }
 
-fn preview_with_handle(
+pub(crate) fn run_remove_preview(
     handle: &mut alpm::Alpm,
-    request: &RemoveRequest,
-) -> anyhow::Result<Preview> {
-    let state = crate::dry_run::attach_recorder(handle);
-    let outcome = run_remove_preview(handle, request, &state);
-    let _ = handle.trans_release();
-    outcome
-}
-
-fn run_remove_preview(
-    handle: &mut alpm::Alpm,
-    request: &RemoveRequest,
-    state: &std::rc::Rc<std::cell::RefCell<crate::dry_run::RecorderState>>,
-) -> anyhow::Result<Preview> {
-    let config = crate::pacman::config()?;
-    let targets = expand_remove_groups(handle, &request.targets);
-    handle
-        .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
-        .context("failed to init remove preview transaction")?;
-    for name in &targets {
-        let pkg = handle
-            .localdb()
-            .pkg(name.as_str())
-            .map_err(|_| anyhow::anyhow!("package '{name}' is not installed"))?;
-        handle
-            .trans_remove_pkg(pkg)
-            .context("failed to queue package for removal")?;
-    }
-    let prepare_error = handle
-        .trans_prepare()
-        .err()
-        .map(crate::dry_run::extract_prepare_failure);
-    let mut questions = crate::dry_run::snapshot(state);
-    if prepare_error.is_none() {
-        let patterns = &config.hold_pkg;
-        let names: Vec<String> = handle
-            .trans_remove()
-            .iter()
-            .map(|pkg| pkg.name().to_string())
-            .collect();
-        questions.held = crate::holdpkg::held_packages(&names, patterns);
-    }
-    let summary = crate::tx::convert::build_summary(handle);
-    Ok(Preview {
-        summary,
-        questions,
-        prepare_error,
-        aur: Vec::new(),
-        pkgbuild_diffs: Vec::new(),
-    })
+    targets: &[String],
+    holds: &[String],
+    source: Box<dyn crate::question::source::AnswerSource>,
+) -> anyhow::Result<crate::question::review::Review> {
+    let spec = crate::tx::driver::RunSpec {
+        kind: crate::tx::driver::RunKind::Remove(crate::tx::driver::RemoveSpec {
+            flags: alpm::TransFlag::NONE,
+            holds: holds.to_vec(),
+        }),
+        targets: targets.to_vec(),
+        stub_targets: Vec::new(),
+        explore: true,
+        as_deps: false,
+        reinstall: false,
+        dep_names: Vec::new(),
+    };
+    let outcome = crate::tx::driver::run(handle, &spec, source, Box::new(DiscardSink))?;
+    outcome.review.context("remove preview produced no review")
 }
 
 fn seal_approvals(
@@ -99,19 +87,7 @@ fn run_remove(request: RemoveRequest, mut tx: futures::channel::mpsc::Sender<Str
         run_root_remove(request, &mut tx);
         return;
     }
-    let handle = match crate::pacman::handle() {
-        Ok(handle) => handle,
-        Err(error) => {
-            send_done(&mut tx, ChildOutcome::Failed(format!("{error:#}")));
-            return;
-        }
-    };
-    let targets = if request.tty {
-        request.targets.clone()
-    } else {
-        expand_remove_groups(&handle, &request.targets)
-    };
-    drop(handle);
+    let targets = request.targets.clone();
     let sealed = match seal_approvals(&request.approvals) {
         Ok(sealed) => sealed,
         Err(error) => {
@@ -134,19 +110,7 @@ fn run_remove(request: RemoveRequest, mut tx: futures::channel::mpsc::Sender<Str
 }
 
 fn run_root_remove(request: RemoveRequest, tx: &mut futures::channel::mpsc::Sender<StreamItem>) {
-    let handle = match crate::pacman::handle() {
-        Ok(handle) => handle,
-        Err(error) => {
-            send_done(tx, ChildOutcome::Failed(format!("{error:#}")));
-            return;
-        }
-    };
-    let targets = if request.tty {
-        request.targets.clone()
-    } else {
-        expand_remove_groups(&handle, &request.targets)
-    };
-    drop(handle);
+    let targets = request.targets.clone();
     let sealed = match seal_approvals(&request.approvals) {
         Ok(sealed) => sealed,
         Err(error) => {
@@ -156,7 +120,7 @@ fn run_root_remove(request: RemoveRequest, tx: &mut futures::channel::mpsc::Send
     };
     let operation = ChildOperation::Remove {
         targets,
-        interactive: request.tty,
+        interactive: request.tty && !request.json,
         approvals_path: sealed
             .as_ref()
             .map(|file| file.path().to_string_lossy().into_owned()),
@@ -169,28 +133,38 @@ fn run_root_remove(request: RemoveRequest, tx: &mut futures::channel::mpsc::Send
     send_done(tx, outcome);
 }
 
-fn expand_remove_groups(handle: &alpm::Alpm, positionals: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for s in positionals {
-        if crate::package::is_installed(handle, s) {
-            if seen.insert(s.clone()) {
-                out.push(s.clone());
-            }
-            continue;
-        }
-        if let Some(group) = crate::package::local_group(handle, s) {
-            let members: Vec<String> = group.members.iter().map(|m| m.name.clone()).collect();
-            for name in members {
-                if seen.insert(name.clone()) {
-                    out.push(name);
-                }
-            }
-            continue;
-        }
-        if seen.insert(s.clone()) {
-            out.push(s.clone());
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dispatch::seal::{
+        JSON_SEAL_REQUIRED, json_seal_missing, non_interactive_seal_missing,
+    };
+
+    #[test]
+    fn missing_seals_are_rejected_with_exact_messages() {
+        assert!(json_seal_missing(true, None));
+        assert!(!json_seal_missing(true, Some("{}")));
+        assert!(!json_seal_missing(false, None));
+        assert_eq!(JSON_SEAL_REQUIRED, "--json requires sealed approvals");
+        assert!(non_interactive_seal_missing(false, false, None));
+        assert!(!non_interactive_seal_missing(false, true, None));
+        assert!(!non_interactive_seal_missing(true, false, None));
+        assert!(!non_interactive_seal_missing(false, false, Some("{}")));
+        assert_eq!(
+            NON_INTERACTIVE_SEAL_REQUIRED,
+            "non-interactive remove requires sealed approvals"
+        );
     }
-    out
+
+    #[test]
+    fn empty_targets_fail_closed_without_spawning() {
+        let request = RemoveRequest {
+            targets: Vec::new(),
+            tty: true,
+            json: false,
+            approvals: None,
+        };
+        let outcome = crate::dispatch::exec::drain_declining(remove(request), &mut DiscardSink);
+        assert!(matches!(outcome, ChildOutcome::Failed(message) if message == "no remove targets"));
+    }
 }

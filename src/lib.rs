@@ -21,7 +21,6 @@ pub mod pacman_watch;
 pub mod pkgbuild;
 pub mod progress;
 pub mod question;
-pub mod remove;
 pub mod resolve;
 pub mod search;
 pub mod srcinfo_io;

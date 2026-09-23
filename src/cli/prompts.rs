@@ -160,15 +160,6 @@ pub fn confirm_install() -> bool {
     read_confirmation("Proceed with installation?", PromptStream::Stdout, true)
 }
 
-pub fn confirm_remove() -> bool {
-    println!();
-    read_confirmation(
-        "Do you want to remove these packages?",
-        PromptStream::Stdout,
-        true,
-    )
-}
-
 fn member_label(make: bool, target: bool) -> Option<&'static str> {
     match (make, target) {
         (_, true) => None,
@@ -327,14 +318,6 @@ fn print_conflict_section(title: &str, items: &[Conflict]) {
         eprintln!("    {}: {details}", conflict.pkg);
     }
     eprintln!();
-}
-
-pub fn confirm_hold_remove(stream: PromptStream) -> bool {
-    read_confirmation(
-        "HoldPkg was found in target list. Do you want to continue?",
-        stream,
-        false,
-    )
 }
 
 pub fn confirm_review_accept() -> bool {

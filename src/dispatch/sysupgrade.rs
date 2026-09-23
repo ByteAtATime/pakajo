@@ -4,9 +4,17 @@ use crate::dispatch::approvals::ApprovalsFile;
 use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem, send_done};
 use crate::dispatch::operation::{ChildOperation, PrivilegedOperation};
 use crate::dispatch::protocol::Decider;
-use crate::dispatch::remove::Preview;
 use crate::dispatch::session::{PhasePlan, run_phases};
 use crate::events::InstallEvent;
+
+#[derive(Debug, Clone)]
+pub struct Preview {
+    pub summary: crate::events::TransactionSummary,
+    pub questions: crate::question::QuestionSet,
+    pub prepare_error: Option<crate::dry_run::PrepareFailure>,
+    pub aur: Vec<crate::upgrade::AurUpgradeCandidate>,
+    pub pkgbuild_diffs: Vec<crate::pkgbuild::PkgbuildDiff>,
+}
 
 pub struct SysupgradeRequest {
     pub no_refresh: bool,

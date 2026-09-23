@@ -11,6 +11,16 @@ pub struct SealedDecider {
     sealed: SealedApprovals,
 }
 
+pub(crate) const JSON_SEAL_REQUIRED: &str = "--json requires sealed approvals";
+
+pub(crate) fn json_seal_missing(json: bool, approvals: Option<&str>) -> bool {
+    json && approvals.is_none()
+}
+
+pub(crate) fn non_interactive_seal_missing(json: bool, tty: bool, approvals: Option<&str>) -> bool {
+    !json && !tty && approvals.is_none()
+}
+
 pub fn sealed_decider(sealed: SealedApprovals) -> SealedDecider {
     SealedDecider { sealed }
 }

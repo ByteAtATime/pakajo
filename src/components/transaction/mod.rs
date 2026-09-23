@@ -6,14 +6,15 @@ use futures::StreamExt as _;
 
 use pakajo::dispatch::exec::{AnswerWriter, ChildOutcome, StreamItem};
 use pakajo::dispatch::protocol::AutomaticDecider;
-use pakajo::dispatch::revalidate::{RevalidationRun, ReviewLoop, ReviewOrigin, ReviewStep};
+use pakajo::dispatch::revalidate::{
+    RevalidationRun, ReviewLoop, ReviewOrigin, ReviewPlan, ReviewStep,
+};
 use pakajo::events::InstallEvent;
 use pakajo::package::PackageSource;
 use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::progress::InstallKind;
 use pakajo::question::model::Question;
 use pakajo::question::revalidate::{Verdict, converge, revalidate};
-use pakajo::question::{QuestionSet, collect_approvals, encode_approvals};
 
 use crate::Element;
 
@@ -50,7 +51,7 @@ pub(crate) mod checkout;
 use checkout::CheckoutModel;
 
 pub(crate) mod review;
-use review::{InstallReview, ReviewMessage, ReviewModel};
+use review::{InstallReview, ReviewMessage};
 
 #[derive(Clone, Debug)]
 pub enum TransactionMessage {
@@ -59,7 +60,6 @@ pub enum TransactionMessage {
     StartRemove,
     InstallEvent(InstallEvent),
     InstallDone(ChildOutcome),
-    DryRunResult(Result<QuestionSet, String>),
     Explored(Result<RevalidationRun, String>),
     ToggleStage(usize),
     ToggleBuildCard(String),
@@ -84,23 +84,6 @@ pub(crate) enum Action {
     Finished,
     ViewClosed,
     InstallSucceeded,
-}
-
-fn review_approvals(review: &ReviewModel) -> Option<String> {
-    match collect_approvals(
-        &review.qs,
-        &review.conflict_checks,
-        &review.provider_choices,
-        &review.qs.held,
-    )
-    .and_then(|approvals| encode_approvals(&approvals))
-    {
-        Ok(payload) => Some(payload),
-        Err(e) => {
-            eprintln!("[pakajo] approval encoding failed: {e}");
-            None
-        }
-    }
 }
 
 fn proceed_only_seal() -> String {
@@ -238,7 +221,7 @@ impl Transaction {
             tty: false,
             json: false,
         };
-        let (review_loop, rx) = ReviewLoop::spawn(request);
+        let (review_loop, rx) = ReviewLoop::spawn(ReviewPlan::Install(Box::new(request)));
         review_loop.send(ReviewStep::Defaults);
         (
             Self {
@@ -253,27 +236,19 @@ impl Transaction {
         name: String,
         source: PackageSource,
     ) -> (Self, Task<crate::Message>) {
-        let dry_name = name.clone();
+        let targets = vec![name.clone()];
         let model = TransactionModel::new(name, source, InstallKind::Remove);
-        let task = crate::components::task::blocking_task(
-            move || {
-                let request = pakajo::dispatch::RemoveRequest {
-                    targets: vec![dry_name],
-                    tty: false,
-                    json: false,
-                    approvals: None,
-                };
-                pakajo::dispatch::preview(&request).map(|preview| preview.questions)
-            },
-            "dry-run channel closed",
-            |result| crate::Message::Transaction(TransactionMessage::DryRunResult(result)).into(),
-        );
+        let holds = pakajo::pacman::config()
+            .map(|config| config.hold_pkg)
+            .unwrap_or_default();
+        let (review_loop, rx) = ReviewLoop::spawn(ReviewPlan::Remove { targets, holds });
+        review_loop.send(ReviewStep::Defaults);
         (
             Self {
                 model,
-                review_loop: None,
+                review_loop: Some(review_loop),
             },
-            task,
+            review_stream(rx),
         )
     }
 
@@ -295,22 +270,6 @@ impl Transaction {
                     Action::None
                 }
             }
-            TransactionMessage::DryRunResult(result) => match result {
-                Err(e) => {
-                    eprintln!("[pakajo] remove dry-run failed: {e}");
-                    self.model.finish(ChildOutcome::Failed(e));
-                    Action::None
-                }
-                Ok(qs) => {
-                    if qs.held.is_empty() {
-                        return self.launch_remove_subprocess(None);
-                    }
-                    eprintln!("[pakajo] held review required ({} held)", qs.held.len(),);
-                    let review = ReviewModel::new(qs);
-                    self.model.review = Some(review);
-                    Action::None
-                }
-            },
             TransactionMessage::Explored(result) => match result {
                 Err(e) => {
                     if e == REVIEW_LOOP_ENDED {
@@ -369,9 +328,6 @@ impl Transaction {
                 {
                     return Action::None;
                 }
-                if let Some(r) = self.model.review.as_mut() {
-                    r.update(m.clone());
-                }
                 if let Some(r) = self.model.install_review.as_mut() {
                     r.update(m);
                 }
@@ -379,14 +335,6 @@ impl Transaction {
             }
             TransactionMessage::CancelReview => Action::Finished,
             TransactionMessage::ApproveReview => {
-                if self.model.kind == InstallKind::Remove {
-                    let review = match self.model.review.take() {
-                        Some(r) => r,
-                        None => return Action::None,
-                    };
-                    let approvals = review_approvals(&review);
-                    return self.launch_remove_subprocess(approvals);
-                }
                 if self
                     .model
                     .install_review
@@ -432,7 +380,6 @@ impl Transaction {
                 Action::None
             }
             TransactionMessage::PkgbuildResult(result) => {
-                self.model.review = None;
                 self.model.install_review = None;
                 match result {
                     Err(e) => {
@@ -467,7 +414,11 @@ impl Transaction {
                     return Action::None;
                 }
                 let approvals = self.model.pending_approvals.take();
-                self.launch_subprocess(approvals.unwrap_or_else(proceed_only_seal))
+                let payload = approvals.unwrap_or_else(proceed_only_seal);
+                if self.model.kind == InstallKind::Remove {
+                    return self.launch_remove_subprocess(payload);
+                }
+                self.launch_subprocess(payload)
             }
             TransactionMessage::CancelCheckout => Action::Finished,
             TransactionMessage::AnswerChannel(writer) => {
@@ -642,14 +593,14 @@ impl Transaction {
         Action::Run(stream_items(pakajo::dispatch::install(request)))
     }
 
-    fn launch_remove_subprocess(&mut self, approvals: Option<String>) -> Action {
-        let name = self.model.name.clone();
+    fn launch_remove_subprocess(&mut self, approvals: String) -> Action {
+        let targets = self.model.targets.clone();
         self.model.status = TransactionStatus::Running;
         let request = pakajo::dispatch::RemoveRequest {
-            targets: vec![name],
+            targets,
             tty: false,
             json: false,
-            approvals,
+            approvals: Some(approvals),
         };
         Action::Run(stream_items(pakajo::dispatch::remove(request)))
     }
@@ -687,8 +638,6 @@ impl Transaction {
             r.view(&self.model.name, self.model.kind)
         } else if let Some(c) = self.model.checkout.as_ref() {
             c.view(&self.model.name)
-        } else if let Some(r) = self.model.review.as_ref() {
-            r.view(&self.model.name, self.model.kind)
         } else {
             self.model.pkgbuild_review.as_ref().map(|p| p.view())?
         };
@@ -1088,5 +1037,133 @@ mod tests {
 
     fn s(value: &str) -> String {
         value.to_string()
+    }
+
+    fn remove_transaction() -> Transaction {
+        Transaction {
+            model: TransactionModel::new(s("firefox"), PackageSource::Repo, InstallKind::Remove),
+            review_loop: None,
+        }
+    }
+
+    fn removal_summary() -> TransactionSummary {
+        TransactionSummary {
+            packages: vec![SummaryPackage {
+                name: s("firefox"),
+                repository: None,
+                new_version: s("1.0"),
+                old_version: Some(s("1.0")),
+                download_size: 0,
+                installed_size: 0,
+                old_installed_size: 2,
+                is_removal: true,
+            }],
+            total_download_size: 0,
+            total_installed_size: 0,
+            total_removed_size: 2,
+        }
+    }
+
+    fn remove_questions() -> Vec<Question> {
+        vec![
+            Question::HoldPkgs {
+                names: vec![s("firefox")],
+            },
+            Question::RemovePkgs {
+                names: vec![s("ghost")],
+                kind: pakajo::question::model::TransactionKind::Remove,
+            },
+        ]
+    }
+
+    fn initial_remove_run(questions: Vec<Question>) -> RevalidationRun {
+        RevalidationRun {
+            origin: ReviewOrigin::Initial,
+            questions,
+            answers: Vec::new(),
+            summary: removal_summary(),
+        }
+    }
+
+    #[test]
+    fn remove_empty_part1_goes_straight_to_checkout() {
+        let mut transaction = remove_transaction();
+        transaction.update(TransactionMessage::Explored(Ok(initial_remove_run(
+            Vec::new(),
+        ))));
+        assert!(transaction.model.install_review.is_none());
+        let checkout = transaction.model.checkout.as_ref().expect("checkout shown");
+        assert_eq!(checkout.summary.packages.len(), 1);
+        assert!(
+            checkout
+                .summary
+                .packages
+                .iter()
+                .all(|package| package.is_removal)
+        );
+        assert_eq!(checkout.summary, removal_summary());
+    }
+
+    #[test]
+    fn remove_review_gates_confirm_until_hold_acknowledged() {
+        let mut transaction = remove_transaction();
+        transaction.update(TransactionMessage::Explored(Ok(initial_remove_run(
+            remove_questions(),
+        ))));
+        assert!(transaction.model.install_review.is_some());
+        assert!(transaction.model.checkout.is_none());
+        transaction.update(TransactionMessage::ApproveReview);
+        assert!(transaction.model.install_review.is_some());
+        assert!(transaction.model.pending_approvals.is_none());
+        assert!(transaction.model.checkout.is_none());
+    }
+
+    #[test]
+    fn remove_sealed_revalidation_converges_to_checkout_and_launches() {
+        let mut transaction = remove_transaction();
+        transaction.update(TransactionMessage::Explored(Ok(initial_remove_run(
+            remove_questions(),
+        ))));
+        transaction.update(TransactionMessage::Review(ReviewMessage::ToggleHoldpkgs(0)));
+        transaction.update(TransactionMessage::ApproveReview);
+        let payload = transaction
+            .model
+            .pending_approvals
+            .clone()
+            .expect("sealed payload");
+        let sealed = pakajo::dispatch::seal::decode_seal(&payload).expect("decodes");
+        assert!(sealed.proceed);
+        assert!(sealed.answers.iter().any(|(_, answer)| matches!(
+            answer,
+            pakajo::question::model::Answer::HoldPkgs { names, proceed: true }
+            if names == &vec![s("firefox")]
+        )));
+        let review = transaction
+            .model
+            .install_review
+            .as_ref()
+            .expect("review kept");
+        assert!(review.approving);
+        let settled = RevalidationRun {
+            origin: ReviewOrigin::Revalidation,
+            questions: review.questions.clone(),
+            answers: review.answers(),
+            summary: removal_summary(),
+        };
+        transaction.update(TransactionMessage::Explored(Ok(settled)));
+        assert!(transaction.model.install_review.is_none());
+        assert!(transaction.model.checkout.is_some());
+        let carried = transaction
+            .model
+            .pending_approvals
+            .clone()
+            .expect("payload carried");
+        let decoded = pakajo::dispatch::seal::decode_seal(&carried).expect("decodes");
+        assert!(decoded.proceed);
+        transaction.update(TransactionMessage::ApproveCheckout);
+        assert!(matches!(
+            transaction.model.status,
+            TransactionStatus::Running
+        ));
     }
 }

@@ -6,11 +6,13 @@ pub mod operation;
 pub mod protocol;
 mod remove;
 pub mod seal;
-pub use remove::{Preview, RemoveRequest, preview, remove};
+pub use remove::{RemoveRequest, remove};
 pub(crate) mod install;
 pub use install::{InstallPreview, InstallRequest, install};
 pub mod revalidate;
-pub use revalidate::{RevalidationRun, ReviewLoop, ReviewOrigin, ReviewStep, run_step};
+pub use revalidate::{RevalidationRun, ReviewLoop, ReviewOrigin, ReviewPlan, ReviewStep, run_step};
 pub(crate) mod session;
 pub(crate) mod sysupgrade;
-pub use sysupgrade::{SysupgradePreviewRequest, SysupgradeRequest, sysupgrade, sysupgrade_preview};
+pub use sysupgrade::{
+    Preview, SysupgradePreviewRequest, SysupgradeRequest, sysupgrade, sysupgrade_preview,
+};

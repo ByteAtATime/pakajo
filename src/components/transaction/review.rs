@@ -76,7 +76,6 @@ pub(crate) struct ReviewModel {
     pub(crate) qs: QuestionSet,
     pub(crate) conflict_checks: Vec<bool>,
     pub(crate) provider_choices: HashMap<String, usize>,
-    pub(super) approving: bool,
 }
 
 impl ReviewModel {
@@ -91,7 +90,6 @@ impl ReviewModel {
             qs,
             conflict_checks,
             provider_choices,
-            approving: false,
         }
     }
 
@@ -118,50 +116,6 @@ impl ReviewModel {
 
     pub(crate) fn select_provider(&mut self, depend: String, idx: usize) {
         self.update(ReviewMessage::SelectProvider { depend, idx });
-    }
-
-    pub(crate) fn view(&self, name: &str, kind: InstallKind) -> Element<'_> {
-        let body =
-            review_body(&self.qs, &self.conflict_checks, &self.provider_choices).map(|selection| {
-                crate::Message::Transaction(TransactionMessage::Review(match selection {
-                    ReviewSelection::ToggleConflict(i) => ReviewMessage::ToggleConflict(i),
-                    ReviewSelection::SelectProvider { depend, idx } => {
-                        ReviewMessage::SelectProvider { depend, idx }
-                    }
-                }))
-            });
-
-        let is_protected_removal = matches!(kind, InstallKind::Remove) && !self.qs.held.is_empty();
-        let approve = crate::Message::Transaction(TransactionMessage::ApproveReview);
-        let confirm: Element<'_> = if self.approving {
-            button::suggested("Loading...").into()
-        } else if is_protected_removal {
-            button::destructive("Remove anyway")
-                .on_press(approve)
-                .into()
-        } else {
-            let label = match kind {
-                InstallKind::Remove => "Confirm removal",
-                InstallKind::Install | InstallKind::Upgrade => "Confirm",
-            };
-            button::suggested(label).on_press(approve).into()
-        };
-        let cancel = button::standard("Cancel").on_press(crate::Message::Transaction(
-            TransactionMessage::CancelReview,
-        ));
-
-        let title = match kind {
-            InstallKind::Remove => format!("Review removal of {name}"),
-            InstallKind::Install | InstallKind::Upgrade => {
-                format!("Review installation of {name}")
-            }
-        };
-        dialog()
-            .title(title)
-            .control(scrollable(body).height(Length::Fixed(400.0)))
-            .primary_action(confirm)
-            .secondary_action(cancel)
-            .into()
     }
 }
 

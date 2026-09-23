@@ -3,6 +3,7 @@ use anyhow::Context as _;
 use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem, send_done};
 use crate::dispatch::operation::{ChildOperation, PrivilegedOperation};
 use crate::dispatch::protocol::Decider;
+use crate::dispatch::seal::{JSON_SEAL_REQUIRED, json_seal_missing, non_interactive_seal_missing};
 use crate::dispatch::session::{PhasePlan, run_phases};
 use crate::question::model::Question;
 use crate::question::review::Review;
@@ -31,18 +32,8 @@ pub struct InstallPreview {
     pub prepare_error: Option<crate::tx::convert::PrepareFailure>,
 }
 
-pub(crate) const JSON_SEAL_REQUIRED: &str = "--json requires sealed approvals";
-
 pub(crate) const NON_INTERACTIVE_SEAL_REQUIRED: &str =
     "non-interactive install requires sealed approvals";
-
-pub(crate) fn json_seal_missing(json: bool, approvals: Option<&str>) -> bool {
-    json && approvals.is_none()
-}
-
-fn non_interactive_seal_missing(json: bool, tty: bool, approvals: Option<&str>) -> bool {
-    !json && !tty && approvals.is_none()
-}
 
 pub fn install(request: InstallRequest) -> DispatchStream {
     let (mut tx, rx) = futures::channel::mpsc::channel(256);
@@ -414,6 +405,9 @@ fn expand_install_groups(handle: &alpm::Alpm, positionals: &[String], tty: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dispatch::seal::{
+        JSON_SEAL_REQUIRED, json_seal_missing, non_interactive_seal_missing,
+    };
     use crate::resolve::{Conflict, Conflicting};
 
     fn conflicting_report() -> ConflictReport {

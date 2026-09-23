@@ -1,7 +1,4 @@
-use crate::cli::{
-    ConsoleSink, EscalatedSink, JsonSink, PromptStream, answerer_for, classify_target,
-    confirm_hold_remove, confirm_remove, privs,
-};
+use crate::cli::{ConsoleSink, EscalatedSink, JsonSink, answerer_for, classify_target, privs};
 use crate::dispatch::operation::ChildOperation;
 use crate::events::{InstallEvent, InstallSink};
 use crate::install::InstallTarget;
@@ -14,19 +11,7 @@ pub enum Presentation {
     SilentStream,
 }
 
-pub fn select_remove_presentation(stream: bool, tty: bool) -> Presentation {
-    if stream {
-        if tty {
-            Presentation::InteractiveStream
-        } else {
-            Presentation::SilentStream
-        }
-    } else {
-        Presentation::Console
-    }
-}
-
-pub fn select_install_presentation(stream: bool, interactive: bool, tty: bool) -> Presentation {
+pub fn select_presentation(stream: bool, interactive: bool, tty: bool) -> Presentation {
     if !stream {
         return Presentation::Console;
     }
@@ -69,6 +54,12 @@ fn read_seal(
                 .with_context(|| format!("failed to decode seal file {path}"))
         })
         .transpose()
+}
+
+fn stdin_input() -> std::rc::Rc<std::cell::RefCell<std::io::BufReader<std::io::Stdin>>> {
+    std::rc::Rc::new(std::cell::RefCell::new(std::io::BufReader::new(
+        std::io::stdin(),
+    )))
 }
 
 fn finish_transaction(outcome: crate::tx::driver::RunOutcome) -> anyhow::Result<()> {
@@ -127,32 +118,26 @@ impl ChildOperation {
                 approvals_path,
                 stream,
             } => {
-                let approvals = read_approvals(approvals_path.as_deref())?;
-                let approved_held: Vec<String> = approvals
-                    .as_ref()
-                    .map(|a| a.approved_held.clone())
-                    .unwrap_or_default();
-                match select_remove_presentation(*stream, privs::stdin_is_tty()) {
+                let sealed = read_seal(approvals_path.as_deref())?;
+                let mut handle = crate::pacman::handle()?;
+                let holds = crate::pacman::config()?.hold_pkg;
+                let spec = crate::tx::driver::RunSpec {
+                    kind: crate::tx::driver::RunKind::Remove(crate::tx::driver::RemoveSpec {
+                        flags: alpm::TransFlag::NONE,
+                        holds,
+                    }),
+                    targets: targets.clone(),
+                    stub_targets: Vec::new(),
+                    explore: false,
+                    as_deps: false,
+                    reinstall: false,
+                    dep_names: Vec::new(),
+                };
+                let presentation =
+                    select_presentation(*stream, *interactive, privs::stdin_is_tty());
+                match presentation {
                     Presentation::InteractiveStream => {
-                        let mut handle = crate::pacman::handle()?;
-                        let holds = crate::pacman::config()?.hold_pkg;
-                        let spec = crate::tx::driver::RunSpec {
-                            kind: crate::tx::driver::RunKind::Remove(
-                                crate::tx::driver::RemoveSpec {
-                                    flags: alpm::TransFlag::NONE,
-                                    holds,
-                                },
-                            ),
-                            targets: targets.clone(),
-                            stub_targets: Vec::new(),
-                            explore: false,
-                            as_deps: false,
-                            reinstall: false,
-                            dep_names: Vec::new(),
-                        };
-                        let input = std::rc::Rc::new(std::cell::RefCell::new(
-                            std::io::BufReader::new(std::io::stdin()),
-                        ));
+                        let input = stdin_input();
                         let source = engine_source(
                             false,
                             crate::tx::prompt::InteractiveSource::new(
@@ -174,65 +159,43 @@ impl ChildOperation {
                         )?;
                         finish_transaction(outcome)
                     }
-                    Presentation::SilentStream => crate::remove::run_remove(
-                        targets,
-                        JsonSink::new(),
-                        || true,
-                        answerer_for(None),
-                        &approved_held,
-                        || false,
-                    ),
                     Presentation::Console => {
-                        if *interactive {
-                            let mut handle = crate::pacman::handle()?;
-                            let holds = crate::pacman::config()?.hold_pkg;
-                            let spec = crate::tx::driver::RunSpec {
-                                kind: crate::tx::driver::RunKind::Remove(
-                                    crate::tx::driver::RemoveSpec {
-                                        flags: alpm::TransFlag::NONE,
-                                        holds,
-                                    },
-                                ),
-                                targets: targets.clone(),
-                                stub_targets: Vec::new(),
-                                explore: false,
-                                as_deps: false,
-                                reinstall: false,
-                                dep_names: Vec::new(),
-                            };
-                            let input = std::rc::Rc::new(std::cell::RefCell::new(
-                                std::io::BufReader::new(std::io::stdin()),
-                            ));
-                            let source = engine_source(
-                                false,
-                                crate::tx::prompt::InteractiveSource::new(
-                                    std::rc::Rc::clone(&input),
-                                    std::io::stdout(),
-                                    crate::color::stdout_color(),
-                                ),
-                                crate::tx::prompt::TtyImportPrompter::new(
-                                    std::rc::Rc::clone(&input),
-                                    std::io::stdout(),
-                                    crate::color::stdout_color(),
-                                ),
-                            );
-                            let outcome = crate::tx::prompt::execute_with_source(
-                                source,
-                                &mut handle,
-                                &spec,
-                                Box::new(ConsoleSink::new()),
-                            )?;
-                            finish_transaction(outcome)
-                        } else {
-                            crate::remove::run_remove(
-                                targets,
-                                ConsoleSink::new(),
-                                confirm_remove,
-                                answerer_for(None),
-                                &approved_held,
-                                || confirm_hold_remove(PromptStream::Stdout),
-                            )
-                        }
+                        let input = stdin_input();
+                        let source = engine_source(
+                            false,
+                            crate::tx::prompt::InteractiveSource::new(
+                                std::rc::Rc::clone(&input),
+                                std::io::stdout(),
+                                crate::color::stdout_color(),
+                            ),
+                            crate::tx::prompt::TtyImportPrompter::new(
+                                std::rc::Rc::clone(&input),
+                                std::io::stdout(),
+                                crate::color::stdout_color(),
+                            ),
+                        );
+                        let outcome = crate::tx::prompt::execute_with_source(
+                            source,
+                            &mut handle,
+                            &spec,
+                            Box::new(ConsoleSink::new()),
+                        )?;
+                        finish_transaction(outcome)
+                    }
+                    Presentation::SilentStream => {
+                        let inner: Box<dyn crate::question::source::AnswerSource> = match sealed {
+                            Some(sealed) => {
+                                Box::new(crate::question::source::ApprovalsReplay::new(sealed))
+                            }
+                            None => Box::new(crate::question::source::FailClosedSource),
+                        };
+                        let outcome = crate::tx::prompt::execute_with_source(
+                            inner,
+                            &mut handle,
+                            &spec,
+                            Box::new(JsonSink::new()),
+                        )?;
+                        finish_transaction(outcome)
                     }
                 }
             }
@@ -268,7 +231,7 @@ impl ChildOperation {
                     );
                 }
                 let presentation =
-                    select_install_presentation(*stream, *interactive, privs::stdin_is_tty());
+                    select_presentation(*stream, *interactive, privs::stdin_is_tty());
                 let preconfirmed = *preconfirmed;
                 match presentation {
                     Presentation::InteractiveStream | Presentation::Console => {
@@ -281,9 +244,7 @@ impl ChildOperation {
                             reinstall: *reinstall,
                             dep_names: dep_names.clone(),
                         };
-                        let input = std::rc::Rc::new(std::cell::RefCell::new(
-                            std::io::BufReader::new(std::io::stdin()),
-                        ));
+                        let input = stdin_input();
                         let outcome = if matches!(presentation, Presentation::InteractiveStream) {
                             let source = engine_source(
                                 preconfirmed,
@@ -396,25 +357,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remove_presentation_keys_on_terminal_alone() {
-        use Presentation::{Console, InteractiveStream, SilentStream};
-        let cases = [
-            ((true, true), InteractiveStream),
-            ((true, false), SilentStream),
-            ((false, true), Console),
-            ((false, false), Console),
-        ];
-        for ((stream, tty), expected) in cases {
-            assert_eq!(
-                select_remove_presentation(stream, tty),
-                expected,
-                "select_remove_presentation(stream={stream}, tty={tty})"
-            );
-        }
-    }
-
-    #[test]
-    fn install_presentation_keys_on_interactive_plus_terminal() {
+    fn presentation_keys_on_interactive_plus_terminal() {
         use Presentation::{Console, InteractiveStream, SilentStream};
         let cases = [
             ((true, true, true), InteractiveStream),
@@ -428,9 +371,9 @@ mod tests {
         ];
         for ((stream, interactive, tty), expected) in cases {
             assert_eq!(
-                select_install_presentation(stream, interactive, tty),
+                select_presentation(stream, interactive, tty),
                 expected,
-                "select_install_presentation(stream={stream}, interactive={interactive}, tty={tty})"
+                "select_presentation(stream={stream}, interactive={interactive}, tty={tty})"
             );
         }
     }

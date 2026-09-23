@@ -12,7 +12,7 @@ use pakajo::question::model::Question;
 
 use super::checkout::CheckoutModel;
 use super::pkgbuild::PkgbuildModel;
-use super::review::{InstallReview, ReviewModel};
+use super::review::InstallReview;
 
 #[derive(Clone, Debug)]
 pub(crate) enum TransactionStatus {
@@ -36,7 +36,6 @@ pub(crate) struct TransactionModel {
     pub(crate) source: PackageSource,
     pub(crate) kind: InstallKind,
     pub(crate) now: std::time::Instant,
-    pub(super) review: Option<ReviewModel>,
     pub(super) install_review: Option<InstallReview>,
     pub(super) summary: Option<TransactionSummary>,
     pub(super) checkout: Option<CheckoutModel>,
@@ -86,7 +85,6 @@ impl TransactionModel {
             source,
             kind,
             now: std::time::Instant::now(),
-            review: None,
             install_review: None,
             summary: None,
             checkout: None,
@@ -103,11 +101,12 @@ impl TransactionModel {
 
     pub(crate) fn new(name: String, source: PackageSource, kind: InstallKind) -> Self {
         let targets = vec![name.clone()];
+        let is_removal = kind == InstallKind::Remove;
         let aur_names = match source {
-            PackageSource::Aur => vec![name.clone()],
+            PackageSource::Aur if !is_removal => vec![name.clone()],
             _ => Vec::new(),
         };
-        let prefer_aur = matches!(source, PackageSource::Aur);
+        let prefer_aur = matches!(source, PackageSource::Aur) && !is_removal;
         Self::batch(name, targets, aur_names, prefer_aur, kind)
     }
 
@@ -904,6 +903,16 @@ mod tests {
         assert_eq!(upgrade.targets, vec!["system".to_string()]);
         assert!(upgrade.aur_names.is_empty());
         assert!(!upgrade.prefer_aur);
+    }
+
+    #[test]
+    fn remove_constructor_stays_repo_shaped_for_aur_source() {
+        let remove =
+            TransactionModel::new("yay".to_string(), PackageSource::Aur, InstallKind::Remove);
+        assert_eq!(remove.targets, vec!["yay".to_string()]);
+        assert!(remove.aur_names.is_empty());
+        assert!(!remove.prefer_aur);
+        assert!(!remove.is_aur());
     }
 
     #[test]

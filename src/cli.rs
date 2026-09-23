@@ -16,8 +16,6 @@ pub(crate) mod summary;
 mod info;
 
 pub(crate) mod prompts;
-pub(crate) use self::prompts::confirm_remove;
-pub(crate) use self::prompts::{PromptStream, confirm_hold_remove};
 
 pub(crate) mod review;
 
@@ -179,11 +177,19 @@ fn remove_subcommand(args: RemoveArgs) -> i32 {
         std::process::exit(2);
     }
 
+    let stdin_tty = stdin_is_tty();
+    let approvals = match piped_seal_payload(stdin_tty, std::io::stdin().lock()) {
+        Ok(payload) => payload,
+        Err(error) => {
+            eprintln!("{error:#}");
+            return 1;
+        }
+    };
     let request = crate::dispatch::RemoveRequest {
         targets: positionals,
-        tty: stdin_is_tty() && !args.json,
+        tty: stdin_tty && !args.json,
         json: args.json,
-        approvals: None,
+        approvals,
     };
     outcome_code(&drain(crate::dispatch::remove(request), args.json))
 }
@@ -299,7 +305,7 @@ fn exit_with_result(result: anyhow::Result<()>) -> ! {
 mod tests {
     use super::{INVALID_PIPED_SEAL, SEAL_PAYLOAD_TOO_LARGE, classify_target, piped_seal_payload};
     use crate::cli::args::{Cli, Command};
-    use crate::dispatch::install::json_seal_missing;
+    use crate::dispatch::seal::json_seal_missing;
     use crate::install::InstallTarget;
     use clap::Parser as _;
     use std::io::Cursor;
