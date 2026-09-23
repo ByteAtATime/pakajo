@@ -14,7 +14,7 @@ use crate::tx::convert::{
     convert_progress_phase, extract_prepare_failure,
 };
 use crate::tx::questions::QuestionSession;
-use crate::tx::targets::resolve_targets;
+use crate::tx::targets::{is_file_target, resolve_targets};
 
 #[derive(Debug, Clone)]
 pub struct RemoveSpec {
@@ -352,10 +352,6 @@ fn queue_remove_targets(handle: &alpm::Alpm, targets: &[String]) -> anyhow::Resu
         missing.push(name.to_string());
     }
     Ok(missing)
-}
-
-fn is_file_target(target: &str) -> bool {
-    target.contains(std::path::MAIN_SEPARATOR) && std::path::Path::new(target).exists()
 }
 
 fn queue_file(handle: &alpm::Alpm, target: &str) -> anyhow::Result<()> {

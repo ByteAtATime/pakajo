@@ -97,25 +97,21 @@ fn split_pin(target: &str) -> Option<(&str, &str)> {
     }
 }
 
+pub fn is_file_target(target: &str) -> bool {
+    target.contains(std::path::MAIN_SEPARATOR) && std::path::Path::new(target).exists()
+}
+
 pub fn peel_file_targets(positionals: &[String]) -> (Vec<String>, Vec<String>) {
     let mut files: Vec<String> = Vec::new();
     let mut names: Vec<String> = Vec::new();
     for s in positionals {
-        if file_suffix_path(s).is_some() {
+        if is_file_target(s) {
             files.push(s.clone());
         } else {
             names.push(s.clone());
         }
     }
     (files, names)
-}
-
-fn file_suffix_path(target: &str) -> Option<&str> {
-    const FILE_SUFFIXES: &[&str] = &[".pkg.tar", ".pkg.tar.gz", ".pkg.tar.zst", ".pkg.tar.xz"];
-    FILE_SUFFIXES
-        .iter()
-        .any(|suffix| target.ends_with(suffix))
-        .then_some(target)
 }
 
 #[cfg(test)]
@@ -302,14 +298,47 @@ mod tests {
     }
 
     #[test]
-    fn peel_file_targets_separates_suffix_paths_from_names() {
-        let (files, names) = peel_file_targets(&[
-            "neovim".to_string(),
-            "/tmp/foo-1.0-1-x86_64.pkg.tar.zst".to_string(),
-            "yay-bin".to_string(),
-        ]);
-        assert_eq!(files, vec!["/tmp/foo-1.0-1-x86_64.pkg.tar.zst".to_string()]);
-        assert_eq!(names, vec!["neovim".to_string(), "yay-bin".to_string()]);
+    fn existing_path_with_separator_peels_as_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_cachedir_stub(dir.path(), "foo", "1.0-1", &[], &[], &[], &[]);
+        let path = dir
+            .path()
+            .join(filename("foo", "1.0-1"))
+            .to_string_lossy()
+            .into_owned();
+        let (files, names) = peel_file_targets(&["neovim".to_string(), path.clone()]);
+        assert_eq!(files, vec![path]);
+        assert_eq!(names, vec!["neovim".to_string()]);
+    }
+
+    #[test]
+    fn bare_suffix_name_without_file_peels_as_name() {
+        let (files, names) = peel_file_targets(&["foo.pkg.tar.zst".to_string()]);
+        assert!(files.is_empty());
+        assert_eq!(names, vec!["foo.pkg.tar.zst".to_string()]);
+    }
+
+    #[test]
+    fn missing_path_with_separator_peels_as_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir
+            .path()
+            .join("ghost-1.0-1-x86_64.pkg.tar.zst")
+            .to_string_lossy()
+            .into_owned();
+        let (files, names) = peel_file_targets(std::slice::from_ref(&missing));
+        assert!(files.is_empty());
+        assert_eq!(names, vec![missing]);
+    }
+
+    #[test]
+    fn existing_separator_path_without_suffix_peels_as_file() {
+        let dir = tempfile::tempdir().unwrap();
+        File::create(dir.path().join("data.bin")).unwrap();
+        let path = dir.path().join("data.bin").to_string_lossy().into_owned();
+        let (files, names) = peel_file_targets(std::slice::from_ref(&path));
+        assert_eq!(files, vec![path]);
+        assert!(names.is_empty());
     }
 
     #[test]
