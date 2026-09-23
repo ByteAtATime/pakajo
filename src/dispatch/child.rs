@@ -339,13 +339,27 @@ impl ChildOperation {
                         fingerprint_path.as_deref(),
                     )
                 } else {
-                    crate::upgrade::run_repo_sysupgrade(
+                    let input = stdin_input();
+                    let source = engine_source(
+                        false,
+                        crate::tx::prompt::InteractiveSource::new(
+                            std::rc::Rc::clone(&input),
+                            std::io::stdout(),
+                            crate::color::stdout_color(),
+                        ),
+                        crate::tx::prompt::TtyImportPrompter::new(
+                            std::rc::Rc::clone(&input),
+                            std::io::stdout(),
+                            crate::color::stdout_color(),
+                        ),
+                    );
+                    let outcome = crate::upgrade::run_upgrade_repo(
                         *no_refresh,
                         ignores,
-                        ConsoleSink::new(),
-                        answerer,
-                        fingerprint_path.as_deref(),
-                    )
+                        source,
+                        Box::new(ConsoleSink::new()),
+                    )?;
+                    finish_transaction(outcome)
                 }
             }
         }

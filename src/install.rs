@@ -235,10 +235,13 @@ mod tests {
                 &cache,
                 package.name,
                 "1.0-1",
-                package.depends,
-                package.provides,
-                package.conflicts,
-                package.groups,
+                &crate::tx::targets::StubLists {
+                    depends: package.depends,
+                    provides: package.provides,
+                    conflicts: package.conflicts,
+                    groups: package.groups,
+                    ..Default::default()
+                },
             );
         }
         handle

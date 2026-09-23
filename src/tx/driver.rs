@@ -25,6 +25,7 @@ pub struct RemoveSpec {
 #[derive(Debug)]
 pub enum RunKind {
     Sync,
+    Upgrade,
     Remove(RemoveSpec),
 }
 
@@ -63,6 +64,13 @@ pub fn trans_init_flags(spec: &RunSpec) -> alpm::TransFlag {
             if spec.as_deps {
                 flags |= alpm::TransFlag::ALL_DEPS;
             }
+            if spec.explore {
+                flags |= alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK;
+            }
+            flags
+        }
+        RunKind::Upgrade => {
+            let mut flags = alpm::TransFlag::NONE;
             if spec.explore {
                 flags |= alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK;
             }
@@ -143,7 +151,7 @@ fn drive(
     events: &Rc<RefCell<Box<dyn InstallSink>>>,
 ) -> anyhow::Result<RunOutcome> {
     let session = QuestionSession::attach(handle, source);
-    if matches!(spec.kind, RunKind::Sync)
+    if matches!(spec.kind, RunKind::Sync | RunKind::Upgrade)
         && spec
             .stub_targets
             .iter()
@@ -154,6 +162,7 @@ fn drive(
     }
     let queue_result: anyhow::Result<Vec<String>> = match &spec.kind {
         RunKind::Sync => queue_targets(handle, spec, &session).map(|()| Vec::new()),
+        RunKind::Upgrade => queue_upgrade(handle, spec, &session),
         RunKind::Remove(_) => queue_remove_targets(handle, &spec.targets),
     };
     let missing = match queue_result {
@@ -169,11 +178,12 @@ fn drive(
     }
     let nothing_queued = match &spec.kind {
         RunKind::Sync => handle.trans_add().is_empty(),
+        RunKind::Upgrade => handle.trans_add().is_empty() && handle.trans_remove().is_empty(),
         RunKind::Remove(_) => handle.trans_remove().is_empty(),
     };
     if nothing_queued {
         fail_closed(&session, events)?;
-        if !spec.explore {
+        if !spec.explore && !matches!(spec.kind, RunKind::Upgrade) {
             events.borrow_mut().event(InstallEvent::Log {
                 level: LogLevel::Warning,
                 message: "there is nothing to do".to_string(),
@@ -270,7 +280,7 @@ fn ask_proceed(
     kind: &RunKind,
 ) -> anyhow::Result<bool> {
     let mapped = match kind {
-        RunKind::Sync => TransactionKind::Install,
+        RunKind::Sync | RunKind::Upgrade => TransactionKind::Install,
         RunKind::Remove(_) => TransactionKind::Remove,
     };
     let question = Question::Proceed {
@@ -308,6 +318,18 @@ fn queue_targets(
         fail_on_denied(&session.borrow())?;
     }
     Ok(())
+}
+
+fn queue_upgrade(
+    handle: &alpm::Alpm,
+    spec: &RunSpec,
+    session: &Rc<RefCell<QuestionSession>>,
+) -> anyhow::Result<Vec<String>> {
+    queue_targets(handle, spec, session)?;
+    handle
+        .sync_sysupgrade(false)
+        .context("failed to select upgrade candidates")?;
+    Ok(Vec::new())
 }
 
 fn ask_missing_removal(
@@ -666,6 +688,7 @@ mod tests {
         depends: Vec<&'static str>,
         provides: Vec<&'static str>,
         conflicts: Vec<&'static str>,
+        replaces: Vec<&'static str>,
         groups: Vec<&'static str>,
     }
 
@@ -682,6 +705,7 @@ mod tests {
             depends: depends.to_vec(),
             provides: provides.to_vec(),
             conflicts: Vec::new(),
+            replaces: Vec::new(),
             groups: groups.to_vec(),
         }
     }
@@ -696,6 +720,7 @@ mod tests {
         for (tag, entries) in [
             ("%DEPENDS%\n", &package.depends),
             ("%CONFLICTS%\n", &package.conflicts),
+            ("%REPLACES%\n", &package.replaces),
             ("%PROVIDES%\n", &package.provides),
             ("%GROUPS%\n", &package.groups),
         ] {
@@ -753,10 +778,13 @@ mod tests {
                     &cache,
                     package.name,
                     package.version,
-                    &package.depends,
-                    &package.provides,
-                    &package.conflicts,
-                    &package.groups,
+                    &crate::tx::targets::StubLists {
+                        depends: &package.depends,
+                        provides: &package.provides,
+                        conflicts: &package.conflicts,
+                        replaces: &package.replaces,
+                        groups: &package.groups,
+                    },
                 );
             }
         }
@@ -1738,6 +1766,231 @@ mod tests {
             }
             other => panic!("expected nothing-to-do log, got {other:?}"),
         }
+        release(&mut handle);
+    }
+
+    fn upgrade_spec(targets: &[&str], explore: bool) -> RunSpec {
+        RunSpec {
+            kind: RunKind::Upgrade,
+            targets: targets.iter().map(|t| t.to_string()).collect(),
+            stub_targets: Vec::new(),
+            explore,
+            as_deps: false,
+            reinstall: false,
+            dep_names: Vec::new(),
+        }
+    }
+
+    fn newer(local_version: &'static str, sync_version: &'static str) -> (Vec<Pkg>, Vec<Pkg>) {
+        (
+            vec![make("foo", sync_version, &[], &[], &[])],
+            vec![make("foo", local_version, &[], &[], &[])],
+        )
+    }
+
+    #[test]
+    fn upgrade_selects_newer_repo_package() {
+        let (sync, local) = newer("1.0-1", "2.0-1");
+        let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
+        let outcome = run(&mut handle, &upgrade_spec(&[], false), proceed(), discard()).unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert!(summary_names(&outcome).contains(&"foo".to_string()));
+        release(&mut handle);
+    }
+
+    #[test]
+    fn upgrade_idle_when_up_to_date() {
+        let (sync, local) = newer("1.0-1", "1.0-1");
+        let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let outcome = run(
+            &mut handle,
+            &upgrade_spec(&[], false),
+            proceed(),
+            Box::new(recorder),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        assert!(outcome.summary.packages.is_empty());
+        assert!(
+            !seen.borrow().iter().any(|event| matches!(
+                event,
+                InstallEvent::Log { message, .. } if message.contains("there is nothing to do")
+            )),
+            "upgrade idle stays silent"
+        );
+        release(&mut handle);
+    }
+
+    #[test]
+    fn upgrade_skips_newer_local_with_warning() {
+        let (sync, local) = newer("2.0-1", "1.0-1");
+        let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let outcome = run(
+            &mut handle,
+            &upgrade_spec(&[], false),
+            proceed(),
+            Box::new(recorder),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        assert!(
+            seen.borrow().iter().any(|event| matches!(
+                event,
+                InstallEvent::Log {
+                    level: LogLevel::Warning,
+                    message,
+                } if message.contains("is newer than")
+            )),
+            "newer-local warning must surface"
+        );
+        release(&mut handle);
+    }
+
+    #[test]
+    fn upgrade_drops_ignored_package_with_warning() {
+        let (sync, local) = newer("1.0-1", "2.0-1");
+        let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
+        handle.add_ignorepkg("foo").unwrap();
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let outcome = run(
+            &mut handle,
+            &upgrade_spec(&[], false),
+            proceed(),
+            Box::new(recorder),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        assert!(
+            seen.borrow().iter().any(|event| matches!(
+                event,
+                InstallEvent::Log {
+                    level: LogLevel::Warning,
+                    message,
+                } if message.contains("ignoring package upgrade")
+            )),
+            "ignored-package warning must surface"
+        );
+        release(&mut handle);
+    }
+
+    #[test]
+    fn upgrade_asks_replace_question_before_proceed() {
+        let replacer = Pkg {
+            replaces: vec!["foo"],
+            ..make("bar", "2.0-1", &[], &[], &[])
+        };
+        let (_dir, mut handle) = fixture_full(
+            &[("core", vec![replacer])],
+            &[make("foo", "1.0-1", &[], &[], &[])],
+        );
+        let order: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let source = {
+            let order = Rc::clone(&order);
+            script(move |question| match question {
+                Question::Replace { old, new, .. } => {
+                    order.borrow_mut().push("replace".to_string());
+                    SourceDecision::Answer(Answer::Replace {
+                        old: old.clone(),
+                        new: new.clone(),
+                        replace: true,
+                    })
+                }
+                Question::Proceed { .. } => {
+                    order.borrow_mut().push("proceed".to_string());
+                    SourceDecision::Answer(Answer::Proceed)
+                }
+                _ => SourceDecision::Answer(Answer::Stop),
+            })
+        };
+        let outcome = run(&mut handle, &upgrade_spec(&[], false), source, discard()).unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert_eq!(
+            *order.borrow(),
+            vec!["replace".to_string(), "proceed".to_string()]
+        );
+        release(&mut handle);
+    }
+
+    #[test]
+    fn upgrade_explore_run_returns_review() {
+        let (sync, local) = newer("1.0-1", "2.0-1");
+        let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let outcome = run(
+            &mut handle,
+            &upgrade_spec(&[], true),
+            proceed(),
+            Box::new(recorder),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        let review = outcome.review.as_ref().expect("explore carries a review");
+        assert!(
+            review
+                .part2
+                .packages
+                .iter()
+                .any(|package| package.name == "foo")
+        );
+        assert!(
+            !seen
+                .borrow()
+                .iter()
+                .any(|event| matches!(event, InstallEvent::TransactionSummary(_))),
+            "explore never emits a summary event"
+        );
+        release(&mut handle);
+    }
+
+    #[test]
+    fn upgrade_queues_explicit_targets_and_candidates() {
+        let sync = vec![
+            make("baz", "1.0-1", &[], &[], &[]),
+            make("foo", "2.0-1", &[], &[], &[]),
+        ];
+        let local = vec![make("foo", "1.0-1", &[], &[], &[])];
+        let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
+        let outcome = run(
+            &mut handle,
+            &upgrade_spec(&["baz"], false),
+            proceed(),
+            discard(),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert_eq!(
+            summary_names(&outcome),
+            vec!["baz".to_string(), "foo".to_string()]
+        );
+        release(&mut handle);
+    }
+
+    #[test]
+    fn upgrade_proceed_uses_install_wording() {
+        use crate::question::model::TransactionKind;
+
+        let (sync, local) = newer("1.0-1", "2.0-1");
+        let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
+        let seen: Rc<Cell<Option<TransactionKind>>> = Rc::new(Cell::new(None));
+        let source = {
+            let seen = Rc::clone(&seen);
+            script(move |question| match question {
+                Question::Proceed { kind, .. } => {
+                    seen.set(Some(*kind));
+                    SourceDecision::Answer(Answer::Proceed)
+                }
+                _ => SourceDecision::Answer(Answer::Stop),
+            })
+        };
+        let outcome = run(&mut handle, &upgrade_spec(&[], false), source, discard()).unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert_eq!(seen.get(), Some(TransactionKind::Install));
         release(&mut handle);
     }
 }

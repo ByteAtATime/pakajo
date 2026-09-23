@@ -225,10 +225,10 @@ mod tests {
             &stubs,
             "needsvirt",
             "1.0-1",
-            &["virt"],
-            &[],
-            &[],
-            &[],
+            &crate::tx::targets::StubLists {
+                depends: &["virt"],
+                ..Default::default()
+            },
         );
         let target = stubs
             .join(crate::tx::targets::filename("needsvirt", "1.0-1"))

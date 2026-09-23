@@ -120,14 +120,21 @@ pub(crate) fn filename(name: &str, version: &str) -> String {
 }
 
 #[cfg(test)]
+#[derive(Default)]
+pub(crate) struct StubLists<'a> {
+    pub depends: &'a [&'a str],
+    pub provides: &'a [&'a str],
+    pub conflicts: &'a [&'a str],
+    pub replaces: &'a [&'a str],
+    pub groups: &'a [&'a str],
+}
+
+#[cfg(test)]
 pub(crate) fn write_cachedir_stub(
     cachedir: &Path,
     name: &str,
     version: &str,
-    depends: &[&str],
-    provides: &[&str],
-    conflicts: &[&str],
-    groups: &[&str],
+    lists: &StubLists<'_>,
 ) {
     use std::fmt::Write as _;
     use std::io::Cursor;
@@ -135,16 +142,19 @@ pub(crate) fn write_cachedir_stub(
     writeln!(pkginfo, "pkgname = {name}").unwrap();
     writeln!(pkginfo, "pkgver = {version}").unwrap();
     writeln!(pkginfo, "arch = any").unwrap();
-    for depend in depends {
+    for depend in lists.depends {
         writeln!(pkginfo, "depend = {depend}").unwrap();
     }
-    for provided in provides {
+    for provided in lists.provides {
         writeln!(pkginfo, "provides = {provided}").unwrap();
     }
-    for conflict in conflicts {
+    for conflict in lists.conflicts {
         writeln!(pkginfo, "conflict = {conflict}").unwrap();
     }
-    for group in groups {
+    for replaced in lists.replaces {
+        writeln!(pkginfo, "replaces = {replaced}").unwrap();
+    }
+    for group in lists.groups {
         writeln!(pkginfo, "group = {group}").unwrap();
     }
     let path = cachedir.join(filename(name, version));
@@ -300,7 +310,7 @@ mod tests {
     #[test]
     fn existing_path_with_separator_peels_as_file() {
         let dir = tempfile::tempdir().unwrap();
-        write_cachedir_stub(dir.path(), "foo", "1.0-1", &[], &[], &[], &[]);
+        write_cachedir_stub(dir.path(), "foo", "1.0-1", &StubLists::default());
         let path = dir
             .path()
             .join(filename("foo", "1.0-1"))

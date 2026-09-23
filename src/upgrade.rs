@@ -37,6 +37,35 @@ pub fn run_repo_sysupgrade<S: InstallSink + 'static>(
     repo_sysupgrade_into(&mut handle, sink, answerer, preview.as_ref())
 }
 
+pub fn run_upgrade_repo(
+    no_refresh: bool,
+    extra_ignores: &[String],
+    source: Box<dyn crate::question::source::AnswerSource>,
+    mut sink: Box<dyn InstallSink>,
+) -> anyhow::Result<crate::tx::driver::RunOutcome> {
+    let config = crate::pacman::config()?;
+    let mut handle = crate::pacman::handle_with_config(&config)?;
+    apply_ignores(&mut handle, &config, extra_ignores);
+    if !no_refresh {
+        crate::pacman::lock::lock_retry(
+            || handle.syncdbs_mut().update(false).map(|_| ()),
+            || sink.event(InstallEvent::WaitingForDatabaseLock),
+            crate::pacman::lock::LOCK_POLL_INTERVAL,
+        )
+        .context("failed to refresh sync DBs")?;
+    }
+    let spec = crate::tx::driver::RunSpec {
+        kind: crate::tx::driver::RunKind::Upgrade,
+        targets: Vec::new(),
+        stub_targets: Vec::new(),
+        explore: false,
+        as_deps: false,
+        reinstall: false,
+        dep_names: Vec::new(),
+    };
+    crate::tx::prompt::execute_with_source(source, &mut handle, &spec, sink)
+}
+
 pub fn apply_ignores(handle: &mut alpm::Alpm, config: &pacmanconf::Config, extra: &[String]) {
     for name in &config.ignore_pkg {
         if handle.add_ignorepkg(name.as_str()).is_err() {
