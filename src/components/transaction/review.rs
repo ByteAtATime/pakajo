@@ -225,16 +225,13 @@ impl InstallReview {
             .filter(|question| seen.insert(question.key()))
             .collect();
         Self {
-            conflict_checks: vec![false; questions.len()],
+            conflict_checks: vec![true; questions.len()],
             replace_checks: questions
                 .iter()
                 .map(|question| matches!(question, Question::Replace { .. }))
                 .collect(),
-            ignorepkg_checks: questions
-                .iter()
-                .map(|question| matches!(question, Question::InstallIgnorepkg { .. }))
-                .collect(),
-            removepkgs_checks: vec![false; questions.len()],
+            ignorepkg_checks: vec![false; questions.len()],
+            removepkgs_checks: vec![true; questions.len()],
             provider_choices: questions
                 .iter()
                 .filter_map(|question| match question {
@@ -283,7 +280,7 @@ impl InstallReview {
             } => Answer::Conflict {
                 incoming: incoming.clone(),
                 removable: removable.clone(),
-                remove: self.conflict_checks.get(i).copied().unwrap_or(false),
+                remove: self.conflict_checks.get(i).copied().unwrap_or(true),
             },
             Question::SelectProvider { depend, candidates } => {
                 let chosen = self
@@ -304,17 +301,19 @@ impl InstallReview {
             },
             Question::InstallIgnorepkg { name } => Answer::InstallIgnorepkg {
                 name: name.clone(),
-                install: self.ignorepkg_checks.get(i).copied().unwrap_or(true),
+                install: self.ignorepkg_checks.get(i).copied().unwrap_or(false),
             },
             Question::RemovePkgs { names, .. } => Answer::RemovePkgs {
                 names: names.clone(),
-                skip: self.removepkgs_checks.get(i).copied().unwrap_or(false),
+                skip: self.removepkgs_checks.get(i).copied().unwrap_or(true),
             },
             Question::HoldPkgs { names } => Answer::HoldPkgs {
                 names: names.clone(),
                 proceed: false,
             },
-            Question::GroupMembers { .. } => Answer::GroupMembers { selected: vec![] },
+            Question::GroupMembers { members, .. } => Answer::GroupMembers {
+                selected: members.clone(),
+            },
             Question::Proceed { .. } => Answer::Proceed,
             Question::Corrupted { path } => Answer::Corrupted {
                 path: path.clone(),
@@ -538,9 +537,9 @@ mod install_review_tests {
                 (
                     QuestionKey::InstallIgnorepkg { .. },
                     Answer::InstallIgnorepkg { install, .. },
-                ) => assert!(*install),
+                ) => assert!(!*install),
                 (QuestionKey::RemovePkgs { .. }, Answer::RemovePkgs { skip, .. }) => {
-                    assert!(!*skip)
+                    assert!(*skip)
                 }
                 other => panic!("unexpected sealed entry: {other:?}"),
             }
@@ -580,14 +579,14 @@ mod install_review_tests {
             (key, answer),
             (
                 QuestionKey::InstallIgnorepkg { .. },
-                Answer::InstallIgnorepkg { install: true, .. }
+                Answer::InstallIgnorepkg { install: false, .. }
             )
         )));
         assert!(decoded.answers.iter().any(|(key, answer)| matches!(
             (key, answer),
             (
                 QuestionKey::RemovePkgs { .. },
-                Answer::RemovePkgs { skip: false, .. }
+                Answer::RemovePkgs { skip: true, .. }
             )
         )));
     }
@@ -596,8 +595,8 @@ mod install_review_tests {
     fn fresh_model_defaults_three_kinds() {
         let model = InstallReview::new(questions());
         assert!(model.replace_checks[2]);
-        assert!(model.ignorepkg_checks[3]);
-        assert!(!model.removepkgs_checks[4]);
+        assert!(!model.ignorepkg_checks[3]);
+        assert!(model.removepkgs_checks[4]);
 
         let sealed = model.seal().expect("seal succeeds");
         assert!(sealed.answers.iter().any(|(key, answer)| matches!(
@@ -611,14 +610,14 @@ mod install_review_tests {
             (key, answer),
             (
                 QuestionKey::InstallIgnorepkg { .. },
-                Answer::InstallIgnorepkg { install: true, .. }
+                Answer::InstallIgnorepkg { install: false, .. }
             )
         )));
         assert!(sealed.answers.iter().any(|(key, answer)| matches!(
             (key, answer),
             (
                 QuestionKey::RemovePkgs { .. },
-                Answer::RemovePkgs { skip: false, .. }
+                Answer::RemovePkgs { skip: true, .. }
             )
         )));
     }
@@ -641,22 +640,22 @@ mod install_review_tests {
             (key, answer),
             (
                 QuestionKey::InstallIgnorepkg { .. },
-                Answer::InstallIgnorepkg { install: false, .. }
+                Answer::InstallIgnorepkg { install: true, .. }
             )
         )));
         assert!(sealed.answers.iter().any(|(key, answer)| matches!(
             (key, answer),
             (
                 QuestionKey::RemovePkgs { .. },
-                Answer::RemovePkgs { skip: true, .. }
+                Answer::RemovePkgs { skip: false, .. }
             )
         )));
     }
 
     #[test]
-    fn fresh_model_leaves_conflicts_unchecked() {
+    fn conflicts_default_to_removal() {
         let model = InstallReview::new(questions());
-        assert!(model.conflict_checks.iter().all(|checked| !checked));
+        assert!(model.conflict_checks.iter().all(|checked| *checked));
 
         let sealed = model.seal().expect("seal succeeds");
         let conflict = sealed
@@ -675,8 +674,8 @@ mod install_review_tests {
             });
         assert_eq!(
             conflict,
-            Some((s("cava-git"), s("cava"), false)),
-            "conflict is sealed as remove: false"
+            Some((s("cava-git"), s("cava"), true)),
+            "conflict is sealed as remove: true"
         );
     }
 
@@ -709,8 +708,8 @@ mod install_review_tests {
         assert_eq!(model.ignorepkg_checks.len(), 2);
         assert_eq!(model.replace_checks.len(), 2);
         assert_eq!(model.removepkgs_checks.len(), 2);
-        assert!(!model.conflict_checks[0]);
-        assert!(model.ignorepkg_checks[1]);
+        assert!(model.conflict_checks[0]);
+        assert!(!model.ignorepkg_checks[1]);
     }
 
     #[test]
@@ -729,15 +728,32 @@ mod install_review_tests {
             (key, answer),
             (
                 QuestionKey::Conflict { .. },
-                Answer::Conflict { remove: true, .. }
+                Answer::Conflict { remove: false, .. }
             )
         )));
         assert!(sealed.answers.iter().any(|(key, answer)| matches!(
             (key, answer),
             (
                 QuestionKey::InstallIgnorepkg { .. },
-                Answer::InstallIgnorepkg { install: true, .. }
+                Answer::InstallIgnorepkg { install: false, .. }
             )
+        )));
+    }
+
+    #[test]
+    fn group_members_default_to_all_selected() {
+        let members = vec![s("vim"), s("git"), s("htop")];
+        let model = InstallReview::new(vec![Question::GroupMembers {
+            group: s("tools"),
+            members: members.clone(),
+        }]);
+        let sealed = model.seal().expect("seal succeeds");
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::GroupMembers { .. },
+                Answer::GroupMembers { selected }
+            ) if selected == &members
         )));
     }
 }

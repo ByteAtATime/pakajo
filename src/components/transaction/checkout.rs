@@ -85,7 +85,7 @@ fn package_row(pkg: &pakajo::events::SummaryPackage) -> Element<'_> {
 #[cfg(test)]
 mod checkout_tests {
     use super::*;
-    use crate::components::transaction::review::{InstallReview, ReviewMessage};
+    use crate::components::transaction::review::InstallReview;
     use crate::components::transaction::state::{TransactionModel, TransactionStatus};
     use crate::components::transaction::{Action, Transaction};
     use pakajo::events::SummaryPackage;
@@ -152,7 +152,6 @@ mod checkout_tests {
             incoming: s("cava-git"),
             removable: s("cava"),
         }]));
-        tx.update(TransactionMessage::Review(ReviewMessage::ToggleConflict(0)));
         tx.update(TransactionMessage::ApproveReview);
         assert!(tx.model.checkout.is_some());
         let sealed = pakajo::dispatch::seal::decode_seal(
