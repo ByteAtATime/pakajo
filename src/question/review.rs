@@ -62,6 +62,12 @@ impl ReviewDelta {
 }
 
 fn answered_set(questions: &[Question], answers: &[Answer]) -> BTreeSet<(QuestionKey, String)> {
+    debug_assert!(
+        questions.len() == answers.len(),
+        "answered_set expects {} questions and {} answers to align",
+        questions.len(),
+        answers.len()
+    );
     questions
         .iter()
         .zip(answers.iter())

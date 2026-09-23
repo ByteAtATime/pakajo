@@ -1,11 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, button, checkbox, container, dialog, radio, scrollable, text};
 
 use pakajo::progress::InstallKind;
 use pakajo::question::approvals::{SealedApprovals, seal as seal_answers};
-use pakajo::question::model::{Answer, Question};
+use pakajo::question::model::{Answer, Question, QuestionKey};
+use pakajo::question::revalidate::ReviewDrift;
 use pakajo::question::{ProviderCandidate, QuestionSet};
 
 use super::TransactionMessage;
@@ -214,6 +215,8 @@ pub(crate) struct InstallReview {
     pub(crate) ignorepkg_checks: Vec<bool>,
     pub(crate) removepkgs_checks: Vec<bool>,
     pub(crate) provider_choices: HashMap<String, usize>,
+    pub(crate) highlighted: BTreeSet<QuestionKey>,
+    pub(crate) added: BTreeSet<QuestionKey>,
     pub(super) approving: bool,
 }
 
@@ -240,8 +243,55 @@ impl InstallReview {
                 })
                 .collect(),
             questions,
+            highlighted: BTreeSet::new(),
+            added: BTreeSet::new(),
             approving: false,
         }
+    }
+
+    pub(crate) fn refresh(&mut self, questions: Vec<Question>, drift: &ReviewDrift) {
+        let mut preserved: BTreeMap<QuestionKey, (Question, Answer)> = BTreeMap::new();
+        for (i, old) in self.questions.iter().enumerate() {
+            preserved.insert(old.key(), (old.clone(), self.answer_for(i, old)));
+        }
+        let mut seen = HashSet::new();
+        let fresh: Vec<Question> = questions
+            .into_iter()
+            .filter(|question| seen.insert(question.key()))
+            .collect();
+        let mut conflict_checks = Vec::with_capacity(fresh.len());
+        let mut replace_checks = Vec::with_capacity(fresh.len());
+        let mut ignorepkg_checks = Vec::with_capacity(fresh.len());
+        let mut removepkgs_checks = Vec::with_capacity(fresh.len());
+        let mut provider_choices = HashMap::with_capacity(fresh.len());
+        for question in &fresh {
+            let restored = preserved
+                .get(&question.key())
+                .filter(|(old, _)| old == question)
+                .map(|(_, answer)| answer);
+            conflict_checks.push(restored_conflict(question, restored).unwrap_or(true));
+            replace_checks.push(
+                restored_replace(question, restored)
+                    .unwrap_or(matches!(question, Question::Replace { .. })),
+            );
+            ignorepkg_checks.push(restored_ignorepkg(question, restored).unwrap_or(false));
+            removepkgs_checks.push(restored_removepkgs(question, restored).unwrap_or(true));
+            if let Question::SelectProvider { depend, candidates } = question {
+                provider_choices.insert(
+                    depend.clone(),
+                    restored_provider(candidates, restored).unwrap_or(0),
+                );
+            }
+        }
+        self.questions = fresh;
+        self.conflict_checks = conflict_checks;
+        self.replace_checks = replace_checks;
+        self.ignorepkg_checks = ignorepkg_checks;
+        self.removepkgs_checks = removepkgs_checks;
+        self.provider_choices = provider_choices;
+        self.highlighted = drift.added.union(&drift.changed).cloned().collect();
+        self.added = drift.added.clone();
+        self.approving = false;
     }
 
     pub(crate) fn update(&mut self, message: ReviewMessage) {
@@ -339,14 +389,16 @@ impl InstallReview {
     }
 
     pub(crate) fn view(&self, name: &str) -> Element<'_> {
-        let body = part1_body(
-            &self.questions,
-            &self.conflict_checks,
-            &self.replace_checks,
-            &self.ignorepkg_checks,
-            &self.removepkgs_checks,
-            &self.provider_choices,
-        )
+        let body = part1_body(RowInputs {
+            questions: &self.questions,
+            checks: &self.conflict_checks,
+            replace_checks: &self.replace_checks,
+            ignorepkg_checks: &self.ignorepkg_checks,
+            removepkgs_checks: &self.removepkgs_checks,
+            choices: &self.provider_choices,
+            highlighted: &self.highlighted,
+            added: &self.added,
+        })
         .map(|message| crate::Message::Transaction(TransactionMessage::Review(message)));
         let approve = crate::Message::Transaction(TransactionMessage::ApproveReview);
         let confirm: Element<'_> = if self.approving {
@@ -380,18 +432,116 @@ fn info_caption(question: &Question) -> Option<String> {
     }
 }
 
-fn part1_body<'a>(
+fn restored_conflict(question: &Question, restored: Option<&Answer>) -> Option<bool> {
+    match (question, restored) {
+        (Question::Conflict { .. }, Some(Answer::Conflict { remove, .. })) => Some(*remove),
+        _ => None,
+    }
+}
+
+fn restored_replace(question: &Question, restored: Option<&Answer>) -> Option<bool> {
+    match (question, restored) {
+        (Question::Replace { .. }, Some(Answer::Replace { replace, .. })) => Some(*replace),
+        _ => None,
+    }
+}
+
+fn restored_ignorepkg(question: &Question, restored: Option<&Answer>) -> Option<bool> {
+    match (question, restored) {
+        (Question::InstallIgnorepkg { .. }, Some(Answer::InstallIgnorepkg { install, .. })) => {
+            Some(*install)
+        }
+        _ => None,
+    }
+}
+
+fn restored_removepkgs(question: &Question, restored: Option<&Answer>) -> Option<bool> {
+    match (question, restored) {
+        (Question::RemovePkgs { .. }, Some(Answer::RemovePkgs { skip, .. })) => Some(*skip),
+        _ => None,
+    }
+}
+
+fn restored_provider(
+    candidates: &[pakajo::question::model::ProviderCandidate],
+    restored: Option<&Answer>,
+) -> Option<usize> {
+    let Answer::SelectProvider { name, repo } = restored? else {
+        return None;
+    };
+    Some(
+        candidates
+            .iter()
+            .position(|candidate| &candidate.name == name && &candidate.repo == repo)
+            .unwrap_or(0),
+    )
+}
+
+fn highlight_caption<'a>(
+    key: &QuestionKey,
+    highlighted: &'a BTreeSet<QuestionKey>,
+    added: &'a BTreeSet<QuestionKey>,
+) -> Option<&'a str> {
+    if !highlighted.contains(key) {
+        return None;
+    }
+    if added.contains(key) {
+        return Some("New");
+    }
+    Some("Changed")
+}
+
+fn highlight_wrap<'a>(
+    row: cosmic::Element<'a, ReviewMessage>,
+    caption: &str,
+) -> cosmic::Element<'a, ReviewMessage> {
+    let content = Column::new()
+        .spacing(4)
+        .push(text(caption.to_string()))
+        .push(row);
+    container(content)
+        .padding([12.0, 16.0])
+        .width(Length::Fill)
+        .style(|theme: &cosmic::Theme| container::Style {
+            text_color: Some(Color::from(theme.cosmic().warning.on)),
+            background: Some(Background::Color(Color::from(theme.cosmic().warning.base))),
+            border: Border {
+                radius: theme.cosmic().corner_radii.radius_s.into(),
+                width: 1.0,
+                color: Color::from(theme.cosmic().warning.base),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+struct RowInputs<'a> {
     questions: &'a [Question],
     checks: &'a [bool],
     replace_checks: &'a [bool],
     ignorepkg_checks: &'a [bool],
     removepkgs_checks: &'a [bool],
     choices: &'a HashMap<String, usize>,
-) -> cosmic::Element<'a, ReviewMessage> {
+    highlighted: &'a BTreeSet<QuestionKey>,
+    added: &'a BTreeSet<QuestionKey>,
+}
+
+fn part1_body<'a>(inputs: RowInputs<'a>) -> cosmic::Element<'a, ReviewMessage> {
+    let RowInputs {
+        questions,
+        checks,
+        replace_checks,
+        ignorepkg_checks,
+        removepkgs_checks,
+        choices,
+        highlighted,
+        added,
+    } = inputs;
     let mut body = Column::new().spacing(16);
     let mut in_conflicts = false;
     let mut in_providers = false;
     for (i, question) in questions.iter().enumerate() {
+        let caption = highlight_caption(&question.key(), highlighted, added);
         match question {
             Question::Conflict {
                 incoming,
@@ -403,23 +553,27 @@ fn part1_body<'a>(
                 }
                 let label = format!("Replace {} with {}", removable, incoming);
                 let checked = checks.get(i).copied().unwrap_or(false);
-                body = body.push(
-                    checkbox(checked)
-                        .label(label)
-                        .on_toggle(move |_| ReviewMessage::ToggleConflict(i)),
-                );
+                let row: cosmic::Element<'a, ReviewMessage> = checkbox(checked)
+                    .label(label)
+                    .on_toggle(move |_| ReviewMessage::ToggleConflict(i))
+                    .into();
+                body = body.push(match caption {
+                    Some(note) => highlight_wrap(row, note),
+                    None => row,
+                });
             }
             Question::SelectProvider { depend, candidates } => {
                 if !in_providers {
                     body = body.push(text("Providers"));
                     in_providers = true;
                 }
-                body = body.push(text(depend.clone()));
+                let mut group = Column::new().spacing(8);
+                group = group.push(text(depend.clone()));
                 let selected = choices.get(depend).copied().unwrap_or(0);
                 for (idx, candidate) in candidates.iter().enumerate() {
                     let label = candidate_label(candidate);
                     let depend = depend.clone();
-                    body = body.push(radio(
+                    group = group.push(radio(
                         text(label),
                         idx,
                         Some(selected),
@@ -429,24 +583,35 @@ fn part1_body<'a>(
                         },
                     ));
                 }
+                let row: cosmic::Element<'a, ReviewMessage> = group.into();
+                body = body.push(match caption {
+                    Some(note) => highlight_wrap(row, note),
+                    None => row,
+                });
             }
             Question::Replace { old, new, .. } => {
                 let label = format!("Replace {old} with {new}");
                 let checked = replace_checks.get(i).copied().unwrap_or(true);
-                body = body.push(
-                    checkbox(checked)
-                        .label(label)
-                        .on_toggle(move |_| ReviewMessage::ToggleReplace(i)),
-                );
+                let row: cosmic::Element<'a, ReviewMessage> = checkbox(checked)
+                    .label(label)
+                    .on_toggle(move |_| ReviewMessage::ToggleReplace(i))
+                    .into();
+                body = body.push(match caption {
+                    Some(note) => highlight_wrap(row, note),
+                    None => row,
+                });
             }
             Question::InstallIgnorepkg { name } => {
                 let label = format!("Install {name} anyway (in IgnorePkg)");
                 let checked = ignorepkg_checks.get(i).copied().unwrap_or(false);
-                body = body.push(
-                    checkbox(checked)
-                        .label(label)
-                        .on_toggle(move |_| ReviewMessage::ToggleIgnorepkg(i)),
-                );
+                let row: cosmic::Element<'a, ReviewMessage> = checkbox(checked)
+                    .label(label)
+                    .on_toggle(move |_| ReviewMessage::ToggleIgnorepkg(i))
+                    .into();
+                body = body.push(match caption {
+                    Some(note) => highlight_wrap(row, note),
+                    None => row,
+                });
             }
             Question::RemovePkgs { names, .. } => {
                 let label = format!(
@@ -454,15 +619,26 @@ fn part1_body<'a>(
                     names.join(", ")
                 );
                 let checked = removepkgs_checks.get(i).copied().unwrap_or(false);
-                body = body.push(
-                    checkbox(checked)
-                        .label(label)
-                        .on_toggle(move |_| ReviewMessage::ToggleRemovepkgs(i)),
-                );
+                let row: cosmic::Element<'a, ReviewMessage> = checkbox(checked)
+                    .label(label)
+                    .on_toggle(move |_| ReviewMessage::ToggleRemovepkgs(i))
+                    .into();
+                body = body.push(match caption {
+                    Some(note) => highlight_wrap(row, note),
+                    None => row,
+                });
             }
             other => {
-                if let Some(caption) = info_caption(other) {
-                    body = body.push(text(caption));
+                if let Some(note) = info_caption(other) {
+                    let row: cosmic::Element<'a, ReviewMessage> = text(note).into();
+                    body = body.push(match caption {
+                        Some(flag) => highlight_wrap(row, flag),
+                        None => row,
+                    });
+                } else if let Some(flag) = caption {
+                    let key = question.key();
+                    let row: cosmic::Element<'a, ReviewMessage> = text(format!("{key:?}")).into();
+                    body = body.push(highlight_wrap(row, flag));
                 }
             }
         }
@@ -756,6 +932,137 @@ mod install_review_tests {
                 QuestionKey::GroupMembers { .. },
                 Answer::GroupMembers { selected }
             ) if selected == &members
+        )));
+    }
+
+    fn empty_drift() -> pakajo::question::revalidate::ReviewDrift {
+        pakajo::question::revalidate::ReviewDrift {
+            added: BTreeSet::new(),
+            changed: BTreeSet::new(),
+            removed: BTreeSet::new(),
+            summary: pakajo::question::review::ReviewDelta::default(),
+        }
+    }
+
+    fn drift_with(
+        added: Vec<QuestionKey>,
+        changed: Vec<QuestionKey>,
+    ) -> pakajo::question::revalidate::ReviewDrift {
+        pakajo::question::revalidate::ReviewDrift {
+            added: added.into_iter().collect(),
+            changed: changed.into_iter().collect(),
+            removed: BTreeSet::new(),
+            summary: pakajo::question::review::ReviewDelta::default(),
+        }
+    }
+
+    #[test]
+    fn refresh_preserves_toggled_answers_on_unchanged_questions() {
+        let mut model = InstallReview::new(questions());
+        model.update(ReviewMessage::ToggleConflict(0));
+        model.update(ReviewMessage::SelectProvider {
+            depend: s("virt"),
+            idx: 1,
+        });
+        let before = model.answers();
+        model.refresh(questions(), &empty_drift());
+        assert_eq!(model.answers(), before);
+        assert!(!model.conflict_checks[0]);
+        assert_eq!(model.provider_choices.get("virt"), Some(&1));
+        assert!(model.highlighted.is_empty());
+        assert!(!model.approving);
+    }
+
+    #[test]
+    fn refresh_defaults_added_questions_and_highlights() {
+        let mut model = InstallReview::new(questions());
+        model.update(ReviewMessage::SelectProvider {
+            depend: s("virt"),
+            idx: 1,
+        });
+        let drifted_provider = Question::SelectProvider {
+            depend: s("virt"),
+            candidates: vec![candidate("qemu"), candidate("kvm"), candidate("virtualbox")],
+        };
+        let added_ignorepkg = Question::InstallIgnorepkg { name: s("yay") };
+        let fresh = vec![
+            questions().into_iter().next().expect("conflict first"),
+            drifted_provider.clone(),
+            added_ignorepkg.clone(),
+        ];
+        let drift = drift_with(vec![added_ignorepkg.key()], vec![drifted_provider.key()]);
+        model.refresh(fresh, &drift);
+        assert!(model.conflict_checks[0]);
+        assert_eq!(model.provider_choices.get("virt"), Some(&0));
+        assert!(!model.ignorepkg_checks[2]);
+        assert_eq!(
+            model.highlighted,
+            BTreeSet::from([added_ignorepkg.key(), drifted_provider.key()])
+        );
+        assert_eq!(model.added, BTreeSet::from([added_ignorepkg.key()]));
+    }
+
+    #[test]
+    fn refresh_clears_stale_highlight_on_stable_refresh() {
+        let mut model = InstallReview::new(questions());
+        let added_ignorepkg = Question::InstallIgnorepkg { name: s("yay") };
+        let mut fresh = questions();
+        fresh.push(added_ignorepkg.clone());
+        model.refresh(fresh, &drift_with(vec![added_ignorepkg.key()], Vec::new()));
+        assert!(!model.highlighted.is_empty());
+        let stable = model.questions.clone();
+        model.refresh(stable, &empty_drift());
+        assert!(model.highlighted.is_empty());
+        assert!(model.added.is_empty());
+    }
+
+    #[test]
+    fn seal_after_refresh_reflects_preserved_answers() {
+        let mut model = InstallReview::new(questions());
+        model.update(ReviewMessage::ToggleConflict(0));
+        model.update(ReviewMessage::ToggleReplace(2));
+        model.update(ReviewMessage::ToggleIgnorepkg(3));
+        model.update(ReviewMessage::ToggleRemovepkgs(4));
+        model.update(ReviewMessage::SelectProvider {
+            depend: s("virt"),
+            idx: 1,
+        });
+        model.refresh(questions(), &empty_drift());
+        let sealed = model.seal().expect("seal succeeds");
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::Conflict { .. },
+                Answer::Conflict { remove: false, .. }
+            )
+        )));
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::Replace { .. },
+                Answer::Replace { replace: false, .. }
+            )
+        )));
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::InstallIgnorepkg { .. },
+                Answer::InstallIgnorepkg { install: true, .. }
+            )
+        )));
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::RemovePkgs { .. },
+                Answer::RemovePkgs { skip: false, .. }
+            )
+        )));
+        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
+            (key, answer),
+            (
+                QuestionKey::SelectProvider { .. },
+                Answer::SelectProvider { name, .. }
+            ) if name == "virtualbox"
         )));
     }
 }

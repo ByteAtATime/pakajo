@@ -43,17 +43,9 @@ pub fn run_step(
             })
         }
         ReviewStep::Sealed(sealed) => {
-            let preview = run_install_preview_with(
-                handle,
-                request,
-                Box::new(RevalidateSource {
-                    sealed: sealed.clone(),
-                }),
-            )?;
-            let replay = RevalidateSource {
-                sealed: sealed.clone(),
-            };
-            let answers = derive_answers(&preview.review.part1, &replay)?;
+            let source = RevalidateSource::new(sealed);
+            let preview = run_install_preview_with(handle, request, Box::new(source.clone()))?;
+            let answers = derive_answers(&preview.review.part1, &source)?;
             Ok(RevalidationRun {
                 origin: ReviewOrigin::Revalidation,
                 questions: preview.review.part1,
@@ -72,8 +64,12 @@ fn derive_answers(
     for question in questions {
         match source.answer(question) {
             SourceDecision::Answer(answer) => answers.push(answer),
-            SourceDecision::Abort(_) => {
-                anyhow::bail!("revalidation cannot answer {:?}", question.key())
+            SourceDecision::Abort(denied) => {
+                anyhow::bail!(
+                    "revalidation cannot answer {:?}: {}",
+                    question.key(),
+                    denied.reason
+                )
             }
         }
     }
@@ -91,14 +87,16 @@ impl ReviewLoop {
         std::thread::Builder::new()
             .name("review-loop".to_string())
             .spawn(move || drive_reviews(request, step_rx, result_tx))
-            .expect("spawn review-loop worker");
+            .expect("spawn review-loop thread");
         (Self { steps: step_tx }, result_rx)
     }
 
-    pub fn send(&self, step: ReviewStep) {
+    pub fn send(&self, step: ReviewStep) -> bool {
         if self.steps.send(step).is_err() {
             eprintln!("[pakajo] review loop gone; step dropped");
+            return false;
         }
+        true
     }
 }
 

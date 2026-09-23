@@ -103,8 +103,15 @@ pub struct ApprovalsReplay {
     sealed: SealedApprovals,
 }
 
+#[derive(Debug, Clone)]
 pub struct RevalidateSource {
-    pub sealed: SealedApprovals,
+    sealed: SealedApprovals,
+}
+
+impl RevalidateSource {
+    pub fn new(sealed: SealedApprovals) -> Self {
+        Self { sealed }
+    }
 }
 
 impl ApprovalsReplay {
@@ -456,7 +463,7 @@ mod tests {
     }
 
     fn revalidate_with(sealed: SealedApprovals) -> RevalidateSource {
-        RevalidateSource { sealed }
+        RevalidateSource::new(sealed)
     }
 
     fn provider_question() -> Question {
@@ -586,6 +593,47 @@ mod tests {
                 selected: vec![s("a"), s("b")],
             })
         );
+    }
+
+    #[test]
+    fn revalidate_falls_back_remaining_matrix() {
+        let sealed = seal(&[], &[], false).expect("seal succeeds");
+        let source = revalidate_with(sealed);
+        let replace = Question::Replace {
+            old: s("nginx"),
+            new: s("nginx-mainline"),
+            repo: Some(s("extra")),
+        };
+        assert_eq!(
+            source.answer(&replace),
+            SourceDecision::Answer(Answer::Replace {
+                old: s("nginx"),
+                new: s("nginx-mainline"),
+                replace: true,
+            })
+        );
+        let proceed = Question::Proceed {
+            summary: summary(),
+            kind: TransactionKind::Install,
+        };
+        assert_eq!(
+            source.answer(&proceed),
+            SourceDecision::Answer(Answer::Stop)
+        );
+        for question in [
+            Question::Corrupted {
+                path: s("/cache/foo.pkg.tar.zst"),
+            },
+            Question::ImportKey {
+                fingerprint: s("ABC"),
+                uid: s("root"),
+            },
+        ] {
+            let SourceDecision::Abort(denied) = source.answer(&question) else {
+                panic!("expected fail-closed for {question:?}");
+            };
+            assert_eq!(denied.key, question.key());
+        }
     }
 
     struct KeepCorrupted;

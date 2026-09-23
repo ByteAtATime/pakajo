@@ -89,6 +89,14 @@ pub fn converge(diverged_rounds: usize, outcome: &Revalidation) -> Verdict {
 }
 
 fn keyed(questions: &[Question]) -> BTreeMap<QuestionKey, &Question> {
+    debug_assert!(
+        {
+            let mut seen = BTreeSet::new();
+            questions.iter().all(|question| seen.insert(question.key()))
+        },
+        "keyed expects {} questions with distinct keys",
+        questions.len()
+    );
     questions
         .iter()
         .map(|question| (question.key(), question))

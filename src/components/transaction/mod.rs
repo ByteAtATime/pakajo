@@ -313,13 +313,29 @@ impl Transaction {
             },
             TransactionMessage::Explored(result) => match result {
                 Err(e) => {
-                    if e == REVIEW_LOOP_ENDED
-                        && (self.model.install_review.is_some() || self.model.checkout.is_some())
-                    {
+                    if e == REVIEW_LOOP_ENDED {
+                        if self.model.checkout.is_some() {
+                            return Action::None;
+                        }
+                        let approving = self
+                            .model
+                            .install_review
+                            .as_ref()
+                            .is_some_and(|review| review.approving);
+                        if approving {
+                            eprintln!("[pakajo] review failed: {e}");
+                            self.model.failure_message = Some(e);
+                            self.model.pending_approvals = None;
+                            if let Some(review) = self.model.install_review.as_mut() {
+                                review.approving = false;
+                            }
+                            return Action::None;
+                        }
                         return Action::None;
                     }
                     eprintln!("[pakajo] review failed: {e}");
                     self.model.failure_message = Some(e);
+                    self.model.pending_approvals = None;
                     if let Some(review) = self.model.install_review.as_mut() {
                         review.approving = false;
                     }
@@ -345,6 +361,14 @@ impl Transaction {
                 Action::None
             }
             TransactionMessage::Review(m) => {
+                if self
+                    .model
+                    .install_review
+                    .as_ref()
+                    .is_some_and(|review| review.approving)
+                {
+                    return Action::None;
+                }
                 if let Some(r) = self.model.review.as_mut() {
                     r.update(m.clone());
                 }
@@ -363,6 +387,16 @@ impl Transaction {
                     let approvals = review_approvals(&review);
                     return self.launch_remove_subprocess(approvals);
                 }
+                if self
+                    .model
+                    .install_review
+                    .as_ref()
+                    .is_some_and(|review| review.approving)
+                {
+                    return Action::None;
+                }
+                self.model.review_notice = None;
+                self.model.unstables = 0;
                 let mut review = match self.model.install_review.take() {
                     Some(r) => r,
                     None => return Action::None,
@@ -378,8 +412,14 @@ impl Transaction {
                 review.approving = true;
                 self.model.install_review = Some(review);
                 self.model.pending_approvals = Some(approvals);
-                if let Some(review_loop) = self.review_loop.as_ref() {
-                    review_loop.send(ReviewStep::Sealed(sealed));
+                if let Some(review_loop) = self.review_loop.as_ref()
+                    && !review_loop.send(ReviewStep::Sealed(sealed))
+                {
+                    self.model.failure_message = Some(REVIEW_LOOP_ENDED.to_string());
+                    self.model.pending_approvals = None;
+                    if let Some(review) = self.model.install_review.as_mut() {
+                        review.approving = false;
+                    }
                 }
                 Action::None
             }
@@ -452,7 +492,8 @@ impl Transaction {
     fn accept_initial(&mut self, run: RevalidationRun) -> Action {
         self.model.summary = Some(run.summary);
         self.model.revalidations = 0;
-        self.model.review_notice = None;
+        self.model.unstables = 0;
+        self.model.pending_approvals = None;
         if !review::install_needs_review(&run.questions) {
             eprintln!("[pakajo] no questions, showing checkout");
             return self.show_checkout();
@@ -478,11 +519,15 @@ impl Transaction {
                 &run.answers,
                 &run.summary,
             ),
-            _ => return self.accept_initial(run),
+            _ => {
+                eprintln!("[pakajo] revalidation without review or summary");
+                return Action::None;
+            }
         };
         match converge(self.model.revalidations, &outcome) {
             Verdict::Converged => {
                 self.model.summary = Some(run.summary);
+                self.model.review_notice = None;
                 self.model.install_review.take();
                 match self.model.pending_approvals.take() {
                     Some(payload) => self.proceed_after_conflicts(Some(payload)),
@@ -497,17 +542,37 @@ impl Transaction {
             Verdict::Diverged(drift) => {
                 self.model.revalidations += 1;
                 self.model.summary = Some(run.summary);
-                self.model.install_review = Some(InstallReview::new(run.questions));
+                self.model.pending_approvals = None;
+                match self.model.install_review.as_mut() {
+                    Some(review) => review.refresh(run.questions, &drift),
+                    None => {
+                        self.model.install_review = Some(InstallReview::new(run.questions));
+                    }
+                }
                 eprintln!(
-                    "[pakajo] review drifted ({} added, {} changed, {} removed)",
+                    "[pakajo] review drifted ({} added, {} changed, {} removed, {} summary added, {} summary removed)",
                     drift.added.len(),
                     drift.changed.len(),
-                    drift.removed.len()
+                    drift.removed.len(),
+                    drift.summary.added.len(),
+                    drift.summary.removed.len()
                 );
                 Action::None
             }
             Verdict::Unstable => {
                 self.model.revalidations = 0;
+                self.model.pending_approvals = None;
+                self.model.unstables += 1;
+                if self.model.unstables >= 2 {
+                    let message = "review did not stabilize".to_string();
+                    eprintln!("[pakajo] {message}");
+                    self.model.failure_message = Some(message);
+                    self.model.review_notice = Some("review did not stabilize".to_string());
+                    if let Some(review) = self.model.install_review.as_mut() {
+                        review.approving = false;
+                    }
+                    return Action::None;
+                }
                 self.model.review_notice = Some("review did not stabilize".to_string());
                 eprintln!("[pakajo] review did not stabilize");
                 if let Some(review_loop) = self.review_loop.as_ref() {
@@ -731,7 +796,7 @@ mod tests {
         RevalidationRun {
             origin: ReviewOrigin::Initial,
             questions: vec![Question::InstallIgnorepkg { name: s("glibc") }],
-            answers: Vec::new(),
+            answers: vec![ignorepkg_answer("glibc")],
             summary: test_summary(),
         }
     }
@@ -872,6 +937,9 @@ mod tests {
     #[test]
     fn revalidation_diverges_then_converges_to_checkout() {
         let mut transaction = approving_transaction(Some(s("sealed-payload")), 0);
+        if let Some(review) = transaction.model.install_review.as_mut() {
+            review.ignorepkg_checks[0] = true;
+        }
         transaction.update(TransactionMessage::Explored(Ok(drifted_run())));
         assert_eq!(transaction.model.revalidations, 1);
         let rebuilt = transaction
@@ -881,13 +949,23 @@ mod tests {
             .expect("review rebuilt");
         assert_eq!(rebuilt.questions.len(), 2);
         assert!(!rebuilt.approving);
+        assert!(rebuilt.ignorepkg_checks[0]);
+        assert!(!rebuilt.ignorepkg_checks[1]);
+        assert_eq!(rebuilt.highlighted.len(), 1);
+        assert!(
+            rebuilt
+                .highlighted
+                .contains(&Question::InstallIgnorepkg { name: s("nvidia") }.key())
+        );
 
+        assert!(transaction.model.pending_approvals.is_none());
         transaction.model.install_review = Some({
             let mut review =
                 InstallReview::new(vec![Question::InstallIgnorepkg { name: s("glibc") }]);
             review.approving = true;
             review
         });
+        transaction.model.pending_approvals = Some(s("sealed-payload"));
         let settled = revalidation_run(
             vec![Question::InstallIgnorepkg { name: s("glibc") }],
             vec![ignorepkg_answer("glibc")],
@@ -902,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn unstable_restarts_review_and_teardown_stays_noop() {
+    fn unstable_notice_survives_initial_restart() {
         let mut transaction = approving_transaction(None, 2);
         transaction.update(TransactionMessage::Explored(Ok(drifted_run())));
         assert_eq!(transaction.model.revalidations, 0);
@@ -912,13 +990,91 @@ mod tests {
         );
 
         transaction.update(TransactionMessage::Explored(Ok(reviewed())));
-        assert!(transaction.model.review_notice.is_none());
+        assert_eq!(
+            transaction.model.review_notice.as_deref(),
+            Some("review did not stabilize")
+        );
         assert!(transaction.model.install_review.is_some());
 
         transaction.update(TransactionMessage::Explored(Err(
             REVIEW_LOOP_ENDED.to_string()
         )));
         assert!(transaction.model.failure_message.is_none());
+        assert!(transaction.model.install_review.is_some());
+    }
+
+    #[test]
+    fn diverged_with_summary_only_drift_still_rebuilds() {
+        let mut transaction = approving_transaction(Some(s("sealed-payload")), 0);
+        let mut varied = test_summary();
+        varied.packages[0].new_version = s("2.0");
+        let run = RevalidationRun {
+            origin: ReviewOrigin::Revalidation,
+            questions: vec![Question::InstallIgnorepkg { name: s("glibc") }],
+            answers: vec![ignorepkg_answer("glibc")],
+            summary: varied,
+        };
+        transaction.update(TransactionMessage::Explored(Ok(run)));
+        assert_eq!(transaction.model.revalidations, 1);
+        assert!(transaction.model.install_review.is_some());
+        assert!(transaction.model.pending_approvals.is_none());
+    }
+
+    #[test]
+    fn sentinel_while_approving_fails_closed() {
+        let mut transaction = approving_transaction(Some(s("sealed-payload")), 0);
+        transaction.update(TransactionMessage::Explored(Err(
+            REVIEW_LOOP_ENDED.to_string()
+        )));
+        assert_eq!(
+            transaction.model.failure_message.as_deref(),
+            Some(REVIEW_LOOP_ENDED)
+        );
+        assert!(
+            transaction
+                .model
+                .install_review
+                .as_ref()
+                .is_some_and(|review| !review.approving)
+        );
+    }
+
+    #[test]
+    fn unstable_clears_stash_and_notice_survives_restart() {
+        let mut transaction = approving_transaction(Some(s("sealed-payload")), 2);
+        transaction.update(TransactionMessage::Explored(Ok(drifted_run())));
+        assert!(transaction.model.pending_approvals.is_none());
+        assert_eq!(
+            transaction.model.review_notice.as_deref(),
+            Some("review did not stabilize")
+        );
+        transaction.update(TransactionMessage::Explored(Ok(reviewed())));
+        assert_eq!(
+            transaction.model.review_notice.as_deref(),
+            Some("review did not stabilize")
+        );
+        assert!(transaction.model.pending_approvals.is_none());
+    }
+
+    #[test]
+    fn second_consecutive_unstable_fails_closed() {
+        let mut transaction = approving_transaction(Some(s("sealed-payload")), 2);
+        transaction.model.unstables = 1;
+        transaction.update(TransactionMessage::Explored(Ok(drifted_run())));
+        assert!(
+            transaction
+                .model
+                .failure_message
+                .as_deref()
+                .is_some_and(|message| message.contains("review did not stabilize"))
+        );
+        assert!(
+            transaction
+                .model
+                .install_review
+                .as_ref()
+                .is_some_and(|review| !review.approving)
+        );
         assert!(transaction.model.install_review.is_some());
     }
 

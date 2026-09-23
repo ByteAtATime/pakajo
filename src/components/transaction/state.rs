@@ -46,6 +46,7 @@ pub(crate) struct TransactionModel {
     pub(super) answer_channel: Option<AnswerWriter>,
     pub(super) pending_import_key: Option<Question>,
     pub(super) revalidations: usize,
+    pub(super) unstables: usize,
     pub(super) review_notice: Option<String>,
 }
 
@@ -95,6 +96,7 @@ impl TransactionModel {
             answer_channel: None,
             pending_import_key: None,
             revalidations: 0,
+            unstables: 0,
             review_notice: None,
         }
     }
