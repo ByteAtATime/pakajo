@@ -317,8 +317,8 @@ impl BuildOperation {
         std::thread::spawn(move || {
             let mut tx = tx;
             let mut sink = ChannelSink::new(tx.clone());
-            let result = crate::build::run_build(
-                crate::build::BuildParams {
+            let result = crate::dispatch::aur::install_aur(
+                crate::dispatch::aur::BuildParams {
                     targets: &self.targets,
                     files: &self.files,
                     no_check: self.no_check,

@@ -1,4 +1,5 @@
 pub mod approvals;
+pub(crate) mod aur;
 pub mod child;
 pub mod exec;
 pub mod operation;

@@ -5,23 +5,6 @@ use std::process::Stdio;
 
 use anyhow::Context as _;
 
-use crate::aur::AurInfo;
-use crate::cli::prompts::CliAsk;
-use crate::dispatch::exec::ChildOutcome;
-use crate::dispatch::protocol::Decider;
-use crate::events::{InstallEvent, InstallSink, PkgbuildReviewEntry};
-use crate::pkgbuild::PkgbuildInfo;
-use crate::resolve::{Decisions, Plan};
-
-#[derive(Clone, Copy)]
-struct AurBuildConfig {
-    no_check: bool,
-    as_deps: bool,
-    reinstall: bool,
-    tty: bool,
-    interactive: bool,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum BuildDecision {
     Proceed,
@@ -29,320 +12,44 @@ pub enum BuildDecision {
     Abort,
 }
 
-pub struct BuildParams<'a> {
-    pub targets: &'a [String],
-    pub files: &'a [String],
-    pub no_check: bool,
-    pub as_deps: bool,
-    pub reinstall: bool,
-    pub approvals: Option<&'a str>,
-    pub tty: bool,
-    pub interactive: bool,
+pub struct BuiltBase {
+    pub artifacts: Vec<String>,
+    pub version: Option<String>,
 }
 
-pub fn run_build<S: InstallSink + ?Sized>(
-    params: BuildParams<'_>,
-    sink: &mut S,
-    decider: &dyn Decider,
-) -> anyhow::Result<()> {
-    let BuildParams {
-        targets,
-        files,
-        no_check,
-        as_deps,
-        reinstall,
-        approvals,
-        tty,
-        interactive,
-    } = params;
-    let (alpm, plan) = resolve_and_report(targets, no_check, sink, tty)?;
-
-    if plan.aur_builds().next().is_some() && crate::cli::privs::is_root() {
-        anyhow::bail!("can't install AUR package as root");
-    }
-    crate::resolve::check_plan_gates(&plan)?;
-
-    crate::cli::prompts::announce_conflict_calculation();
-    if !plan.conflicts.is_empty() {
-        crate::cli::prompts::print_conflicts(&plan.conflicts);
-        crate::cli::prompts::confirm_conflict_warning(!tty);
-        if !decider.confirm_conflicts(&plan.conflicts) {
-            if tty {
-                anyhow::bail!("build cancelled by user");
-            }
-            anyhow::bail!("can not install conflicting packages with --noconfirm");
-        }
-    }
-
-    let decision = if plan.bases.is_empty() {
-        BuildDecision::Proceed
-    } else {
-        let decision = decider.confirm_build(&plan);
-        if matches!(decision, BuildDecision::Abort) {
-            anyhow::bail!("build cancelled by user");
-        }
-        decision
-    };
-
-    let pkgbuilds = crate::pkgbuild::collect_for_review(&plan, sink)?;
-    review_if_requested(decision, &pkgbuilds, sink, decider)?;
-
-    let arch = alpm.architectures().first();
-    let spine_confirmed = !plan.bases.is_empty();
-    let repo_config = AurBuildConfig {
-        no_check,
-        as_deps,
-        reinstall,
-        tty,
-        interactive,
-    };
-    install_repo_packages(&plan, files, repo_config, approvals, spine_confirmed, sink)?;
-
-    if let Some(label) = plan.bases.iter().find_map(|base| match base {
-        crate::resolve::Base::Pkgbuild { repo, base, .. } => Some(format!("{repo}/{base}")),
-        _ => None,
-    }) {
-        anyhow::bail!("pkgbuild repo builds are not supported: {label}");
-    }
-    for (pkgbase, members) in plan.aur_builds() {
-        let Some(first) = members.first() else {
-            anyhow::bail!("resolution produced an empty package base: {pkgbase}");
-        };
-        let dir = clone_dir(pkgbase)?;
-        let as_deps = as_deps || members.iter().all(|member| !member.target);
-        let explicit = members.iter().any(|member| member.target);
-        let info = AurInfo {
-            name: first.name.clone(),
-            package_base: pkgbase.to_string(),
-            version: first.version.clone(),
-            ..Default::default()
-        };
-        let config = AurBuildConfig {
-            no_check,
-            as_deps,
-            reinstall: reinstall && explicit,
-            tty,
-            interactive,
-        };
-        build_and_install_aur(&info, &dir, config, approvals, arch, sink)?;
-    }
-
-    Ok(())
-}
-
-fn repo_child_inputs(plan: &Plan, files: &[String]) -> (Vec<String>, Vec<String>) {
-    let mut targets = files.to_vec();
-    let mut dep_names = Vec::new();
-    for row in &plan.repo_installs {
-        if row.db.is_empty() {
-            targets.push(row.name.clone());
-        } else {
-            targets.push(format!("{}/{}", row.db, row.name));
-        }
-        if !row.target {
-            dep_names.push(row.name.clone());
-        }
-    }
-    (targets, dep_names)
-}
-
-fn install_repo_packages<S: InstallSink + ?Sized>(
-    plan: &Plan,
-    files: &[String],
-    config: AurBuildConfig,
-    approvals: Option<&str>,
-    preconfirmed: bool,
-    sink: &mut S,
-) -> anyhow::Result<()> {
-    let (targets, dep_names) = repo_child_inputs(plan, files);
-    if targets.is_empty() {
-        return Ok(());
-    }
-    run_install_child(
-        InstallChildParams {
-            targets: &targets,
-            as_deps: config.as_deps,
-            reinstall: config.reinstall,
-            preconfirmed,
-            dep_names: &dep_names,
-            interactive: config.interactive,
-            approvals,
-            tty: config.tty,
-        },
-        sink,
-    )
-}
-
-fn resolve_and_report<S: InstallSink + ?Sized>(
-    targets: &[String],
-    no_check: bool,
-    sink: &mut S,
-    tty: bool,
-) -> anyhow::Result<(alpm::Alpm, Plan)> {
-    for target in targets {
-        sink.event(InstallEvent::ResolvingAurDependencies {
-            target: target.to_string(),
-        });
-    }
-
-    let alpm = crate::pacman::handle()?;
-    let decisions = if tty {
-        Decisions::Ask(Box::new(CliAsk))
-    } else {
-        Decisions::Default
-    };
-    let plan = crate::resolve::resolve_plan_raw(targets, no_check, decisions)?;
-
-    let repo_deps = plan.repo_installs.len();
-    let aur_packages = plan.all_members().count();
-    for row in &plan.repo_installs {
-        sink.event(InstallEvent::AurDepResolved {
-            package: row.name.clone(),
-            repo: Some(row.db.clone()),
-            version: Some(row.version.clone()),
-        });
-    }
-    for member in plan.all_members() {
-        sink.event(InstallEvent::AurDepResolved {
-            package: member.name.clone(),
-            repo: None,
-            version: Some(member.version.clone()),
-        });
-    }
-    sink.event(InstallEvent::ResolutionComplete {
-        aur_packages,
-        repo_deps,
-    });
-
-    Ok((alpm, plan))
-}
-
-fn review_if_requested<S: InstallSink + ?Sized>(
-    decision: BuildDecision,
-    pkgbuilds: &[PkgbuildInfo],
-    sink: &mut S,
-    decider: &dyn Decider,
-) -> anyhow::Result<()> {
-    if !matches!(decision, BuildDecision::Review) {
-        return Ok(());
-    }
-    let to_review: Vec<PkgbuildInfo> = pkgbuilds
-        .iter()
-        .filter(|p| p.needs_review)
-        .cloned()
-        .collect();
-    if to_review.is_empty() {
-        sink.event(InstallEvent::PkgbuildAllUpToDate {
-            packages: pkgbuilds.iter().map(|p| p.name.clone()).collect(),
-        });
-    } else {
-        sink.event(InstallEvent::PkgbuildReviewStarted {
-            packages: to_review
-                .iter()
-                .map(|p| PkgbuildReviewEntry {
-                    name: p.name.clone(),
-                    pkgbase: p.pkgbase.clone(),
-                    is_new: p.is_new,
-                })
-                .collect(),
-        });
-        if !decider.review_pkgbuilds(&to_review) {
-            anyhow::bail!("PKGBUILD review rejected by user");
-        }
-        for pb in &to_review {
-            crate::pkgbuild::mark_seen(&pb.dir)?;
-        }
-        sink.event(InstallEvent::PkgbuildReviewAccepted {
-            packages: to_review.iter().map(|p| p.name.clone()).collect(),
-        });
-    }
-    Ok(())
-}
-
-fn resolved_version(expected: &[String], package: &str) -> Option<String> {
-    let parsed: Vec<(String, String)> = expected
-        .iter()
-        .filter_map(|basename| parse_package_filename(basename))
-        .collect();
-    parsed
-        .iter()
-        .find(|(pkgname, _)| pkgname.as_str() == package)
-        .or_else(|| parsed.first())
-        .map(|(_, version)| version.clone())
-}
-
-fn build_and_install_aur<S: InstallSink + ?Sized>(
-    info: &AurInfo,
+pub fn build_base(
     dir: &Path,
-    config: AurBuildConfig,
-    approvals: Option<&str>,
-    arch: Option<&str>,
-    sink: &mut S,
-) -> anyhow::Result<()> {
-    sink.event(InstallEvent::BuildStarted {
-        package: info.name.clone(),
-    });
-    run_makepkg_streaming(dir, config.no_check, &info.name, sink)?;
-
+    package: &str,
+    no_check: bool,
+    on_line: impl FnMut(String),
+) -> anyhow::Result<BuiltBase> {
+    run_makepkg_streaming(dir, no_check, package, on_line)?;
     let expected = expected_artifacts(dir)
-        .with_context(|| format!("failed to enumerate artifacts for {}", info.name))?;
+        .with_context(|| format!("failed to enumerate artifacts for {package}"))?;
     let artifacts = collect_artifacts(dir, &expected)?;
-    let version = resolved_version(&expected, &info.name);
-    sink.event(InstallEvent::BuildCompleted {
-        package: info.name.clone(),
-        artifacts: artifacts.clone(),
-        version,
-    });
-
-    if let Some(arch) = arch
-        && let Err(e) = crate::devel::refresh_baseline(dir, arch)
-    {
-        eprintln!(
-            "warning: devel baseline refresh failed for {}: {e:#}",
-            info.package_base
-        );
-    }
-
-    run_install_child(
-        InstallChildParams {
-            targets: &artifacts,
-            as_deps: config.as_deps,
-            reinstall: config.reinstall,
-            preconfirmed: true,
-            dep_names: &[],
-            interactive: config.interactive,
-            approvals,
-            tty: config.tty,
-        },
-        sink,
-    )?;
-    Ok(())
+    let version = resolved_version(&expected, package);
+    Ok(BuiltBase { artifacts, version })
 }
 
 fn collect_artifacts(dir: &Path, expected: &[String]) -> anyhow::Result<Vec<String>> {
-    let mut artifacts: Vec<String> = Vec::with_capacity(expected.len());
-    for basename in expected {
-        let path = dir.join(basename);
-        if !path.exists() {
-            anyhow::bail!("expected artifact not found: {}", path.display());
-        }
-        artifacts.push(path.to_string_lossy().into_owned());
-    }
-    Ok(artifacts)
+    expected
+        .iter()
+        .map(|basename| {
+            let path = dir.join(basename);
+            if !path.exists() {
+                anyhow::bail!("expected artifact not found: {}", path.display());
+            }
+            Ok(path.to_string_lossy().into_owned())
+        })
+        .collect()
 }
 
 fn is_valid_pkgbase(s: &str) -> Option<()> {
-    let mut chars = s.chars();
-    let first = chars.next()?;
-    if !first.is_ascii_alphanumeric() {
-        return None;
-    }
-    for c in chars {
-        if !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-')) {
-            return None;
-        }
-    }
-    Some(())
+    let first = s.as_bytes().first()?;
+    (first.is_ascii_alphanumeric()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-')))
+    .then_some(())
 }
 
 pub fn clone_dir(pkgbase: &str) -> anyhow::Result<PathBuf> {
@@ -405,29 +112,38 @@ fn expected_artifacts(dir: &Path) -> anyhow::Result<Vec<String>> {
 }
 
 fn parse_package_filename(basename: &str) -> Option<(String, String)> {
-    let split: Vec<&str> = basename.split('-').collect();
-    if split.len() < 4 {
-        return None;
-    }
-    let pkgname = split[..split.len() - 3].join("-");
-    let version = split[split.len() - 3..split.len() - 1].join("-");
-    Some((pkgname, version))
+    let mut parts = basename.rsplitn(4, '-');
+    let (_arch, release, version, pkgname) =
+        (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    Some((pkgname.to_string(), format!("{version}-{release}")))
 }
 
-fn run_makepkg_streaming<S: InstallSink + ?Sized>(
+fn resolved_version(expected: &[String], package: &str) -> Option<String> {
+    let mut fallback = None;
+    for basename in expected {
+        let Some((pkgname, version)) = parse_package_filename(basename) else {
+            continue;
+        };
+        if pkgname == package {
+            return Some(version);
+        }
+        if fallback.is_none() {
+            fallback = Some(version);
+        }
+    }
+    fallback
+}
+
+pub fn run_makepkg_streaming(
     dir: &Path,
     no_check: bool,
     package: &str,
-    sink: &mut S,
+    mut on_line: impl FnMut(String),
 ) -> anyhow::Result<()> {
     let mut cmd = makepkg_command(dir, no_check);
     let mut session = pty::PtySession::spawn(&mut cmd)?;
-    let package = package.to_string();
     while let Some(line) = session.next_line()? {
-        sink.event(InstallEvent::BuildOutput {
-            package: package.clone(),
-            line,
-        });
+        on_line(line);
     }
     let status = session.wait()?;
     if !status.success() {
@@ -451,97 +167,9 @@ fn makepkg_command(dir: &Path, no_check: bool) -> std::process::Command {
     cmd
 }
 
-struct InstallChildParams<'a> {
-    targets: &'a [String],
-    as_deps: bool,
-    reinstall: bool,
-    preconfirmed: bool,
-    dep_names: &'a [String],
-    interactive: bool,
-    approvals: Option<&'a str>,
-    tty: bool,
-}
-
-fn compose_child_seal(
-    approvals: Option<&str>,
-    dep_names: &[String],
-) -> anyhow::Result<crate::dispatch::approvals::ApprovalsFile> {
-    let payload = approvals
-        .map(|seal| {
-            crate::dispatch::seal::decode_seal(seal).context("failed to decode approvals seal")
-        })
-        .transpose()?;
-    let composed = crate::question::approvals::seal_with_deps(payload.as_ref(), dep_names);
-    let encoded = crate::dispatch::seal::encode_seal(&composed).context("failed to encode seal")?;
-    crate::dispatch::approvals::ApprovalsFile::write(encoded.as_bytes())
-        .context("failed to write approvals file")
-}
-
-fn run_install_child<S: InstallSink + ?Sized>(
-    params: InstallChildParams<'_>,
-    sink: &mut S,
-) -> anyhow::Result<()> {
-    let sealed = compose_child_seal(params.approvals, params.dep_names)?;
-    let operation = crate::dispatch::operation::PrivilegedOperation::Install {
-        targets: params.targets.to_vec(),
-        as_deps: params.as_deps,
-        reinstall: params.reinstall,
-        preconfirmed: params.preconfirmed,
-        interactive: params.interactive,
-        approvals: Some(sealed),
-    };
-    let stream = operation.dispatch(params.tty);
-    match crate::dispatch::exec::drain_declining(stream, sink) {
-        ChildOutcome::Success => Ok(()),
-        outcome => anyhow::bail!(
-            "privileged install of [{}] failed: {}",
-            params.targets.join(", "),
-            outcome.reason()
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolve::RepoInstall;
-
-    #[test]
-    fn repo_child_inputs_merges_files_and_rows_with_dep_names() {
-        let plan = Plan {
-            repo_installs: vec![
-                RepoInstall {
-                    name: "neovim".to_string(),
-                    db: "extra".to_string(),
-                    target: true,
-                    ..Default::default()
-                },
-                RepoInstall {
-                    name: "bare".to_string(),
-                    target: true,
-                    ..Default::default()
-                },
-                RepoInstall {
-                    name: "libtermkey".to_string(),
-                    db: "extra".to_string(),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-        let files = vec!["/tmp/foo-1.0-1-x86_64.pkg.tar.zst".to_string()];
-        let (targets, dep_names) = repo_child_inputs(&plan, &files);
-        assert_eq!(
-            targets,
-            vec![
-                files[0].clone(),
-                "extra/neovim".to_string(),
-                "bare".to_string(),
-                "extra/libtermkey".to_string()
-            ]
-        );
-        assert_eq!(dep_names, vec!["libtermkey".to_string()]);
-    }
 
     #[test]
     fn is_valid_pkgbase_table() {
@@ -562,57 +190,44 @@ mod tests {
     }
 
     #[test]
-    fn parse_package_filename_extracts_git_pkgver() {
-        let (pkgname, version) =
-            parse_package_filename("cava-git-r1136.20a5997-2-x86_64.pkg.tar.zst")
-                .expect("parseable vcs package basename");
-        assert_eq!(pkgname, "cava-git");
-        assert_eq!(version, "r1136.20a5997-2");
-    }
-
-    #[test]
-    fn parse_package_filename_handles_pkgname_with_many_dashes() {
-        let (pkgname, version) =
-            parse_package_filename("python-tokenize-rt-5.2.0-3-any.pkg.tar.zst")
-                .expect("pkgname with multiple dashes still parses");
-        assert_eq!(pkgname, "python-tokenize-rt");
-        assert_eq!(version, "5.2.0-3");
-    }
-
-    #[test]
-    fn parse_package_filename_rejects_too_few_segments() {
-        assert!(parse_package_filename("foo-1.pkg.tar.zst").is_none());
-        assert!(parse_package_filename("foo-1-2").is_none());
-    }
-
-    #[test]
-    fn resolved_version_prefers_exact_match_over_first() {
-        let expected = vec![
-            "bar-1.0-1-x86_64.pkg.tar.zst".to_string(),
-            "foo-2.5-1-x86_64.pkg.tar.zst".to_string(),
+    fn parse_package_filename_table() {
+        let cases = [
+            (
+                "cava-git-r1136.20a5997-2-x86_64.pkg.tar.zst",
+                Some(("cava-git", "r1136.20a5997-2")),
+            ),
+            (
+                "python-tokenize-rt-5.2.0-3-any.pkg.tar.zst",
+                Some(("python-tokenize-rt", "5.2.0-3")),
+            ),
+            ("foo-1.pkg.tar.zst", None),
+            ("foo-1-2", None),
         ];
-        let version = resolved_version(&expected, "foo").expect("exact name match should be found");
-        assert_eq!(version, "2.5-1");
+        for (basename, expected) in cases {
+            let parsed = parse_package_filename(basename);
+            match expected {
+                Some((name, version)) => {
+                    let (pkgname, pkgver) = parsed.expect("parseable basename");
+                    assert_eq!(pkgname, name);
+                    assert_eq!(pkgver, version);
+                }
+                None => assert!(parsed.is_none(), "rejects {basename:?}"),
+            }
+        }
     }
 
     #[test]
-    fn resolved_version_falls_back_to_first_when_no_exact_match() {
-        let expected = vec![
-            "bar-1.0-1-x86_64.pkg.tar.zst".to_string(),
-            "baz-2.0-1-any.pkg.tar.zst".to_string(),
-        ];
-        let version =
-            resolved_version(&expected, "missing").expect("first parsed entry used as fallback");
-        assert_eq!(version, "1.0-1");
-    }
-
-    #[test]
-    fn resolved_version_skips_unparseable_basenames() {
+    fn resolved_version_prefers_match_then_first_parseable() {
         let expected = vec![
             "too-few-segments.pkg.tar.zst".to_string(),
+            "bar-1.0-1-x86_64.pkg.tar.zst".to_string(),
             "foo-2.5-1-x86_64.pkg.tar.zst".to_string(),
         ];
-        let version = resolved_version(&expected, "foo").expect("match after skipping unparseable");
-        assert_eq!(version, "2.5-1");
+        assert_eq!(resolved_version(&expected, "foo").as_deref(), Some("2.5-1"));
+        assert_eq!(
+            resolved_version(&expected, "missing").as_deref(),
+            Some("1.0-1")
+        );
+        assert!(resolved_version(&["junk".to_string()], "foo").is_none());
     }
 }
