@@ -135,6 +135,7 @@ mod checkout_tests {
             pakajo::dispatch::RevalidationRun {
                 origin: pakajo::dispatch::ReviewOrigin::Initial,
                 questions: vec![],
+                answers: Vec::new(),
                 summary: summary(),
             },
         )));

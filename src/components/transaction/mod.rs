@@ -647,6 +647,7 @@ mod tests {
         RevalidationRun {
             origin: ReviewOrigin::Initial,
             questions: vec![Question::InstallIgnorepkg { name: s("glibc") }],
+            answers: Vec::new(),
             summary: test_summary(),
         }
     }
@@ -695,6 +696,7 @@ mod tests {
         let empty = RevalidationRun {
             origin: ReviewOrigin::Initial,
             questions: Vec::new(),
+            answers: Vec::new(),
             summary: test_summary(),
         };
         transaction.update(TransactionMessage::Explored(Ok(empty)));

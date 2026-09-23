@@ -10,7 +10,7 @@ pub use remove::{Preview, RemoveRequest, preview, remove};
 pub(crate) mod install;
 pub use install::{InstallPreview, InstallRequest, install};
 pub mod revalidate;
-pub use revalidate::{RevalidationRun, ReviewLoop, ReviewOrigin, ReviewStep, run_job};
+pub use revalidate::{RevalidationRun, ReviewLoop, ReviewOrigin, ReviewStep, run_step};
 pub(crate) mod session;
 pub(crate) mod sysupgrade;
 pub use sysupgrade::{SysupgradePreviewRequest, SysupgradeRequest, sysupgrade, sysupgrade_preview};

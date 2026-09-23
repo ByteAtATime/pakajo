@@ -1,12 +1,15 @@
 use std::sync::mpsc::{Receiver, Sender};
 
-use crate::dispatch::install::{InstallRequest, run_install_preview};
+use crate::dispatch::install::{InstallRequest, run_install_preview, run_install_preview_with};
 use crate::events::TransactionSummary;
-use crate::question::model::Question;
+use crate::question::approvals::SealedApprovals;
+use crate::question::model::{Answer, Question};
+use crate::question::source::{AnswerSource, ExploreDefaults, RevalidateSource, SourceDecision};
 
 #[derive(Debug, Clone)]
 pub enum ReviewStep {
     Defaults,
+    Sealed(SealedApprovals),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,21 +22,62 @@ pub enum ReviewOrigin {
 pub struct RevalidationRun {
     pub origin: ReviewOrigin,
     pub questions: Vec<Question>,
+    pub answers: Vec<Answer>,
     pub summary: TransactionSummary,
 }
 
-pub fn run_job(
+pub fn run_step(
     handle: &mut alpm::Alpm,
     request: &InstallRequest,
     step: ReviewStep,
 ) -> anyhow::Result<RevalidationRun> {
-    let ReviewStep::Defaults = step;
-    let preview = run_install_preview(handle, request)?;
-    Ok(RevalidationRun {
-        origin: ReviewOrigin::Initial,
-        questions: preview.review.part1,
-        summary: preview.review.part2,
-    })
+    match step {
+        ReviewStep::Defaults => {
+            let preview = run_install_preview(handle, request)?;
+            let answers = derive_answers(&preview.review.part1, &ExploreDefaults)?;
+            Ok(RevalidationRun {
+                origin: ReviewOrigin::Initial,
+                questions: preview.review.part1,
+                answers,
+                summary: preview.review.part2,
+            })
+        }
+        ReviewStep::Sealed(sealed) => {
+            let preview = run_install_preview_with(
+                handle,
+                request,
+                Box::new(RevalidateSource {
+                    sealed: sealed.clone(),
+                }),
+            )?;
+            let replay = RevalidateSource {
+                sealed: sealed.clone(),
+            };
+            let answers = derive_answers(&preview.review.part1, &replay)?;
+            Ok(RevalidationRun {
+                origin: ReviewOrigin::Revalidation,
+                questions: preview.review.part1,
+                answers,
+                summary: preview.review.part2,
+            })
+        }
+    }
+}
+
+fn derive_answers(
+    questions: &[Question],
+    source: &dyn AnswerSource,
+) -> anyhow::Result<Vec<Answer>> {
+    let mut answers = Vec::with_capacity(questions.len());
+    for question in questions {
+        match source.answer(question) {
+            SourceDecision::Answer(answer) => answers.push(answer),
+            SourceDecision::Abort(_) => {
+                anyhow::bail!("revalidation cannot answer {:?}", question.key())
+            }
+        }
+    }
+    Ok(answers)
 }
 
 pub struct ReviewLoop {
@@ -46,17 +90,19 @@ impl ReviewLoop {
         let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<RevalidationRun, String>>();
         std::thread::Builder::new()
             .name("review-loop".to_string())
-            .spawn(move || review_worker(request, step_rx, result_tx))
+            .spawn(move || drive_reviews(request, step_rx, result_tx))
             .expect("spawn review-loop worker");
         (Self { steps: step_tx }, result_rx)
     }
 
     pub fn send(&self, step: ReviewStep) {
-        let _ = self.steps.send(step);
+        if self.steps.send(step).is_err() {
+            eprintln!("[pakajo] review loop gone; step dropped");
+        }
     }
 }
 
-fn review_worker(
+fn drive_reviews(
     request: InstallRequest,
     steps: Receiver<ReviewStep>,
     results: Sender<Result<RevalidationRun, String>>,
@@ -82,8 +128,7 @@ fn serve_reviews(
     results: Sender<Result<RevalidationRun, String>>,
 ) {
     while let Ok(step) = steps.recv() {
-        let run = run_job(handle, request, step).map_err(|error| format!("{error:#}"));
-        let _ = handle.trans_release();
+        let run = run_step(handle, request, step).map_err(|error| format!("{error:#}"));
         if results.send(run).is_err() {
             break;
         }
@@ -106,6 +151,7 @@ fn fail_closed(
 mod tests {
     use super::*;
     use crate::dispatch::protocol::AutomaticDecider;
+    use crate::question::approvals::seal;
 
     fn sync_entry(
         builder: &mut tar::Builder<std::fs::File>,
@@ -220,9 +266,9 @@ mod tests {
     }
 
     #[test]
-    fn defaults_job_surfaces_provider_question_with_summary() {
+    fn defaults_step_surfaces_provider_question_with_summary() {
         let (_dir, mut handle, target) = provider_handle();
-        let run = run_job(&mut handle, &request(&[&target]), ReviewStep::Defaults).unwrap();
+        let run = run_step(&mut handle, &request(&[&target]), ReviewStep::Defaults).unwrap();
         assert_eq!(run.origin, ReviewOrigin::Initial);
         assert!(!run.questions.is_empty());
         assert!(
@@ -233,25 +279,72 @@ mod tests {
             "expected a SelectProvider question for virt, got {:?}",
             run.questions
         );
+        assert_eq!(run.questions.len(), run.answers.len());
         assert!(!run.summary.packages.is_empty());
         assert!(summary_names(&run).contains(&"needsvirt".to_string()));
     }
 
     #[test]
-    fn same_handle_serves_second_job_with_equal_output() {
+    fn same_handle_serves_second_step_with_equal_output() {
         let (_dir, mut handle, target) = provider_handle();
-        let first = run_job(&mut handle, &request(&[&target]), ReviewStep::Defaults).unwrap();
-        let second = run_job(&mut handle, &request(&[&target]), ReviewStep::Defaults).unwrap();
+        let first = run_step(&mut handle, &request(&[&target]), ReviewStep::Defaults).unwrap();
+        let second = run_step(&mut handle, &request(&[&target]), ReviewStep::Defaults).unwrap();
         assert_eq!(first.questions, second.questions);
+        assert_eq!(first.answers, second.answers);
         assert_eq!(summary_names(&first), summary_names(&second));
     }
 
     #[test]
     fn plain_stub_projects_empty_questions_with_summary() {
         let (_dir, mut handle, target) = plain_handle();
-        let run = run_job(&mut handle, &request(&[&target]), ReviewStep::Defaults).unwrap();
+        let run = run_step(&mut handle, &request(&[&target]), ReviewStep::Defaults).unwrap();
         assert_eq!(run.origin, ReviewOrigin::Initial);
         assert!(run.questions.is_empty());
+        assert!(run.answers.is_empty());
         assert_eq!(summary_names(&run), vec!["solo".to_string()]);
+    }
+
+    #[test]
+    fn sealed_step_replays_provider_two_with_changed_summary() {
+        let (_dir, mut handle, target) = provider_handle();
+        let initial = run_step(&mut handle, &request(&[&target]), ReviewStep::Defaults).unwrap();
+        let reselected: Vec<Answer> = initial
+            .answers
+            .iter()
+            .map(|answer| match answer {
+                Answer::SelectProvider { .. } => Answer::SelectProvider {
+                    name: "provider-two".to_string(),
+                    repo: Some("core".to_string()),
+                },
+                kept => kept.clone(),
+            })
+            .collect();
+        let sealed = seal(&initial.questions, &reselected, false).expect("seal succeeds");
+        let rerun = run_step(
+            &mut handle,
+            &request(&[&target]),
+            ReviewStep::Sealed(sealed),
+        )
+        .unwrap();
+        assert_eq!(rerun.origin, ReviewOrigin::Revalidation);
+        assert!(
+            rerun.questions.iter().any(|question| matches!(
+                question,
+                Question::SelectProvider { depend, .. } if depend == "virt"
+            )),
+            "expected a SelectProvider question for virt, got {:?}",
+            rerun.questions
+        );
+        assert!(
+            rerun.answers.iter().any(|answer| matches!(
+                answer,
+                Answer::SelectProvider { name, .. } if name == "provider-two"
+            )),
+            "expected provider-two replay, got {:?}",
+            rerun.answers
+        );
+        assert_ne!(summary_names(&initial), summary_names(&rerun));
+        assert!(summary_names(&rerun).contains(&"provider-two".to_string()));
+        assert!(!summary_names(&rerun).contains(&"provider-one".to_string()));
     }
 }

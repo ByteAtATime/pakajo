@@ -103,6 +103,10 @@ pub struct ApprovalsReplay {
     sealed: SealedApprovals,
 }
 
+pub struct RevalidateSource {
+    pub sealed: SealedApprovals,
+}
+
 impl ApprovalsReplay {
     pub fn new(sealed: SealedApprovals) -> Self {
         Self { sealed }
@@ -120,6 +124,15 @@ impl AnswerSource for ApprovalsReplay {
                 key: question.key(),
                 reason: "unanswered question".to_string(),
             }),
+        }
+    }
+}
+
+impl AnswerSource for RevalidateSource {
+    fn answer(&self, question: &Question) -> SourceDecision {
+        match match_answer(question, &self.sealed) {
+            Sealed::Answer(answer) => SourceDecision::Answer(answer),
+            Sealed::Ask => ExploreDefaults.answer(question),
         }
     }
 }
@@ -439,6 +452,139 @@ mod tests {
                 kind: TransactionKind::Install,
             }),
             SourceDecision::Answer(Answer::Stop)
+        );
+    }
+
+    fn revalidate_with(sealed: SealedApprovals) -> RevalidateSource {
+        RevalidateSource { sealed }
+    }
+
+    fn provider_question() -> Question {
+        Question::SelectProvider {
+            depend: s("virt"),
+            candidates: vec![
+                provider("provider-one", "core"),
+                provider("provider-two", "core"),
+            ],
+        }
+    }
+
+    #[test]
+    fn revalidate_replays_fitting_provider_over_first_candidate() {
+        let question = provider_question();
+        let chosen = Answer::SelectProvider {
+            name: s("provider-two"),
+            repo: Some(s("core")),
+        };
+        let sealed = seal(
+            std::slice::from_ref(&question),
+            std::slice::from_ref(&chosen),
+            false,
+        )
+        .expect("seal succeeds");
+        assert_eq!(
+            revalidate_with(sealed).answer(&question),
+            SourceDecision::Answer(chosen)
+        );
+    }
+
+    #[test]
+    fn revalidate_falls_back_to_remove_for_unanswered_conflict() {
+        let question = Question::Conflict {
+            incoming: s("foo"),
+            removable: s("bar"),
+        };
+        let sealed = seal(&[], &[], false).expect("seal succeeds");
+        assert_eq!(
+            revalidate_with(sealed).answer(&question),
+            SourceDecision::Answer(Answer::Conflict {
+                incoming: s("foo"),
+                removable: s("bar"),
+                remove: true,
+            })
+        );
+    }
+
+    #[test]
+    fn revalidate_falls_back_to_first_provider_candidate() {
+        let question = provider_question();
+        let sealed = seal(&[], &[], false).expect("seal succeeds");
+        assert_eq!(
+            revalidate_with(sealed).answer(&question),
+            SourceDecision::Answer(Answer::SelectProvider {
+                name: s("provider-one"),
+                repo: Some(s("core")),
+            })
+        );
+    }
+
+    #[test]
+    fn revalidate_falls_back_to_keep_ignorepkg_uninstalled() {
+        let question = Question::InstallIgnorepkg { name: s("glibc") };
+        let sealed = seal(&[], &[], false).expect("seal succeeds");
+        assert_eq!(
+            revalidate_with(sealed).answer(&question),
+            SourceDecision::Answer(Answer::InstallIgnorepkg {
+                name: s("glibc"),
+                install: false,
+            })
+        );
+    }
+
+    #[test]
+    fn revalidate_falls_back_to_skip_removed_packages() {
+        let question = Question::RemovePkgs {
+            names: vec![s("gone"), s("also-gone")],
+            kind: TransactionKind::Install,
+        };
+        let sealed = seal(&[], &[], false).expect("seal succeeds");
+        assert_eq!(
+            revalidate_with(sealed).answer(&question),
+            SourceDecision::Answer(Answer::RemovePkgs {
+                names: vec![s("gone"), s("also-gone")],
+                skip: true,
+            })
+        );
+    }
+
+    #[test]
+    fn revalidate_falls_back_when_sealed_candidate_left_the_list() {
+        let sealed_question = provider_question();
+        let chosen = Answer::SelectProvider {
+            name: s("provider-two"),
+            repo: Some(s("core")),
+        };
+        let sealed = seal(
+            std::slice::from_ref(&sealed_question),
+            std::slice::from_ref(&chosen),
+            false,
+        )
+        .expect("seal succeeds");
+        let drifted = Question::SelectProvider {
+            depend: s("virt"),
+            candidates: vec![provider("provider-one", "core")],
+        };
+        assert_eq!(
+            revalidate_with(sealed).answer(&drifted),
+            SourceDecision::Answer(Answer::SelectProvider {
+                name: s("provider-one"),
+                repo: Some(s("core")),
+            })
+        );
+    }
+
+    #[test]
+    fn revalidate_falls_back_to_all_group_members() {
+        let question = Question::GroupMembers {
+            group: s("tools"),
+            members: vec![s("a"), s("b")],
+        };
+        let sealed = seal(&[], &[], false).expect("seal succeeds");
+        assert_eq!(
+            revalidate_with(sealed).answer(&question),
+            SourceDecision::Answer(Answer::GroupMembers {
+                selected: vec![s("a"), s("b")],
+            })
         );
     }
 
