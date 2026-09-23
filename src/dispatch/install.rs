@@ -6,6 +6,7 @@ use crate::dispatch::protocol::Decider;
 use crate::dispatch::session::{PhasePlan, run_phases};
 use crate::question::model::Question;
 use crate::question::review::Review;
+use crate::question::source::{AnswerSource, ExploreDefaults};
 use crate::resolve::{ConflictReport, Decisions, Plan};
 use crate::tx::driver::{Finish, RunKind, RunSpec};
 use crate::tx::targets::peel_file_targets;
@@ -69,6 +70,14 @@ pub(crate) fn run_install_preview(
     handle: &mut alpm::Alpm,
     request: &InstallRequest,
 ) -> anyhow::Result<InstallPreview> {
+    run_install_preview_with(handle, request, Box::new(ExploreDefaults))
+}
+
+pub(crate) fn run_install_preview_with(
+    handle: &mut alpm::Alpm,
+    request: &InstallRequest,
+    source: Box<dyn AnswerSource>,
+) -> anyhow::Result<InstallPreview> {
     let expanded = expand_install_groups(handle, &request.targets, request.tty);
     let (files, names) = peel_file_targets(&expanded);
     let plan = resolve_combined_plan(&names, request.no_check)?;
@@ -84,7 +93,7 @@ pub(crate) fn run_install_preview(
         reinstall: request.reinstall,
         dep_names: Vec::new(),
     };
-    let outcome = crate::tx::compose::preview(handle, spec)?;
+    let outcome = crate::tx::compose::preview_with(handle, spec, source)?;
     let review = outcome
         .review
         .context("install preview produced no review")?;
@@ -633,5 +642,114 @@ mod tests {
             direct_install_targets(&peeled(&["neovim", "yay-bin"], false)),
             None
         );
+    }
+
+    struct SecondProvider;
+
+    impl AnswerSource for SecondProvider {
+        fn answer(&self, question: &Question) -> crate::question::source::SourceDecision {
+            let Question::SelectProvider { candidates, .. } = question else {
+                return ExploreDefaults.answer(question);
+            };
+            let Some(second) = candidates.get(1) else {
+                return ExploreDefaults.answer(question);
+            };
+            crate::question::source::SourceDecision::Answer(
+                crate::question::model::Answer::SelectProvider {
+                    name: second.name.clone(),
+                    repo: second.repo.clone(),
+                },
+            )
+        }
+    }
+
+    fn provider_preview_handle() -> (tempfile::TempDir, alpm::Alpm, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let db = dir.path().join("db");
+        let stubs = dir.path().join("stubs");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(db.join("local")).unwrap();
+        std::fs::create_dir_all(db.join("sync")).unwrap();
+        std::fs::create_dir_all(&stubs).unwrap();
+        let file = std::fs::File::create(db.join("sync").join("core.db")).unwrap();
+        let mut builder = tar::Builder::new(file);
+        for name in ["provider-one", "provider-two"] {
+            let desc = format!(
+                "%NAME%\n{name}\n\n%VERSION%\n1.0-1\n\n%FILENAME%\n{name}-1.0-1-x86_64.pkg.tar.zst\n\n%PROVIDES%\nvirt\n\n"
+            );
+            let mut header = tar::Header::new_gnu();
+            header.set_size(desc.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, format!("{name}-1.0-1/desc"), desc.as_bytes())
+                .unwrap();
+        }
+        builder.into_inner().unwrap();
+        let mut handle = alpm::Alpm::new(
+            root.to_string_lossy().as_ref(),
+            db.to_string_lossy().as_ref(),
+        )
+        .unwrap();
+        handle
+            .register_syncdb_mut("core", alpm::SigLevel::NONE)
+            .unwrap()
+            .add_server("file:///pakajo-offline-stub")
+            .unwrap();
+        crate::tx::targets::write_cachedir_stub(
+            &stubs,
+            "needsvirt",
+            "1.0-1",
+            &["virt"],
+            &[],
+            &[],
+            &[],
+        );
+        let target = stubs
+            .join(crate::tx::targets::filename("needsvirt", "1.0-1"))
+            .to_string_lossy()
+            .into_owned();
+        (dir, handle, target)
+    }
+
+    fn preview_request(targets: &[&str]) -> InstallRequest {
+        InstallRequest {
+            targets: targets.iter().map(|target| target.to_string()).collect(),
+            as_deps: false,
+            reinstall: false,
+            no_check: false,
+            ignores: Vec::new(),
+            prefer_aur: false,
+            decider: Box::new(crate::dispatch::protocol::AutomaticDecider::new()),
+            approvals: None,
+            tty: false,
+            json: false,
+        }
+    }
+
+    fn preview_names(preview: &InstallPreview) -> Vec<String> {
+        let mut names: Vec<String> = preview
+            .review
+            .part2
+            .packages
+            .iter()
+            .map(|package| package.name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn install_preview_with_honors_provider_source() {
+        let (_dir, mut handle, target) = provider_preview_handle();
+        let request = preview_request(&[&target]);
+        let defaults = run_install_preview(&mut handle, &request).unwrap();
+        assert!(preview_names(&defaults).contains(&"provider-one".to_string()));
+        assert!(!preview_names(&defaults).contains(&"provider-two".to_string()));
+        let second =
+            run_install_preview_with(&mut handle, &request, Box::new(SecondProvider)).unwrap();
+        assert!(preview_names(&second).contains(&"provider-two".to_string()));
+        assert!(!preview_names(&second).contains(&"provider-one".to_string()));
     }
 }
