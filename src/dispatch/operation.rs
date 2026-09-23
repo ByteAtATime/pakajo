@@ -11,10 +11,12 @@ const IGNORE: &str = "--ignore";
 const FINGERPRINT_FILE: &str = "--fingerprint-file";
 const APPROVALS_FILE: &str = "--approvals-file";
 const PRECONFIRMED: &str = "--preconfirmed";
+const INTERACTIVE: &str = "--interactive";
 
 pub enum PrivilegedOperation {
     Remove {
         targets: Vec<String>,
+        interactive: bool,
         approvals: Option<crate::dispatch::approvals::ApprovalsFile>,
     },
     Install {
@@ -45,6 +47,7 @@ pub struct BuildOperation {
 pub enum ChildOperation {
     Remove {
         targets: Vec<String>,
+        interactive: bool,
         approvals_path: Option<String>,
         stream: bool,
     },
@@ -72,8 +75,15 @@ impl PrivilegedOperation {
         fingerprint_path: Option<&str>,
     ) -> Vec<String> {
         match self {
-            PrivilegedOperation::Remove { targets, .. } => {
+            PrivilegedOperation::Remove {
+                targets,
+                interactive,
+                ..
+            } => {
                 let mut argv = vec![REMOVE.to_string(), STREAM.to_string()];
+                if *interactive {
+                    argv.push(INTERACTIVE.to_string());
+                }
                 if let Some(path) = approvals_path {
                     argv.push(APPROVALS_FILE.to_string());
                     argv.push(path.to_string());
@@ -145,12 +155,14 @@ impl ChildOperation {
 
 fn decode_remove(argv: &[String]) -> Option<ChildOperation> {
     let mut stream = false;
+    let mut interactive = false;
     let mut approvals_path = None;
     let mut targets = Vec::new();
     let mut parts = argv.iter();
     while let Some(arg) = parts.next() {
         match arg.as_str() {
             STREAM => stream = true,
+            INTERACTIVE => interactive = true,
             APPROVALS_FILE => approvals_path = Some(parts.next()?.clone()),
             _ => {
                 if arg.starts_with('-') {
@@ -162,6 +174,7 @@ fn decode_remove(argv: &[String]) -> Option<ChildOperation> {
     }
     Some(ChildOperation::Remove {
         targets,
+        interactive,
         approvals_path,
         stream,
     })
@@ -234,6 +247,7 @@ mod tests {
     fn remove_wire_round_trip() {
         let operation = PrivilegedOperation::Remove {
             targets: vec!["sl".to_string(), "figlet".to_string()],
+            interactive: false,
             approvals: None,
         };
         let argv = operation.wire_args(None, None);
@@ -242,6 +256,7 @@ mod tests {
             ChildOperation::decode(&argv),
             Some(ChildOperation::Remove {
                 targets: vec!["sl".to_string(), "figlet".to_string()],
+                interactive: false,
                 approvals_path: None,
                 stream: true,
             })
@@ -252,6 +267,7 @@ mod tests {
     fn remove_approvals_wire_round_trip() {
         let operation = PrivilegedOperation::Remove {
             targets: vec!["sl".to_string()],
+            interactive: false,
             approvals: None,
         };
         let argv = operation.wire_args(Some("/tmp/pakajo-approvals-1.json"), None);
@@ -269,6 +285,7 @@ mod tests {
             ChildOperation::decode(&argv),
             Some(ChildOperation::Remove {
                 targets: vec!["sl".to_string()],
+                interactive: false,
                 approvals_path: Some("/tmp/pakajo-approvals-1.json".to_string()),
                 stream: true,
             })
@@ -279,6 +296,31 @@ mod tests {
             "--approvals-file".to_string(),
         ];
         assert_eq!(ChildOperation::decode(&trailing), None);
+    }
+
+    #[test]
+    fn remove_interactive_wire_round_trip() {
+        for (interactive, expected) in [
+            (false, vec!["remove", "--stream", "sl"]),
+            (true, vec!["remove", "--stream", "--interactive", "sl"]),
+        ] {
+            let operation = PrivilegedOperation::Remove {
+                targets: vec!["sl".to_string()],
+                interactive,
+                approvals: None,
+            };
+            let argv = operation.wire_args(None, None);
+            assert_eq!(argv, expected);
+            assert_eq!(
+                ChildOperation::decode(&argv),
+                Some(ChildOperation::Remove {
+                    targets: vec!["sl".to_string()],
+                    interactive,
+                    approvals_path: None,
+                    stream: true,
+                })
+            );
+        }
     }
 
     #[test]

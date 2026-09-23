@@ -123,6 +123,7 @@ impl ChildOperation {
         match self {
             ChildOperation::Remove {
                 targets,
+                interactive,
                 approvals_path,
                 stream,
             } => {
@@ -180,14 +181,57 @@ impl ChildOperation {
                         &approved_held,
                         || false,
                     ),
-                    Presentation::Console => crate::remove::run_remove(
-                        targets,
-                        ConsoleSink::new(),
-                        confirm_remove,
-                        answerer_for(None),
-                        &approved_held,
-                        || confirm_hold_remove(PromptStream::Stdout),
-                    ),
+                    Presentation::Console => {
+                        if *interactive {
+                            let mut handle = crate::pacman::handle()?;
+                            let holds = crate::pacman::config()?.hold_pkg;
+                            let spec = crate::tx::driver::RunSpec {
+                                kind: crate::tx::driver::RunKind::Remove(
+                                    crate::tx::driver::RemoveSpec {
+                                        flags: alpm::TransFlag::NONE,
+                                        holds,
+                                    },
+                                ),
+                                targets: targets.clone(),
+                                stub_targets: Vec::new(),
+                                explore: false,
+                                as_deps: false,
+                                reinstall: false,
+                            };
+                            let input = std::rc::Rc::new(std::cell::RefCell::new(
+                                std::io::BufReader::new(std::io::stdin()),
+                            ));
+                            let source = engine_source(
+                                false,
+                                crate::tx::prompt::InteractiveSource::new(
+                                    std::rc::Rc::clone(&input),
+                                    std::io::stdout(),
+                                    crate::color::stdout_color(),
+                                ),
+                                crate::tx::prompt::TtyImportPrompter::new(
+                                    std::rc::Rc::clone(&input),
+                                    std::io::stdout(),
+                                    crate::color::stdout_color(),
+                                ),
+                            );
+                            let outcome = crate::tx::prompt::execute_with_source(
+                                source,
+                                &mut handle,
+                                &spec,
+                                Box::new(ConsoleSink::new()),
+                            )?;
+                            finish_transaction(outcome)
+                        } else {
+                            crate::remove::run_remove(
+                                targets,
+                                ConsoleSink::new(),
+                                confirm_remove,
+                                answerer_for(None),
+                                &approved_held,
+                                || confirm_hold_remove(PromptStream::Stdout),
+                            )
+                        }
+                    }
                 }
             }
             ChildOperation::Install {
@@ -427,5 +471,31 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert_eq!(decoded, Some(sealed));
         assert!(read_seal(None).expect("no path is no seal").is_none());
+    }
+
+    #[test]
+    fn finish_transaction_maps_outcomes() {
+        use crate::tx::driver::{Finish, RunOutcome};
+        for finish in [Finish::Committed, Finish::Stopped] {
+            let outcome = RunOutcome {
+                summary: crate::events::TransactionSummary::default(),
+                finish,
+                review: None,
+            };
+            assert!(finish_transaction(outcome).is_ok());
+        }
+        let outcome = RunOutcome {
+            summary: crate::events::TransactionSummary::default(),
+            finish: Finish::PrepareFailed(crate::tx::convert::PrepareFailure::Other(
+                "broken".to_string(),
+            )),
+            review: None,
+        };
+        let error = finish_transaction(outcome).expect_err("prepare failure errors");
+        assert!(
+            error
+                .to_string()
+                .contains("failed to prepare transaction: broken")
+        );
     }
 }

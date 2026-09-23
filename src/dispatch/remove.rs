@@ -117,6 +117,7 @@ fn run_remove(request: RemoveRequest, mut tx: futures::channel::mpsc::Sender<Str
     };
     let mut inner = PrivilegedOperation::Remove {
         targets,
+        interactive: request.tty,
         approvals: sealed,
     }
     .dispatch(request.tty);
@@ -147,6 +148,7 @@ fn run_root_remove(request: RemoveRequest, tx: &mut futures::channel::mpsc::Send
     };
     let operation = ChildOperation::Remove {
         targets,
+        interactive: request.tty,
         approvals_path: sealed
             .as_ref()
             .map(|file| file.path().to_string_lossy().into_owned()),
