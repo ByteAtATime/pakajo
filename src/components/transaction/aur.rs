@@ -9,7 +9,6 @@ use pakajo::progress::{
 };
 use pakajo::utils::format_elapsed;
 
-use super::SYSTEM_AUR_NAME;
 use super::TransactionMessage;
 use super::finalize::finalize_section;
 use super::install::{install_section, install_view};
@@ -23,17 +22,13 @@ use crate::Element;
 use crate::components::ansi::build_line_element;
 
 pub(super) fn view(model: &TransactionModel) -> Element<'_> {
-    let title = if model.name == SYSTEM_AUR_NAME {
-        "Upgrading AUR packages".to_string()
-    } else {
-        match model.kind {
-            InstallKind::Install if model.targets.len() > 1 => {
-                format!("Installing {} packages", model.targets.len())
-            }
-            InstallKind::Install => format!("Installing {}", model.name),
-            InstallKind::Remove => format!("Removing {}", model.name),
-            InstallKind::Upgrade => format!("Upgrading {}", model.name),
+    let title = match model.kind {
+        InstallKind::Install if model.targets.len() > 1 => {
+            format!("Installing {} packages", model.targets.len())
         }
+        InstallKind::Install => format!("Installing {}", model.name),
+        InstallKind::Remove => format!("Removing {}", model.name),
+        InstallKind::Upgrade => format!("Upgrading {}", model.name),
     };
     let mut sections = Vec::new();
     for (i, stage) in ordered_aur_stages().iter().enumerate() {

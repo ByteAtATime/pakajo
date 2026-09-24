@@ -17,8 +17,6 @@ use pakajo::question::revalidate::{Verdict, converge, revalidate};
 
 use crate::Element;
 
-pub(super) const SYSTEM_AUR_NAME: &str = "system-aur";
-
 const REVIEW_LOOP_ENDED: &str = "review loop ended";
 
 mod state;

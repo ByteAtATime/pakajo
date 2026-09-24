@@ -28,8 +28,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
         } else {
             let state = model.stage_state(i);
             let section = match *stage {
-                RepoStage::Resolve => prepare_section(&model.repo_state, state),
-                RepoStage::Validate => continue,
+                RepoStage::Resolve | RepoStage::Validate => continue,
                 RepoStage::Download => download_section(&model.repo_state, state),
                 RepoStage::Install => install_section(&model.repo_state.install, state, model.kind),
                 RepoStage::Finalize => finalize_section(&model.repo_state.finalize, state),
