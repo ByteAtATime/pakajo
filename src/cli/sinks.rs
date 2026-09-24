@@ -50,7 +50,7 @@ impl DownloadBars {
         self.order.len() as i64
     }
 
-    fn draw_total(&self, cols: usize) -> String {
+    fn draw_total(&self, cols: usize, colored: bool) -> String {
         if !self.draw_total {
             return String::new();
         }
@@ -61,6 +61,7 @@ impl DownloadBars {
             self.totals.meter.rate,
             self.totals.meter.eta,
             cols,
+            colored,
         )
     }
 
@@ -147,7 +148,7 @@ impl DownloadBars {
             return out;
         }
         out.push_str(&self.move_to(self.total_line_index(), true));
-        out.push_str(&self.draw_total(cols));
+        out.push_str(&self.draw_total(cols, color));
         out.push('\n');
         self.cursor += 1;
         out
@@ -179,6 +180,7 @@ impl DownloadBars {
                 file.meter.rate,
                 file.meter.eta,
                 cols,
+                color,
             );
             if !color {
                 return Some(line);
@@ -201,7 +203,7 @@ impl DownloadBars {
             if drew {
                 let index = self.total_line_index();
                 out.push_str(&self.move_to(index, true));
-                out.push_str(&self.draw_total(cols));
+                out.push_str(&self.draw_total(cols, color));
             }
             if out.is_empty() { None } else { Some(out) }
         }
@@ -277,6 +279,7 @@ impl DownloadBars {
             file.meter.rate,
             file.meter.eta,
             cols,
+            color,
         );
         if !color {
             return line;
@@ -297,7 +300,7 @@ impl DownloadBars {
         self.totals.finish(now);
         let index = self.order.len() as i64;
         let mut out = self.move_to(index, true);
-        out.push_str(&self.draw_total(cols));
+        out.push_str(&self.draw_total(cols, color));
         out.push('\n');
         self.cursor = self.order.len() as i64;
         self.draw_total = false;
@@ -356,28 +359,6 @@ fn pacman_humanize(value: f64) -> (f64, &'static str) {
     (scaled, UNITS[unit])
 }
 
-fn fill_progress(percent: i32, proglen: i64) -> String {
-    let percent = percent.clamp(0, 100);
-    let hashlen = if proglen > 8 { proglen - 8 } else { 0 };
-    let mut bar = String::new();
-    if hashlen > 0 {
-        let hash = i64::from(percent) * hashlen / 100;
-        bar.push_str(" [");
-        for position in 0..hashlen {
-            if position < hash {
-                bar.push('#');
-            } else {
-                bar.push('-');
-            }
-        }
-        bar.push(']');
-    }
-    if proglen >= 5 {
-        bar.push_str(&format!(" {percent:>3}%"));
-    }
-    bar
-}
-
 fn draw_download_bar(
     cleaned: &str,
     xfered: i64,
@@ -385,6 +366,7 @@ fn draw_download_bar(
     rate: f64,
     eta: u64,
     cols: usize,
+    colored: bool,
 ) -> String {
     let percent = download_percent(xfered, total);
     let infolen = (cols * 6 / 10).max(50);
@@ -392,7 +374,19 @@ fn draw_download_bar(
     let fitted = fit_subject(cleaned, filenamelen);
     let (xfered_value, xfered_unit) = pacman_humanize(xfered as f64);
     let (rate_value, rate_unit) = pacman_humanize(rate.trunc());
-    let bar = fill_progress(percent, cols as i64 - infolen as i64);
+    let proglen = cols as i64 - infolen as i64;
+    let mut bar = String::new();
+    if proglen > 8 {
+        bar.push(' ');
+        bar.push_str(&super::chomp::render(
+            percent,
+            (proglen - 8) as usize,
+            colored,
+        ));
+    }
+    if proglen >= 5 {
+        bar.push_str(&format!(" {percent:>3}%"));
+    }
     format!(
         "\r {fitted} {xfered_value:>6.1} {xfered_unit:>3}  {} {rate_unit:>3}/s {}{bar}",
         format_rate(rate_value),
@@ -1185,8 +1179,8 @@ mod tests {
     #[test]
     fn draw_download_bar_matches_pacman_progress_line() {
         assert_eq!(
-            draw_download_bar("core", 512, 1024, 0.0, ETA_UNKNOWN, 80),
-            "\r core                  512.0   B  0.00   B/s --:-- [###########-----------]  50%"
+            draw_download_bar("core", 512, 1024, 0.0, ETA_UNKNOWN, 80, false),
+            "\r core                  512.0   B  0.00   B/s --:-- [-----------C o  o  o  ]  50%"
         );
     }
 
@@ -1203,7 +1197,7 @@ mod tests {
                 80,
                 false
             ),
-            "\r core                 2048.0   B  2048   B/s 00:01 [######################] 100%"
+            "\r core                 2048.0   B  2048   B/s 00:01 [----------------------] 100%"
         );
     }
 
@@ -1216,7 +1210,7 @@ mod tests {
         assert_eq!(
             bars.progress_line("a.db", 0, 1000, base, 80, true),
             Some(
-                "\x1B[2F\r a                       0.0   B  0.00   B/s --:-- [----------------------]   0%"
+                "\x1B[2F\r a                       0.0   B  0.00   B/s --:-- [\x1B[1;33mC\x1B[0m\x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  ]   0%"
                     .to_string()
             )
         );
@@ -1234,13 +1228,13 @@ mod tests {
                 true
             ),
             Some(
-                "\x1B[1F\r a                     500.0   B   555   B/s 00:00 [###########-----------]  50%"
+                "\x1B[1F\r a                     500.0   B   555   B/s 00:00 [-----------\x1B[1;33mC\x1B[0m \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  ]  50%"
                     .to_string()
             )
         );
         assert_eq!(
             bars.success_line("a.db", 1000, base + Duration::from_millis(1000), 80, true),
-            "\r a                    1000.0   B  1000   B/s 00:01 [######################] 100%"
+            "\r a                    1000.0   B  1000   B/s 00:01 [----------------------] 100%"
         );
         assert_eq!(bars.move_end(true), "\x1B[2E");
     }
@@ -1253,13 +1247,13 @@ mod tests {
         assert_eq!(
             bars.progress_line("a.db", 0, 1000, base, 80, true),
             Some(
-                "\x1B[1F\r a                       0.0   B  0.00   B/s --:-- [----------------------]   0%"
+                "\x1B[1F\r a                       0.0   B  0.00   B/s --:-- [\x1B[1;33mC\x1B[0m\x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  ]   0%"
                     .to_string()
             )
         );
         assert_eq!(
             bars.success_line("a.db", 1000, base + Duration::from_millis(1000), 80, true),
-            "\r a                    1000.0   B  1000   B/s 00:01 [######################] 100%"
+            "\r a                    1000.0   B  1000   B/s 00:01 [----------------------] 100%"
         );
         assert_eq!(bars.move_end(true), "\x1B[1E");
     }
@@ -1303,12 +1297,12 @@ mod tests {
         let first = bars.init_file("a.pkg.tar.zst", base, 80, true);
         assert_eq!(
             first,
-            " a\n\r Total (0/2)             0.0   B  0.00   B/s --:-- [----------------------]   0%\n"
+            " a\n\r Total (0/2)             0.0   B  0.00   B/s --:-- [\x1B[1;33mC\x1B[0m\x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  ]   0%\n"
         );
         let second = bars.init_file("b.pkg.tar.zst", base, 80, true);
         assert_eq!(
             second,
-            "\x1B[1F b\n\r Total (0/2)             0.0   B  0.00   B/s --:-- [----------------------]   0%\n"
+            "\x1B[1F b\n\r Total (0/2)             0.0   B  0.00   B/s --:-- [\x1B[1;33mC\x1B[0m\x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  ]   0%\n"
         );
     }
 
