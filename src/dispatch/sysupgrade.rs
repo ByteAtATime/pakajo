@@ -4,7 +4,7 @@ use crate::dispatch::approvals::ApprovalsFile;
 use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem, send_done};
 use crate::dispatch::operation::{ChildOperation, PrivilegedOperation};
 use crate::dispatch::protocol::Decider;
-use crate::dispatch::session::{PhasePlan, run_phases};
+use crate::dispatch::session::{PhasePlan, RepoPhaseDecision, repo_phase_decision, run_phases};
 use crate::events::InstallEvent;
 
 #[derive(Debug, Clone)]
@@ -168,13 +168,12 @@ fn run_root_sysupgrade(
         ),
         Err(error) => ChildOutcome::Failed(format!("{error:#}")),
     };
-    if !matches!(outcome, ChildOutcome::Success) {
-        send_done(tx, outcome);
-        return;
-    }
-    if request.repo_only || aur_targets.is_empty() {
-        send_done(tx, ChildOutcome::Success);
-        return;
+    match repo_phase_decision(&outcome, !request.repo_only && !aur_targets.is_empty()) {
+        RepoPhaseDecision::ContinueToAur => {}
+        RepoPhaseDecision::Finish(outcome) => {
+            send_done(tx, outcome);
+            return;
+        }
     }
     run_phases(
         PhasePlan {

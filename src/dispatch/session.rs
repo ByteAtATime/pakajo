@@ -25,6 +25,20 @@ enum ForwardEnd {
     ReceiverGone,
 }
 
+pub enum RepoPhaseDecision {
+    ContinueToAur,
+    Finish(ChildOutcome),
+}
+
+pub fn repo_phase_decision(outcome: &ChildOutcome, aur_pending: bool) -> RepoPhaseDecision {
+    match outcome {
+        ChildOutcome::Success | ChildOutcome::Stopped { idle: true } if aur_pending => {
+            RepoPhaseDecision::ContinueToAur
+        }
+        _ => RepoPhaseDecision::Finish(outcome.clone()),
+    }
+}
+
 pub fn run_phases(plan: PhasePlan, tx: &mut futures::channel::mpsc::Sender<StreamItem>) {
     if plan.privileged.is_none() && plan.aur_targets.is_empty() {
         send_done(tx, ChildOutcome::Failed("no install targets".to_string()));
@@ -33,17 +47,20 @@ pub fn run_phases(plan: PhasePlan, tx: &mut futures::channel::mpsc::Sender<Strea
     let mut privileged_ran = false;
     if let Some(operation) = plan.privileged {
         privileged_ran = true;
-        match forward(operation.dispatch(plan.tty), tx) {
-            ForwardEnd::Done(ChildOutcome::Success) => {}
-            ForwardEnd::Done(outcome) => {
-                send_done(tx, outcome);
-                return;
-            }
+        let outcome = match forward(operation.dispatch(plan.tty), tx) {
+            ForwardEnd::Done(outcome) => outcome,
             ForwardEnd::InnerEnded => {
                 send_done(tx, ChildOutcome::Failed("stream ended".to_string()));
                 return;
             }
             ForwardEnd::ReceiverGone => return,
+        };
+        match repo_phase_decision(&outcome, !plan.aur_targets.is_empty()) {
+            RepoPhaseDecision::ContinueToAur => {}
+            RepoPhaseDecision::Finish(outcome) => {
+                send_done(tx, outcome);
+                return;
+            }
         }
     }
     if plan.aur_targets.is_empty() {
@@ -101,4 +118,41 @@ fn forward(
         }
     }
     ForwardEnd::InnerEnded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repo_continues_to_aur_after_success_or_idle() {
+        assert!(matches!(
+            repo_phase_decision(&ChildOutcome::Success, true),
+            RepoPhaseDecision::ContinueToAur
+        ));
+        assert!(matches!(
+            repo_phase_decision(&ChildOutcome::Stopped { idle: true }, true),
+            RepoPhaseDecision::ContinueToAur
+        ));
+    }
+
+    #[test]
+    fn repo_finishes_without_aur_or_after_terminal_outcome() {
+        assert!(matches!(
+            repo_phase_decision(&ChildOutcome::Success, false),
+            RepoPhaseDecision::Finish(ChildOutcome::Success)
+        ));
+        assert!(matches!(
+            repo_phase_decision(&ChildOutcome::Stopped { idle: false }, true),
+            RepoPhaseDecision::Finish(ChildOutcome::Stopped { idle: false })
+        ));
+        assert!(matches!(
+            repo_phase_decision(&ChildOutcome::Failed("boom".to_string()), true),
+            RepoPhaseDecision::Finish(ChildOutcome::Failed(_))
+        ));
+        assert!(matches!(
+            repo_phase_decision(&ChildOutcome::Dismissed, false),
+            RepoPhaseDecision::Finish(ChildOutcome::Dismissed)
+        ));
+    }
 }
