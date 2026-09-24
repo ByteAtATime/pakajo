@@ -236,8 +236,7 @@ impl ChildOperation {
                     tty: privs::stdin_is_tty(),
                 };
                 let (source, sink) = child_source_sink(&wire, None::<fn(Question)>);
-                let outcome =
-                    crate::tx::prompt::execute_with_source(source, &mut handle, &spec, sink)?;
+                let outcome = crate::tx::driver::run(&mut handle, &spec, source, sink)?;
                 finish_transaction(outcome)
             }
             ChildOperation::Install {
@@ -291,8 +290,7 @@ impl ChildOperation {
                     tty: privs::stdin_is_tty(),
                 };
                 let (source, sink) = child_source_sink(&wire, Some(runtime_emit));
-                let outcome =
-                    crate::tx::prompt::execute_with_source(source, &mut handle, &spec, sink)?;
+                let outcome = crate::tx::driver::run(&mut handle, &spec, source, sink)?;
                 finish_transaction(outcome)
             }
             ChildOperation::UpgradeRepo {

@@ -68,10 +68,6 @@ fn push_hookdir(hookdirs: &mut Vec<String>, dir: &str) {
     }
 }
 
-pub fn handle_rootless() -> anyhow::Result<Alpm> {
-    handle_rootless_with_config(&config()?)
-}
-
 pub(crate) fn init_alpm_at(
     config: &pacmanconf::Config,
     root: &str,

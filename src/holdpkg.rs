@@ -1,4 +1,4 @@
-pub fn glob_match(pattern: &str, name: &str) -> bool {
+fn glob_match(pattern: &str, name: &str) -> bool {
     let pattern: Vec<char> = pattern.chars().collect();
     let name: Vec<char> = name.chars().collect();
     match_here(&pattern, &name)

@@ -319,21 +319,6 @@ pub fn find_groups(handle: &alpm::Alpm, name: &str) -> Vec<PackageGroup> {
         .collect()
 }
 
-pub fn local_group(handle: &alpm::Alpm, name: &str) -> Option<PackageGroup> {
-    let db = handle.localdb();
-    db.group(name).ok().map(|group| PackageGroup {
-        repo: db.name().to_string(),
-        members: group
-            .packages()
-            .iter()
-            .map(|p| GroupMember {
-                name: p.name().to_string(),
-                description: p.desc().map(|d| d.to_string()),
-            })
-            .collect(),
-    })
-}
-
 pub fn group_index(handle: &alpm::Alpm) -> Vec<(String, String)> {
     handle
         .syncdbs()
@@ -503,34 +488,6 @@ mod tests {
         assert!(
             index.iter().any(|(name, _)| name == "base-devel"),
             "group index must contain base-devel; got {index:?}"
-        );
-    }
-
-    #[test]
-    fn local_group_lists_installed_members() {
-        use crate::question::source::ExploreDefaults;
-        use crate::tx::fixtures::{Pkg, drive_sync, fixture};
-        let make = Pkg {
-            groups: vec!["base-devel"],
-            ..Pkg::plain("make")
-        };
-        let (_dir, mut handle) = fixture(&[make]);
-        assert!(
-            local_group(&handle, "base-devel").is_none(),
-            "local base-devel must be absent before any member is installed"
-        );
-        drive_sync(
-            &mut handle,
-            &["make"],
-            crate::tx::prompt::with_authorized_proceed(Box::new(ExploreDefaults), true),
-        )
-        .expect("make should install first");
-        let group = local_group(&handle, "base-devel")
-            .expect("base-devel should resolve in localdb after installing make");
-        let members: Vec<String> = group.members.iter().map(|m| m.name.clone()).collect();
-        assert!(
-            members.iter().any(|m| m == "make"),
-            "local base-devel should contain make; got {members:?}"
         );
     }
 }

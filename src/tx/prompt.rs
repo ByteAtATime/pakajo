@@ -8,7 +8,6 @@ use crate::question::source::{
     AnswerSource, FailClosed, RuntimeSource, SourceDecision, parse_group_selection,
     parse_provider_selection,
 };
-use crate::tx::driver::{self, RunOutcome, RunSpec};
 
 pub fn render(question: &Question, colored: bool) -> String {
     match question {
@@ -473,15 +472,6 @@ impl AnswerSource for AuthorizedProceed {
             other => self.inner.answer(other),
         }
     }
-}
-
-pub fn execute_with_source(
-    source: Box<dyn AnswerSource>,
-    handle: &mut alpm::Alpm,
-    spec: &RunSpec,
-    sink: Box<dyn crate::events::InstallSink>,
-) -> anyhow::Result<RunOutcome> {
-    driver::run(handle, spec, source, sink)
 }
 
 pub fn tty_runtime_source<R: BufRead + 'static, W: Write + 'static>(

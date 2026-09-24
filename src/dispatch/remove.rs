@@ -5,6 +5,7 @@ use futures::StreamExt as _;
 use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem, send_done};
 use crate::dispatch::operation::{ChildOperation, PrivilegedOperation};
 use crate::dispatch::seal::{JSON_SEAL_REQUIRED, json_seal_missing, non_interactive_seal_missing};
+use crate::events::DiscardSink;
 
 pub struct RemoveRequest {
     pub targets: Vec<String>,
@@ -43,12 +44,6 @@ pub fn remove(request: RemoveRequest) -> DispatchStream {
         run_remove(request, tx);
     });
     rx
-}
-
-struct DiscardSink;
-
-impl crate::events::InstallSink for DiscardSink {
-    fn event(&mut self, _event: crate::events::InstallEvent) {}
 }
 
 pub(crate) fn run_remove_preview(

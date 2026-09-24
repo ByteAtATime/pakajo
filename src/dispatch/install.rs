@@ -9,7 +9,7 @@ use crate::question::model::Question;
 use crate::question::review::Review;
 use crate::question::source::{AnswerSource, ExploreDefaults};
 use crate::resolve::{ConflictReport, Decisions, Plan};
-use crate::tx::driver::{Finish, RunKind, RunSpec};
+use crate::tx::driver::{RunKind, RunSpec};
 use crate::tx::targets::peel_file_targets;
 
 pub struct InstallRequest {
@@ -26,7 +26,6 @@ pub struct InstallRequest {
 
 pub struct InstallPreview {
     pub review: Review,
-    pub prepare_error: Option<crate::tx::convert::PrepareFailure>,
 }
 
 pub(crate) const NON_INTERACTIVE_SEAL_REQUIRED: &str =
@@ -86,14 +85,7 @@ pub(crate) fn run_install_preview_with(
         .review
         .context("install preview produced no review")?;
     let review = merge_plan_conflicts(review, plan.as_ref());
-    let prepare_error = match outcome.finish {
-        Finish::PrepareFailed(failure) => Some(failure),
-        _ => None,
-    };
-    Ok(InstallPreview {
-        review,
-        prepare_error,
-    })
+    Ok(InstallPreview { review })
 }
 
 fn repo_target_names(plan: Option<&Plan>) -> anyhow::Result<Vec<String>> {
@@ -411,6 +403,7 @@ mod tests {
         JSON_SEAL_REQUIRED, json_seal_missing, non_interactive_seal_missing,
     };
     use crate::resolve::{Conflict, Conflicting};
+    use crate::tx::driver::Finish;
 
     fn conflicting_report() -> ConflictReport {
         ConflictReport {

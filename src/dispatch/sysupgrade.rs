@@ -272,12 +272,7 @@ mod tests {
     use crate::dispatch::seal::{
         JSON_SEAL_REQUIRED, json_seal_missing, non_interactive_seal_missing,
     };
-
-    struct DiscardSink;
-
-    impl crate::events::InstallSink for DiscardSink {
-        fn event(&mut self, _event: crate::events::InstallEvent) {}
-    }
+    use crate::events::DiscardSink;
 
     fn gate_request(json: bool, tty: bool, approvals: Option<&str>) -> SysupgradeRequest {
         SysupgradeRequest {
