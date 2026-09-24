@@ -60,6 +60,23 @@ pub struct SysupgradePreviewRequest {
     pub ignores: Vec<String>,
 }
 
+pub(crate) struct UpgradeReview {
+    pub(crate) review: crate::question::review::Review,
+    pub(crate) aur: Vec<crate::upgrade::AurUpgradeCandidate>,
+}
+
+pub(crate) fn upgrade_review(
+    handle: &mut alpm::Alpm,
+    source: Box<dyn crate::question::source::AnswerSource>,
+) -> anyhow::Result<(UpgradeReview, crate::tx::driver::Finish)> {
+    let aur = preview_aur_candidates(handle);
+    let outcome = crate::tx::compose::preview_with(handle, upgrade_run_spec(), source)?;
+    let review = outcome
+        .review
+        .ok_or_else(|| anyhow::anyhow!("upgrade explore run produced no review"))?;
+    Ok((UpgradeReview { review, aur }, outcome.finish))
+}
+
 pub fn sysupgrade_preview(request: &SysupgradePreviewRequest) -> anyhow::Result<Preview> {
     let config = crate::pacman::config()?;
     let mut handle = crate::pacman::handle_rootless_with_config(&config)?;
@@ -67,16 +84,26 @@ pub fn sysupgrade_preview(request: &SysupgradePreviewRequest) -> anyhow::Result<
         crate::pacman::refresh_sync_dbs_rootless(&mut handle)?;
     }
     crate::upgrade::apply_ignores(&mut handle, &config, &request.ignores);
-    let aur = match detect_aur_upgrades(&handle) {
-        Ok(candidates) => candidates,
-        Err(error) => {
-            eprintln!(
-                "[pakajo] aur upgrade check failed, sysupgrade preview shows repo only: {error:#}"
-            );
-            Vec::new()
-        }
-    };
-    let spec = crate::tx::driver::RunSpec {
+    let (assessed, finish) = upgrade_review(
+        &mut handle,
+        Box::new(crate::question::source::ExploreDefaults),
+    )?;
+    let aur_names: Vec<String> = assessed
+        .aur
+        .iter()
+        .map(|candidate| candidate.name.clone())
+        .collect();
+    let pkgbuild_diffs = pkgbuild_diffs_for(&aur_names);
+    Ok(legacy_preview(
+        &assessed.review,
+        finish,
+        assessed.aur,
+        pkgbuild_diffs,
+    ))
+}
+
+fn upgrade_run_spec() -> crate::tx::driver::RunSpec {
+    crate::tx::driver::RunSpec {
         kind: crate::tx::driver::RunKind::Upgrade,
         targets: Vec::new(),
         stub_targets: Vec::new(),
@@ -84,37 +111,50 @@ pub fn sysupgrade_preview(request: &SysupgradePreviewRequest) -> anyhow::Result<
         as_deps: false,
         reinstall: false,
         dep_names: Vec::new(),
-    };
-    let outcome = crate::tx::compose::preview(&mut handle, spec)?;
-    let review = outcome
-        .review
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("upgrade explore run produced no review"))?;
-    let summary = review.part2.clone();
-    let questions = crate::dry_run::question_set_from_review(review);
-    let prepare_error = match outcome.finish {
-        crate::tx::driver::Finish::PrepareFailed(failure) => Some(failure),
-        crate::tx::driver::Finish::Stopped | crate::tx::driver::Finish::Committed => None,
-    };
-    let aur_names: Vec<String> = aur.iter().map(|candidate| candidate.name.clone()).collect();
-    let pkgbuild_diffs = if aur_names.is_empty() {
-        Vec::new()
-    } else {
-        match crate::pkgbuild::prepare_pkgbuild_diffs(&aur_names, false) {
-            Ok(diffs) => diffs,
-            Err(error) => {
-                eprintln!("[pakajo] pkgbuild diff computation failed: {error:#}");
-                Vec::new()
-            }
+    }
+}
+
+fn preview_aur_candidates(handle: &alpm::Alpm) -> Vec<crate::upgrade::AurUpgradeCandidate> {
+    match detect_aur_upgrades(handle) {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            eprintln!(
+                "[pakajo] aur upgrade check failed, sysupgrade preview shows repo only: {error:#}"
+            );
+            Vec::new()
         }
-    };
-    Ok(Preview {
-        summary,
-        questions,
-        prepare_error,
+    }
+}
+
+fn pkgbuild_diffs_for(names: &[String]) -> Vec<crate::pkgbuild::PkgbuildDiff> {
+    if names.is_empty() {
+        return Vec::new();
+    }
+    match crate::pkgbuild::prepare_pkgbuild_diffs(names, false) {
+        Ok(diffs) => diffs,
+        Err(error) => {
+            eprintln!("[pakajo] pkgbuild diff computation failed: {error:#}");
+            Vec::new()
+        }
+    }
+}
+
+fn legacy_preview(
+    review: &crate::question::review::Review,
+    finish: crate::tx::driver::Finish,
+    aur: Vec<crate::upgrade::AurUpgradeCandidate>,
+    pkgbuild_diffs: Vec<crate::pkgbuild::PkgbuildDiff>,
+) -> Preview {
+    Preview {
+        summary: review.part2.clone(),
+        questions: crate::dry_run::question_set_from_review(review),
+        prepare_error: match finish {
+            crate::tx::driver::Finish::PrepareFailed(failure) => Some(failure),
+            crate::tx::driver::Finish::Stopped | crate::tx::driver::Finish::Committed => None,
+        },
         aur,
         pkgbuild_diffs,
-    })
+    }
 }
 
 fn detect_aur_upgrades(
