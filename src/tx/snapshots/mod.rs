@@ -1,5 +1,6 @@
 mod install;
 mod remove;
+mod upgrade;
 
 pub(super) fn snapshot_settings() -> insta::Settings {
     let mut settings = insta::Settings::clone_current();
@@ -52,8 +53,11 @@ fn render_outcome(
 }
 
 fn summary_lines(outcome: &crate::tx::driver::RunOutcome) -> Vec<String> {
-    let mut packages: Vec<String> = outcome
-        .summary
+    summary_package_lines(&outcome.summary)
+}
+
+fn summary_package_lines(summary: &crate::events::TransactionSummary) -> Vec<String> {
+    let mut packages: Vec<String> = summary
         .packages
         .iter()
         .map(|pkg| {

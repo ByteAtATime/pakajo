@@ -1,0 +1,9 @@
+---
+source: src/tx/snapshots/upgrade.rs
+assertion_line: 223
+expression: "run_upgrade_case(&[local_pkg(\"upgun\", \"1.0-1\")],\n&[sync_pkg(\"upgun\", \"1.0-1\")],)"
+---
+summary:
+finish: Stopped
+installed:
+  upgun 1.0-1 Explicit

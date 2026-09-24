@@ -1,0 +1,12 @@
+---
+source: src/tx/snapshots/upgrade.rs
+assertion_line: 194
+expression: "run_upgrade_case(&[local_pkg(\"needsvirt\", \"1.0-1\")],\n&[SyncPkg\n{ name: \"needsvirt\", version: \"2.0-1\", extra: \"%DEPENDS%\\nvirt\\n\\n\", },\nSyncPkg\n{ name: \"provider-one\", version: \"1.0-1\", extra: \"%PROVIDES%\\nvirt\\n\\n\", },\nSyncPkg\n{ name: \"provider-two\", version: \"1.0-1\", extra: \"%PROVIDES%\\nvirt\\n\\n\", },],)"
+---
+question SelectProvider SelectProvider { depend: "virt" } default=provider=provider-one repo=core
+summary:
+  needsvirt 2.0-1
+  provider-one 1.0-1
+finish: Stopped
+installed:
+  needsvirt 1.0-1 Explicit

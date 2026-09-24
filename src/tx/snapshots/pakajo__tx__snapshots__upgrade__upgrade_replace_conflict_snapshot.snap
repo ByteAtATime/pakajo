@@ -1,0 +1,17 @@
+---
+source: src/tx/snapshots/upgrade.rs
+assertion_line: 166
+expression: "run_upgrade_case(&[local_pkg(\"dummy-old\", \"1.0-1\"),\nlocal_pkg(\"clash-a\", \"1.0-1\"), local_pkg(\"clash-b\", \"0.5-1\"),],\n&[SyncPkg\n{ name: \"dummy-new\", version: \"2.0-1\", extra: \"%REPLACES%\\ndummy-old\\n\\n\", },\nSyncPkg\n{ name: \"clash-b\", version: \"1.0-1\", extra: \"%CONFLICTS%\\nclash-a\\n\\n\", },],)"
+---
+question Replace Replace { old: "dummy-old", new: "dummy-new" } default=replace=true
+question Conflict Conflict { first: "clash-a", second: "clash-b" } default=remove=true
+summary:
+  clash-a 1.0-1 (removal)
+  clash-b 1.0-1
+  dummy-new 2.0-1
+  dummy-old 1.0-1 (removal)
+finish: Stopped
+installed:
+  clash-a 1.0-1 Explicit
+  clash-b 0.5-1 Explicit
+  dummy-old 1.0-1 Explicit
