@@ -7,7 +7,6 @@ use crate::events::TransactionSummary;
 use crate::question::approvals::SealedApprovals;
 use crate::question::model::{Answer, Question};
 use crate::question::source::{ExploreDefaults, RevalidateSource, derive_answers};
-use crate::tx::driver::Finish;
 
 pub enum ReviewPlan {
     Install(Box<InstallRequest>),
@@ -55,13 +54,6 @@ fn upgrade_run(
         summary: assessed.review.part2,
         aur: assessed.aur,
     })
-}
-
-fn fail_on_unprepared(finish: &Finish) -> anyhow::Result<()> {
-    let Finish::PrepareFailed(failure) = finish else {
-        return Ok(());
-    };
-    anyhow::bail!("upgrade preview failed to prepare: {failure}");
 }
 
 pub fn run_step(
@@ -130,15 +122,13 @@ pub fn run_step(
                     crate::pacman::refresh_sync_dbs_rootless(handle)?;
                 }
                 apply_upgrade_ignores(handle, ignores)?;
-                let (assessed, finish) = upgrade_review(handle, Box::new(ExploreDefaults))?;
-                fail_on_unprepared(&finish)?;
+                let assessed = upgrade_review(handle, Box::new(ExploreDefaults))?;
                 upgrade_run(assessed, ReviewOrigin::Initial, &ExploreDefaults)
             }
             ReviewStep::Sealed(sealed) => {
                 apply_upgrade_ignores(handle, ignores)?;
                 let source = RevalidateSource::new(sealed);
-                let (assessed, finish) = upgrade_review(handle, Box::new(source.clone()))?;
-                fail_on_unprepared(&finish)?;
+                let assessed = upgrade_review(handle, Box::new(source.clone()))?;
                 upgrade_run(assessed, ReviewOrigin::Revalidation, &source)
             }
         },

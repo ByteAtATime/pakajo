@@ -7,6 +7,5 @@ question SelectProvider SelectProvider { depend: "virt" } default=provider=provi
 summary:
   needsvirt 2.0-1
   provider-one 1.0-1
-finish: Stopped
 installed:
   needsvirt 1.0-1 Explicit

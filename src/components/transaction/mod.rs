@@ -39,12 +39,9 @@ mod repo;
 mod resolve;
 
 mod shared;
-pub(crate) use shared::format_signed_bytes;
 
 pub(crate) mod diff;
 mod pkgbuild;
-pub(crate) use diff::diff_rows_column;
-pub(crate) use pkgbuild::ReviewedDiff;
 use pkgbuild::{PkgbuildMessage, PkgbuildModel};
 
 pub(crate) mod checkout;
@@ -418,6 +415,9 @@ impl Transaction {
                 if self.model.kind == InstallKind::Remove {
                     return self.launch_remove_subprocess(payload);
                 }
+                if self.model.kind == InstallKind::Upgrade {
+                    return self.launch_sysupgrade_subprocess(payload);
+                }
                 self.launch_subprocess(payload)
             }
             TransactionMessage::CancelCheckout => Action::Finished,
@@ -449,10 +449,26 @@ impl Transaction {
     }
 
     fn accept_initial(&mut self, run: RevalidationRun) -> Action {
+        let upgrade = self.model.kind == InstallKind::Upgrade;
+        if upgrade {
+            self.model.aur_names = run
+                .aur
+                .iter()
+                .map(|candidate| candidate.name.clone())
+                .collect();
+            self.model.aur_upgrades = run.aur.clone();
+        }
+        let idle_upgrade = upgrade && run.questions.is_empty() && run.summary.packages.is_empty();
         self.model.summary = Some(run.summary);
         self.model.revalidations = 0;
         self.model.unstables = 0;
         self.model.pending_approvals = None;
+        if idle_upgrade {
+            eprintln!("[pakajo] sysupgrade found nothing to do");
+            self.model.status = TransactionStatus::Done(ChildOutcome::Success);
+            self.model.review_notice = Some("System is up to date".to_string());
+            return Action::None;
+        }
         if !review::install_needs_review(&run.questions) {
             eprintln!("[pakajo] no questions, showing checkout");
             return self.show_checkout();
@@ -561,7 +577,8 @@ impl Transaction {
 
     fn show_checkout(&mut self) -> Action {
         let summary = self.model.summary.clone().unwrap_or_default();
-        self.model.checkout = Some(CheckoutModel::new(summary, self.model.kind));
+        let aur = self.model.aur_upgrades.clone();
+        self.model.checkout = Some(CheckoutModel::new(summary, self.model.kind, aur));
         Action::None
     }
 
@@ -605,21 +622,48 @@ impl Transaction {
         Action::Run(stream_items(pakajo::dispatch::remove(request)))
     }
 
-    pub(crate) fn start_sysupgrade(
-        request: pakajo::dispatch::SysupgradeRequest,
-    ) -> (Self, Task<crate::Message>) {
-        let mut transaction = Self {
-            model: TransactionModel::new(
-                "system".to_string(),
-                PackageSource::Repo,
-                InstallKind::Upgrade,
-            ),
-            review_loop: None,
+    fn launch_sysupgrade_subprocess(&mut self, approvals: String) -> Action {
+        self.model.status = TransactionStatus::Running;
+        let decider: Box<dyn pakajo::dispatch::protocol::Decider + Send> =
+            match pakajo::dispatch::seal::decode_seal(&approvals) {
+                Ok(sealed) => Box::new(pakajo::dispatch::seal::sealed_decider(sealed)),
+                Err(error) => {
+                    self.model
+                        .finish(ChildOutcome::Failed(format!("{error:#}")));
+                    return Action::None;
+                }
+            };
+        let request = pakajo::dispatch::SysupgradeRequest {
+            no_refresh: false,
+            repo_only: false,
+            ignores: Vec::new(),
+            decider,
+            aur_targets: Some(self.model.aur_names.clone()),
+            approvals: Some(approvals),
+            tty: false,
+            json: false,
+            print_nothing_to_do: false,
         };
-        transaction.model.status = TransactionStatus::Running;
+        Action::Run(stream_items(pakajo::dispatch::sysupgrade(request)))
+    }
+
+    pub(crate) fn start_sysupgrade() -> (Self, Task<crate::Message>) {
+        let model = TransactionModel::new(
+            "system".to_string(),
+            PackageSource::Repo,
+            InstallKind::Upgrade,
+        );
+        let (review_loop, rx) = ReviewLoop::spawn(ReviewPlan::Upgrade {
+            no_refresh: false,
+            ignores: Vec::new(),
+        });
+        review_loop.send(ReviewStep::Defaults);
         (
-            transaction,
-            stream_items(pakajo::dispatch::sysupgrade(request)),
+            Self {
+                model,
+                review_loop: Some(review_loop),
+            },
+            review_stream(rx),
         )
     }
 
@@ -1041,6 +1085,88 @@ mod tests {
 
     fn s(value: &str) -> String {
         value.to_string()
+    }
+
+    fn upgrade_transaction() -> Transaction {
+        Transaction {
+            model: TransactionModel::new(s("system"), PackageSource::Repo, InstallKind::Upgrade),
+            review_loop: None,
+        }
+    }
+
+    fn aur_candidate(name: &str) -> pakajo::upgrade::AurUpgradeCandidate {
+        pakajo::upgrade::AurUpgradeCandidate {
+            name: s(name),
+            local_version: s("1.0"),
+            remote_version: s("2.0"),
+            package_base: s(name),
+        }
+    }
+
+    fn upgrade_run(
+        questions: Vec<Question>,
+        summary: pakajo::events::TransactionSummary,
+        aur: Vec<pakajo::upgrade::AurUpgradeCandidate>,
+    ) -> RevalidationRun {
+        RevalidationRun {
+            origin: ReviewOrigin::Initial,
+            questions,
+            answers: Vec::new(),
+            summary,
+            aur,
+        }
+    }
+
+    #[test]
+    fn sysupgrade_idle_auto_finishes_with_notice() {
+        let mut transaction = upgrade_transaction();
+        transaction.update(TransactionMessage::Explored(Ok(upgrade_run(
+            Vec::new(),
+            pakajo::events::TransactionSummary::default(),
+            Vec::new(),
+        ))));
+        assert!(transaction.model.install_review.is_none());
+        assert!(transaction.model.checkout.is_none());
+        assert!(matches!(
+            transaction.model.status,
+            TransactionStatus::Done(ChildOutcome::Success)
+        ));
+        assert_eq!(
+            transaction.model.review_notice.as_deref(),
+            Some("System is up to date")
+        );
+    }
+
+    #[test]
+    fn sysupgrade_initial_stores_aur_names_and_reviews() {
+        let mut transaction = upgrade_transaction();
+        transaction.update(TransactionMessage::Explored(Ok(upgrade_run(
+            vec![Question::InstallIgnorepkg { name: s("glibc") }],
+            test_summary(),
+            vec![aur_candidate("yay")],
+        ))));
+        assert_eq!(transaction.model.aur_names, vec![s("yay")]);
+        assert_eq!(transaction.model.aur_upgrades.len(), 1);
+        assert!(transaction.model.install_review.is_some());
+        assert!(transaction.model.checkout.is_none());
+    }
+
+    #[test]
+    fn sysupgrade_empty_questions_with_summary_carries_aur_to_checkout() {
+        let mut transaction = upgrade_transaction();
+        transaction.update(TransactionMessage::Explored(Ok(upgrade_run(
+            Vec::new(),
+            test_summary(),
+            vec![aur_candidate("yay")],
+        ))));
+        assert!(transaction.model.install_review.is_none());
+        let checkout = transaction.model.checkout.as_ref().expect("checkout shown");
+        assert_eq!(checkout.summary, test_summary());
+        transaction.update(TransactionMessage::ApproveCheckout);
+        assert!(matches!(
+            transaction.model.status,
+            TransactionStatus::Running
+        ));
     }
 
     fn remove_transaction() -> Transaction {

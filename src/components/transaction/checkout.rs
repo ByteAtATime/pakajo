@@ -3,6 +3,7 @@ use cosmic::widget::{Column, Row, button, dialog, scrollable, space, text};
 
 use pakajo::events::{SummaryAction, TransactionSummary, classify_action, target_version};
 use pakajo::progress::InstallKind;
+use pakajo::upgrade::AurUpgradeCandidate;
 use pakajo::utils::format_bytes;
 
 use super::TransactionMessage;
@@ -11,21 +12,35 @@ use super::shared::{
     version_change,
 };
 use crate::Element;
+use crate::components::updates::aur_upgrade_row;
 
 pub(crate) struct CheckoutModel {
     pub(crate) summary: TransactionSummary,
     kind: InstallKind,
+    aur: Vec<AurUpgradeCandidate>,
 }
 
 impl CheckoutModel {
-    pub(crate) fn new(summary: TransactionSummary, kind: InstallKind) -> Self {
-        Self { summary, kind }
+    pub(crate) fn new(
+        summary: TransactionSummary,
+        kind: InstallKind,
+        aur: Vec<AurUpgradeCandidate>,
+    ) -> Self {
+        Self { summary, kind, aur }
     }
 
     pub(crate) fn view(&self, name: &str) -> Element<'_> {
         let mut body = Column::new().spacing(8);
         for pkg in &self.summary.packages {
             body = body.push(package_row(pkg));
+        }
+        if self.kind == InstallKind::Upgrade && !self.aur.is_empty() {
+            let mut aur_col = Column::new().spacing(8);
+            aur_col = aur_col.push(text(format!("AUR packages to build ({})", self.aur.len())));
+            for candidate in &self.aur {
+                aur_col = aur_col.push(aur_upgrade_row(candidate));
+            }
+            body = body.push(aur_col);
         }
         body = body.push(text("Totals"));
         body = body.push(muted(text(format!(
@@ -242,7 +257,11 @@ mod checkout_tests {
     #[test]
     fn checkout_cancel_does_not_launch() {
         let mut tx = install_model();
-        tx.model.checkout = Some(CheckoutModel::new(summary(), InstallKind::Install));
+        tx.model.checkout = Some(CheckoutModel::new(
+            summary(),
+            InstallKind::Install,
+            Vec::new(),
+        ));
         let action = tx.update(TransactionMessage::CancelCheckout);
         assert!(matches!(action, Action::Finished));
         assert!(!matches!(tx.model.status, TransactionStatus::Running));

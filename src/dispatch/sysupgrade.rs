@@ -11,15 +11,6 @@ use crate::dispatch::session::{
 };
 use crate::events::InstallEvent;
 
-#[derive(Debug, Clone)]
-pub struct Preview {
-    pub summary: crate::events::TransactionSummary,
-    pub questions: crate::question::QuestionSet,
-    pub prepare_error: Option<crate::dry_run::PrepareFailure>,
-    pub aur: Vec<crate::upgrade::AurUpgradeCandidate>,
-    pub pkgbuild_diffs: Vec<crate::pkgbuild::PkgbuildDiff>,
-}
-
 pub struct SysupgradeRequest {
     pub no_refresh: bool,
     pub repo_only: bool,
@@ -55,11 +46,6 @@ pub fn sysupgrade(request: SysupgradeRequest) -> DispatchStream {
     rx
 }
 
-pub struct SysupgradePreviewRequest {
-    pub no_refresh: bool,
-    pub ignores: Vec<String>,
-}
-
 pub(crate) struct UpgradeReview {
     pub(crate) review: crate::question::review::Review,
     pub(crate) aur: Vec<crate::upgrade::AurUpgradeCandidate>,
@@ -68,38 +54,16 @@ pub(crate) struct UpgradeReview {
 pub(crate) fn upgrade_review(
     handle: &mut alpm::Alpm,
     source: Box<dyn crate::question::source::AnswerSource>,
-) -> anyhow::Result<(UpgradeReview, crate::tx::driver::Finish)> {
+) -> anyhow::Result<UpgradeReview> {
     let aur = preview_aur_candidates(handle);
     let outcome = crate::tx::compose::preview_with(handle, upgrade_run_spec(), source)?;
+    if let crate::tx::driver::Finish::PrepareFailed(failure) = &outcome.finish {
+        anyhow::bail!("upgrade preview failed to prepare: {failure}");
+    }
     let review = outcome
         .review
         .ok_or_else(|| anyhow::anyhow!("upgrade explore run produced no review"))?;
-    Ok((UpgradeReview { review, aur }, outcome.finish))
-}
-
-pub fn sysupgrade_preview(request: &SysupgradePreviewRequest) -> anyhow::Result<Preview> {
-    let config = crate::pacman::config()?;
-    let mut handle = crate::pacman::handle_rootless_with_config(&config)?;
-    if !request.no_refresh {
-        crate::pacman::refresh_sync_dbs_rootless(&mut handle)?;
-    }
-    crate::upgrade::apply_ignores(&mut handle, &config, &request.ignores);
-    let (assessed, finish) = upgrade_review(
-        &mut handle,
-        Box::new(crate::question::source::ExploreDefaults),
-    )?;
-    let aur_names: Vec<String> = assessed
-        .aur
-        .iter()
-        .map(|candidate| candidate.name.clone())
-        .collect();
-    let pkgbuild_diffs = pkgbuild_diffs_for(&aur_names);
-    Ok(legacy_preview(
-        &assessed.review,
-        finish,
-        assessed.aur,
-        pkgbuild_diffs,
-    ))
+    Ok(UpgradeReview { review, aur })
 }
 
 fn upgrade_run_spec() -> crate::tx::driver::RunSpec {
@@ -123,37 +87,6 @@ fn preview_aur_candidates(handle: &alpm::Alpm) -> Vec<crate::upgrade::AurUpgrade
             );
             Vec::new()
         }
-    }
-}
-
-fn pkgbuild_diffs_for(names: &[String]) -> Vec<crate::pkgbuild::PkgbuildDiff> {
-    if names.is_empty() {
-        return Vec::new();
-    }
-    match crate::pkgbuild::prepare_pkgbuild_diffs(names, false) {
-        Ok(diffs) => diffs,
-        Err(error) => {
-            eprintln!("[pakajo] pkgbuild diff computation failed: {error:#}");
-            Vec::new()
-        }
-    }
-}
-
-fn legacy_preview(
-    review: &crate::question::review::Review,
-    finish: crate::tx::driver::Finish,
-    aur: Vec<crate::upgrade::AurUpgradeCandidate>,
-    pkgbuild_diffs: Vec<crate::pkgbuild::PkgbuildDiff>,
-) -> Preview {
-    Preview {
-        summary: review.part2.clone(),
-        questions: crate::dry_run::question_set_from_review(review),
-        prepare_error: match finish {
-            crate::tx::driver::Finish::PrepareFailed(failure) => Some(failure),
-            crate::tx::driver::Finish::Stopped | crate::tx::driver::Finish::Committed => None,
-        },
-        aur,
-        pkgbuild_diffs,
     }
 }
 

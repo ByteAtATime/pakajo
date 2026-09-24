@@ -13,6 +13,4 @@ pub mod revalidate;
 pub use revalidate::{RevalidationRun, ReviewLoop, ReviewOrigin, ReviewPlan, ReviewStep, run_step};
 pub(crate) mod session;
 pub(crate) mod sysupgrade;
-pub use sysupgrade::{
-    Preview, SysupgradePreviewRequest, SysupgradeRequest, sysupgrade, sysupgrade_preview,
-};
+pub use sysupgrade::{SysupgradeRequest, sysupgrade};

@@ -123,7 +123,7 @@ fn render_question(question: &Question) -> String {
 
 fn run_upgrade_case(local: &[LocalPkg], sync: &[SyncPkg]) -> String {
     let (_dir, mut handle) = upgrade_fixture(local, sync);
-    let (assessed, finish) =
+    let assessed =
         upgrade_review(&mut handle, approved()).expect("upgrade explore review succeeds");
     let mut rendered = String::new();
     for question in &assessed.review.part1 {
@@ -134,7 +134,6 @@ fn run_upgrade_case(local: &[LocalPkg], sync: &[SyncPkg]) -> String {
     for line in summary_package_lines(&assessed.review.part2) {
         rendered.push_str(&format!("  {line}\n"));
     }
-    rendered.push_str(&format!("finish: {finish:?}\n"));
     rendered.push_str("installed:\n");
     for line in installed_names(&handle) {
         rendered.push_str(&format!("  {line}\n"));

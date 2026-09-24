@@ -30,7 +30,6 @@ use components::search::{
     search_input_id, search_status_bar,
 };
 use components::sysupgrade::SysupgradeMessage;
-use components::transaction::review::ReviewModel;
 use components::transaction::{Action, Transaction, TransactionMessage};
 use components::updates::{RefreshKind, UpdatesMessage, UpdatesState};
 
@@ -85,13 +84,7 @@ pub struct PakajoApp {
     pub(crate) updates_refresh_error: Option<String>,
     pub(crate) pending_force_refresh: Option<RefreshKind>,
     pub(crate) page: Page,
-    pub(crate) sysupgrade_preview: Option<pakajo::dispatch::Preview>,
-    pub(crate) sysupgrade_preview_error: Option<String>,
-    pub(crate) sysupgrade_preview_in_flight: bool,
     search_focus_pending: bool,
-    pub(crate) sysupgrade_review: Option<ReviewModel>,
-    pub(crate) pkgbuild_rows: Vec<crate::components::transaction::ReviewedDiff>,
-    pub(crate) pkgbuild_review_index: usize,
 }
 
 impl Application for PakajoApp {
@@ -184,13 +177,7 @@ impl Application for PakajoApp {
             updates_refresh_error: None,
             pending_force_refresh: None,
             page: Page::Search,
-            sysupgrade_preview: None,
-            sysupgrade_preview_error: None,
-            sysupgrade_preview_in_flight: false,
             search_focus_pending: true,
-            sysupgrade_review: None,
-            pkgbuild_rows: Vec::new(),
-            pkgbuild_review_index: 0,
         };
         let task = match pakajo::updates::load_cached() {
             Some(cache) => {
@@ -323,9 +310,6 @@ impl Application for PakajoApp {
             let page = match self.page {
                 Page::Search => self.search_page(),
                 Page::Updates => self.updates_page(),
-                Page::Resolve => self.resolve_page(),
-                Page::PkgbuildReview => self.pkgbuild_review_page(),
-                Page::Confirm => self.confirm_page(),
             };
             Column::new()
                 .push(container(page).width(Length::Fill).height(Length::Fill))
@@ -647,9 +631,6 @@ pub enum Message {
 pub enum Page {
     Search,
     Updates,
-    Resolve,
-    PkgbuildReview,
-    Confirm,
 }
 
 pub(crate) fn page_scroll_id() -> Id {

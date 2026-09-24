@@ -10,7 +10,6 @@ summary:
   clash-b 1.0-1
   dummy-new 2.0-1
   dummy-old 1.0-1 (removal)
-finish: Stopped
 installed:
   clash-a 1.0-1 Explicit
   clash-b 0.5-1 Explicit

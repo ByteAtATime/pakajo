@@ -22,19 +22,6 @@ pub fn select_presentation(stream: bool, interactive: bool, tty: bool) -> Presen
     }
 }
 
-fn read_approvals(
-    approvals_path: Option<&str>,
-) -> anyhow::Result<Option<crate::question::Approvals>> {
-    approvals_path
-        .map(|path| {
-            let bytes = std::fs::read(path)
-                .with_context(|| format!("failed to read approvals file {path}"))?;
-            serde_json::from_slice(&bytes)
-                .with_context(|| format!("failed to parse approvals file {path}"))
-        })
-        .transpose()
-}
-
 fn read_seal(
     approvals_path: Option<&str>,
 ) -> anyhow::Result<Option<crate::question::approvals::SealedApprovals>> {
@@ -114,7 +101,7 @@ pub fn run(argv: &[String]) -> i32 {
 
 fn upgrade_repo_source_sink(
     presentation: Presentation,
-    approvals: Option<crate::question::Approvals>,
+    sealed: Option<crate::question::approvals::SealedApprovals>,
 ) -> (
     Box<dyn crate::question::source::AnswerSource>,
     Box<dyn InstallSink>,
@@ -155,9 +142,13 @@ fn upgrade_repo_source_sink(
             (source, Box::new(ConsoleSink::new()))
         }
         Presentation::SilentStream => {
-            let source: Box<dyn crate::question::source::AnswerSource> = Box::new(
-                crate::question::source::LegacyApprovalsSource::new(approvals),
-            );
+            let inner: Box<dyn crate::question::source::AnswerSource> = match sealed {
+                Some(sealed) => Box::new(crate::question::source::ApprovalsReplay::new(sealed)),
+                None => Box::new(crate::question::source::FailClosedSource),
+            };
+            let source = crate::tx::prompt::stdin_channel_source(inner, |question| {
+                JsonSink::new().event(InstallEvent::RuntimePrompt { question })
+            });
             (source, Box::new(JsonSink::new()))
         }
     }
@@ -405,16 +396,11 @@ impl ChildOperation {
             } => {
                 let presentation =
                     select_presentation(*stream, *interactive, privs::stdin_is_tty());
-                if !matches!(presentation, Presentation::SilentStream) {
-                    let (source, sink) = upgrade_repo_source_sink(presentation, None);
-                    let outcome =
-                        crate::upgrade::run_upgrade_repo(*no_refresh, ignores, source, sink)?;
-                    return upgrade_outcome_code(outcome);
-                }
-                let (source, sink) = upgrade_repo_source_sink(
-                    presentation,
-                    read_approvals(approvals_path.as_deref())?,
-                );
+                let sealed = match presentation {
+                    Presentation::SilentStream => read_seal(approvals_path.as_deref())?,
+                    _ => None,
+                };
+                let (source, sink) = upgrade_repo_source_sink(presentation, sealed);
                 let outcome = crate::upgrade::run_upgrade_repo(*no_refresh, ignores, source, sink)?;
                 upgrade_outcome_code(outcome)
             }
@@ -459,13 +445,62 @@ mod tests {
     }
 
     #[test]
-    fn approvals_file_rejects_malformed_json() {
+    fn read_seal_rejects_corrupt_file_loudly() {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("pakajo-test-bad-{}.json", std::process::id()));
-        std::fs::write(&path, b"not json").expect("write bad approvals");
-        let result = read_approvals(Some(&path.to_string_lossy()));
+        let path = dir.join(format!("pakajo-test-bad-seal-{}.json", std::process::id()));
+        std::fs::write(&path, b"not json").expect("write bad seal");
+        let error = read_seal(Some(&path.to_string_lossy())).expect_err("corrupt seal rejected");
         let _ = std::fs::remove_file(&path);
-        assert!(result.is_err());
+        assert!(
+            error.to_string().contains("failed to decode seal file"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn upgrade_silent_source_replays_sealed_answer() {
+        use crate::question::approvals::seal;
+        use crate::question::model::{Answer, Question};
+        use crate::question::source::SourceDecision;
+        let question = Question::Conflict {
+            incoming: "cava-git".to_string(),
+            incoming_version: "1.0-1".to_string(),
+            removable: "cava".to_string(),
+            removable_version: "1.0-1".to_string(),
+            conflict_reason: None,
+        };
+        let answer = Answer::Conflict {
+            incoming: "cava-git".to_string(),
+            removable: "cava".to_string(),
+            remove: true,
+        };
+        let sealed = seal(std::slice::from_ref(&question), &[answer], true).expect("seal succeeds");
+        let (source, _) = upgrade_repo_source_sink(Presentation::SilentStream, Some(sealed));
+        assert!(
+            matches!(
+                source.answer(&question),
+                SourceDecision::Answer(Answer::Conflict { remove: true, .. })
+            ),
+            "sealed conflict replays as remove"
+        );
+    }
+
+    #[test]
+    fn upgrade_silent_source_fails_closed_without_seal() {
+        use crate::question::model::Question;
+        use crate::question::source::SourceDecision;
+        let question = Question::Conflict {
+            incoming: "cava-git".to_string(),
+            incoming_version: "1.0-1".to_string(),
+            removable: "cava".to_string(),
+            removable_version: "1.0-1".to_string(),
+            conflict_reason: None,
+        };
+        let (source, _) = upgrade_repo_source_sink(Presentation::SilentStream, None);
+        assert!(
+            matches!(source.answer(&question), SourceDecision::Abort(_)),
+            "unsealed upgrade answers nothing"
+        );
     }
 
     #[test]

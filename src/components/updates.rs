@@ -180,12 +180,16 @@ impl crate::PakajoApp {
                 .on_press(crate::Message::Updates(UpdatesMessage::RefreshUpdates))
                 .into()
         };
-        let upgrade_all: Element<'_> = if self.sysupgrade_preview_in_flight {
+        let upgrade_all: Element<'_> = if self
+            .transaction
+            .as_ref()
+            .is_some_and(|t| t.is_sysupgrade() && t.is_checking())
+        {
             text("Checking...").into()
         } else {
             let btn = button::standard("Upgrade all");
             let btn = if self.pending_count > 0 {
-                btn.on_press(crate::Message::Sysupgrade(SysupgradeMessage::StartPreview))
+                btn.on_press(crate::Message::Sysupgrade(SysupgradeMessage::Start))
             } else {
                 btn
             };
