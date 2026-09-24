@@ -4,6 +4,7 @@ use crate::dispatch::approvals::ApprovalsFile;
 use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem, send_done};
 use crate::dispatch::operation::PrivilegedOperation;
 use crate::dispatch::protocol::Decider;
+use crate::dispatch::seal::{JSON_SEAL_REQUIRED, json_seal_missing, non_interactive_seal_missing};
 use crate::dispatch::session::{
     AfterRepo, PhasePlan, RepoPhase, after_repo, repo_phase_from_child, repo_phase_from_result,
     run_phases,
@@ -129,7 +130,24 @@ fn detect_aur_upgrades(
         .collect())
 }
 
+pub(crate) const NON_INTERACTIVE_SEAL_REQUIRED: &str =
+    "non-interactive sysupgrade requires sealed approvals";
+
 fn run_sysupgrade(request: SysupgradeRequest, mut tx: futures::channel::mpsc::Sender<StreamItem>) {
+    if json_seal_missing(request.json, request.approvals.as_deref()) {
+        send_done(
+            &mut tx,
+            ChildOutcome::Failed(JSON_SEAL_REQUIRED.to_string()),
+        );
+        return;
+    }
+    if non_interactive_seal_missing(request.json, request.tty, request.approvals.as_deref()) {
+        send_done(
+            &mut tx,
+            ChildOutcome::Failed(NON_INTERACTIVE_SEAL_REQUIRED.to_string()),
+        );
+        return;
+    }
     let interactive = request.tty && !request.json;
     if crate::cli::privs::is_root() {
         let phase = repo_phase_from_result(crate::dispatch::child::run_upgrade_repo_direct(
@@ -275,7 +293,78 @@ fn detect_aur_targets(
 
 #[cfg(test)]
 mod tests {
-    use super::{NothingToDoSink, nothing_to_do_sink};
+    use super::{NON_INTERACTIVE_SEAL_REQUIRED, nothing_to_do_sink, sysupgrade};
+    use super::{NothingToDoSink, SysupgradeRequest};
+    use crate::dispatch::exec::{ChildOutcome, drain_declining};
+    use crate::dispatch::seal::{
+        JSON_SEAL_REQUIRED, json_seal_missing, non_interactive_seal_missing,
+    };
+
+    struct DiscardSink;
+
+    impl crate::events::InstallSink for DiscardSink {
+        fn event(&mut self, _event: crate::events::InstallEvent) {}
+    }
+
+    fn gate_request(json: bool, tty: bool, approvals: Option<&str>) -> SysupgradeRequest {
+        SysupgradeRequest {
+            no_refresh: true,
+            repo_only: true,
+            ignores: Vec::new(),
+            decider: Box::new(crate::dispatch::protocol::AutomaticDecider::new()),
+            aur_targets: Some(Vec::new()),
+            approvals: approvals.map(str::to_string),
+            tty,
+            json,
+            print_nothing_to_do: false,
+        }
+    }
+
+    #[test]
+    fn missing_seals_are_rejected_with_exact_messages() {
+        assert!(json_seal_missing(true, None));
+        assert!(!json_seal_missing(true, Some("{}")));
+        assert!(!json_seal_missing(false, None));
+        assert_eq!(JSON_SEAL_REQUIRED, "--json requires sealed approvals");
+        assert!(non_interactive_seal_missing(false, false, None));
+        assert!(!non_interactive_seal_missing(false, true, None));
+        assert!(!non_interactive_seal_missing(true, false, None));
+        assert!(!non_interactive_seal_missing(false, false, Some("{}")));
+        assert_eq!(
+            NON_INTERACTIVE_SEAL_REQUIRED,
+            "non-interactive sysupgrade requires sealed approvals"
+        );
+    }
+
+    #[test]
+    fn json_without_seal_fails_closed() {
+        let outcome = drain_declining(
+            sysupgrade(gate_request(true, false, None)),
+            &mut DiscardSink,
+        );
+        assert!(
+            matches!(
+                &outcome,
+                ChildOutcome::Failed(message) if message.as_str() == JSON_SEAL_REQUIRED
+            ),
+            "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn non_interactive_without_seal_fails_closed() {
+        let outcome = drain_declining(
+            sysupgrade(gate_request(false, false, None)),
+            &mut DiscardSink,
+        );
+        assert!(
+            matches!(
+                &outcome,
+                ChildOutcome::Failed(message) if message.as_str() == NON_INTERACTIVE_SEAL_REQUIRED
+            ),
+            "{outcome:?}"
+        );
+    }
 
     #[test]
     fn nothing_to_do_prints_for_cli_callers_only() {
