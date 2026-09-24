@@ -472,8 +472,8 @@ mod tests {
 
     #[test]
     fn find_groups_resolves_base_devel() {
-        use crate::install::{offline_pkg, offline_root};
-        let make = crate::install::OfflinePkg {
+        use crate::tx::testkit::{offline_pkg, offline_root};
+        let make = crate::tx::testkit::OfflinePkg {
             name: "make",
             groups: &["base-devel"],
             ..offline_pkg("make")
@@ -494,8 +494,8 @@ mod tests {
 
     #[test]
     fn group_index_includes_base_devel() {
-        use crate::install::{offline_pkg, offline_root};
-        let make = crate::install::OfflinePkg {
+        use crate::tx::testkit::{offline_pkg, offline_root};
+        let make = crate::tx::testkit::OfflinePkg {
             name: "make",
             groups: &["base-devel"],
             ..offline_pkg("make")
@@ -510,9 +510,9 @@ mod tests {
 
     #[test]
     fn local_group_lists_installed_members() {
-        use crate::install::{drive_sync, offline_pkg, offline_root};
         use crate::question::source::ExploreDefaults;
-        let make = crate::install::OfflinePkg {
+        use crate::tx::testkit::{drive_sync, offline_pkg, offline_root};
+        let make = crate::tx::testkit::OfflinePkg {
             name: "make",
             groups: &["base-devel"],
             ..offline_pkg("make")

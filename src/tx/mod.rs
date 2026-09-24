@@ -6,3 +6,5 @@ pub mod questions;
 #[cfg(test)]
 mod snapshots;
 pub mod targets;
+#[cfg(test)]
+pub mod testkit;

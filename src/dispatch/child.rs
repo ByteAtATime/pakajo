@@ -1,7 +1,6 @@
-use crate::cli::{ConsoleSink, EscalatedSink, JsonSink, classify_target, privs};
+use crate::cli::{ConsoleSink, EscalatedSink, InstallTarget, JsonSink, classify_target, privs};
 use crate::dispatch::operation::ChildOperation;
 use crate::events::{InstallEvent, InstallSink};
-use crate::install::InstallTarget;
 use anyhow::Context as _;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

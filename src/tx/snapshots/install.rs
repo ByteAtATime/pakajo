@@ -1,5 +1,5 @@
 use super::{approved, render_outcome, snapshot_settings};
-use crate::install::{OfflinePkg, drive_sync, offline_pkg, offline_root};
+use crate::tx::testkit::{OfflinePkg, drive_sync, offline_pkg, offline_root};
 
 struct InstallCase {
     name: &'static str,

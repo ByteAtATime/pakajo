@@ -1,11 +1,11 @@
 use super::{approved, render_outcome, snapshot_settings};
-use crate::install::{OfflinePkg, drive_sync, offline_pkg, offline_root};
 use crate::question::approvals::seal;
 use crate::question::model::{Answer, Question};
 use crate::question::source::{
     AnswerSource, ApprovalsReplay, ExploreDefaults, SourceDecision, derive_answers,
 };
 use crate::tx::driver::{RemoveSpec, RunKind, RunSpec};
+use crate::tx::testkit::{OfflinePkg, drive_sync, offline_pkg, offline_root};
 
 enum RemoveSource {
     Hold(bool),

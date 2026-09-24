@@ -14,7 +14,6 @@ pub mod download;
 pub mod events;
 pub mod git;
 pub mod holdpkg;
-pub mod install;
 pub mod package;
 pub mod pacman;
 pub mod pacman_watch;

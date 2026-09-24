@@ -770,4 +770,158 @@ mod tests {
         assert!(preview_names(&second).contains(&"provider-two".to_string()));
         assert!(!preview_names(&second).contains(&"provider-one".to_string()));
     }
+
+    use crate::question::model::Answer;
+    use crate::question::source::SourceDecision;
+    use crate::tx::testkit::{OfflinePkg, drive_sync, offline_pkg, offline_root};
+
+    fn preapproved() -> Box<dyn AnswerSource> {
+        crate::tx::prompt::with_preapproved_proceed(Box::new(ExploreDefaults))
+    }
+
+    struct DeclineConflicts;
+
+    impl AnswerSource for DeclineConflicts {
+        fn answer(&self, question: &Question) -> SourceDecision {
+            match question {
+                Question::Conflict {
+                    incoming,
+                    removable,
+                    ..
+                } => SourceDecision::Answer(Answer::Conflict {
+                    incoming: incoming.clone(),
+                    removable: removable.clone(),
+                    remove: false,
+                }),
+                other => ExploreDefaults.answer(other),
+            }
+        }
+    }
+
+    #[test]
+    fn engine_install_commits_single_package() {
+        let (_dir, mut handle) = offline_root(&[offline_pkg("sl")]);
+        let outcome = drive_sync(&mut handle, &["sl"], preapproved()).unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert!(
+            handle.localdb().pkg("sl").is_ok(),
+            "sl should be installed in the local db"
+        );
+    }
+
+    #[test]
+    fn engine_install_commits_multiple_targets() {
+        let (_dir, mut handle) = offline_root(&[offline_pkg("sl"), offline_pkg("figlet")]);
+        let outcome = drive_sync(&mut handle, &["sl", "figlet"], preapproved()).unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        assert!(
+            handle.localdb().pkg("sl").is_ok(),
+            "sl should be installed in the local db"
+        );
+        assert!(
+            handle.localdb().pkg("figlet").is_ok(),
+            "figlet should be installed in the local db"
+        );
+    }
+
+    #[test]
+    fn engine_install_stopped_leaves_localdb_empty() {
+        let (_dir, mut handle) = offline_root(&[offline_pkg("sl")]);
+        let outcome = drive_sync(&mut handle, &["sl"], Box::new(ExploreDefaults)).unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        assert!(
+            handle.localdb().pkg("sl").is_err(),
+            "sl must NOT be installed after a stopped confirm"
+        );
+    }
+
+    #[test]
+    fn engine_conflict_decline_fails_without_committing() {
+        let gvim = OfflinePkg {
+            name: "gvim",
+            conflicts: &["vim"],
+            ..offline_pkg("gvim")
+        };
+        let (_dir, mut handle) = offline_root(&[offline_pkg("vim"), gvim]);
+        drive_sync(&mut handle, &["vim"], preapproved()).unwrap();
+        assert!(
+            handle.localdb().pkg("vim").is_ok(),
+            "vim should be installed before the conflict test"
+        );
+
+        let outcome = drive_sync(&mut handle, &["gvim"], Box::new(DeclineConflicts)).unwrap();
+        assert!(
+            matches!(outcome.finish, Finish::PrepareFailed(_)),
+            "declined conflict must fail prepare, got {:?}",
+            outcome.finish
+        );
+        assert!(
+            handle.localdb().pkg("gvim").is_err(),
+            "gvim must NOT be installed after the declined conflict"
+        );
+    }
+
+    #[test]
+    fn engine_provider_choice_is_recorded() {
+        use std::sync::{Arc, Mutex};
+
+        type RecordedProviders = Arc<Mutex<Vec<(String, usize)>>>;
+
+        struct RecordingProvider {
+            recorded: RecordedProviders,
+        }
+
+        impl AnswerSource for RecordingProvider {
+            fn answer(&self, question: &Question) -> SourceDecision {
+                match question {
+                    Question::SelectProvider { depend, candidates } => {
+                        self.recorded
+                            .lock()
+                            .unwrap()
+                            .push((depend.clone(), candidates.len()));
+                        let first = &candidates[0];
+                        SourceDecision::Answer(Answer::SelectProvider {
+                            name: first.name.clone(),
+                            repo: first.repo.clone(),
+                        })
+                    }
+                    other => ExploreDefaults.answer(other),
+                }
+            }
+        }
+
+        let netapp = OfflinePkg {
+            name: "netapp",
+            depends: &["sdl"],
+            ..offline_pkg("netapp")
+        };
+        let sdl_one = OfflinePkg {
+            name: "sdl-one",
+            provides: &["sdl"],
+            ..offline_pkg("sdl-one")
+        };
+        let sdl_two = OfflinePkg {
+            name: "sdl-two",
+            provides: &["sdl"],
+            ..offline_pkg("sdl-two")
+        };
+        let (_dir, mut handle) = offline_root(&[netapp, sdl_one, sdl_two]);
+        let recorded: RecordedProviders = Arc::new(Mutex::new(Vec::new()));
+        let outcome = drive_sync(
+            &mut handle,
+            &["netapp"],
+            Box::new(RecordingProvider {
+                recorded: recorded.clone(),
+            }),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        let captured = recorded.lock().unwrap().clone();
+        assert!(
+            captured
+                .iter()
+                .any(|(depend, count)| depend == "sdl" && *count >= 2),
+            "expected a SelectProvider for \"sdl\" with >=2 candidates; got {captured:?}"
+        );
+    }
 }

@@ -1,7 +1,6 @@
 use crate::dispatch::exec::{ChildOutcome, DispatchStream};
 use crate::dispatch::protocol::{Decider, TerminalDecider};
 use crate::events::InstallSink;
-use crate::install::InstallTarget;
 use clap::Parser;
 
 mod args;
@@ -259,6 +258,11 @@ fn read_fully(reader: impl std::io::Read) -> anyhow::Result<String> {
     Ok(payload)
 }
 
+pub enum InstallTarget {
+    Repo(String),
+    File(std::path::PathBuf),
+}
+
 pub(crate) fn classify_target(s: &str) -> InstallTarget {
     const FILE_SUFFIXES: &[&str] = &[".pkg.tar", ".pkg.tar.gz", ".pkg.tar.zst", ".pkg.tar.xz"];
     if FILE_SUFFIXES.iter().any(|suffix| s.ends_with(suffix)) {
@@ -303,10 +307,12 @@ fn exit_with_result(result: anyhow::Result<()>) -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{INVALID_PIPED_SEAL, SEAL_PAYLOAD_TOO_LARGE, classify_target, piped_seal_payload};
+    use super::{
+        INVALID_PIPED_SEAL, InstallTarget, SEAL_PAYLOAD_TOO_LARGE, classify_target,
+        piped_seal_payload,
+    };
     use crate::cli::args::{Cli, Command};
     use crate::dispatch::seal::json_seal_missing;
-    use crate::install::InstallTarget;
     use clap::Parser as _;
     use std::io::Cursor;
 
