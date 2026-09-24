@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(dep.version.as_deref(), Some(">=1.2"));
         assert_eq!(dep.reason.as_deref(), Some("some reason"));
 
-        let dep = parse_opt_dependency("foo: reason").expect("legacy reason must parse");
+        let dep = parse_opt_dependency("foo: reason").expect("reason must parse");
         assert_eq!(dep.name, "foo");
         assert_eq!(dep.version, None);
         assert_eq!(dep.reason.as_deref(), Some("reason"));

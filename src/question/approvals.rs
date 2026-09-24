@@ -552,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn dep_seals_stay_sorted_unique_and_legacy_compatible() {
+    fn dep_seals_stay_sorted_unique_and_compatible() {
         for deps in [vec![s("b"), s("a")], vec![s("a"), s("a")]] {
             assert!(
                 validate(&SealedApprovals {
@@ -572,10 +572,10 @@ mod tests {
         let composed = seal_with_deps(None, &[s("b"), s("a"), s("b")]);
         assert_eq!(composed.deps, vec![s("a"), s("b")]);
         assert!(composed.proceed && composed.answers.is_empty());
-        let legacy = serde_json::json!({"answers": [], "proceed": true});
-        let decoded: SealedApprovals = from_value(legacy).expect("legacy seal decodes");
+        let without_deps = serde_json::json!({"answers": [], "proceed": true});
+        let decoded: SealedApprovals = from_value(without_deps).expect("dep-less seal decodes");
         assert!(decoded.deps.is_empty());
-        validate(&decoded).expect("legacy seal validates");
+        validate(&decoded).expect("dep-less seal validates");
     }
 
     #[test]
