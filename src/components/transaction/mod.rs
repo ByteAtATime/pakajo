@@ -449,18 +449,13 @@ impl Transaction {
 
     fn accept_initial(&mut self, run: RevalidationRun) -> Action {
         let upgrade = self.model.kind == InstallKind::Upgrade;
-        if upgrade {
-            self.model.aur_names = run
-                .aur
-                .iter()
-                .map(|candidate| candidate.name.clone())
-                .collect();
-            self.model.aur_upgrades = run.aur.clone();
-        }
         let idle_upgrade = upgrade
             && run.questions.is_empty()
             && run.summary.packages.is_empty()
             && run.aur.is_empty();
+        if upgrade {
+            self.model.adopt_aur_candidates(run.aur);
+        }
         self.model.summary = Some(run.summary);
         self.model.revalidations = 0;
         self.model.unstables = 0;
@@ -504,12 +499,7 @@ impl Transaction {
         match converge(self.model.revalidations, &outcome) {
             Verdict::Converged => {
                 if self.model.kind == InstallKind::Upgrade {
-                    self.model.aur_names = run
-                        .aur
-                        .iter()
-                        .map(|candidate| candidate.name.clone())
-                        .collect();
-                    self.model.aur_upgrades = run.aur.clone();
+                    self.model.adopt_aur_candidates(run.aur);
                 }
                 self.model.summary = Some(run.summary);
                 self.model.review_notice = None;

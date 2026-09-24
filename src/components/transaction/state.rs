@@ -172,6 +172,17 @@ impl TransactionModel {
         self.answer_channel = None;
     }
 
+    pub(crate) fn adopt_aur_candidates(
+        &mut self,
+        candidates: Vec<pakajo::upgrade::AurUpgradeCandidate>,
+    ) {
+        self.aur_names = candidates
+            .iter()
+            .map(|candidate| candidate.name.clone())
+            .collect();
+        self.aur_upgrades = candidates;
+    }
+
     pub(crate) fn set_answer_channel(&mut self, writer: AnswerWriter) {
         self.answer_channel = Some(writer);
         self.pending_import_key = None;
