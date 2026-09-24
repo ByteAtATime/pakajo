@@ -162,7 +162,7 @@ fn drive(
     }
     let queue_result: anyhow::Result<Vec<String>> = match &spec.kind {
         RunKind::Sync => queue_targets(handle, spec, &session).map(|()| Vec::new()),
-        RunKind::Upgrade => queue_upgrade(handle, spec, &session),
+        RunKind::Upgrade => queue_upgrade(handle, spec, &session).map(|()| Vec::new()),
         RunKind::Remove(_) => queue_remove_targets(handle, &spec.targets),
     };
     let missing = match queue_result {
@@ -324,12 +324,12 @@ fn queue_upgrade(
     handle: &alpm::Alpm,
     spec: &RunSpec,
     session: &Rc<RefCell<QuestionSession>>,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<()> {
     queue_targets(handle, spec, session)?;
     handle
         .sync_sysupgrade(false)
         .context("failed to select upgrade candidates")?;
-    Ok(Vec::new())
+    Ok(())
 }
 
 fn ask_missing_removal(
@@ -1781,16 +1781,21 @@ mod tests {
         }
     }
 
-    fn newer(local_version: &'static str, sync_version: &'static str) -> (Vec<Pkg>, Vec<Pkg>) {
-        (
-            vec![make("foo", sync_version, &[], &[], &[])],
-            vec![make("foo", local_version, &[], &[], &[])],
-        )
+    struct NewerPair {
+        sync: Vec<Pkg>,
+        local: Vec<Pkg>,
+    }
+
+    fn newer(local_version: &'static str, sync_version: &'static str) -> NewerPair {
+        NewerPair {
+            sync: vec![make("foo", sync_version, &[], &[], &[])],
+            local: vec![make("foo", local_version, &[], &[], &[])],
+        }
     }
 
     #[test]
     fn upgrade_selects_newer_repo_package() {
-        let (sync, local) = newer("1.0-1", "2.0-1");
+        let NewerPair { sync, local } = newer("1.0-1", "2.0-1");
         let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
         let outcome = run(&mut handle, &upgrade_spec(&[], false), proceed(), discard()).unwrap();
         assert!(matches!(outcome.finish, Finish::Committed));
@@ -1800,7 +1805,7 @@ mod tests {
 
     #[test]
     fn upgrade_idle_when_up_to_date() {
-        let (sync, local) = newer("1.0-1", "1.0-1");
+        let NewerPair { sync, local } = newer("1.0-1", "1.0-1");
         let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
         let recorder = Recorder::default();
         let seen = recorder.seen.clone();
@@ -1824,8 +1829,45 @@ mod tests {
     }
 
     #[test]
+    fn upgrade_idle_stays_silent_for_child_presentation() {
+        use crate::question::source::LegacyApprovalsSource;
+
+        let source: Box<dyn AnswerSource> = Box::new(LegacyApprovalsSource::new(Some(
+            crate::question::Approvals::default(),
+        )));
+        let NewerPair { sync, local } = newer("1.0-1", "1.0-1");
+        let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let outcome = run(
+            &mut handle,
+            &upgrade_spec(&[], false),
+            source,
+            Box::new(recorder),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped), "idle must stop");
+        assert!(outcome.summary.is_empty(), "idle summary must be empty");
+        assert!(
+            !seen.borrow().iter().any(|event| matches!(
+                event,
+                InstallEvent::Log { message, .. } if message.contains("there is nothing to do")
+            )),
+            "child must not print nothing-to-do"
+        );
+        assert!(
+            !seen
+                .borrow()
+                .iter()
+                .any(|event| matches!(event, InstallEvent::TransactionSummary(_))),
+            "idle must not emit a summary event"
+        );
+        release(&mut handle);
+    }
+
+    #[test]
     fn upgrade_skips_newer_local_with_warning() {
-        let (sync, local) = newer("2.0-1", "1.0-1");
+        let NewerPair { sync, local } = newer("2.0-1", "1.0-1");
         let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
         let recorder = Recorder::default();
         let seen = recorder.seen.clone();
@@ -1852,7 +1894,7 @@ mod tests {
 
     #[test]
     fn upgrade_drops_ignored_package_with_warning() {
-        let (sync, local) = newer("1.0-1", "2.0-1");
+        let NewerPair { sync, local } = newer("1.0-1", "2.0-1");
         let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
         handle.add_ignorepkg("foo").unwrap();
         let recorder = Recorder::default();
@@ -1918,7 +1960,7 @@ mod tests {
 
     #[test]
     fn upgrade_explore_run_returns_review() {
-        let (sync, local) = newer("1.0-1", "2.0-1");
+        let NewerPair { sync, local } = newer("1.0-1", "2.0-1");
         let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
         let recorder = Recorder::default();
         let seen = recorder.seen.clone();
@@ -1975,7 +2017,7 @@ mod tests {
     fn upgrade_proceed_uses_install_wording() {
         use crate::question::model::TransactionKind;
 
-        let (sync, local) = newer("1.0-1", "2.0-1");
+        let NewerPair { sync, local } = newer("1.0-1", "2.0-1");
         let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
         let seen: Rc<Cell<Option<TransactionKind>>> = Rc::new(Cell::new(None));
         let source = {

@@ -1,4 +1,4 @@
-use crate::cli::{ConsoleSink, EscalatedSink, JsonSink, answerer_for, classify_target, privs};
+use crate::cli::{ConsoleSink, EscalatedSink, JsonSink, classify_target, privs};
 use crate::dispatch::operation::ChildOperation;
 use crate::events::{InstallEvent, InstallSink};
 use crate::install::InstallTarget;
@@ -19,14 +19,6 @@ pub fn select_presentation(stream: bool, interactive: bool, tty: bool) -> Presen
         Presentation::InteractiveStream
     } else {
         Presentation::SilentStream
-    }
-}
-
-pub fn select_upgrade_repo_presentation(stream: bool) -> Presentation {
-    if stream {
-        Presentation::SilentStream
-    } else {
-        Presentation::Console
     }
 }
 
@@ -62,11 +54,22 @@ fn stdin_input() -> std::rc::Rc<std::cell::RefCell<std::io::BufReader<std::io::S
     )))
 }
 
-fn finish_transaction(outcome: crate::tx::driver::RunOutcome) -> anyhow::Result<()> {
+fn finish_transaction(outcome: crate::tx::driver::RunOutcome) -> anyhow::Result<i32> {
     if let crate::tx::driver::Finish::PrepareFailed(failure) = outcome.finish {
         anyhow::bail!("failed to prepare transaction: {failure}")
     }
-    Ok(())
+    Ok(0)
+}
+
+fn upgrade_outcome_code(outcome: crate::tx::driver::RunOutcome) -> anyhow::Result<i32> {
+    match outcome.finish {
+        crate::tx::driver::Finish::Committed => Ok(0),
+        crate::tx::driver::Finish::Stopped if outcome.summary.is_empty() => Ok(3),
+        crate::tx::driver::Finish::Stopped => Ok(4),
+        crate::tx::driver::Finish::PrepareFailed(failure) => {
+            anyhow::bail!("failed to prepare transaction: {failure}")
+        }
+    }
 }
 
 fn engine_source<R: std::io::BufRead + 'static, W: std::io::Write + 'static>(
@@ -91,9 +94,9 @@ fn repo_names_acceptable(handle: &alpm::Alpm, repo_names: &[String]) -> bool {
     crate::tx::targets::unresolvable_target(handle, &probe).is_none()
 }
 
-pub fn code_from(result: anyhow::Result<()>) -> i32 {
+pub fn code_from(result: anyhow::Result<i32>) -> i32 {
     match result {
-        Ok(()) => 0,
+        Ok(code) => code,
         Err(e) => {
             eprintln!("{e:#}");
             1
@@ -110,7 +113,7 @@ pub fn run(argv: &[String]) -> i32 {
 }
 
 impl ChildOperation {
-    pub fn execute(&self) -> anyhow::Result<()> {
+    pub fn execute(&self) -> anyhow::Result<i32> {
         match self {
             ChildOperation::Remove {
                 targets,
@@ -320,46 +323,72 @@ impl ChildOperation {
             ChildOperation::UpgradeRepo {
                 no_refresh,
                 ignores,
-                fingerprint_path,
+                interactive,
                 approvals_path,
                 stream,
             } => {
-                let approvals = read_approvals(approvals_path.as_deref())?;
-                let answerer = answerer_for(approvals);
-                let silent = matches!(
-                    select_upgrade_repo_presentation(*stream),
-                    Presentation::SilentStream
-                );
-                if silent {
-                    crate::upgrade::run_repo_sysupgrade(
-                        *no_refresh,
-                        ignores,
-                        JsonSink::new(),
-                        answerer,
-                        fingerprint_path.as_deref(),
-                    )
-                } else {
-                    let input = stdin_input();
-                    let source = engine_source(
-                        false,
-                        crate::tx::prompt::InteractiveSource::new(
-                            std::rc::Rc::clone(&input),
-                            std::io::stdout(),
-                            crate::color::stdout_color(),
-                        ),
-                        crate::tx::prompt::TtyImportPrompter::new(
-                            std::rc::Rc::clone(&input),
-                            std::io::stdout(),
-                            crate::color::stdout_color(),
-                        ),
-                    );
-                    let outcome = crate::upgrade::run_upgrade_repo(
-                        *no_refresh,
-                        ignores,
-                        source,
-                        Box::new(ConsoleSink::new()),
-                    )?;
-                    finish_transaction(outcome)
+                let presentation =
+                    select_presentation(*stream, *interactive, privs::stdin_is_tty());
+                match presentation {
+                    Presentation::InteractiveStream => {
+                        let input = stdin_input();
+                        let source = engine_source(
+                            false,
+                            crate::tx::prompt::InteractiveSource::new(
+                                std::rc::Rc::clone(&input),
+                                std::io::stderr(),
+                                crate::color::stderr_color(),
+                            ),
+                            crate::tx::prompt::TtyImportPrompter::new(
+                                std::rc::Rc::clone(&input),
+                                std::io::stderr(),
+                                crate::color::stderr_color(),
+                            ),
+                        );
+                        let outcome = crate::upgrade::run_upgrade_repo(
+                            *no_refresh,
+                            ignores,
+                            source,
+                            Box::new(EscalatedSink::new()),
+                        )?;
+                        upgrade_outcome_code(outcome)
+                    }
+                    Presentation::Console => {
+                        let input = stdin_input();
+                        let source = engine_source(
+                            false,
+                            crate::tx::prompt::InteractiveSource::new(
+                                std::rc::Rc::clone(&input),
+                                std::io::stdout(),
+                                crate::color::stdout_color(),
+                            ),
+                            crate::tx::prompt::TtyImportPrompter::new(
+                                std::rc::Rc::clone(&input),
+                                std::io::stdout(),
+                                crate::color::stdout_color(),
+                            ),
+                        );
+                        let outcome = crate::upgrade::run_upgrade_repo(
+                            *no_refresh,
+                            ignores,
+                            source,
+                            Box::new(ConsoleSink::new()),
+                        )?;
+                        upgrade_outcome_code(outcome)
+                    }
+                    Presentation::SilentStream => {
+                        let source: Box<dyn crate::question::source::AnswerSource> =
+                            Box::new(crate::question::source::LegacyApprovalsSource::new(
+                                read_approvals(approvals_path.as_deref())?,
+                            ));
+                        let outcome = crate::upgrade::run_upgrade_repo(
+                            *no_refresh,
+                            ignores,
+                            source,
+                            Box::new(JsonSink::new()),
+                        )?;
+                        upgrade_outcome_code(outcome)
+                    }
                 }
             }
         }
@@ -388,19 +417,6 @@ mod tests {
                 select_presentation(stream, interactive, tty),
                 expected,
                 "select_presentation(stream={stream}, interactive={interactive}, tty={tty})"
-            );
-        }
-    }
-
-    #[test]
-    fn upgrade_repo_presentation_keys_on_stream_alone() {
-        use Presentation::{Console, SilentStream};
-        let cases = [(true, SilentStream), (false, Console)];
-        for (stream, expected) in cases {
-            assert_eq!(
-                select_upgrade_repo_presentation(stream),
-                expected,
-                "select_upgrade_repo_presentation(stream={stream})"
             );
         }
     }
@@ -437,6 +453,52 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert_eq!(decoded, Some(sealed));
         assert!(read_seal(None).expect("no path is no seal").is_none());
+    }
+
+    #[test]
+    fn upgrade_outcome_codes_classify_idle_and_decline() {
+        use crate::events::TransactionSummary;
+        use crate::tx::driver::{Finish, RunOutcome};
+        let committed = RunOutcome {
+            summary: TransactionSummary::default(),
+            finish: Finish::Committed,
+            review: None,
+        };
+        assert_eq!(upgrade_outcome_code(committed).expect("committed"), 0);
+        let idle = RunOutcome {
+            summary: TransactionSummary::default(),
+            finish: Finish::Stopped,
+            review: None,
+        };
+        assert_eq!(upgrade_outcome_code(idle).expect("idle"), 3);
+        let declined = RunOutcome {
+            summary: TransactionSummary {
+                packages: vec![crate::events::SummaryPackage {
+                    name: "foo".to_string(),
+                    repository: None,
+                    new_version: "1.0".to_string(),
+                    old_version: None,
+                    download_size: 0,
+                    installed_size: 0,
+                    old_installed_size: 0,
+                    is_removal: false,
+                }],
+                total_download_size: 0,
+                total_installed_size: 0,
+                total_removed_size: 0,
+            },
+            finish: Finish::Stopped,
+            review: None,
+        };
+        assert_eq!(upgrade_outcome_code(declined).expect("declined"), 4);
+        let failed = RunOutcome {
+            summary: TransactionSummary::default(),
+            finish: Finish::PrepareFailed(crate::tx::convert::PrepareFailure::Other(
+                "broken".to_string(),
+            )),
+            review: None,
+        };
+        assert!(upgrade_outcome_code(failed).is_err());
     }
 
     #[test]

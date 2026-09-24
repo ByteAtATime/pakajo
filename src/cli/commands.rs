@@ -1,4 +1,3 @@
-use super::privs::stdin_is_tty;
 use crate::package::PackageSource;
 use crate::search::SearchResult;
 
@@ -133,17 +132,5 @@ fn print_search_results(rows: &[SearchResult]) {
         let desc = row.description.as_deref().unwrap_or("-");
         println!("{repo}/{name} {version}{metadata_block}");
         println!("    {desc}");
-    }
-}
-
-pub fn answerer_for(
-    approvals: Option<crate::question::Approvals>,
-) -> Box<dyn crate::answerer::QuestionAnswerer> {
-    if let Some(appr) = approvals {
-        Box::new(crate::answerer::ApprovalsAnswerer::new(appr))
-    } else if stdin_is_tty() {
-        Box::new(crate::answerer::StdioAnswerer::new())
-    } else {
-        Box::new(crate::answerer::NonInteractiveAnswerer)
     }
 }

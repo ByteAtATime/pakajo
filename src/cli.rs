@@ -2,7 +2,6 @@ use crate::dispatch::exec::{ChildOutcome, DispatchStream};
 use crate::dispatch::protocol::{Decider, TerminalDecider};
 use crate::events::InstallSink;
 use crate::install::InstallTarget;
-use anyhow::Context as _;
 use clap::Parser;
 
 mod args;
@@ -29,7 +28,6 @@ pub(crate) mod privs;
 use self::privs::stdin_is_tty;
 
 mod commands;
-pub(crate) use self::commands::answerer_for;
 use self::commands::{run_aur_sync, run_gendb, run_search};
 
 mod complete;
@@ -66,7 +64,10 @@ fn drain(stream: DispatchStream, json: bool) -> ChildOutcome {
 }
 
 fn outcome_code(outcome: &ChildOutcome) -> i32 {
-    if matches!(outcome, ChildOutcome::Success) {
+    if matches!(
+        outcome,
+        ChildOutcome::Success | ChildOutcome::Stopped { idle: true }
+    ) {
         return 0;
     }
     eprintln!("{}", outcome.reason());
@@ -74,14 +75,6 @@ fn outcome_code(outcome: &ChildOutcome) -> i32 {
 }
 
 fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
-    let fingerprint = match args.fingerprint_file.as_deref().map(seal_fingerprint_file) {
-        Some(Ok(file)) => Some(file),
-        Some(Err(error)) => {
-            eprintln!("{error:#}");
-            return 1;
-        }
-        None => None,
-    };
     let tty = stdin_is_tty() && !args.json;
     let request = crate::dispatch::SysupgradeRequest {
         no_refresh: args.no_refresh,
@@ -89,18 +82,11 @@ fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
         ignores: args.ignores.clone(),
         decider: Box::new(TerminalDecider::new(args.json, args.skip_review, tty)),
         aur_targets: None,
-        fingerprint,
         approvals: None,
         tty,
         json: args.json,
     };
     outcome_code(&drain(crate::dispatch::sysupgrade(request), args.json))
-}
-
-fn seal_fingerprint_file(path: &str) -> anyhow::Result<crate::dispatch::approvals::ApprovalsFile> {
-    let bytes =
-        std::fs::read(path).with_context(|| format!("failed to read fingerprint file {path}"))?;
-    crate::dispatch::approvals::ApprovalsFile::write(&bytes)
 }
 
 fn install_subcommand(args: InstallArgs) -> i32 {

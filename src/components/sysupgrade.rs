@@ -122,20 +122,6 @@ impl crate::PakajoApp {
         if preview.prepare_error.is_some() {
             return Task::none();
         }
-        let summary_bytes = match serde_json::to_vec(&preview.summary) {
-            Err(e) => {
-                eprintln!("[pakajo] fingerprint serialization failed: {e:#}");
-                return Task::none();
-            }
-            Ok(bytes) => bytes,
-        };
-        let fingerprint = match pakajo::dispatch::approvals::ApprovalsFile::write(&summary_bytes) {
-            Ok(file) => file,
-            Err(e) => {
-                eprintln!("[pakajo] fingerprint write failed: {e:#}");
-                return Task::none();
-            }
-        };
         let approvals = {
             let collected = if let Some(r) = &self.sysupgrade_review {
                 collect_approvals(&r.qs, &r.conflict_checks, &r.provider_choices, &r.qs.held)
@@ -163,7 +149,6 @@ impl crate::PakajoApp {
                 ignores: Vec::new(),
                 decider: Box::new(pakajo::dispatch::protocol::AutomaticDecider::new()),
                 aur_targets: Some(preview.aur.iter().map(|c| c.name.clone()).collect()),
-                fingerprint: Some(fingerprint),
                 approvals,
                 tty: false,
                 json: false,

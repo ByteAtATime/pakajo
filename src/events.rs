@@ -174,6 +174,15 @@ pub struct TransactionSummary {
     pub total_removed_size: i64,
 }
 
+impl TransactionSummary {
+    pub fn is_empty(&self) -> bool {
+        self.packages.is_empty()
+            && self.total_download_size == 0
+            && self.total_installed_size == 0
+            && self.total_removed_size == 0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SummaryPackage {
     pub name: String,

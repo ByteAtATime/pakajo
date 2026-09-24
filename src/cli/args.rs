@@ -54,8 +54,6 @@ pub struct UpgradeArgs {
     pub ignores: Vec<String>,
     #[arg(long = "skip-review")]
     pub skip_review: bool,
-    #[arg(long = "fingerprint-file")]
-    pub fingerprint_file: Option<String>,
 }
 
 #[derive(Args)]

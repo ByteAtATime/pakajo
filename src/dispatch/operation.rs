@@ -8,7 +8,6 @@ const AS_DEPS: &str = "--asdeps";
 const REINSTALL: &str = "--reinstall";
 const NO_REFRESH: &str = "--no-refresh";
 const IGNORE: &str = "--ignore";
-const FINGERPRINT_FILE: &str = "--fingerprint-file";
 const APPROVALS_FILE: &str = "--approvals-file";
 const PRECONFIRMED: &str = "--preconfirmed";
 const INTERACTIVE: &str = "--interactive";
@@ -30,7 +29,7 @@ pub enum PrivilegedOperation {
     UpgradeRepo {
         no_refresh: bool,
         ignores: Vec<String>,
-        fingerprint: Option<crate::dispatch::approvals::ApprovalsFile>,
+        interactive: bool,
         approvals: Option<crate::dispatch::approvals::ApprovalsFile>,
     },
 }
@@ -65,18 +64,14 @@ pub enum ChildOperation {
     UpgradeRepo {
         no_refresh: bool,
         ignores: Vec<String>,
-        fingerprint_path: Option<String>,
+        interactive: bool,
         approvals_path: Option<String>,
         stream: bool,
     },
 }
 
 impl PrivilegedOperation {
-    pub(crate) fn wire_args(
-        &self,
-        approvals_path: Option<&str>,
-        fingerprint_path: Option<&str>,
-    ) -> Vec<String> {
+    pub(crate) fn wire_args(&self, approvals_path: Option<&str>) -> Vec<String> {
         match self {
             PrivilegedOperation::Remove {
                 targets,
@@ -125,19 +120,19 @@ impl PrivilegedOperation {
             PrivilegedOperation::UpgradeRepo {
                 no_refresh,
                 ignores,
+                interactive,
                 ..
             } => {
                 let mut argv = vec![UPGRADE_REPO.to_string(), STREAM.to_string()];
+                if *interactive {
+                    argv.push(INTERACTIVE.to_string());
+                }
                 if *no_refresh {
                     argv.push(NO_REFRESH.to_string());
                 }
                 for name in ignores {
                     argv.push(IGNORE.to_string());
                     argv.push(name.clone());
-                }
-                if let Some(path) = fingerprint_path {
-                    argv.push(FINGERPRINT_FILE.to_string());
-                    argv.push(path.to_string());
                 }
                 if let Some(path) = approvals_path {
                     argv.push(APPROVALS_FILE.to_string());
@@ -226,16 +221,16 @@ fn decode_install(argv: &[String]) -> Option<ChildOperation> {
 fn decode_upgrade_repo(argv: &[String]) -> Option<ChildOperation> {
     let mut stream = false;
     let mut no_refresh = false;
+    let mut interactive = false;
     let mut ignores = Vec::new();
-    let mut fingerprint_path = None;
     let mut approvals_path = None;
     let mut parts = argv.iter();
     while let Some(arg) = parts.next() {
         match arg.as_str() {
             STREAM => stream = true,
             NO_REFRESH => no_refresh = true,
+            INTERACTIVE => interactive = true,
             IGNORE => ignores.push(parts.next()?.clone()),
-            FINGERPRINT_FILE => fingerprint_path = Some(parts.next()?.clone()),
             APPROVALS_FILE => approvals_path = Some(parts.next()?.clone()),
             _ => return None,
         }
@@ -243,7 +238,7 @@ fn decode_upgrade_repo(argv: &[String]) -> Option<ChildOperation> {
     Some(ChildOperation::UpgradeRepo {
         no_refresh,
         ignores,
-        fingerprint_path,
+        interactive,
         approvals_path,
         stream,
     })
@@ -260,7 +255,7 @@ mod tests {
             interactive: false,
             approvals: None,
         };
-        let argv = operation.wire_args(None, None);
+        let argv = operation.wire_args(None);
         assert_eq!(argv, ["remove", "--stream", "sl", "figlet"]);
         assert_eq!(
             ChildOperation::decode(&argv),
@@ -280,7 +275,7 @@ mod tests {
             interactive: false,
             approvals: None,
         };
-        let argv = operation.wire_args(Some("/tmp/pakajo-approvals-1.json"), None);
+        let argv = operation.wire_args(Some("/tmp/pakajo-approvals-1.json"));
         assert_eq!(
             argv,
             [
@@ -319,7 +314,7 @@ mod tests {
                 interactive,
                 approvals: None,
             };
-            let argv = operation.wire_args(None, None);
+            let argv = operation.wire_args(None);
             assert_eq!(argv, expected);
             assert_eq!(
                 ChildOperation::decode(&argv),
@@ -343,7 +338,7 @@ mod tests {
             interactive: false,
             approvals: None,
         };
-        let argv = operation.wire_args(Some("/tmp/pakajo-approvals-1.json"), None);
+        let argv = operation.wire_args(Some("/tmp/pakajo-approvals-1.json"));
         assert_eq!(
             argv,
             [
@@ -385,7 +380,7 @@ mod tests {
                 interactive,
                 approvals: None,
             };
-            let argv = operation.wire_args(None, None);
+            let argv = operation.wire_args(None);
             assert_eq!(argv, ["install", "--stream", flag, "sl"]);
             assert_eq!(
                 ChildOperation::decode(&argv),
@@ -407,22 +402,21 @@ mod tests {
         let operation = PrivilegedOperation::UpgradeRepo {
             no_refresh: true,
             ignores: vec!["foo".to_string(), "bar".to_string()],
-            fingerprint: None,
+            interactive: true,
             approvals: None,
         };
-        let argv = operation.wire_args(Some("/tmp/pakajo-approvals-1.json"), Some("/tmp/fp.json"));
+        let argv = operation.wire_args(Some("/tmp/pakajo-approvals-1.json"));
         assert_eq!(
             argv,
             [
                 "upgrade-repo",
                 "--stream",
+                "--interactive",
                 "--no-refresh",
                 "--ignore",
                 "foo",
                 "--ignore",
                 "bar",
-                "--fingerprint-file",
-                "/tmp/fp.json",
                 "--approvals-file",
                 "/tmp/pakajo-approvals-1.json",
             ]
@@ -432,7 +426,7 @@ mod tests {
             Some(ChildOperation::UpgradeRepo {
                 no_refresh: true,
                 ignores: vec!["foo".to_string(), "bar".to_string()],
-                fingerprint_path: Some("/tmp/fp.json".to_string()),
+                interactive: true,
                 approvals_path: Some("/tmp/pakajo-approvals-1.json".to_string()),
                 stream: true,
             })
@@ -444,17 +438,17 @@ mod tests {
         let operation = PrivilegedOperation::UpgradeRepo {
             no_refresh: false,
             ignores: vec![],
-            fingerprint: None,
+            interactive: false,
             approvals: None,
         };
-        let argv = operation.wire_args(None, None);
+        let argv = operation.wire_args(None);
         assert_eq!(argv, ["upgrade-repo", "--stream"]);
         assert_eq!(
             ChildOperation::decode(&argv),
             Some(ChildOperation::UpgradeRepo {
                 no_refresh: false,
                 ignores: vec![],
-                fingerprint_path: None,
+                interactive: false,
                 approvals_path: None,
                 stream: true,
             })

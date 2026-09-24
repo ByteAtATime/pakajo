@@ -293,7 +293,13 @@ fn run_root_install(request: InstallRequest, tx: &mut futures::channel::mpsc::Se
         };
         let outcome = operation
             .execute()
-            .map(|()| ChildOutcome::Success)
+            .map(|code| {
+                crate::dispatch::exec::map_exit_code(
+                    crate::dispatch::exec::ChildKind::Install,
+                    code,
+                    "direct",
+                )
+            })
             .unwrap_or_else(|error| ChildOutcome::Failed(format!("{error:#}")));
         send_done(tx, outcome);
         return;

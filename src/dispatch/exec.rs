@@ -12,6 +12,7 @@ use crate::events::{InstallEvent, InstallSink, read_event_stream};
 #[derive(Clone, Debug)]
 pub enum ChildOutcome {
     Success,
+    Stopped { idle: bool },
     Dismissed,
     NotFound(String),
     Failed(String),
@@ -21,11 +22,20 @@ impl ChildOutcome {
     pub fn reason(&self) -> &str {
         match self {
             ChildOutcome::Success => "succeeded",
+            ChildOutcome::Stopped { idle: true } => "nothing to do",
+            ChildOutcome::Stopped { idle: false } => "declined to proceed",
             ChildOutcome::Dismissed => "privilege prompt dismissed",
             ChildOutcome::NotFound(message) => message.as_str(),
             ChildOutcome::Failed(message) => message.as_str(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChildKind {
+    Install,
+    Remove,
+    UpgradeRepo,
 }
 
 pub enum StreamItem {
@@ -193,16 +203,25 @@ fn escalation(exe: &str, tty: bool) -> (Command, &'static str) {
     (escalator.build_command(exe), name)
 }
 
-fn map_outcome(status: io::Result<ExitStatus>, escalator: &str) -> ChildOutcome {
+pub fn map_exit_code(kind: ChildKind, code: i32, escalator: &str) -> ChildOutcome {
+    match code {
+        0 => ChildOutcome::Success,
+        3 | 4 if matches!(kind, ChildKind::UpgradeRepo) => {
+            ChildOutcome::Stopped { idle: code == 3 }
+        }
+        126 => ChildOutcome::Dismissed,
+        127 => ChildOutcome::NotFound(format!("{escalator} not found")),
+        exit => ChildOutcome::Failed(format!("operation failed (exit {exit})")),
+    }
+}
+
+fn map_outcome(kind: ChildKind, status: io::Result<ExitStatus>, escalator: &str) -> ChildOutcome {
     let code = match status {
         Err(error) => return ChildOutcome::Failed(error.to_string()),
         Ok(status) => status.code(),
     };
     match code {
-        Some(0) => ChildOutcome::Success,
-        Some(126) => ChildOutcome::Dismissed,
-        Some(127) => ChildOutcome::NotFound(format!("{escalator} not found")),
-        Some(exit) => ChildOutcome::Failed(format!("operation failed (exit {exit})")),
+        Some(code) => map_exit_code(kind, code, escalator),
         None => ChildOutcome::Failed("install killed by signal".to_string()),
     }
 }
@@ -254,12 +273,6 @@ fn run_privileged(
     tty: bool,
     tx: &mut futures::channel::mpsc::Sender<StreamItem>,
 ) {
-    let fingerprint_path = match &operation {
-        PrivilegedOperation::UpgradeRepo { fingerprint, .. } => fingerprint
-            .as_ref()
-            .map(|file| file.path().to_string_lossy().into_owned()),
-        _ => None,
-    };
     let approvals_path = match &operation {
         PrivilegedOperation::Remove { approvals, .. } => approvals
             .as_ref()
@@ -271,7 +284,12 @@ fn run_privileged(
             .as_ref()
             .map(|file| file.path().to_string_lossy().into_owned()),
     };
-    let argv = operation.wire_args(approvals_path.as_deref(), fingerprint_path.as_deref());
+    let argv = operation.wire_args(approvals_path.as_deref());
+    let kind = match &operation {
+        PrivilegedOperation::Remove { .. } => ChildKind::Remove,
+        PrivilegedOperation::Install { .. } => ChildKind::Install,
+        PrivilegedOperation::UpgradeRepo { .. } => ChildKind::UpgradeRepo,
+    };
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(err) => {
@@ -292,7 +310,7 @@ fn run_privileged(
     }
     let mut sink = ChannelSink::new(tx.clone());
     let status = stream_child(child, &mut sink);
-    send_item(tx, StreamItem::Done(map_outcome(status, escalator)));
+    send_item(tx, StreamItem::Done(map_outcome(kind, status, escalator)));
 }
 
 impl PrivilegedOperation {
@@ -402,7 +420,7 @@ mod tests {
             ),
         ];
         for (status, expected) in cases {
-            let actual = map_outcome(status, "sudo");
+            let actual = map_outcome(ChildKind::Install, status, "sudo");
             assert_eq!(
                 format!("{actual:?}"),
                 format!("{expected:?}"),
@@ -413,7 +431,52 @@ mod tests {
 
     #[test]
     fn missing_escalator_names_selected_backend() {
-        let actual = map_outcome(Ok(ExitStatusExt::from_raw(127 << 8)), "pkexec");
+        let actual = map_outcome(
+            ChildKind::Install,
+            Ok(ExitStatusExt::from_raw(127 << 8)),
+            "pkexec",
+        );
         assert_eq!(actual.reason(), "pkexec not found");
+    }
+
+    #[test]
+    fn upgrade_repo_exit_codes_map_to_stopped() {
+        let idle = map_outcome(
+            ChildKind::UpgradeRepo,
+            Ok(ExitStatusExt::from_raw(3 << 8)),
+            "sudo",
+        );
+        assert!(matches!(idle, ChildOutcome::Stopped { idle: true }));
+        let declined = map_outcome(
+            ChildKind::UpgradeRepo,
+            Ok(ExitStatusExt::from_raw(4 << 8)),
+            "sudo",
+        );
+        assert!(matches!(declined, ChildOutcome::Stopped { idle: false }));
+        assert!(matches!(
+            map_outcome(
+                ChildKind::UpgradeRepo,
+                Ok(ExitStatusExt::from_raw(0)),
+                "sudo"
+            ),
+            ChildOutcome::Success
+        ));
+        assert!(matches!(
+            map_outcome(
+                ChildKind::UpgradeRepo,
+                Ok(ExitStatusExt::from_raw(1 << 8)),
+                "sudo"
+            ),
+            ChildOutcome::Failed(_)
+        ));
+        for kind in [ChildKind::Install, ChildKind::Remove] {
+            for code in [3, 4] {
+                let actual = map_outcome(kind, Ok(ExitStatusExt::from_raw(code << 8)), "sudo");
+                assert!(
+                    matches!(actual, ChildOutcome::Failed(_)),
+                    "kind {kind:?} code {code} must fail closed"
+                );
+            }
+        }
     }
 }

@@ -22,7 +22,6 @@ pub struct SysupgradeRequest {
     pub ignores: Vec<String>,
     pub decider: Box<dyn Decider + Send>,
     pub aur_targets: Option<Vec<String>>,
-    pub fingerprint: Option<ApprovalsFile>,
     pub approvals: Option<String>,
     pub tty: bool,
     pub json: bool,
@@ -115,7 +114,7 @@ fn run_sysupgrade(request: SysupgradeRequest, mut tx: futures::channel::mpsc::Se
             privileged: Some(PrivilegedOperation::UpgradeRepo {
                 no_refresh: request.no_refresh,
                 ignores: request.ignores,
-                fingerprint: request.fingerprint,
+                interactive: request.tty && !request.json,
                 approvals: sealed,
             }),
             aur_targets,
@@ -155,17 +154,18 @@ fn run_root_sysupgrade(
     let operation = ChildOperation::UpgradeRepo {
         no_refresh: request.no_refresh,
         ignores: request.ignores,
-        fingerprint_path: request
-            .fingerprint
-            .as_ref()
-            .map(|file| file.path().to_string_lossy().into_owned()),
+        interactive: request.tty && !request.json,
         approvals_path: sealed
             .as_ref()
             .map(|file| file.path().to_string_lossy().into_owned()),
         stream: request.json,
     };
     let outcome = match operation.execute() {
-        Ok(()) => ChildOutcome::Success,
+        Ok(code) => crate::dispatch::exec::map_exit_code(
+            crate::dispatch::exec::ChildKind::UpgradeRepo,
+            code,
+            "direct",
+        ),
         Err(error) => ChildOutcome::Failed(format!("{error:#}")),
     };
     if !matches!(outcome, ChildOutcome::Success) {
