@@ -1,5 +1,5 @@
 #[cfg(test)]
-pub use tests::{OfflinePkg, drive_sync, offline_pkg, offline_root, setup_fake_root};
+pub use tests::{OfflinePkg, drive_sync, offline_pkg, offline_root};
 
 pub enum InstallTarget {
     Repo(String),
@@ -12,27 +12,6 @@ mod tests {
     use crate::question::source::{AnswerSource, ExploreDefaults, SourceDecision};
     use crate::tx::driver::{Finish, RunKind, RunOutcome, RunSpec};
     use std::fs;
-
-    pub fn setup_fake_root(suffix: &str) -> alpm::Alpm {
-        let base = std::env::temp_dir().join(format!("pakajo_fake_root_{suffix}"));
-        let _ = fs::remove_dir_all(&base);
-        let root = base.join("root");
-        let db = base.join("db");
-        let cache = base.join("cache");
-        fs::create_dir_all(&root).unwrap();
-        fs::create_dir_all(&db).unwrap();
-        fs::create_dir_all(&cache).unwrap();
-        let config = crate::pacman::config().unwrap();
-        let mut handle = crate::pacman::init_alpm_at(
-            &config,
-            &root.to_string_lossy(),
-            &db.to_string_lossy(),
-            &[cache.to_string_lossy().into_owned()],
-        )
-        .unwrap();
-        handle.syncdbs_mut().update(false).unwrap();
-        handle
-    }
 
     pub struct OfflinePkg {
         pub name: &'static str,
