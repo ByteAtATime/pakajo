@@ -112,14 +112,13 @@ pub fn run(argv: &[String]) -> i32 {
     code_from(operation.execute())
 }
 
-pub(crate) fn run_upgrade_repo_direct(
-    no_refresh: bool,
-    ignores: &[String],
-    interactive: bool,
-    approvals_payload: Option<&str>,
-    stream: bool,
-) -> anyhow::Result<crate::tx::driver::RunOutcome> {
-    let presentation = select_presentation(stream, interactive, privs::stdin_is_tty());
+fn upgrade_repo_source_sink(
+    presentation: Presentation,
+    approvals: Option<crate::question::Approvals>,
+) -> (
+    Box<dyn crate::question::source::AnswerSource>,
+    Box<dyn InstallSink>,
+) {
     match presentation {
         Presentation::InteractiveStream => {
             let input = stdin_input();
@@ -136,12 +135,7 @@ pub(crate) fn run_upgrade_repo_direct(
                     crate::color::stderr_color(),
                 ),
             );
-            crate::upgrade::run_upgrade_repo(
-                no_refresh,
-                ignores,
-                source,
-                Box::new(EscalatedSink::new()),
-            )
+            (source, Box::new(EscalatedSink::new()))
         }
         Presentation::Console => {
             let input = stdin_input();
@@ -158,26 +152,37 @@ pub(crate) fn run_upgrade_repo_direct(
                     crate::color::stdout_color(),
                 ),
             );
-            crate::upgrade::run_upgrade_repo(
-                no_refresh,
-                ignores,
-                source,
-                Box::new(ConsoleSink::new()),
-            )
+            (source, Box::new(ConsoleSink::new()))
         }
         Presentation::SilentStream => {
-            let approvals = approvals_payload
-                .map(|payload| {
-                    serde_json::from_str::<crate::question::Approvals>(payload)
-                        .with_context(|| "failed to parse approvals payload")
-                })
-                .transpose()?;
             let source: Box<dyn crate::question::source::AnswerSource> = Box::new(
                 crate::question::source::LegacyApprovalsSource::new(approvals),
             );
-            crate::upgrade::run_upgrade_repo(no_refresh, ignores, source, Box::new(JsonSink::new()))
+            (source, Box::new(JsonSink::new()))
         }
     }
+}
+
+pub(crate) fn run_upgrade_repo_direct(
+    no_refresh: bool,
+    ignores: &[String],
+    interactive: bool,
+    approvals_payload: Option<&str>,
+    stream: bool,
+) -> anyhow::Result<crate::tx::driver::RunOutcome> {
+    let presentation = select_presentation(stream, interactive, privs::stdin_is_tty());
+    if !matches!(presentation, Presentation::SilentStream) {
+        let (source, sink) = upgrade_repo_source_sink(presentation, None);
+        return crate::upgrade::run_upgrade_repo(no_refresh, ignores, source, sink);
+    }
+    let approvals = approvals_payload
+        .map(|payload| {
+            serde_json::from_str::<crate::question::Approvals>(payload)
+                .with_context(|| "failed to parse approvals payload")
+        })
+        .transpose()?;
+    let (source, sink) = upgrade_repo_source_sink(presentation, approvals);
+    crate::upgrade::run_upgrade_repo(no_refresh, ignores, source, sink)
 }
 
 impl ChildOperation {
@@ -397,67 +402,18 @@ impl ChildOperation {
             } => {
                 let presentation =
                     select_presentation(*stream, *interactive, privs::stdin_is_tty());
-                match presentation {
-                    Presentation::InteractiveStream => {
-                        let input = stdin_input();
-                        let source = engine_source(
-                            false,
-                            crate::tx::prompt::InteractiveSource::new(
-                                std::rc::Rc::clone(&input),
-                                std::io::stderr(),
-                                crate::color::stderr_color(),
-                            ),
-                            crate::tx::prompt::TtyImportPrompter::new(
-                                std::rc::Rc::clone(&input),
-                                std::io::stderr(),
-                                crate::color::stderr_color(),
-                            ),
-                        );
-                        let outcome = crate::upgrade::run_upgrade_repo(
-                            *no_refresh,
-                            ignores,
-                            source,
-                            Box::new(EscalatedSink::new()),
-                        )?;
-                        upgrade_outcome_code(outcome)
-                    }
-                    Presentation::Console => {
-                        let input = stdin_input();
-                        let source = engine_source(
-                            false,
-                            crate::tx::prompt::InteractiveSource::new(
-                                std::rc::Rc::clone(&input),
-                                std::io::stdout(),
-                                crate::color::stdout_color(),
-                            ),
-                            crate::tx::prompt::TtyImportPrompter::new(
-                                std::rc::Rc::clone(&input),
-                                std::io::stdout(),
-                                crate::color::stdout_color(),
-                            ),
-                        );
-                        let outcome = crate::upgrade::run_upgrade_repo(
-                            *no_refresh,
-                            ignores,
-                            source,
-                            Box::new(ConsoleSink::new()),
-                        )?;
-                        upgrade_outcome_code(outcome)
-                    }
-                    Presentation::SilentStream => {
-                        let source: Box<dyn crate::question::source::AnswerSource> =
-                            Box::new(crate::question::source::LegacyApprovalsSource::new(
-                                read_approvals(approvals_path.as_deref())?,
-                            ));
-                        let outcome = crate::upgrade::run_upgrade_repo(
-                            *no_refresh,
-                            ignores,
-                            source,
-                            Box::new(JsonSink::new()),
-                        )?;
-                        upgrade_outcome_code(outcome)
-                    }
+                if !matches!(presentation, Presentation::SilentStream) {
+                    let (source, sink) = upgrade_repo_source_sink(presentation, None);
+                    let outcome =
+                        crate::upgrade::run_upgrade_repo(*no_refresh, ignores, source, sink)?;
+                    return upgrade_outcome_code(outcome);
                 }
+                let (source, sink) = upgrade_repo_source_sink(
+                    presentation,
+                    read_approvals(approvals_path.as_deref())?,
+                );
+                let outcome = crate::upgrade::run_upgrade_repo(*no_refresh, ignores, source, sink)?;
+                upgrade_outcome_code(outcome)
             }
         }
     }
