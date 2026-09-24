@@ -1,23 +1,10 @@
 use std::io::Write as _;
 
 use crate::color;
-use crate::question::ProviderCandidate;
+use crate::question::model::ProviderCandidate;
 
 pub trait QuestionAnswerer {
-    fn answer_conflict(
-        &self,
-        incoming: &str,
-        incoming_version: &str,
-        removable: &str,
-        removable_version: &str,
-    ) -> ConflictDecision;
     fn answer_provider(&self, depend: &str, candidates: &[ProviderCandidate]) -> ProviderDecision;
-}
-
-pub enum ConflictDecision {
-    Remove,
-    Decline,
-    CannotPrompt,
 }
 
 #[derive(Debug)]
@@ -61,30 +48,6 @@ impl Default for StdioAnswerer {
 }
 
 impl QuestionAnswerer for StdioAnswerer {
-    fn answer_conflict(
-        &self,
-        incoming: &str,
-        incoming_version: &str,
-        removable: &str,
-        removable_version: &str,
-    ) -> ConflictDecision {
-        let inc = color::paint(self.color, color::BOLD, incoming);
-        let incv = color::paint(self.color, color::VERSION, incoming_version);
-        let rem = color::paint(self.color, color::BOLD, removable);
-        let remv = color::paint(self.color, color::VERSION, removable_version);
-        let msg = format!("{inc}-{incv} and {rem}-{remv} are in conflict. Remove {rem}? [y/N]");
-        eprint!("{} ", color::colon(self.color, &msg));
-        let _ = std::io::stderr().flush();
-        let mut input = String::new();
-        if std::io::stdin().read_line(&mut input).is_err() {
-            return ConflictDecision::CannotPrompt;
-        }
-        match input.trim().to_lowercase().as_str() {
-            "y" | "yes" => ConflictDecision::Remove,
-            _ => ConflictDecision::Decline,
-        }
-    }
-
     fn answer_provider(&self, depend: &str, candidates: &[ProviderCandidate]) -> ProviderDecision {
         if candidates.is_empty() {
             return ProviderDecision::Decline;

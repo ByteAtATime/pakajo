@@ -2,7 +2,7 @@ use std::io::Write as _;
 
 use crate::answerer::{ProviderDecision, QuestionAnswerer, StdioAnswerer};
 use crate::package::PackageGroup;
-use crate::question::ProviderCandidate;
+use crate::question::model::ProviderCandidate;
 use crate::resolve::{Ask, Conflict, ConflictReport, GroupMember, Plan};
 use crate::{build::BuildDecision, color};
 

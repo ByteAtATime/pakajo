@@ -481,7 +481,6 @@ impl PakajoApp {
                             .is_some_and(Transaction::is_sysupgrade);
                         self.transaction = None;
                         if was_sysupgrade {
-                            self.clear_sysupgrade_state();
                             return Task::batch([self.goto_page(crate::Page::Updates)]);
                         }
                         Task::none()
@@ -496,7 +495,6 @@ impl PakajoApp {
                             .as_ref()
                             .is_some_and(Transaction::is_sysupgrade)
                         {
-                            self.clear_sysupgrade_state();
                             self.transaction = None;
                             return Task::batch([refresh, self.goto_page(crate::Page::Updates)]);
                         }

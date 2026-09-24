@@ -8,8 +8,6 @@ pub enum SysupgradeMessage {
 }
 
 impl crate::PakajoApp {
-    pub(crate) fn clear_sysupgrade_state(&mut self) {}
-
     pub(crate) fn handle_sysupgrade(&mut self, message: SysupgradeMessage) -> Task<crate::Message> {
         match message {
             SysupgradeMessage::Start => {

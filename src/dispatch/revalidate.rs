@@ -241,7 +241,7 @@ fn fail_closed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dispatch::protocol::AutomaticDecider;
+    use crate::dispatch::seal::proceed_decider;
     use crate::question::approvals::seal;
 
     fn sync_entry(
@@ -338,7 +338,7 @@ mod tests {
             no_check: false,
             ignores: Vec::new(),
             prefer_aur: false,
-            decider: Box::new(AutomaticDecider::new()),
+            decider: proceed_decider(),
             approvals: None,
             tty: false,
             json: false,

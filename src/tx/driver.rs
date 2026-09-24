@@ -1848,11 +1848,14 @@ mod tests {
 
     #[test]
     fn upgrade_idle_stays_silent_for_child_presentation() {
-        use crate::question::source::LegacyApprovalsSource;
+        use crate::question::approvals::SealedApprovals;
+        use crate::question::source::ApprovalsReplay;
 
-        let source: Box<dyn AnswerSource> = Box::new(LegacyApprovalsSource::new(Some(
-            crate::question::Approvals::default(),
-        )));
+        let source: Box<dyn AnswerSource> = Box::new(ApprovalsReplay::new(SealedApprovals {
+            answers: Vec::new(),
+            proceed: true,
+            deps: Vec::new(),
+        }));
         let NewerPair { sync, local } = newer("1.0-1", "1.0-1");
         let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
         let recorder = Recorder::default();

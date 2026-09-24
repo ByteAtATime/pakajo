@@ -21,7 +21,7 @@ pub enum ReviewMessage {
     SelectProvider { depend: String, idx: usize },
 }
 
-fn candidate_label(candidate: &pakajo::question::ProviderCandidate) -> String {
+fn candidate_label(candidate: &pakajo::question::model::ProviderCandidate) -> String {
     let qualified = match &candidate.repo {
         Some(repo) => format!("{repo}/{}", candidate.name),
         None => candidate.name.clone(),

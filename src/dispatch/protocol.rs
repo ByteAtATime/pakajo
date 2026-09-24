@@ -52,51 +52,6 @@ impl Decider for TerminalDecider {
     }
 }
 
-#[derive(Default)]
-pub struct AutomaticDecider {
-    approvals: crate::question::Approvals,
-}
-
-impl AutomaticDecider {
-    pub fn new() -> Self {
-        Self {
-            approvals: crate::question::Approvals::default(),
-        }
-    }
-
-    fn conflict_approved(&self, incoming: &str, removable: &str) -> bool {
-        self.approvals.approved_conflicts.iter().any(|approved| {
-            (approved.incoming == incoming && approved.removable == removable)
-                || (approved.incoming == removable && approved.removable == incoming)
-        })
-    }
-}
-
-impl Decider for AutomaticDecider {
-    fn confirm_build(&self, _plan: &Plan) -> BuildDecision {
-        BuildDecision::Proceed
-    }
-
-    fn confirm_conflicts(&self, report: &ConflictReport) -> bool {
-        report
-            .local
-            .iter()
-            .chain(report.inner.iter())
-            .flat_map(|conflict| {
-                conflict
-                    .conflicting
-                    .iter()
-                    .map(|entry| (conflict.pkg.as_str(), entry.pkg.as_str()))
-            })
-            .all(|(incoming, removable)| self.conflict_approved(incoming, removable))
-            && !report.is_empty()
-    }
-
-    fn review_pkgbuilds(&self, _pkgbuilds: &[PkgbuildInfo]) -> bool {
-        true
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,40 +84,12 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_json_and_automatic_deciders_answer_both_prompts() {
+    fn deterministic_json_decider_answers_both_prompts() {
         use crate::build::BuildDecision;
         let plan = empty_plan();
         let terminal = TerminalDecider::new(true, false, false);
-        let automatic = AutomaticDecider::new();
-        let cases: Vec<(&dyn Decider, BuildDecision, bool)> = vec![
-            (&terminal, BuildDecision::Review, true),
-            (&automatic, BuildDecision::Proceed, true),
-        ];
-        for (decider, expected_confirm, expected_review) in cases {
-            assert_eq!(decider.confirm_build(&plan), expected_confirm);
-            assert_eq!(decider.review_pkgbuilds(&[]), expected_review);
-        }
-    }
-
-    #[test]
-    fn automatic_decider_bails_on_conflicts() {
-        let report = conflicted_report();
-        assert!(!AutomaticDecider::new().confirm_conflicts(&report));
-    }
-
-    #[test]
-    fn automatic_decider_proceeds_when_every_pair_approved() {
-        let report = conflicted_report();
-        let approvals = crate::question::Approvals {
-            approved_conflicts: vec![crate::question::Conflict {
-                incoming: "cava-git".to_string(),
-                removable: "cava".to_string(),
-            }],
-            approved_providers: Vec::new(),
-            approved_held: Vec::new(),
-            approved_groups: Default::default(),
-        };
-        assert!(AutomaticDecider { approvals }.confirm_conflicts(&report));
+        assert_eq!(terminal.confirm_build(&plan), BuildDecision::Review);
+        assert!(terminal.review_pkgbuilds(&[]));
     }
 
     #[test]

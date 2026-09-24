@@ -5,7 +5,6 @@ use cosmic::widget::{button, container, dialog, text};
 use futures::StreamExt as _;
 
 use pakajo::dispatch::exec::{AnswerWriter, ChildOutcome, StreamItem};
-use pakajo::dispatch::protocol::AutomaticDecider;
 use pakajo::dispatch::revalidate::{
     RevalidationRun, ReviewLoop, ReviewOrigin, ReviewPlan, ReviewStep,
 };
@@ -213,7 +212,7 @@ impl Transaction {
             no_check: false,
             ignores: vec![],
             prefer_aur,
-            decider: Box::new(AutomaticDecider::new()),
+            decider: pakajo::dispatch::seal::proceed_decider(),
             approvals: None,
             tty: false,
             json: false,

@@ -120,14 +120,7 @@ fn merge_plan_conflicts(mut review: Review, plan: Option<&Plan>) -> Review {
     let Some(plan) = plan else {
         return review;
     };
-    for conflict in plan_conflicts_to_questions(&plan.conflicts) {
-        let question = Question::Conflict {
-            incoming: conflict.incoming,
-            incoming_version: String::new(),
-            removable: conflict.removable,
-            removable_version: String::new(),
-            conflict_reason: None,
-        };
+    for question in plan_conflicts_to_questions(&plan.conflicts) {
         if !review
             .part1
             .iter()
@@ -365,19 +358,19 @@ fn peel_for_dispatch(
     })
 }
 
-fn plan_conflicts_to_questions(report: &ConflictReport) -> Vec<crate::question::Conflict> {
+fn plan_conflicts_to_questions(report: &ConflictReport) -> Vec<Question> {
     report
         .local
         .iter()
         .chain(report.inner.iter())
         .flat_map(|conflict| {
-            conflict
-                .conflicting
-                .iter()
-                .map(|entry| crate::question::Conflict {
-                    incoming: conflict.pkg.clone(),
-                    removable: entry.pkg.clone(),
-                })
+            conflict.conflicting.iter().map(|entry| Question::Conflict {
+                incoming: conflict.pkg.clone(),
+                incoming_version: String::new(),
+                removable: entry.pkg.clone(),
+                removable_version: String::new(),
+                conflict_reason: None,
+            })
         })
         .collect()
 }
@@ -522,17 +515,26 @@ mod tests {
         assert_eq!(
             mapped,
             vec![
-                crate::question::Conflict {
+                Question::Conflict {
                     incoming: "nvidia-470xx-utils".to_string(),
+                    incoming_version: String::new(),
                     removable: "nvidia-utils".to_string(),
+                    removable_version: String::new(),
+                    conflict_reason: None,
                 },
-                crate::question::Conflict {
+                Question::Conflict {
                     incoming: "cava-git".to_string(),
+                    incoming_version: String::new(),
                     removable: "cava".to_string(),
+                    removable_version: String::new(),
+                    conflict_reason: None,
                 },
-                crate::question::Conflict {
+                Question::Conflict {
                     incoming: "cava-git".to_string(),
+                    incoming_version: String::new(),
                     removable: "cava-old".to_string(),
+                    removable_version: String::new(),
+                    conflict_reason: None,
                 },
             ]
         );
@@ -743,7 +745,7 @@ mod tests {
             no_check: false,
             ignores: Vec::new(),
             prefer_aur: false,
-            decider: Box::new(crate::dispatch::protocol::AutomaticDecider::new()),
+            decider: crate::dispatch::seal::proceed_decider(),
             approvals: None,
             tty: false,
             json: false,

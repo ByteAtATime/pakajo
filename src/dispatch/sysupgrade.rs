@@ -284,7 +284,7 @@ mod tests {
             no_refresh: true,
             repo_only: true,
             ignores: Vec::new(),
-            decider: Box::new(crate::dispatch::protocol::AutomaticDecider::new()),
+            decider: crate::dispatch::seal::proceed_decider(),
             aur_targets: Some(Vec::new()),
             approvals: approvals.map(str::to_string),
             tty,

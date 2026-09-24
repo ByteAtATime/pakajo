@@ -25,6 +25,14 @@ pub fn sealed_decider(sealed: SealedApprovals) -> SealedDecider {
     SealedDecider { sealed }
 }
 
+pub fn proceed_decider() -> Box<dyn Decider + Send> {
+    Box::new(sealed_decider(SealedApprovals {
+        answers: Vec::new(),
+        proceed: true,
+        deps: Vec::new(),
+    }))
+}
+
 impl SealedDecider {
     fn conflict_removed(&self, incoming: &str, removable: &str) -> bool {
         let key = Question::Conflict {
