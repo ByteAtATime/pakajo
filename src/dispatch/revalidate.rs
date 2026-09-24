@@ -2,16 +2,22 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use crate::dispatch::install::{InstallRequest, run_install_preview, run_install_preview_with};
 use crate::dispatch::remove::run_remove_preview;
+use crate::dispatch::sysupgrade::upgrade_review;
 use crate::events::TransactionSummary;
 use crate::question::approvals::SealedApprovals;
 use crate::question::model::{Answer, Question};
 use crate::question::source::{ExploreDefaults, RevalidateSource, derive_answers};
+use crate::tx::driver::Finish;
 
 pub enum ReviewPlan {
     Install(Box<InstallRequest>),
     Remove {
         targets: Vec<String>,
         holds: Vec<String>,
+    },
+    Upgrade {
+        no_refresh: bool,
+        ignores: Vec<String>,
     },
 }
 
@@ -33,6 +39,29 @@ pub struct RevalidationRun {
     pub questions: Vec<Question>,
     pub answers: Vec<Answer>,
     pub summary: TransactionSummary,
+    pub aur: Vec<crate::upgrade::AurUpgradeCandidate>,
+}
+
+fn upgrade_run(
+    assessed: crate::dispatch::sysupgrade::UpgradeReview,
+    origin: ReviewOrigin,
+    source: &dyn crate::question::source::AnswerSource,
+) -> anyhow::Result<RevalidationRun> {
+    let answers = derive_answers(&assessed.review.part1, source)?;
+    Ok(RevalidationRun {
+        origin,
+        questions: assessed.review.part1,
+        answers,
+        summary: assessed.review.part2,
+        aur: assessed.aur,
+    })
+}
+
+fn fail_on_unprepared(finish: &Finish) -> anyhow::Result<()> {
+    let Finish::PrepareFailed(failure) = finish else {
+        return Ok(());
+    };
+    anyhow::bail!("upgrade preview failed to prepare: {failure}");
 }
 
 pub fn run_step(
@@ -50,6 +79,7 @@ pub fn run_step(
                     questions: preview.review.part1,
                     answers,
                     summary: preview.review.part2,
+                    aur: Vec::new(),
                 })
             }
             ReviewStep::Sealed(sealed) => {
@@ -61,6 +91,7 @@ pub fn run_step(
                     questions: preview.review.part1,
                     answers,
                     summary: preview.review.part2,
+                    aur: Vec::new(),
                 })
             }
         },
@@ -73,6 +104,7 @@ pub fn run_step(
                     questions: review.part1,
                     answers,
                     summary: review.part2,
+                    aur: Vec::new(),
                 })
             }
             ReviewStep::Sealed(sealed) => {
@@ -85,7 +117,29 @@ pub fn run_step(
                     questions: review.part1,
                     answers,
                     summary: review.part2,
+                    aur: Vec::new(),
                 })
+            }
+        },
+        ReviewPlan::Upgrade {
+            no_refresh,
+            ignores,
+        } => match step {
+            ReviewStep::Defaults => {
+                if !no_refresh {
+                    crate::pacman::refresh_sync_dbs_rootless(handle)?;
+                }
+                apply_upgrade_ignores(handle, ignores)?;
+                let (assessed, finish) = upgrade_review(handle, Box::new(ExploreDefaults))?;
+                fail_on_unprepared(&finish)?;
+                upgrade_run(assessed, ReviewOrigin::Initial, &ExploreDefaults)
+            }
+            ReviewStep::Sealed(sealed) => {
+                apply_upgrade_ignores(handle, ignores)?;
+                let source = RevalidateSource::new(sealed);
+                let (assessed, finish) = upgrade_review(handle, Box::new(source.clone()))?;
+                fail_on_unprepared(&finish)?;
+                upgrade_run(assessed, ReviewOrigin::Revalidation, &source)
             }
         },
     }
@@ -115,15 +169,47 @@ impl ReviewLoop {
     }
 }
 
+fn apply_upgrade_ignores(handle: &mut alpm::Alpm, ignores: &[String]) -> anyhow::Result<()> {
+    let config = crate::pacman::config()?;
+    crate::upgrade::apply_ignores(handle, &config, ignores);
+    Ok(())
+}
+
 fn drive_reviews(
     plan: ReviewPlan,
     steps: Receiver<ReviewStep>,
     results: Sender<Result<RevalidationRun, String>>,
 ) {
+    if matches!(plan, ReviewPlan::Upgrade { .. }) {
+        serve_reviews_fresh(&plan, steps, results);
+        return;
+    }
     match prime_handle(&plan) {
         Ok(mut handle) => serve_reviews(&plan, &mut handle, steps, results),
         Err(message) => fail_closed(steps, results, message),
     }
+}
+
+fn serve_reviews_fresh(
+    plan: &ReviewPlan,
+    steps: Receiver<ReviewStep>,
+    results: Sender<Result<RevalidationRun, String>>,
+) {
+    while let Ok(step) = steps.recv() {
+        let run = open_fresh_run(plan, step);
+        if results.send(run).is_err() {
+            break;
+        }
+    }
+}
+
+fn open_fresh_run(plan: &ReviewPlan, step: ReviewStep) -> Result<RevalidationRun, String> {
+    (|| {
+        let config = crate::pacman::config()?;
+        let mut handle = crate::pacman::handle_rootless_with_config(&config)?;
+        run_step(&mut handle, plan, step)
+    })()
+    .map_err(|error| format!("{error:#}"))
 }
 
 fn prime_handle(plan: &ReviewPlan) -> Result<alpm::Alpm, String> {
@@ -352,6 +438,105 @@ mod tests {
             .collect();
         let answers = derive_answers(&collectable, &ExploreDefaults).expect("answers sealed");
         seal(&collectable, &answers, true).expect("seal succeeds")
+    }
+
+    fn write_sync_versions(db: &std::path::Path, entries: &[(&str, &str)]) {
+        let file = std::fs::File::create(db.join("sync").join("core.db")).unwrap();
+        let mut builder = tar::Builder::new(file);
+        for (name, version) in entries {
+            sync_entry(&mut builder, name, version, "");
+        }
+        builder.into_inner().unwrap();
+    }
+
+    fn upgrade_fixture_dir(
+        local_names: &[&str],
+        sync_entries: &[(&str, &str)],
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let db = dir.path().join("db");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(db.join("local")).unwrap();
+        std::fs::create_dir_all(db.join("sync")).unwrap();
+        for name in local_names {
+            let entry_dir = db.join("local").join(format!("{name}-1.0-1"));
+            std::fs::create_dir_all(&entry_dir).unwrap();
+            let desc = format!(
+                "%NAME%\n{name}\n\n%VERSION%\n1.0-1\n\n%FILENAME%\n{}\n\n",
+                crate::tx::targets::filename(name, "1.0-1"),
+            );
+            std::fs::write(entry_dir.join("desc"), desc).unwrap();
+            std::fs::write(entry_dir.join("files"), "%FILES%\n").unwrap();
+        }
+        std::fs::write(db.join("local").join("ALPM_DB_VERSION"), "9").unwrap();
+        write_sync_versions(&db, sync_entries);
+        (dir, db)
+    }
+
+    fn upgrade_plan() -> ReviewPlan {
+        ReviewPlan::Upgrade {
+            no_refresh: true,
+            ignores: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn upgrade_defaults_step_records_questions_summary_and_aur() {
+        let (dir, db) = upgrade_fixture_dir(&["upgun"], &[("upgun", "2.0-1")]);
+        let mut handle = open_handle(&dir, &db);
+        let run = run_step(&mut handle, &upgrade_plan(), ReviewStep::Defaults).unwrap();
+        assert_eq!(run.origin, ReviewOrigin::Initial);
+        assert!(run.questions.is_empty());
+        assert!(run.answers.is_empty());
+        assert_eq!(summary_names(&run), vec!["upgun".to_string()]);
+        assert!(run.aur.is_empty());
+    }
+
+    #[test]
+    fn upgrade_sealed_step_converges_on_same_fingerprint() {
+        use crate::question::review::fingerprint;
+
+        let (dir, db) = upgrade_fixture_dir(&["upgun"], &[("upgun", "2.0-1")]);
+        let plan = upgrade_plan();
+        let mut first = open_handle(&dir, &db);
+        let initial = run_step(&mut first, &plan, ReviewStep::Defaults).unwrap();
+        let sealed = sealed_from_defaults(&initial);
+        drop(first);
+        let mut second = open_handle(&dir, &db);
+        let rerun = run_step(&mut second, &plan, ReviewStep::Sealed(sealed)).unwrap();
+        assert_eq!(rerun.origin, ReviewOrigin::Revalidation);
+        assert_eq!(
+            fingerprint(&initial.questions, &initial.answers, &initial.summary),
+            fingerprint(&rerun.questions, &rerun.answers, &rerun.summary)
+        );
+    }
+
+    #[test]
+    fn upgrade_external_db_mutation_diverges() {
+        use crate::question::review::fingerprint;
+
+        let (dir, db) = upgrade_fixture_dir(
+            &["upgun", "newgun"],
+            &[("upgun", "2.0-1"), ("newgun", "1.0-1")],
+        );
+        let plan = upgrade_plan();
+        let mut first = open_handle(&dir, &db);
+        let initial = run_step(&mut first, &plan, ReviewStep::Defaults).unwrap();
+        assert_eq!(summary_names(&initial), vec!["upgun".to_string()]);
+        let sealed = sealed_from_defaults(&initial);
+        drop(first);
+        write_sync_versions(&db, &[("upgun", "2.0-1"), ("newgun", "2.0-1")]);
+        let mut second = open_handle(&dir, &db);
+        let rerun = run_step(&mut second, &plan, ReviewStep::Sealed(sealed)).unwrap();
+        assert_eq!(
+            summary_names(&rerun),
+            vec!["newgun".to_string(), "upgun".to_string()]
+        );
+        assert_ne!(
+            fingerprint(&initial.questions, &initial.answers, &initial.summary),
+            fingerprint(&rerun.questions, &rerun.answers, &rerun.summary)
+        );
     }
 
     #[test]

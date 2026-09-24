@@ -180,6 +180,7 @@ mod checkout_tests {
             questions: vec![conflict()],
             answers: vec![conflict_answer()],
             summary: summary(),
+            aur: Vec::new(),
         }
     }
 
@@ -192,6 +193,7 @@ mod checkout_tests {
                 questions: vec![],
                 answers: Vec::new(),
                 summary: summary(),
+                aur: Vec::new(),
             },
         )));
         assert!(tx.model.install_review.is_none());

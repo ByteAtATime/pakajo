@@ -755,6 +755,7 @@ mod tests {
             questions: vec![Question::InstallIgnorepkg { name: s("glibc") }],
             answers: vec![ignorepkg_answer("glibc")],
             summary: test_summary(),
+            aur: Vec::new(),
         }
     }
 
@@ -800,6 +801,7 @@ mod tests {
             questions,
             answers,
             summary: test_summary(),
+            aur: Vec::new(),
         }
     }
 
@@ -857,6 +859,7 @@ mod tests {
             questions: Vec::new(),
             answers: Vec::new(),
             summary: test_summary(),
+            aur: Vec::new(),
         };
         transaction.update(TransactionMessage::Explored(Ok(empty)));
         assert!(transaction.model.install_review.is_none());
@@ -970,6 +973,7 @@ mod tests {
             questions: vec![Question::InstallIgnorepkg { name: s("glibc") }],
             answers: vec![ignorepkg_answer("glibc")],
             summary: varied,
+            aur: Vec::new(),
         };
         transaction.update(TransactionMessage::Explored(Ok(run)));
         assert_eq!(transaction.model.revalidations, 1);
@@ -1082,6 +1086,7 @@ mod tests {
             questions,
             answers: Vec::new(),
             summary: removal_summary(),
+            aur: Vec::new(),
         }
     }
 
@@ -1149,6 +1154,7 @@ mod tests {
             questions: review.questions.clone(),
             answers: review.answers(),
             summary: removal_summary(),
+            aur: Vec::new(),
         };
         transaction.update(TransactionMessage::Explored(Ok(settled)));
         assert!(transaction.model.install_review.is_none());
