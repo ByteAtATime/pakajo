@@ -1,8 +1,6 @@
 use std::io::Write as _;
 
-use crate::answerer::{ProviderDecision, QuestionAnswerer, StdioAnswerer};
 use crate::package::PackageGroup;
-use crate::question::model::ProviderCandidate;
 use crate::resolve::{Ask, Conflict, ConflictReport, GroupMember, Plan};
 use crate::{build::BuildDecision, color};
 
@@ -102,6 +100,58 @@ fn select_group_indices(group_name: &str, groups: &[crate::package::PackageGroup
     }
 }
 
+fn parse_provider_choice(input: &str, candidate_count: usize) -> Option<usize> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Some(0);
+    }
+    let Ok(n) = trimmed.parse::<usize>() else {
+        return None;
+    };
+    if (1..=candidate_count).contains(&n) {
+        Some(n - 1)
+    } else {
+        None
+    }
+}
+
+fn render_provider_menu(depend: &str, candidates: &[String]) {
+    let colored = color::stderr_color();
+    eprintln!(
+        "{}",
+        color::colon(
+            colored,
+            &format!(
+                "There are {} providers available for {}:",
+                candidates.len(),
+                depend
+            )
+        )
+    );
+    for (index, name) in candidates.iter().enumerate() {
+        eprintln!("  [{}] {name}", index + 1);
+    }
+    eprint!("{} ", color::colon(colored, "Enter a number (default=1):"));
+    let _ = std::io::stderr().flush();
+}
+
+fn provider_index_from_reader<R: std::io::BufRead>(
+    depend: &str,
+    candidates: &[String],
+    reader: &mut R,
+) -> usize {
+    loop {
+        render_provider_menu(depend, candidates);
+        let mut input = String::new();
+        if reader.read_line(&mut input).is_err() {
+            return 0;
+        }
+        if let Some(index) = parse_provider_choice(&input, candidates.len()) {
+            return index;
+        }
+    }
+}
+
 pub(crate) struct CliAsk;
 
 fn group_packages(members: &[GroupMember]) -> Vec<PackageGroup> {
@@ -130,22 +180,9 @@ impl Ask for CliAsk {
         if candidates.is_empty() {
             return 0;
         }
-        let owned: Vec<ProviderCandidate> = candidates
-            .iter()
-            .map(|name| ProviderCandidate {
-                name: name.clone(),
-                repo: None,
-                version: None,
-            })
-            .collect();
-        let answerer = StdioAnswerer::new();
-        loop {
-            match answerer.answer_provider(depend, &owned) {
-                ProviderDecision::Choose(index) => return index,
-                ProviderDecision::CannotPrompt => return 0,
-                ProviderDecision::Decline => continue,
-            }
-        }
+        let stdin = std::io::stdin();
+        let mut locked = stdin.lock();
+        provider_index_from_reader(depend, candidates, &mut locked)
     }
 
     fn choose_group_members(&mut self, group: &str, members: &[GroupMember]) -> Vec<usize> {
@@ -327,7 +364,8 @@ pub fn confirm_review_accept() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_confirmation;
+    use super::{parse_confirmation, parse_provider_choice, provider_index_from_reader};
+    use std::io::Cursor;
 
     #[test]
     fn confirmation_answers_proceed_and_decline() {
@@ -342,5 +380,49 @@ mod tests {
     fn confirmation_empty_takes_default() {
         assert!(parse_confirmation("", true));
         assert!(!parse_confirmation("", false));
+    }
+
+    #[test]
+    fn parse_provider_choice_picks_default_on_empty() {
+        assert_eq!(parse_provider_choice("", 3), Some(0));
+    }
+
+    #[test]
+    fn parse_provider_choice_first_entry_maps_to_zero_index() {
+        assert_eq!(parse_provider_choice("1", 3), Some(0));
+    }
+
+    #[test]
+    fn parse_provider_choice_last_entry_maps_to_count_minus_one() {
+        assert_eq!(parse_provider_choice("3", 3), Some(2));
+    }
+
+    #[test]
+    fn parse_provider_choice_zero_is_declined() {
+        assert_eq!(parse_provider_choice("0", 3), None);
+    }
+
+    #[test]
+    fn parse_provider_choice_past_end_is_declined() {
+        assert_eq!(parse_provider_choice("4", 3), None);
+    }
+
+    #[test]
+    fn parse_provider_choice_non_numeric_is_declined() {
+        assert_eq!(parse_provider_choice("abc", 3), None);
+    }
+
+    #[test]
+    fn provider_prompt_reads_choice_from_reader() {
+        let candidates = vec![String::from("a"), String::from("b")];
+        let mut reader = Cursor::new("2\n");
+        assert_eq!(provider_index_from_reader("x", &candidates, &mut reader), 1);
+    }
+
+    #[test]
+    fn provider_prompt_reprompts_after_decline() {
+        let candidates = vec![String::from("a"), String::from("b")];
+        let mut reader = Cursor::new("abc\n2\n");
+        assert_eq!(provider_index_from_reader("x", &candidates, &mut reader), 1);
     }
 }
