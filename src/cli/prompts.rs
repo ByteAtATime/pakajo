@@ -364,7 +364,8 @@ pub fn confirm_review_accept() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_confirmation, parse_provider_choice, provider_index_from_reader};
+    use super::{CliAsk, parse_confirmation, parse_provider_choice, provider_index_from_reader};
+    use crate::resolve::Ask;
     use std::io::Cursor;
 
     #[test]
@@ -424,5 +425,39 @@ mod tests {
         let candidates = vec![String::from("a"), String::from("b")];
         let mut reader = Cursor::new("abc\n2\n");
         assert_eq!(provider_index_from_reader("x", &candidates, &mut reader), 1);
+    }
+
+    #[test]
+    fn provider_prompt_empty_input_selects_default() {
+        let candidates = vec![String::from("a"), String::from("b")];
+        let mut reader = Cursor::new("");
+        assert_eq!(provider_index_from_reader("x", &candidates, &mut reader), 0);
+    }
+
+    struct FailingReader;
+
+    impl std::io::BufRead for FailingReader {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            Err(std::io::Error::other("boom"))
+        }
+        fn consume(&mut self, _amt: usize) {}
+    }
+
+    impl std::io::Read for FailingReader {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("boom"))
+        }
+    }
+
+    #[test]
+    fn provider_prompt_read_error_selects_default() {
+        let candidates = vec![String::from("a"), String::from("b")];
+        let mut reader = FailingReader;
+        assert_eq!(provider_index_from_reader("x", &candidates, &mut reader), 0);
+    }
+
+    #[test]
+    fn choose_provider_with_no_candidates_selects_default() {
+        assert_eq!(CliAsk.choose_provider("x", &[]), 0);
     }
 }
