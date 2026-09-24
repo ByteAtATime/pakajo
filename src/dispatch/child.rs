@@ -175,14 +175,17 @@ pub(crate) fn run_upgrade_repo_direct(
         let (source, sink) = upgrade_repo_source_sink(presentation, None);
         return crate::upgrade::run_upgrade_repo(no_refresh, ignores, source, sink);
     }
-    let approvals = approvals_payload
-        .map(|payload| {
-            serde_json::from_str::<crate::question::Approvals>(payload)
-                .with_context(|| "failed to parse approvals payload")
-        })
+    let sealed = approvals_payload
+        .map(crate::dispatch::seal::decode_seal)
         .transpose()?;
-    let (source, sink) = upgrade_repo_source_sink(presentation, approvals);
-    crate::upgrade::run_upgrade_repo(no_refresh, ignores, source, sink)
+    let inner: Box<dyn crate::question::source::AnswerSource> = match sealed {
+        Some(sealed) => Box::new(crate::question::source::ApprovalsReplay::new(sealed)),
+        None => Box::new(crate::question::source::FailClosedSource),
+    };
+    let source = crate::tx::prompt::stdin_channel_source(inner, |question| {
+        JsonSink::new().event(InstallEvent::RuntimePrompt { question })
+    });
+    crate::upgrade::run_upgrade_repo(no_refresh, ignores, source, Box::new(JsonSink::new()))
 }
 
 impl ChildOperation {
@@ -443,6 +446,16 @@ mod tests {
                 "select_presentation(stream={stream}, interactive={interactive}, tty={tty})"
             );
         }
+    }
+
+    #[test]
+    fn upgrade_direct_silent_rejects_corrupt_seal_loudly() {
+        let error = run_upgrade_repo_direct(false, &[], false, Some("not json"), true)
+            .expect_err("corrupt seal rejected");
+        assert!(
+            error.to_string().contains("failed to decode seal"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]

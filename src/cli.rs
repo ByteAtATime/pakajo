@@ -75,14 +75,28 @@ fn outcome_code(outcome: &ChildOutcome) -> i32 {
 }
 
 fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
-    let tty = stdin_is_tty() && !args.json;
+    let stdin_tty = stdin_is_tty();
+    let tty = stdin_tty && !args.json;
+    let approvals = match piped_seal_payload(stdin_tty, std::io::stdin().lock()) {
+        Ok(payload) => payload,
+        Err(error) => {
+            eprintln!("{error:#}");
+            return 1;
+        }
+    };
     let request = crate::dispatch::SysupgradeRequest {
         no_refresh: args.no_refresh,
         repo_only: args.repo_only,
         ignores: args.ignores.clone(),
-        decider: Box::new(TerminalDecider::new(args.json, args.skip_review, tty)),
+        decider: match decider_for(tty, args.json, args.skip_review, approvals.as_deref()) {
+            Ok(decider) => decider,
+            Err(error) => {
+                eprintln!("{error:#}");
+                return 1;
+            }
+        },
         aur_targets: None,
-        approvals: None,
+        approvals,
         tty,
         json: args.json,
         print_nothing_to_do: true,
