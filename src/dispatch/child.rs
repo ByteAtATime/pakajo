@@ -61,6 +61,9 @@ fn engine_source<R: std::io::BufRead + 'static, W: std::io::Write + 'static>(
     prompter: crate::tx::prompt::TtyImportPrompter<R, W>,
 ) -> Box<dyn crate::question::source::AnswerSource> {
     let runtime = crate::tx::prompt::tty_runtime_source(source, prompter);
+    if !authorized {
+        return runtime;
+    }
     crate::tx::prompt::with_authorized_proceed(runtime, authorized)
 }
 

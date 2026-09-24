@@ -137,6 +137,7 @@ fn install_aur_base<S: InstallSink + ?Sized>(
         params.reinstall && explicit,
         &dep_names,
         sink,
+        true,
     )
 }
 
@@ -278,7 +279,14 @@ fn install_repo_packages<S: InstallSink + ?Sized>(
     if targets.is_empty() {
         return Ok(());
     }
-    run_install_child(&targets, params, params.reinstall, &deps, sink)
+    run_install_child(
+        &targets,
+        params,
+        params.reinstall,
+        &deps,
+        sink,
+        !plan.bases.is_empty(),
+    )
 }
 
 fn resolve_and_report<S: InstallSink + ?Sized>(
@@ -365,13 +373,17 @@ fn review_if_requested<S: InstallSink + ?Sized>(
 fn compose_child_seal(
     approvals: Option<&str>,
     dep_names: &[String],
+    confirmed: bool,
 ) -> anyhow::Result<crate::dispatch::approvals::ApprovalsFile> {
     let payload = approvals
         .map(|seal| {
             crate::dispatch::seal::decode_seal(seal).context("failed to decode approvals seal")
         })
         .transpose()?;
-    let composed = crate::question::approvals::seal_with_deps(payload.as_ref(), dep_names);
+    let mut composed = crate::question::approvals::seal_with_deps(payload.as_ref(), dep_names);
+    if payload.is_none() {
+        composed.proceed = confirmed;
+    }
     let encoded = crate::dispatch::seal::encode_seal(&composed).context("failed to encode seal")?;
     crate::dispatch::approvals::ApprovalsFile::write(encoded.as_bytes())
         .context("failed to write approvals file")
@@ -383,8 +395,9 @@ fn run_install_child<S: InstallSink + ?Sized>(
     reinstall: bool,
     dep_names: &[String],
     sink: &mut S,
+    confirmed: bool,
 ) -> anyhow::Result<()> {
-    let sealed = compose_child_seal(params.approvals, dep_names)?;
+    let sealed = compose_child_seal(params.approvals, dep_names, confirmed)?;
     let operation = crate::dispatch::operation::PrivilegedOperation::Install {
         targets: targets.to_vec(),
         as_deps: params.as_deps,
@@ -440,6 +453,47 @@ mod tests {
             split_dep_names(&artifacts, &members),
             vec!["foo-doc".to_string()]
         );
+    }
+
+    fn sealed_proceed(file: &crate::dispatch::approvals::ApprovalsFile) -> bool {
+        let payload = std::fs::read_to_string(file.path()).expect("seal file readable");
+        crate::dispatch::seal::decode_seal(&payload)
+            .expect("seal decodes")
+            .proceed
+    }
+
+    fn encoded_payload(proceed: bool) -> String {
+        crate::dispatch::seal::encode_seal(&crate::question::approvals::SealedApprovals {
+            answers: Vec::new(),
+            proceed,
+            deps: Vec::new(),
+        })
+        .expect("payload encodes")
+    }
+
+    #[test]
+    fn unconfirmed_synthesis_seals_proceed_false() {
+        let sealed = compose_child_seal(None, &["dep".to_string()], false).expect("seal writes");
+        assert!(!sealed_proceed(&sealed));
+    }
+
+    #[test]
+    fn confirmed_synthesis_seals_proceed_true() {
+        let sealed = compose_child_seal(None, &["dep".to_string()], true).expect("seal writes");
+        assert!(sealed_proceed(&sealed));
+    }
+
+    #[test]
+    fn user_payload_proceed_survives_synthesis() {
+        for proceed in [true, false] {
+            let payload = encoded_payload(proceed);
+            let sealed = compose_child_seal(Some(&payload), &["dep".to_string()], true)
+                .expect("seal writes");
+            assert_eq!(sealed_proceed(&sealed), proceed);
+            let sealed = compose_child_seal(Some(&payload), &["dep".to_string()], false)
+                .expect("seal writes");
+            assert_eq!(sealed_proceed(&sealed), proceed);
+        }
     }
 
     #[test]
