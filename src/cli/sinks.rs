@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::time::Instant;
 
@@ -7,122 +7,150 @@ use crate::color::{HIDE_CURSOR, SHOW_CURSOR};
 use crate::events::{DownloadResult, InstallEvent, InstallSink, LogLevel, ProgressPhase};
 use crate::{
     color,
+    download::{FileTransfer, Totals},
     utils::{format_eta, format_rate},
 };
 
-const DOWNLOAD_SAMPLE_MS: u128 = 200;
-const ETA_UNKNOWN: u64 = u32::MAX as u64;
-
-struct DownloadStat {
-    xfered: i64,
-    total: i64,
-    init_time: Instant,
-    sync_xfered: i64,
-    sync_time: Option<Instant>,
-    rate: f64,
-    eta: u64,
-}
-
-impl DownloadStat {
-    fn fresh(now: Instant) -> Self {
-        DownloadStat {
-            xfered: 0,
-            total: 0,
-            init_time: now,
-            sync_xfered: 0,
-            sync_time: None,
-            rate: 0.0,
-            eta: 0,
-        }
-    }
-
-    fn reset(&mut self, now: Instant) {
-        self.xfered = 0;
-        self.total = 0;
-        self.init_time = now;
-        self.sync_xfered = 0;
-        self.sync_time = None;
-        self.rate = 0.0;
-        self.eta = 0;
-    }
-
-    fn derive_eta(&mut self, total: i64) {
-        if self.rate > 0.0 {
-            let remaining = (total - self.sync_xfered) as f64 / self.rate;
-            self.eta = if remaining < 0.0 || remaining > ETA_UNKNOWN as f64 {
-                ETA_UNKNOWN
-            } else {
-                remaining as u64
-            };
-        } else {
-            self.eta = ETA_UNKNOWN;
-        }
-    }
-
-    fn observe(&mut self, now: Instant, downloaded: i64, total: i64) -> bool {
-        if downloaded < 0 || total < 0 {
-            return false;
-        }
-        self.xfered = downloaded;
-        self.total = total;
-        match self.sync_time {
-            None => {
-                self.sync_xfered = downloaded;
-                self.sync_time = Some(now);
-                if downloaded > 0 {
-                    self.rate = f64::MIN_POSITIVE;
-                } else {
-                    self.rate = 0.0;
-                }
-                self.derive_eta(total);
-                true
-            }
-            Some(previous) => {
-                let elapsed = now.saturating_duration_since(previous).as_millis();
-                if elapsed < DOWNLOAD_SAMPLE_MS {
-                    return false;
-                }
-                let chunk = downloaded - self.sync_xfered;
-                self.sync_xfered = downloaded;
-                self.sync_time = Some(now);
-                if chunk > 0 && elapsed > 0 {
-                    let chunk_rate = chunk as f64 * 1000.0 / elapsed as f64;
-                    self.rate = (chunk_rate + 2.0 * self.rate) / 3.0;
-                }
-                self.derive_eta(total);
-                true
-            }
-        }
-    }
-
-    fn finish(&mut self, now: Instant, total: i64) {
-        let total = total.max(0);
-        self.xfered = total;
-        self.total = total;
-        self.sync_xfered = total;
-        let elapsed = now
-            .saturating_duration_since(self.init_time)
-            .as_millis()
-            .max(1);
-        self.rate = total as f64 * 1000.0 / elapsed as f64;
-        self.eta = ((elapsed + 500) / 1000).min(u128::from(u64::MAX)) as u64;
-    }
-}
-
 struct DownloadBars {
-    stats: HashMap<String, DownloadStat>,
+    files: HashMap<String, FileTransfer>,
+    order: Vec<String>,
+    finished: HashSet<String>,
+    cursor: i64,
+    totals: Totals,
+    draw_total: bool,
 }
 
 impl DownloadBars {
     fn new() -> Self {
         DownloadBars {
-            stats: HashMap::new(),
+            files: HashMap::new(),
+            order: Vec::new(),
+            finished: HashSet::new(),
+            cursor: 0,
+            totals: Totals::default(),
+            draw_total: false,
         }
     }
 
-    fn init_file(&mut self, filename: &str, now: Instant) {
-        self.stats
-            .insert(filename.to_string(), DownloadStat::fresh(now));
+    fn total_active(&self) -> bool {
+        self.draw_total
+    }
+
+    #[cfg(test)]
+    fn total_downloaded(&self) -> usize {
+        self.totals.downloaded
+    }
+
+    #[cfg(test)]
+    fn total_xfered(&self) -> i64 {
+        self.totals.xfered
+    }
+
+    fn total_line_index(&self) -> i64 {
+        self.order.len() as i64
+    }
+
+    fn draw_total(&self, cols: usize) -> String {
+        if !self.draw_total {
+            return String::new();
+        }
+        draw_download_bar(
+            &total_label(self.totals.downloaded, self.totals.howmany),
+            self.totals.meter.sync_xfered,
+            self.totals.meter.total,
+            self.totals.meter.rate,
+            self.totals.meter.eta,
+            cols,
+        )
+    }
+
+    fn init_total(&mut self, num: usize, total_bytes: i64, now: Instant, color: bool) {
+        self.totals.reset(num, total_bytes, now);
+        self.draw_total = color && num > 1 && total_bytes > 0;
+    }
+
+    fn move_to(&mut self, index: i64, color: bool) -> String {
+        if !color {
+            return String::new();
+        }
+        let delta = index - self.cursor;
+        self.cursor = index;
+        if delta > 0 {
+            format!("\x1B[{delta}E")
+        } else if delta < 0 {
+            format!("\x1B[{}F", -delta)
+        } else {
+            String::new()
+        }
+    }
+
+    fn move_end(&mut self, color: bool) -> String {
+        if !color {
+            return String::new();
+        }
+        let end = self.order.len() as i64;
+        self.move_to(end, color)
+    }
+
+    fn move_below_total(&mut self, color: bool) -> String {
+        if !color {
+            return String::new();
+        }
+        let end = self.order.len() as i64 + i64::from(self.total_active());
+        self.move_to(end, color)
+    }
+
+    fn claim_line(&mut self, filename: &str, color: bool) -> String {
+        if !color {
+            return String::new();
+        }
+        if self.order.iter().any(|name| name == filename) {
+            return String::new();
+        }
+        let mut out = self.move_end(true);
+        out.push_str(&format!(" {}\n", clean_pkg_filename(filename)));
+        self.order.push(filename.to_string());
+        self.cursor += 1;
+        out
+    }
+
+    fn bar_index(&mut self, filename: &str) -> i64 {
+        if let Some(index) = self.order.iter().position(|name| name == filename) {
+            return index as i64;
+        }
+        self.order.push(filename.to_string());
+        self.order.len() as i64 - 1
+    }
+
+    fn release_head(&mut self) {
+        loop {
+            let head_done = self
+                .order
+                .first()
+                .is_some_and(|name| self.finished.contains(name));
+            if !head_done {
+                break;
+            }
+            if let Some(name) = self.order.first().cloned() {
+                self.finished.remove(&name);
+            }
+            self.order.remove(0);
+            self.cursor -= 1;
+        }
+    }
+
+    fn init_file(&mut self, filename: &str, now: Instant, cols: usize, color: bool) -> String {
+        self.files
+            .insert(filename.to_string(), FileTransfer::fresh(now));
+        let mut out = self.claim_line(filename, color);
+        if !color || !self.total_active() {
+            return out;
+        }
+        out.push_str(&self.move_to(self.total_line_index(), true));
+        out.push_str(&self.draw_total(cols));
+        out.push('\n');
+        self.cursor += 1;
+        out
     }
 
     fn progress_line(
@@ -132,59 +160,182 @@ impl DownloadBars {
         total: i64,
         now: Instant,
         cols: usize,
+        color: bool,
     ) -> Option<String> {
-        let stat = self
-            .stats
+        let previous = self.files.get(filename).map_or(0, |file| file.downloaded);
+        let chunk = downloaded - previous;
+        let file_drew = self
+            .files
             .entry(filename.to_string())
-            .or_insert_with(|| DownloadStat::fresh(now));
-        if !stat.observe(now, downloaded, total) {
-            return None;
+            .or_insert_with(|| FileTransfer::fresh(now))
+            .observe(now, downloaded, total);
+        let mut out = String::new();
+        if file_drew {
+            let file = self.files.get(filename).expect("file observed");
+            let line = draw_download_bar(
+                clean_pkg_filename(filename),
+                file.meter.sync_xfered,
+                file.meter.total,
+                file.meter.rate,
+                file.meter.eta,
+                cols,
+            );
+            if !color {
+                return Some(line);
+            }
+            out.push_str(&self.claim_line(filename, true));
+            let index = self.bar_index(filename);
+            out.push_str(&self.move_to(index, true));
+            out.push_str(&line);
         }
-        Some(draw_download_bar(
-            clean_pkg_filename(filename),
-            stat.sync_xfered,
-            stat.total,
-            stat.rate,
-            stat.eta,
-            cols,
-        ))
+        if !color {
+            if out.is_empty() {
+                return None;
+            }
+            return Some(out);
+        }
+        if !self.total_active() {
+            if out.is_empty() { None } else { Some(out) }
+        } else {
+            let drew = self.totals.add_chunk(chunk, now);
+            if drew {
+                let index = self.total_line_index();
+                out.push_str(&self.move_to(index, true));
+                out.push_str(&self.draw_total(cols));
+            }
+            if out.is_empty() { None } else { Some(out) }
+        }
     }
 
-    fn retry_file(&mut self, filename: &str, now: Instant) {
-        if let Some(stat) = self.stats.get_mut(filename) {
-            stat.reset(now);
+    fn retry_file(&mut self, filename: &str, now: Instant, resume: bool) {
+        let previous = self.files.get(filename).map_or(0, |file| file.downloaded);
+        if let Some(file) = self.files.get_mut(filename) {
+            file.reset(now);
         }
+        if resume {
+            return;
+        }
+        self.totals.rollback(previous);
+    }
+
+    fn count_completion(&mut self) {
+        self.totals.count_completion();
     }
 
     fn up_to_date_line(&mut self, filename: &str, color: bool) -> String {
-        self.stats.remove(filename);
+        self.files.remove(filename);
+        self.count_completion();
         let clear = if color { "\x1b[K" } else { "" };
-        format!(" {} is up to date{clear}", clean_pkg_filename(filename))
+        if !color {
+            return format!(" {} is up to date{clear}", clean_pkg_filename(filename));
+        }
+        let index = self.bar_index(filename);
+        let mut out = self.move_to(index, true);
+        out.push_str(&format!(
+            " {} is up to date{clear}",
+            clean_pkg_filename(filename)
+        ));
+        self.finished.insert(filename.to_string());
+        self.release_head();
+        out
     }
 
     fn failed_line(&mut self, filename: &str, color: bool) -> String {
-        self.stats.remove(filename);
+        self.files.remove(filename);
+        self.count_completion();
         let clear = if color { "\x1b[K" } else { "" };
-        format!(" {filename} failed to download{clear}")
+        if !color {
+            return format!(" {filename} failed to download{clear}");
+        }
+        let index = self.bar_index(filename);
+        let mut out = self.move_to(index, true);
+        out.push_str(&format!(" {filename} failed to download{clear}"));
+        self.finished.insert(filename.to_string());
+        self.release_head();
+        out
     }
 
-    fn success_line(&mut self, filename: &str, total: i64, now: Instant, cols: usize) -> String {
-        let stat = self
-            .stats
+    fn success_line(
+        &mut self,
+        filename: &str,
+        total: i64,
+        now: Instant,
+        cols: usize,
+        color: bool,
+    ) -> String {
+        self.count_completion();
+        let file = self
+            .files
             .entry(filename.to_string())
-            .or_insert_with(|| DownloadStat::fresh(now));
-        stat.finish(now, total);
+            .or_insert_with(|| FileTransfer::fresh(now));
+        file.complete(total);
+        file.meter.finish(now, total);
         let line = draw_download_bar(
             clean_pkg_filename(filename),
-            stat.sync_xfered,
-            stat.total,
-            stat.rate,
-            stat.eta,
+            file.meter.sync_xfered,
+            file.meter.total,
+            file.meter.rate,
+            file.meter.eta,
             cols,
         );
-        self.stats.remove(filename);
-        line
+        if !color {
+            return line;
+        }
+        let index = self.bar_index(filename);
+        let mut out = self.move_to(index, true);
+        out.push_str(&line);
+        self.finished.insert(filename.to_string());
+        self.release_head();
+        out
     }
+
+    fn finish_total(&mut self, now: Instant, cols: usize, color: bool) -> String {
+        if !color || !self.draw_total {
+            self.draw_total = false;
+            return String::new();
+        }
+        self.totals.finish(now);
+        let index = self.order.len() as i64;
+        let mut out = self.move_to(index, true);
+        out.push_str(&self.draw_total(cols));
+        out.push('\n');
+        self.cursor = self.order.len() as i64;
+        self.draw_total = false;
+        out
+    }
+
+    #[cfg(test)]
+    fn complete_one(
+        &mut self,
+        filename: &str,
+        result: crate::events::DownloadResult,
+        now: Instant,
+        cols: usize,
+        color: bool,
+    ) -> String {
+        match result {
+            crate::events::DownloadResult::UpToDate => self.up_to_date_line(filename, color),
+            crate::events::DownloadResult::Success => {
+                self.success_line(filename, 0, now, cols, color)
+            }
+            crate::events::DownloadResult::Failed => self.failed_line(filename, color),
+        }
+    }
+}
+
+fn is_download_event(event: &InstallEvent) -> bool {
+    matches!(
+        event,
+        InstallEvent::DownloadInit { .. }
+            | InstallEvent::DownloadProgress { .. }
+            | InstallEvent::DownloadRetry { .. }
+            | InstallEvent::DownloadCompleted { .. }
+    )
+}
+
+fn total_label(downloaded: usize, howmany: usize) -> String {
+    let width = count_digits(howmany);
+    format!("Total ({downloaded:>width$}/{howmany:>width$})")
 }
 
 fn download_percent(xfered: i64, total: i64) -> i32 {
@@ -287,6 +438,18 @@ impl ConsoleSink {
     }
 
     fn print_event(&mut self, event: &InstallEvent) {
+        if !is_download_event(event) {
+            let end = match event {
+                InstallEvent::PkgRetrieveDone { .. } | InstallEvent::PkgRetrieveFailed { .. } => {
+                    self.downloads.move_end(self.color)
+                }
+                _ => self.downloads.move_below_total(self.color),
+            };
+            if !end.is_empty() {
+                print!("{end}");
+                let _ = std::io::stdout().flush();
+            }
+        }
         match event {
             InstallEvent::ResolvingDependencies => println!("resolving dependencies..."),
             InstallEvent::CheckingConflicts => println!("looking for conflicting packages..."),
@@ -304,7 +467,9 @@ impl ConsoleSink {
                 color::colon(self.color, "Starting full system upgrade...")
             ),
             InstallEvent::KeyringStart => {}
-            InstallEvent::RetrievingPackages { .. } => {
+            InstallEvent::RetrievingPackages { num, total_bytes } => {
+                self.downloads
+                    .init_total(*num, *total_bytes, Instant::now(), self.color);
                 println!("{}", color::colon(self.color, "Retrieving packages..."));
             }
             InstallEvent::ProcessingChanges => {
@@ -321,7 +486,17 @@ impl ConsoleSink {
             }
             InstallEvent::PackageOperation { .. } => {}
             InstallEvent::DownloadInit { filename, optional } => {
-                self.downloads.init_file(filename, Instant::now());
+                let claim = self.downloads.init_file(
+                    filename,
+                    Instant::now(),
+                    crate::utils::terminal_cols(),
+                    self.color,
+                );
+                if !claim.is_empty() {
+                    self.hide_cursor();
+                    print!("{claim}");
+                    let _ = std::io::stdout().flush();
+                }
                 if *optional {
                     println!("  {filename} (optional)");
                 }
@@ -333,8 +508,8 @@ impl ConsoleSink {
             } => {
                 self.download_progress(filename, *downloaded, *total);
             }
-            InstallEvent::DownloadRetry { filename, .. } => {
-                self.downloads.retry_file(filename, Instant::now());
+            InstallEvent::DownloadRetry { filename, resume } => {
+                self.downloads.retry_file(filename, Instant::now(), *resume);
             }
             InstallEvent::DownloadCompleted {
                 filename,
@@ -477,10 +652,19 @@ impl ConsoleSink {
             | InstallEvent::KeyDownloadDone
             | InstallEvent::RetrieveStart
             | InstallEvent::RetrieveDone
-            | InstallEvent::RetrieveFailed
-            | InstallEvent::PkgRetrieveDone { .. }
-            | InstallEvent::PkgRetrieveFailed { .. }
-            | InstallEvent::PackageOperationEnd { .. }
+            | InstallEvent::RetrieveFailed => {}
+            InstallEvent::PkgRetrieveDone { .. } | InstallEvent::PkgRetrieveFailed { .. } => {
+                let line = self.downloads.finish_total(
+                    Instant::now(),
+                    crate::utils::terminal_cols(),
+                    self.color,
+                );
+                if !line.is_empty() {
+                    print!("{line}");
+                    let _ = std::io::stdout().flush();
+                }
+            }
+            InstallEvent::PackageOperationEnd { .. }
             | InstallEvent::HookDone { .. }
             | InstallEvent::HookRunDone => {}
             InstallEvent::KeyDownloadStart => {
@@ -536,6 +720,7 @@ impl ConsoleSink {
             total,
             Instant::now(),
             crate::utils::terminal_cols(),
+            self.color,
         );
         if let Some(line) = drawn {
             self.hide_cursor();
@@ -545,24 +730,23 @@ impl ConsoleSink {
     }
 
     fn download_completed(&mut self, filename: &str, total: i64, result: DownloadResult) {
-        match result {
-            DownloadResult::UpToDate => {
-                println!("{}", self.downloads.up_to_date_line(filename, self.color));
-            }
-            DownloadResult::Success => {
-                println!(
-                    "{}",
-                    self.downloads.success_line(
-                        filename,
-                        total,
-                        Instant::now(),
-                        crate::utils::terminal_cols()
-                    )
-                );
-            }
-            DownloadResult::Failed => {
-                println!("{}", self.downloads.failed_line(filename, self.color));
-            }
+        let color = self.color;
+        let line = match result {
+            DownloadResult::UpToDate => self.downloads.up_to_date_line(filename, color),
+            DownloadResult::Success => self.downloads.success_line(
+                filename,
+                total,
+                Instant::now(),
+                crate::utils::terminal_cols(),
+                color,
+            ),
+            DownloadResult::Failed => self.downloads.failed_line(filename, color),
+        };
+        if color {
+            print!("{line}");
+            let _ = std::io::stdout().flush();
+        } else {
+            println!("{line}");
         }
     }
 }
@@ -617,6 +801,18 @@ impl EscalatedSink {
 
 impl InstallSink for EscalatedSink {
     fn event(&mut self, event: InstallEvent) {
+        if !is_download_event(&event) {
+            let end = match event {
+                InstallEvent::PkgRetrieveDone { .. } | InstallEvent::PkgRetrieveFailed { .. } => {
+                    self.downloads.move_end(color::stderr_color())
+                }
+                _ => self.downloads.move_below_total(color::stderr_color()),
+            };
+            if !end.is_empty() {
+                eprint!("{end}");
+                let _ = std::io::stderr().flush();
+            }
+        }
         match event {
             InstallEvent::HookStart { pre } => {
                 if let Some(label) = hook_header(&mut self.hook_phase, pre) {
@@ -642,7 +838,16 @@ impl InstallSink for EscalatedSink {
                 eprintln!("checking dependencies...");
             }
             InstallEvent::DownloadInit { filename, optional } => {
-                self.downloads.init_file(&filename, Instant::now());
+                let claim = self.downloads.init_file(
+                    &filename,
+                    Instant::now(),
+                    crate::utils::terminal_cols(),
+                    color::stderr_color(),
+                );
+                if !claim.is_empty() {
+                    eprint!("{claim}");
+                    let _ = std::io::stderr().flush();
+                }
                 if optional {
                     eprintln!("  {filename} (optional)");
                 }
@@ -658,45 +863,59 @@ impl InstallSink for EscalatedSink {
                     total,
                     Instant::now(),
                     crate::utils::terminal_cols(),
+                    color::stderr_color(),
                 );
                 if let Some(line) = drawn {
                     eprint!("{line}");
                     let _ = std::io::stderr().flush();
                 }
             }
-            InstallEvent::DownloadRetry { filename, .. } => {
-                self.downloads.retry_file(&filename, Instant::now());
+            InstallEvent::DownloadRetry { filename, resume } => {
+                self.downloads.retry_file(&filename, Instant::now(), resume);
             }
             InstallEvent::DownloadCompleted {
                 filename,
                 total,
                 result,
-            } => match result {
-                DownloadResult::UpToDate => {
-                    eprintln!(
-                        "{}",
-                        self.downloads
-                            .up_to_date_line(&filename, color::stderr_color())
-                    );
+            } => {
+                let color = color::stderr_color();
+                let line = match result {
+                    DownloadResult::UpToDate => self.downloads.up_to_date_line(&filename, color),
+                    DownloadResult::Success => self.downloads.success_line(
+                        &filename,
+                        total,
+                        Instant::now(),
+                        crate::utils::terminal_cols(),
+                        color,
+                    ),
+                    DownloadResult::Failed => self.downloads.failed_line(&filename, color),
+                };
+                if color {
+                    eprint!("{line}");
+                    let _ = std::io::stderr().flush();
+                } else {
+                    eprintln!("{line}");
                 }
-                DownloadResult::Success => {
-                    eprintln!(
-                        "{}",
-                        self.downloads.success_line(
-                            &filename,
-                            total,
-                            Instant::now(),
-                            crate::utils::terminal_cols()
-                        )
-                    );
+            }
+            InstallEvent::RetrievingPackages { num, total_bytes } => {
+                self.downloads
+                    .init_total(num, total_bytes, Instant::now(), color::stderr_color());
+                eprintln!(
+                    "{}",
+                    color::colon(color::stderr_color(), "Retrieving packages...")
+                );
+            }
+            InstallEvent::PkgRetrieveDone { .. } | InstallEvent::PkgRetrieveFailed { .. } => {
+                let line = self.downloads.finish_total(
+                    Instant::now(),
+                    crate::utils::terminal_cols(),
+                    color::stderr_color(),
+                );
+                if !line.is_empty() {
+                    eprint!("{line}");
+                    let _ = std::io::stderr().flush();
                 }
-                DownloadResult::Failed => {
-                    eprintln!(
-                        "{}",
-                        self.downloads.failed_line(&filename, color::stderr_color())
-                    );
-                }
-            },
+            }
             InstallEvent::SyncDatabases => {
                 eprintln!(
                     "{}",
@@ -904,6 +1123,8 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use crate::download::ETA_UNKNOWN;
+
     #[test]
     fn hook_header_prints_pre_label_before_post() {
         let mut phase = None;
@@ -942,82 +1163,6 @@ mod tests {
     }
 
     #[test]
-    fn download_progress_first_sample_shows_zero_rate_unknown_eta() {
-        let base = Instant::now();
-        let mut stat = DownloadStat {
-            xfered: 0,
-            total: 0,
-            init_time: base,
-            sync_xfered: 0,
-            sync_time: None,
-            rate: 0.0,
-            eta: 0,
-        };
-        assert!(stat.observe(base, 1000, 9000));
-        assert!(stat.rate > 0.0);
-        assert_eq!(stat.rate.trunc(), 0.0);
-        assert_eq!(stat.eta, ETA_UNKNOWN);
-        assert_eq!(stat.sync_xfered, 1000);
-        assert_eq!(stat.sync_time, Some(base));
-    }
-
-    #[test]
-    fn download_progress_first_sample_of_complete_file_shows_zero_eta() {
-        let base = Instant::now();
-        let mut stat = DownloadStat {
-            xfered: 0,
-            total: 0,
-            init_time: base,
-            sync_xfered: 0,
-            sync_time: None,
-            rate: 0.0,
-            eta: 0,
-        };
-        assert!(stat.observe(base, 742, 742));
-        assert_eq!(stat.eta, 0);
-    }
-
-    #[test]
-    fn download_progress_first_sample_of_empty_file_shows_unknown_eta() {
-        let base = Instant::now();
-        let mut stat = DownloadStat {
-            xfered: 0,
-            total: 0,
-            init_time: base,
-            sync_xfered: 0,
-            sync_time: None,
-            rate: 0.0,
-            eta: 0,
-        };
-        assert!(stat.observe(base, 0, 0));
-        assert_eq!(stat.rate, 0.0);
-        assert_eq!(stat.eta, ETA_UNKNOWN);
-    }
-
-    #[test]
-    fn download_progress_second_sample_computes_rate_and_eta() {
-        let base = Instant::now();
-        let mut stat = DownloadStat {
-            xfered: 0,
-            total: 0,
-            init_time: base,
-            sync_xfered: 0,
-            sync_time: None,
-            rate: 0.0,
-            eta: 0,
-        };
-        assert!(stat.observe(base, 1000, 9000));
-        assert!(!stat.observe(base + Duration::from_millis(100), 2000, 9000));
-        assert!(stat.observe(base + Duration::from_millis(300), 3000, 9000));
-        let chunk_rate = 2000.0 * 1000.0 / 300.0;
-        let expected_rate = (chunk_rate + 2.0 * 0.0) / 3.0;
-        assert_eq!(stat.rate, expected_rate);
-        assert_eq!(stat.eta, ((9000 - 3000) as f64 / expected_rate) as u64);
-        assert_eq!(stat.sync_xfered, 3000);
-        assert_eq!(stat.sync_time, Some(base + Duration::from_millis(300)));
-    }
-
-    #[test]
     fn clean_pkg_filename_strips_suffixes_in_pacman_priority() {
         assert_eq!(
             clean_pkg_filename("foo-1.2-3-x86_64.pkg.tar.zst"),
@@ -1049,11 +1194,88 @@ mod tests {
     fn success_line_redraws_final_hundred_percent_bar() {
         let base = Instant::now();
         let mut bars = DownloadBars::new();
-        bars.init_file("core.db", base);
+        bars.init_file("core.db", base, 80, false);
         assert_eq!(
-            bars.success_line("core.db", 2048, base + Duration::from_millis(1000), 80),
+            bars.success_line(
+                "core.db",
+                2048,
+                base + Duration::from_millis(1000),
+                80,
+                false
+            ),
             "\r core                 2048.0   B  2048   B/s 00:01 [######################] 100%"
         );
+    }
+
+    #[test]
+    fn interleaved_up_to_date_owns_its_line() {
+        let base = Instant::now();
+        let mut bars = DownloadBars::new();
+        assert_eq!(bars.init_file("a.db", base, 80, true), " a\n");
+        assert_eq!(bars.init_file("b.db", base, 80, true), " b\n");
+        assert_eq!(
+            bars.progress_line("a.db", 0, 1000, base, 80, true),
+            Some(
+                "\x1B[2F\r a                       0.0   B  0.00   B/s --:-- [----------------------]   0%"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            bars.up_to_date_line("b.db", true),
+            "\x1B[1E b is up to date\x1B[K"
+        );
+        assert_eq!(
+            bars.progress_line(
+                "a.db",
+                500,
+                1000,
+                base + Duration::from_millis(300),
+                80,
+                true
+            ),
+            Some(
+                "\x1B[1F\r a                     500.0   B   555   B/s 00:00 [###########-----------]  50%"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            bars.success_line("a.db", 1000, base + Duration::from_millis(1000), 80, true),
+            "\r a                    1000.0   B  1000   B/s 00:01 [######################] 100%"
+        );
+        assert_eq!(bars.move_end(true), "\x1B[2E");
+    }
+
+    #[test]
+    fn sequential_color_claims_redraws_and_releases() {
+        let base = Instant::now();
+        let mut bars = DownloadBars::new();
+        assert_eq!(bars.init_file("a.db", base, 80, true), " a\n");
+        assert_eq!(
+            bars.progress_line("a.db", 0, 1000, base, 80, true),
+            Some(
+                "\x1B[1F\r a                       0.0   B  0.00   B/s --:-- [----------------------]   0%"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            bars.success_line("a.db", 1000, base + Duration::from_millis(1000), 80, true),
+            "\r a                    1000.0   B  1000   B/s 00:01 [######################] 100%"
+        );
+        assert_eq!(bars.move_end(true), "\x1B[1E");
+    }
+
+    #[test]
+    fn plain_mode_emits_no_cursor_protocol() {
+        let base = Instant::now();
+        let mut bars = DownloadBars::new();
+        assert_eq!(bars.init_file("a.db", base, 80, false), "");
+        assert!(
+            bars.progress_line("a.db", 0, 1000, base, 80, false)
+                .expect("first sample draws")
+                .starts_with("\r a")
+        );
+        assert_eq!(bars.up_to_date_line("b.db", false), " b is up to date");
+        assert_eq!(bars.move_end(false), "");
     }
 
     #[test]
@@ -1074,19 +1296,174 @@ mod tests {
     }
 
     #[test]
+    fn total_bar_two_inits_redraw_total_each_claim() {
+        let base = Instant::now();
+        let mut bars = DownloadBars::new();
+        bars.init_total(2, 2000, base, true);
+        let first = bars.init_file("a.pkg.tar.zst", base, 80, true);
+        assert_eq!(
+            first,
+            " a\n\r Total (0/2)             0.0   B  0.00   B/s --:-- [----------------------]   0%\n"
+        );
+        let second = bars.init_file("b.pkg.tar.zst", base, 80, true);
+        assert_eq!(
+            second,
+            "\x1B[1F b\n\r Total (0/2)             0.0   B  0.00   B/s --:-- [----------------------]   0%\n"
+        );
+    }
+
+    #[test]
+    fn total_label_pads_to_howmany_digits() {
+        assert_eq!(total_label(1, 12), "Total ( 1/12)");
+        assert_eq!(total_label(12, 12), "Total (12/12)");
+        assert_eq!(total_label(0, 2), "Total (0/2)");
+    }
+
+    #[test]
+    fn total_progress_accumulates_without_file_window() {
+        let base = Instant::now();
+        let mut bars = DownloadBars::new();
+        bars.init_total(2, 2000, base, true);
+        bars.init_file("a.pkg.tar.zst", base, 80, true);
+        let first = bars
+            .progress_line("a.pkg.tar.zst", 500, 1000, base, 80, true)
+            .expect("total first sample draws");
+        assert!(first.contains("Total (0/2)"));
+        let quiet = bars.progress_line(
+            "a.pkg.tar.zst",
+            700,
+            1000,
+            base + Duration::from_millis(100),
+            80,
+            true,
+        );
+        assert!(quiet.is_none());
+        assert_eq!(bars.total_xfered(), 700);
+        let later = bars.progress_line(
+            "a.pkg.tar.zst",
+            800,
+            1000,
+            base + Duration::from_millis(300),
+            80,
+            true,
+        );
+        assert!(later.is_some());
+    }
+
+    #[test]
+    fn total_retry_without_resume_decrements() {
+        let base = Instant::now();
+        let mut bars = DownloadBars::new();
+        bars.init_total(2, 2000, base, true);
+        bars.init_file("a.pkg.tar.zst", base, 80, true);
+        bars.progress_line("a.pkg.tar.zst", 500, 1000, base, 80, true);
+        bars.retry_file("a.pkg.tar.zst", base + Duration::from_millis(50), false);
+        assert_eq!(bars.total_xfered(), 0);
+        bars.progress_line("a.pkg.tar.zst", 500, 1000, base, 80, true);
+        bars.retry_file("a.pkg.tar.zst", base + Duration::from_millis(60), true);
+        assert_eq!(bars.total_xfered(), 500);
+    }
+
+    #[test]
+    fn total_completion_counts_every_result_without_redraw() {
+        let base = Instant::now();
+        let mut bars = DownloadBars::new();
+        bars.init_total(3, 3000, base, true);
+        bars.init_file("a.pkg.tar.zst", base, 80, true);
+        bars.init_file("b.pkg.tar.zst", base, 80, true);
+        bars.init_file("c.pkg.tar.zst", base, 80, true);
+        bars.complete_one("a.pkg.tar.zst", DownloadResult::Success, base, 80, true);
+        assert_eq!(bars.total_downloaded(), 1);
+        bars.complete_one("b.pkg.tar.zst", DownloadResult::UpToDate, base, 80, true);
+        assert_eq!(bars.total_downloaded(), 2);
+        bars.complete_one("c.pkg.tar.zst", DownloadResult::Failed, base, 80, true);
+        assert_eq!(bars.total_downloaded(), 3);
+    }
+
+    #[test]
+    fn total_finish_draws_hundred_percent_and_deactivates() {
+        let base = Instant::now();
+        let mut bars = DownloadBars::new();
+        bars.init_total(2, 2000, base, true);
+        bars.init_file("a.pkg.tar.zst", base, 80, true);
+        bars.init_file("b.pkg.tar.zst", base, 80, true);
+        let done = bars.finish_total(base + Duration::from_millis(1000), 80, true);
+        assert!(done.ends_with("\n"));
+        assert!(done.contains("Total (0/2)"));
+        assert!(done.contains("100%"));
+        assert!(!bars.total_active());
+        let again = bars.finish_total(base + Duration::from_millis(2000), 80, true);
+        assert_eq!(again, "");
+    }
+
+    #[test]
+    fn total_disabled_for_single_package_or_empty_total() {
+        let base = Instant::now();
+        let mut bars = DownloadBars::new();
+        bars.init_total(1, 2000, base, true);
+        assert!(!bars.total_active());
+        bars.init_total(2, 0, base, true);
+        assert!(!bars.total_active());
+        let claim = bars.init_file("a.pkg.tar.zst", base, 80, true);
+        assert_eq!(claim, " a\n");
+    }
+
+    #[test]
+    fn total_disabled_without_color() {
+        let base = Instant::now();
+        let mut bars = DownloadBars::new();
+        bars.init_total(2, 2000, base, false);
+        assert!(!bars.total_active());
+        let claim = bars.init_file("a.pkg.tar.zst", base, 80, false);
+        assert_eq!(claim, "");
+    }
+
+    #[test]
+    fn total_line_follows_head_pop() {
+        let base = Instant::now();
+        let mut bars = DownloadBars::new();
+        bars.init_total(2, 2000, base, true);
+        bars.init_file("a.pkg.tar.zst", base, 80, true);
+        bars.init_file("b.pkg.tar.zst", base, 80, true);
+        bars.complete_one("a.pkg.tar.zst", DownloadResult::Success, base, 80, true);
+        assert_eq!(bars.total_line_index(), 1);
+        let drawn = bars.progress_line(
+            "b.pkg.tar.zst",
+            400,
+            1000,
+            base + Duration::from_millis(500),
+            80,
+            true,
+        );
+        assert!(drawn.is_some());
+    }
+
+    #[test]
     fn retry_resets_rate_and_eta_to_first_sample() {
         let base = Instant::now();
         let mut bars = DownloadBars::new();
-        bars.init_file("core.db", base);
-        let first = bars.progress_line("core.db", 1000, 9000, base, 80);
+        bars.init_file("core.db", base, 80, false);
+        let first = bars.progress_line("core.db", 1000, 9000, base, 80, false);
         assert!(first.is_some());
-        let second =
-            bars.progress_line("core.db", 3000, 9000, base + Duration::from_millis(300), 80);
+        let second = bars.progress_line(
+            "core.db",
+            3000,
+            9000,
+            base + Duration::from_millis(300),
+            80,
+            false,
+        );
         let second = second.expect("second sample redraws");
         assert!(second.contains("00:02"));
-        bars.retry_file("core.db", base + Duration::from_millis(400));
-        let after_retry =
-            bars.progress_line("core.db", 500, 9000, base + Duration::from_millis(500), 80);
+        bars.retry_file("core.db", base + Duration::from_millis(400), false);
+        let after_retry = bars.progress_line(
+            "core.db",
+            500,
+            9000,
+            base + Duration::from_millis(500),
+            80,
+            false,
+        );
         let after_retry = after_retry.expect("post-retry sample redraws");
         assert!(after_retry.contains("0.00   B/s --:--"));
     }

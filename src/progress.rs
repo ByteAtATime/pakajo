@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::dispatch::exec::ChildOutcome;
+use crate::download::TransferState;
 use crate::events::{InstallEvent, LogLevel, PackageOp, ProgressPhase, TransactionSummary};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,55 +19,6 @@ pub enum RepoStage {
     Download,
     Install,
     Finalize,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct RateSampler {
-    pub sync_time: Option<Instant>,
-    pub sync_done: i64,
-    pub rate: f64,
-}
-
-const DOWNLOAD_RATE_SAMPLE_MS: u128 = 200;
-
-impl RateSampler {
-    fn sample(&mut self, now: Instant, current: i64) {
-        let Some(previous) = self.sync_time else {
-            self.sync_time = Some(now);
-            self.sync_done = current;
-            return;
-        };
-        let timediff = now.duration_since(previous).as_millis();
-        if timediff < DOWNLOAD_RATE_SAMPLE_MS {
-            return;
-        }
-        let chunk = (current - self.sync_done).max(0);
-        self.sync_done = current;
-        self.sync_time = Some(now);
-        let chunk_rate = chunk as f64 * 1000.0 / timediff as f64;
-        self.rate = (chunk_rate + 2.0 * self.rate) / 3.0;
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct DownloadFile {
-    pub downloaded: i64,
-    pub total: i64,
-    pub completed: bool,
-    pub sampler: RateSampler,
-}
-
-impl DownloadFile {
-    fn complete(&mut self, total: i64) -> Option<i64> {
-        if self.completed {
-            return None;
-        }
-        let delta = total - self.downloaded;
-        self.downloaded = total;
-        self.total = total;
-        self.completed = true;
-        Some(delta)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -106,24 +58,6 @@ impl ValidateState {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct DownloadState {
-    pub total: usize,
-    pub done: usize,
-    pub bytes_total: i64,
-    pub bytes_done: i64,
-    pub files: HashMap<String, DownloadFile>,
-    pub order: Vec<String>,
-    pub sampler: RateSampler,
-}
-
-impl DownloadState {
-    pub fn queued(&self) -> usize {
-        let active = self.files.values().filter(|f| !f.completed).count();
-        self.total.saturating_sub(self.done).saturating_sub(active)
-    }
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct InstallState {
     pub order: Vec<String>,
     pub packages: HashMap<String, InstallPackage>,
@@ -146,7 +80,7 @@ pub struct RepoState {
     pub manifest: Option<TransactionSummary>,
     pub resolve: ResolveState,
     pub validate: ValidateState,
-    pub download: DownloadState,
+    pub download: TransferState,
     pub install: InstallState,
     pub finalize: FinalizeState,
 }
@@ -331,57 +265,6 @@ fn apply_finalize(state: &mut FinalizeState, ev: &InstallEvent) {
     }
 }
 
-fn apply_download(state: &mut DownloadState, ev: &InstallEvent, now: Instant) {
-    match ev {
-        InstallEvent::RetrievingPackages { num, total_bytes } => {
-            state.total = *num;
-            state.done = 0;
-            state.bytes_total = *total_bytes;
-            state.bytes_done = 0;
-            state.files.clear();
-            state.order.clear();
-            state.sampler = RateSampler::default();
-        }
-        InstallEvent::DownloadInit { filename, .. } => {
-            ensure_download_file(state, filename);
-        }
-        InstallEvent::DownloadProgress {
-            filename,
-            downloaded,
-            total,
-        } => {
-            let entry = ensure_download_file(state, filename);
-            let previous = entry.downloaded;
-            entry.downloaded = *downloaded;
-            entry.total = *total;
-            entry.sampler.sample(now, *downloaded);
-            state.bytes_done += *downloaded - previous;
-            state.sampler.sample(now, state.bytes_done);
-        }
-        InstallEvent::DownloadRetry { filename, resume } => {
-            if !*resume && let Some(f) = state.files.get_mut(filename) {
-                state.bytes_done -= f.downloaded;
-                f.downloaded = 0;
-                f.sampler = RateSampler::default();
-            }
-        }
-        InstallEvent::DownloadCompleted {
-            filename, total, ..
-        } => {
-            if let Some(delta) = ensure_download_file(state, filename).complete(*total) {
-                state.bytes_done += delta;
-            }
-            state.done += 1;
-        }
-        InstallEvent::RetrieveStart
-        | InstallEvent::RetrieveDone
-        | InstallEvent::RetrieveFailed
-        | InstallEvent::PkgRetrieveDone { .. }
-        | InstallEvent::PkgRetrieveFailed { .. } => {}
-        _ => {}
-    }
-}
-
 pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent, now: Instant) {
     match ev {
         InstallEvent::ResolvingDependencies | InstallEvent::ResolvingAurDependencies { .. } => {
@@ -407,17 +290,10 @@ pub fn apply_repo_counters(state: &mut RepoState, ev: &InstallEvent, now: Instan
     match event_stage(ev) {
         Some(RepoStage::Validate) => track_validate_check(&mut state.validate, ev),
         Some(RepoStage::Install) => apply_install(&mut state.install, ev),
-        Some(RepoStage::Download) => apply_download(&mut state.download, ev, now),
+        Some(RepoStage::Download) => state.download.apply(ev, now),
         Some(RepoStage::Finalize) => apply_finalize(&mut state.finalize, ev),
         Some(RepoStage::Resolve) | None => {}
     }
-}
-
-fn ensure_download_file<'a>(state: &'a mut DownloadState, filename: &str) -> &'a mut DownloadFile {
-    if !state.files.contains_key(filename) {
-        state.order.push(filename.to_string());
-    }
-    state.files.entry(filename.to_string()).or_default()
 }
 
 pub fn ordered_stages(kind: InstallKind) -> &'static [RepoStage] {
@@ -482,7 +358,7 @@ pub struct AurState {
     pub build_order: Vec<String>,
     pub build_ended: Option<Instant>,
     pub install: InstallState,
-    pub download: DownloadState,
+    pub download: TransferState,
     pub finalize: FinalizeState,
     pub last_aur_stage: Option<AurStage>,
 }
@@ -576,7 +452,7 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant)
     match stage {
         Some(AurStage::Install) => match event_stage(ev) {
             Some(RepoStage::Install) => apply_install(&mut state.install, ev),
-            Some(RepoStage::Download) => apply_download(&mut state.download, ev, now),
+            Some(RepoStage::Download) => state.download.apply(ev, now),
             _ => {}
         },
         Some(AurStage::Finalize) => apply_finalize(&mut state.finalize, ev),
@@ -793,10 +669,21 @@ mod tests {
         assert_eq!(state.download.bytes_done, 400);
         assert_eq!(state.download.files["pkg-b"].downloaded, 0);
 
+        apply_repo_event(&mut state, &file_progress("pkg-b", 300, 600));
+        assert_eq!(state.download.bytes_done, 700);
         apply_repo_event(&mut state, &file_done("pkg-b", 600));
         assert_eq!(state.download.done, 2);
-        assert_eq!(state.download.bytes_done, 1000);
+        assert_eq!(state.download.bytes_done, 700);
         assert_eq!(state.download.queued(), 0);
+
+        apply_repo_event(
+            &mut state,
+            &InstallEvent::PkgRetrieveDone {
+                num: 2,
+                total_bytes: 1000,
+            },
+        );
+        assert_eq!(state.download.bytes_done, 1000);
 
         apply_repo_event(&mut state, &retrieving(1, 10));
         assert_eq!(state.download.total, 1);
@@ -936,24 +823,5 @@ mod tests {
             Some(Duration::from_secs(90))
         );
         assert_eq!(state.build_ended, Some(last));
-    }
-
-    #[test]
-    fn rate_sampler_blends_first_eligible_chunk() {
-        let base = Instant::now();
-        let at = |ms: u64| base + Duration::from_millis(ms);
-        let mut sampler = RateSampler::default();
-
-        sampler.sample(base, 1000);
-        assert_eq!(sampler.sync_time, Some(base));
-        assert_eq!((sampler.sync_done, sampler.rate), (1000, 0.0));
-
-        sampler.sample(at(100), 1500);
-        assert_eq!(sampler.sync_time, Some(base));
-        assert_eq!((sampler.sync_done, sampler.rate), (1000, 0.0));
-
-        sampler.sample(at(500), 2500);
-        assert_eq!(sampler.sync_time, Some(at(500)));
-        assert_eq!((sampler.sync_done, sampler.rate), (2500, 1000.0));
     }
 }

@@ -10,6 +10,7 @@ pub mod db;
 pub mod devel;
 pub mod diff;
 pub mod dispatch;
+pub mod download;
 pub mod dry_run;
 pub mod events;
 pub mod git;

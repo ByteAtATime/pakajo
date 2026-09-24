@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 
 use pakajo::dispatch::exec::{AnswerWriter, ChildOutcome};
+use pakajo::download::TransferState;
 use pakajo::events::{InstallEvent, TransactionSummary};
 use pakajo::package::PackageSource;
 use pakajo::progress::{
-    AurStage, AurState, BuildStatus, DownloadState, InstallKind, InstallState, RepoStage,
-    RepoState, VALIDATE_TOTAL, apply_aur_counters, apply_repo_counters, event_stage, finish_aur,
+    AurStage, AurState, BuildStatus, InstallKind, InstallState, RepoStage, RepoState,
+    VALIDATE_TOTAL, apply_aur_counters, apply_repo_counters, event_stage, finish_aur,
     ordered_aur_stages, ordered_stages,
 };
 use pakajo::question::model::Question;
@@ -386,7 +387,7 @@ impl TransactionModel {
     }
 }
 
-fn download_fraction(state: &DownloadState) -> f32 {
+fn download_fraction(state: &TransferState) -> f32 {
     if state.bytes_total > 0 {
         return (state.bytes_done as f32 / state.bytes_total as f32).clamp(0.0, 1.0);
     }

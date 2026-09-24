@@ -4,7 +4,7 @@ use cosmic::iced::alignment::Vertical;
 use cosmic::iced::widget::{Stack, progress_bar};
 use cosmic::iced::{Background, Border, Color, Length};
 use cosmic::widget::{Column, Row, container, space, text};
-use pakajo::progress::{DownloadFile, DownloadState};
+use pakajo::download::{FileTransfer, TransferState};
 use pakajo::utils::{format_bytes, format_eta, humanize_size};
 
 use crate::Element;
@@ -47,14 +47,14 @@ pub(super) fn eta(done: i64, total: i64, rate: f64) -> String {
     "--:--".to_string()
 }
 
-fn files_in_order(state: &DownloadState) -> impl Iterator<Item = (&str, &DownloadFile)> {
+fn files_in_order(state: &TransferState) -> impl Iterator<Item = (&str, &FileTransfer)> {
     state
         .order
         .iter()
         .filter_map(|name| state.files.get(name).map(|f| (name.as_str(), f)))
 }
 
-fn active_card(filename: &str, file: &DownloadFile) -> Element<'static> {
+fn active_card(filename: &str, file: &FileTransfer) -> Element<'static> {
     let pct = percent(file.downloaded, file.total);
     let pct_text = tinted(text(format!("{:.0}%", pct)), accent_color);
     let top = Row::new()
@@ -63,7 +63,7 @@ fn active_card(filename: &str, file: &DownloadFile) -> Element<'static> {
         .push(space::horizontal())
         .push(pct_text);
     let bar = thin_bar(pct as f32);
-    let eta_str = eta(file.downloaded, file.total, file.sampler.rate);
+    let eta_str = eta(file.downloaded, file.total, file.meter.rate);
     let bottom = Row::new()
         .align_y(Vertical::Center)
         .push(muted(text(format!(
@@ -82,7 +82,7 @@ fn active_card(filename: &str, file: &DownloadFile) -> Element<'static> {
         .into()
 }
 
-fn completed_row(filename: &str, file: &DownloadFile) -> Element<'static> {
+fn completed_row(filename: &str, file: &FileTransfer) -> Element<'static> {
     Row::new()
         .align_y(Vertical::Center)
         .spacing(8)
@@ -93,7 +93,7 @@ fn completed_row(filename: &str, file: &DownloadFile) -> Element<'static> {
         .into()
 }
 
-fn stream_row(filename: &str, file: &DownloadFile) -> Element<'static> {
+fn stream_row(filename: &str, file: &FileTransfer) -> Element<'static> {
     let pct = percent(file.downloaded, file.total);
     let background = progress_bar(0.0..=100.0, pct as f32)
         .length(Length::Fill)
@@ -113,7 +113,7 @@ fn stream_row(filename: &str, file: &DownloadFile) -> Element<'static> {
                 }
             },
         ));
-    let (rate_val, rate_unit) = humanize_size(file.sampler.rate.max(0.0) as i64);
+    let (rate_val, rate_unit) = humanize_size(file.meter.rate.max(0.0) as i64);
     let speed_str = format!("{:.2} {}/s", rate_val, rate_unit);
     let right = format!(
         "{} / {}  {}",
@@ -142,11 +142,11 @@ fn stream_row(filename: &str, file: &DownloadFile) -> Element<'static> {
         .into()
 }
 
-fn rich_view(state: &DownloadState) -> Element<'_> {
+fn rich_view(state: &TransferState) -> Element<'_> {
     let mut col = Column::new().spacing(8);
-    let completed: Vec<(&str, &DownloadFile)> =
+    let completed: Vec<(&str, &FileTransfer)> =
         files_in_order(state).filter(|(_, f)| f.completed).collect();
-    let active: Vec<(&str, &DownloadFile)> = files_in_order(state)
+    let active: Vec<(&str, &FileTransfer)> = files_in_order(state)
         .filter(|(_, f)| !f.completed)
         .collect();
     if !completed.is_empty() {
@@ -161,7 +161,7 @@ fn rich_view(state: &DownloadState) -> Element<'_> {
     col.into()
 }
 
-fn compact_view(state: &DownloadState) -> Element<'_> {
+fn compact_view(state: &TransferState) -> Element<'_> {
     let total = state.bytes_total.max(0);
     let done = state.bytes_done.max(0);
     let pct = percent(done, total);
@@ -174,7 +174,7 @@ fn compact_view(state: &DownloadState) -> Element<'_> {
 
     let bar = thin_bar(pct as f32);
 
-    let eta_str = eta(done, total, state.sampler.rate);
+    let eta_str = eta(done, total, state.totals.meter.rate);
 
     let bottom_row = Row::new()
         .align_y(Vertical::Center)
@@ -195,7 +195,7 @@ fn compact_view(state: &DownloadState) -> Element<'_> {
     col = col.push(bar);
     col = col.push(bottom_row);
 
-    let active: Vec<(&str, &DownloadFile)> = files_in_order(state)
+    let active: Vec<(&str, &FileTransfer)> = files_in_order(state)
         .filter(|(_, f)| !f.completed)
         .collect();
     col = col.push(muted(text(format!("Downloading ({})", active.len()))));
@@ -281,7 +281,7 @@ pub(crate) fn format_signed_bytes(value: i64) -> String {
     }
 }
 
-pub(super) fn download_view(state: &DownloadState) -> Element<'_> {
+pub(super) fn download_view(state: &TransferState) -> Element<'_> {
     if state.total < 4 {
         return rich_view(state);
     }
