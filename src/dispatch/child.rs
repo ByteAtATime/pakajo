@@ -169,14 +169,8 @@ pub(crate) fn run_upgrade_repo_direct(
     let sealed = approvals_payload
         .map(crate::dispatch::seal::decode_seal)
         .transpose()?;
-    let inner: Box<dyn crate::question::source::AnswerSource> = match sealed {
-        Some(sealed) => Box::new(crate::question::source::ApprovalsReplay::new(sealed)),
-        None => Box::new(crate::question::source::FailClosedSource),
-    };
-    let source = crate::tx::prompt::stdin_channel_source(inner, |question| {
-        JsonSink::new().event(InstallEvent::RuntimePrompt { question })
-    });
-    crate::upgrade::run_upgrade_repo(no_refresh, ignores, source, Box::new(JsonSink::new()))
+    let (source, sink) = upgrade_repo_source_sink(Presentation::SilentStream, sealed);
+    crate::upgrade::run_upgrade_repo(no_refresh, ignores, source, sink)
 }
 
 impl ChildOperation {
