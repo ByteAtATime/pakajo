@@ -337,7 +337,6 @@ mod tests {
             reinstall: false,
             no_check: false,
             ignores: Vec::new(),
-            prefer_aur: false,
             decider: proceed_decider(),
             approvals: None,
             tty: false,

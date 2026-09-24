@@ -126,7 +126,6 @@ fn install_subcommand(args: InstallArgs) -> i32 {
         reinstall: args.reinstall,
         no_check: false,
         ignores: vec![],
-        prefer_aur: false,
         decider: match decider_for(tty, args.json, args.skip_review, approvals.as_deref()) {
             Ok(decider) => decider,
             Err(error) => {

@@ -188,30 +188,21 @@ impl Transaction {
             PackageSource::Aur => vec![name.clone()],
             _ => Vec::new(),
         };
-        let prefer_aur = matches!(source, PackageSource::Aur);
-        Self::start_batch(targets, aur_names, prefer_aur)
+        Self::start_batch(targets, aur_names)
     }
 
     pub(crate) fn start_batch(
         names: Vec<String>,
         aur_names: Vec<String>,
-        prefer_aur: bool,
     ) -> (Self, Task<crate::Message>) {
         let first = names.first().cloned().expect("start_batch needs a target");
-        let model = TransactionModel::batch(
-            first,
-            names.clone(),
-            aur_names,
-            prefer_aur,
-            InstallKind::Install,
-        );
+        let model = TransactionModel::batch(first, names.clone(), aur_names, InstallKind::Install);
         let request = pakajo::dispatch::InstallRequest {
             targets: names,
             as_deps: false,
             reinstall: false,
             no_check: false,
             ignores: vec![],
-            prefer_aur,
             decider: pakajo::dispatch::seal::proceed_decider(),
             approvals: None,
             tty: false,
@@ -584,7 +575,6 @@ impl Transaction {
 
     fn launch_subprocess(&mut self, approvals: String) -> Action {
         let targets = self.model.targets.clone();
-        let prefer_aur = self.model.prefer_aur;
         self.model.status = TransactionStatus::Running;
         let decider: Box<dyn pakajo::dispatch::protocol::Decider + Send> =
             match pakajo::dispatch::seal::decode_seal(&approvals) {
@@ -601,7 +591,6 @@ impl Transaction {
             reinstall: false,
             no_check: false,
             ignores: vec![],
-            prefer_aur,
             decider,
             approvals: Some(approvals),
             tty: false,
@@ -809,7 +798,6 @@ mod tests {
                 s("paru"),
                 vec![s("paru")],
                 vec![s("paru")],
-                false,
                 InstallKind::Install,
             ),
             review_loop: None,
@@ -822,7 +810,6 @@ mod tests {
                 s("firefox"),
                 vec![s("firefox")],
                 Vec::new(),
-                false,
                 InstallKind::Install,
             ),
             review_loop: None,

@@ -515,7 +515,7 @@ impl PakajoApp {
         };
         let (targets, aur_bucket) =
             components::transaction::partition_batch_targets(&wanted, resolve);
-        let (txn, task) = Transaction::start_batch(targets, aur_bucket, false);
+        let (txn, task) = Transaction::start_batch(targets, aur_bucket);
         self.selected_optdeps.clear();
         self.transaction = Some(txn);
         self.show_transaction = false;

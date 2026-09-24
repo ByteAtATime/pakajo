@@ -162,7 +162,6 @@ mod checkout_tests {
             s("firefox"),
             vec![s("firefox")],
             vec![],
-            false,
             InstallKind::Install,
         );
         Transaction {

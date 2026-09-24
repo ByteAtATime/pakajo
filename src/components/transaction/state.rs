@@ -27,7 +27,6 @@ pub(crate) struct TransactionModel {
     pub(crate) targets: Vec<String>,
     pub(crate) aur_names: Vec<String>,
     pub(crate) aur_upgrades: Vec<pakajo::upgrade::AurUpgradeCandidate>,
-    pub(crate) prefer_aur: bool,
     pub(crate) stages: &'static [RepoStage],
     pub(crate) current_idx: usize,
     pub(crate) repo_state: RepoState,
@@ -64,7 +63,6 @@ impl TransactionModel {
         name: String,
         targets: Vec<String>,
         aur_names: Vec<String>,
-        prefer_aur: bool,
         kind: InstallKind,
     ) -> Self {
         let source = if aur_names.is_empty() {
@@ -77,7 +75,6 @@ impl TransactionModel {
             targets,
             aur_names,
             aur_upgrades: Vec::new(),
-            prefer_aur,
             stages: ordered_stages(kind),
             current_idx: 0,
             repo_state: RepoState::default(),
@@ -109,8 +106,7 @@ impl TransactionModel {
             PackageSource::Aur if !is_removal => vec![name.clone()],
             _ => Vec::new(),
         };
-        let prefer_aur = matches!(source, PackageSource::Aur) && !is_removal;
-        Self::batch(name, targets, aur_names, prefer_aur, kind)
+        Self::batch(name, targets, aur_names, kind)
     }
 
     pub(crate) fn apply_event(&mut self, ev: &InstallEvent) {
@@ -892,7 +888,6 @@ mod tests {
             TransactionModel::new("yay".to_string(), PackageSource::Aur, InstallKind::Install);
         assert_eq!(aur.targets, vec!["yay".to_string()]);
         assert_eq!(aur.aur_names, vec!["yay".to_string()]);
-        assert!(aur.prefer_aur);
         let repo = TransactionModel::new(
             "firefox".to_string(),
             PackageSource::Repo,
@@ -900,7 +895,6 @@ mod tests {
         );
         assert_eq!(repo.targets, vec!["firefox".to_string()]);
         assert!(repo.aur_names.is_empty());
-        assert!(!repo.prefer_aur);
         let remove = TransactionModel::new(
             "firefox".to_string(),
             PackageSource::Repo,
@@ -908,7 +902,6 @@ mod tests {
         );
         assert_eq!(remove.targets, vec!["firefox".to_string()]);
         assert!(remove.aur_names.is_empty());
-        assert!(!remove.prefer_aur);
         let upgrade = TransactionModel::new(
             "system".to_string(),
             PackageSource::Repo,
@@ -916,7 +909,6 @@ mod tests {
         );
         assert_eq!(upgrade.targets, vec!["system".to_string()]);
         assert!(upgrade.aur_names.is_empty());
-        assert!(!upgrade.prefer_aur);
     }
 
     #[test]
@@ -925,7 +917,6 @@ mod tests {
             TransactionModel::new("yay".to_string(), PackageSource::Aur, InstallKind::Remove);
         assert_eq!(remove.targets, vec!["yay".to_string()]);
         assert!(remove.aur_names.is_empty());
-        assert!(!remove.prefer_aur);
         assert!(!remove.is_aur());
     }
 
@@ -935,7 +926,6 @@ mod tests {
             "firefox".to_string(),
             vec!["firefox".to_string(), "yay".to_string()],
             vec!["yay".to_string()],
-            false,
             InstallKind::Install,
         );
         assert_eq!(model.source, PackageSource::Aur);
@@ -945,7 +935,6 @@ mod tests {
             vec!["firefox".to_string(), "yay".to_string()]
         );
         assert_eq!(model.aur_names, vec!["yay".to_string()]);
-        assert!(!model.prefer_aur);
     }
 
     #[test]
@@ -954,11 +943,9 @@ mod tests {
             "firefox".to_string(),
             vec!["firefox".to_string()],
             Vec::new(),
-            false,
             InstallKind::Install,
         );
         assert_eq!(model.source, PackageSource::Repo);
-        assert!(!model.prefer_aur);
     }
 
     #[test]
@@ -969,13 +956,11 @@ mod tests {
             "yay".to_string(),
             vec!["yay".to_string()],
             vec!["yay".to_string()],
-            true,
             InstallKind::Install,
         );
         assert_eq!(from_new.name, from_batch.name);
         assert_eq!(from_new.targets, from_batch.targets);
         assert_eq!(from_new.aur_names, from_batch.aur_names);
-        assert_eq!(from_new.prefer_aur, from_batch.prefer_aur);
         assert_eq!(from_new.source, from_batch.source);
         assert_eq!(from_new.kind, from_batch.kind);
     }
