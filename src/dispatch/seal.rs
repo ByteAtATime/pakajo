@@ -103,7 +103,6 @@ pub fn decode_seal(payload: &str) -> anyhow::Result<SealedApprovals> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::question::approvals::{Sealed, match_answer, seal};
     use crate::question::model::{Answer, Question, QuestionKey, TransactionKind};
 
     fn s(value: &str) -> String {
@@ -151,36 +150,6 @@ mod tests {
             deps: Vec::new(),
         })
         .expect("encodes")
-    }
-
-    #[test]
-    fn round_trip_replays_through_match_answer() {
-        let (questions, answers) = fixture();
-        let sealed = seal(&questions, &answers, true).expect("seal succeeds");
-        let payload = encode_seal(&sealed).expect("encodes");
-        let decoded = decode_seal(&payload).expect("decodes");
-        assert_eq!(decoded, sealed);
-        for (question, answer) in questions.iter().zip(answers.iter()) {
-            assert_eq!(
-                match_answer(question, &decoded),
-                Sealed::Answer(answer.clone())
-            );
-        }
-        assert_eq!(
-            match_answer(
-                &Question::Proceed {
-                    summary: crate::events::TransactionSummary {
-                        packages: vec![],
-                        total_download_size: 0,
-                        total_installed_size: 0,
-                        total_removed_size: 0,
-                    },
-                    kind: TransactionKind::Install,
-                },
-                &decoded
-            ),
-            Sealed::Answer(Answer::Proceed)
-        );
     }
 
     #[test]

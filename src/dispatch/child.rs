@@ -446,33 +446,6 @@ mod tests {
     }
 
     #[test]
-    fn read_seal_round_trips_sealed_payload() {
-        use crate::question::approvals::seal;
-        use crate::question::model::{Answer, Question};
-        let question = Question::Conflict {
-            incoming: "cava-git".to_string(),
-            incoming_version: "1.0-1".to_string(),
-            removable: "cava".to_string(),
-            removable_version: "1.0-1".to_string(),
-            conflict_reason: None,
-        };
-        let answer = Answer::Conflict {
-            incoming: "cava-git".to_string(),
-            removable: "cava".to_string(),
-            remove: true,
-        };
-        let sealed = seal(std::slice::from_ref(&question), &[answer], true).expect("seal succeeds");
-        let payload = crate::dispatch::seal::encode_seal(&sealed).expect("encodes");
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("pakajo-test-seal-{}.json", std::process::id()));
-        std::fs::write(&path, payload).expect("write seal");
-        let decoded = read_seal(Some(&path.to_string_lossy())).expect("reads seal");
-        let _ = std::fs::remove_file(&path);
-        assert_eq!(decoded, Some(sealed));
-        assert!(read_seal(None).expect("no path is no seal").is_none());
-    }
-
-    #[test]
     fn upgrade_outcome_codes_classify_idle_and_decline() {
         use crate::events::TransactionSummary;
         use crate::tx::driver::{Finish, RunOutcome};

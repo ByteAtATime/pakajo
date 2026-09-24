@@ -293,42 +293,22 @@ mod tests {
     use super::{eta, percent};
 
     #[test]
-    fn percent_zero_done() {
-        assert_eq!(percent(0, 100), 0.0);
-    }
-
-    #[test]
-    fn percent_half_done() {
-        assert_eq!(percent(50, 100), 50.0);
-    }
-
-    #[test]
-    fn percent_full() {
-        assert_eq!(percent(100, 100), 100.0);
-    }
-
-    #[test]
-    fn percent_clamps_above_total() {
-        assert_eq!(percent(150, 100), 100.0);
-    }
-
-    #[test]
-    fn percent_zero_total() {
-        assert_eq!(percent(0, 0), 0.0);
-    }
-
-    #[test]
-    fn eta_zero_rate() {
-        assert_eq!(eta(10, 100, 0.0), "--:--");
-    }
-
-    #[test]
-    fn eta_completed() {
-        assert_eq!(eta(100, 100, 10.0), "00:00");
-    }
-
-    #[test]
-    fn eta_mid_download() {
-        assert_eq!(eta(0, 100, 10.0), "00:10");
+    fn progress_math_pins_edges() {
+        for (done, total, expected) in [
+            (0, 100, 0.0),
+            (50, 100, 50.0),
+            (100, 100, 100.0),
+            (150, 100, 100.0),
+            (0, 0, 0.0),
+        ] {
+            assert_eq!(percent(done, total), expected);
+        }
+        for (done, total, rate, expected) in [
+            (10, 100, 0.0, "--:--"),
+            (100, 100, 10.0, "00:00"),
+            (0, 100, 10.0, "00:10"),
+        ] {
+            assert_eq!(eta(done, total, rate), expected);
+        }
     }
 }

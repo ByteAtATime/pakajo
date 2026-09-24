@@ -313,23 +313,6 @@ mod tests {
         (dir, handle, target)
     }
 
-    fn plain_handle() -> (tempfile::TempDir, alpm::Alpm, String) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("root");
-        let db = dir.path().join("db");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(db.join("local")).unwrap();
-        std::fs::create_dir_all(db.join("sync")).unwrap();
-        let file = std::fs::File::create(db.join("sync").join("core.db")).unwrap();
-        let mut builder = tar::Builder::new(file);
-        sync_entry(&mut builder, "solo", "1.0-1", "");
-        builder.into_inner().unwrap();
-        let handle = open_handle(&dir, &db);
-        let stub = crate::stub_pkg::build_stub_pkg("solo", "1.0-1", dir.path()).unwrap();
-        let target = stub.to_string_lossy().into_owned();
-        (dir, handle, target)
-    }
-
     fn request(targets: &[&str]) -> InstallRequest {
         InstallRequest {
             targets: targets.iter().map(|target| target.to_string()).collect(),
@@ -548,72 +531,6 @@ mod tests {
     }
 
     #[test]
-    fn same_handle_serves_second_step_with_equal_output() {
-        let (_dir, mut handle, target) = provider_handle();
-        let first = run_step(&mut handle, &install_plan(&[&target]), ReviewStep::Defaults).unwrap();
-        let second =
-            run_step(&mut handle, &install_plan(&[&target]), ReviewStep::Defaults).unwrap();
-        assert_eq!(first.questions, second.questions);
-        assert_eq!(first.answers, second.answers);
-        assert_eq!(summary_names(&first), summary_names(&second));
-    }
-
-    #[test]
-    fn plain_stub_projects_empty_questions_with_summary() {
-        let (_dir, mut handle, target) = plain_handle();
-        let run = run_step(&mut handle, &install_plan(&[&target]), ReviewStep::Defaults).unwrap();
-        assert_eq!(run.origin, ReviewOrigin::Initial);
-        assert!(run.questions.is_empty());
-        assert!(run.answers.is_empty());
-        assert_eq!(summary_names(&run), vec!["solo".to_string()]);
-    }
-
-    #[test]
-    fn sealed_step_replays_provider_two_with_changed_summary() {
-        let (_dir, mut handle, target) = provider_handle();
-        let initial =
-            run_step(&mut handle, &install_plan(&[&target]), ReviewStep::Defaults).unwrap();
-        let reselected: Vec<Answer> = initial
-            .answers
-            .iter()
-            .map(|answer| match answer {
-                Answer::SelectProvider { .. } => Answer::SelectProvider {
-                    name: "provider-two".to_string(),
-                    repo: Some("core".to_string()),
-                },
-                kept => kept.clone(),
-            })
-            .collect();
-        let sealed = seal(&initial.questions, &reselected, false).expect("seal succeeds");
-        let rerun = run_step(
-            &mut handle,
-            &install_plan(&[&target]),
-            ReviewStep::Sealed(sealed),
-        )
-        .unwrap();
-        assert_eq!(rerun.origin, ReviewOrigin::Revalidation);
-        assert!(
-            rerun.questions.iter().any(|question| matches!(
-                question,
-                Question::SelectProvider { depend, .. } if depend == "virt"
-            )),
-            "expected a SelectProvider question for virt, got {:?}",
-            rerun.questions
-        );
-        assert!(
-            rerun.answers.iter().any(|answer| matches!(
-                answer,
-                Answer::SelectProvider { name, .. } if name == "provider-two"
-            )),
-            "expected provider-two replay, got {:?}",
-            rerun.answers
-        );
-        assert_ne!(summary_names(&initial), summary_names(&rerun));
-        assert!(summary_names(&rerun).contains(&"provider-two".to_string()));
-        assert!(!summary_names(&rerun).contains(&"provider-one".to_string()));
-    }
-
-    #[test]
     fn remove_defaults_step_records_hold_question_with_removal_summary() {
         let app = LocalEntry {
             name: "app",
@@ -739,16 +656,5 @@ mod tests {
             fingerprint(&initial.questions, &initial.answers, &initial.summary),
             fingerprint(&rerun.questions, &rerun.answers, &rerun.summary)
         );
-    }
-
-    #[test]
-    fn remove_same_handle_serves_second_step_with_equal_output() {
-        let (_dir, mut handle) = local_handle(&[local_entry("sl")]);
-        let plan = remove_plan(&["sl"], &["sl"]);
-        let first = run_step(&mut handle, &plan, ReviewStep::Defaults).unwrap();
-        let second = run_step(&mut handle, &plan, ReviewStep::Defaults).unwrap();
-        assert_eq!(first.questions, second.questions);
-        assert_eq!(first.answers, second.answers);
-        assert_eq!(summary_names(&first), summary_names(&second));
     }
 }

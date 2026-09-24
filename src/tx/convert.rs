@@ -303,34 +303,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unsatisfied_with_cause_reports_removal_breakage() {
-        let failure = PrepareFailure::Unsatisfied(vec![UnsatisfiedDep {
+    fn prepare_failure_display_renders_each_miss() {
+        let caused = PrepareFailure::Unsatisfied(vec![UnsatisfiedDep {
             depend: "libfoo".to_string(),
             target: "sl".to_string(),
             causing_pkg: Some("glibc".to_string()),
         }]);
         assert_eq!(
-            failure.to_string(),
+            caused.to_string(),
             "removing glibc breaks dependency 'libfoo' required by sl"
         );
-    }
-
-    #[test]
-    fn unsatisfied_without_cause_reports_unable_to_satisfy() {
-        let failure = PrepareFailure::Unsatisfied(vec![UnsatisfiedDep {
+        let uncaused = PrepareFailure::Unsatisfied(vec![UnsatisfiedDep {
             depend: "libfoo".to_string(),
             target: "sl".to_string(),
             causing_pkg: None,
         }]);
         assert_eq!(
-            failure.to_string(),
+            uncaused.to_string(),
             "unable to satisfy dependency 'libfoo' required by sl"
         );
-    }
-
-    #[test]
-    fn unsatisfied_multiple_misses_render_one_line_each() {
-        let failure = PrepareFailure::Unsatisfied(vec![
+        let both = PrepareFailure::Unsatisfied(vec![
             UnsatisfiedDep {
                 depend: "libfoo".to_string(),
                 target: "sl".to_string(),
@@ -343,14 +335,10 @@ mod tests {
             },
         ]);
         assert_eq!(
-            failure.to_string(),
+            both.to_string(),
             "removing glibc breaks dependency 'libfoo' required by sl\nunable to satisfy dependency 'libbar' required by vlc"
         );
-    }
-
-    #[test]
-    fn other_renders_message_as_is() {
-        let failure = PrepareFailure::Other("database not found".to_string());
-        assert_eq!(failure.to_string(), "database not found");
+        let other = PrepareFailure::Other("database not found".to_string());
+        assert_eq!(other.to_string(), "database not found");
     }
 }

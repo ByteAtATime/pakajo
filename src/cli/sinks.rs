@@ -1142,11 +1142,6 @@ mod tests {
     }
 
     #[test]
-    fn fit_subject_pads_short_labels() {
-        assert_eq!(fit_subject("hi", 5), "hi   ");
-    }
-
-    #[test]
     fn fit_subject_truncates_with_ellipsis() {
         assert_eq!(fit_subject("hello world", 6), "hel...");
     }

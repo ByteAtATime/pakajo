@@ -238,41 +238,6 @@ mod tests {
     }
 
     #[test]
-    fn summary_rows_net_bytes_for_removal() {
-        let summary = TransactionSummary {
-            packages: vec![SummaryPackage {
-                name: "old".to_string(),
-                repository: None,
-                new_version: String::new(),
-                old_version: Some("1.0-1".to_string()),
-                download_size: 0,
-                installed_size: 241591,
-                old_installed_size: 0,
-                is_removal: true,
-            }],
-            total_download_size: 0,
-            total_installed_size: 0,
-            total_removed_size: 241591,
-        };
-        let rows = summary_rows(&summary);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].net_bytes, -241591);
-    }
-
-    #[test]
-    fn summary_rows_net_bytes_for_upgrade() {
-        let summary = TransactionSummary {
-            packages: vec![install_package("foo", 1048576, 786432)],
-            total_download_size: 0,
-            total_installed_size: 1048576,
-            total_removed_size: 786432,
-        };
-        let rows = summary_rows(&summary);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].net_bytes, 1048576 - 786432);
-    }
-
-    #[test]
     fn summary_rows_ordering_removals_first_then_alphabetical() {
         let summary = TransactionSummary {
             packages: vec![

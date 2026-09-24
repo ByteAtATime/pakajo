@@ -239,13 +239,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remove_wire_round_trip() {
-        let operation = PrivilegedOperation::Remove {
+    fn remove_wire_round_trips_targets_flags_and_approvals() {
+        let plain = PrivilegedOperation::Remove {
             targets: vec!["sl".to_string(), "figlet".to_string()],
             interactive: false,
             approvals: None,
         };
-        let argv = operation.wire_args(None);
+        let argv = plain.wire_args(None);
         assert_eq!(argv, ["remove", "--stream", "sl", "figlet"]);
         assert_eq!(
             ChildOperation::decode(&argv),
@@ -256,16 +256,12 @@ mod tests {
                 stream: true,
             })
         );
-    }
-
-    #[test]
-    fn remove_approvals_wire_round_trip() {
-        let operation = PrivilegedOperation::Remove {
+        let sealed = PrivilegedOperation::Remove {
             targets: vec!["sl".to_string()],
             interactive: false,
             approvals: None,
         };
-        let argv = operation.wire_args(Some("/tmp/pakajo-approvals-1.json"));
+        let argv = sealed.wire_args(Some("/tmp/pakajo-approvals-1.json"));
         assert_eq!(
             argv,
             [
@@ -291,10 +287,6 @@ mod tests {
             "--approvals-file".to_string(),
         ];
         assert_eq!(ChildOperation::decode(&trailing), None);
-    }
-
-    #[test]
-    fn remove_interactive_wire_round_trip() {
         for (interactive, expected) in [
             (false, vec!["remove", "--stream", "sl"]),
             (true, vec!["remove", "--stream", "--interactive", "sl"]),
@@ -319,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn install_full_wire_round_trip() {
+    fn install_wire_round_trips_flags_and_approvals() {
         let operation = PrivilegedOperation::Install {
             targets: vec!["sl".to_string(), "figlet".to_string()],
             as_deps: true,
@@ -351,10 +343,6 @@ mod tests {
                 stream: true,
             })
         );
-    }
-
-    #[test]
-    fn install_flag_wire_round_trip() {
         for (as_deps, reinstall, interactive, flag) in [
             (false, true, false, "--reinstall"),
             (false, false, true, "--interactive"),
@@ -383,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_repo_full_wire_round_trip() {
+    fn upgrade_repo_wire_round_trips_refresh_ignores_and_approvals() {
         let operation = PrivilegedOperation::UpgradeRepo {
             no_refresh: true,
             ignores: vec!["foo".to_string(), "bar".to_string()],
@@ -416,10 +404,6 @@ mod tests {
                 stream: true,
             })
         );
-    }
-
-    #[test]
-    fn upgrade_repo_minimal_wire_round_trip() {
         let operation = PrivilegedOperation::UpgradeRepo {
             no_refresh: false,
             ignores: vec![],

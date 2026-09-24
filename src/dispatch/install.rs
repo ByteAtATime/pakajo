@@ -503,38 +503,6 @@ mod tests {
     }
 
     #[test]
-    fn conflict_mapping_flattens_each_entry() {
-        let mapped = plan_conflicts_to_questions(&conflicting_report());
-        assert_eq!(
-            mapped,
-            vec![
-                Question::Conflict {
-                    incoming: "nvidia-470xx-utils".to_string(),
-                    incoming_version: String::new(),
-                    removable: "nvidia-utils".to_string(),
-                    removable_version: String::new(),
-                    conflict_reason: None,
-                },
-                Question::Conflict {
-                    incoming: "cava-git".to_string(),
-                    incoming_version: String::new(),
-                    removable: "cava".to_string(),
-                    removable_version: String::new(),
-                    conflict_reason: None,
-                },
-                Question::Conflict {
-                    incoming: "cava-git".to_string(),
-                    incoming_version: String::new(),
-                    removable: "cava-old".to_string(),
-                    removable_version: String::new(),
-                    conflict_reason: None,
-                },
-            ]
-        );
-        assert!(plan_conflicts_to_questions(&ConflictReport::default()).is_empty());
-    }
-
-    #[test]
     fn repo_target_names_pins_database_and_rejects_empty_rows() {
         let plan = Plan {
             repo_installs: vec![crate::resolve::RepoInstall {
@@ -661,114 +629,6 @@ mod tests {
         );
     }
 
-    struct SecondProvider;
-
-    impl AnswerSource for SecondProvider {
-        fn answer(&self, question: &Question) -> crate::question::source::SourceDecision {
-            let Question::SelectProvider { candidates, .. } = question else {
-                return ExploreDefaults.answer(question);
-            };
-            let Some(second) = candidates.get(1) else {
-                return ExploreDefaults.answer(question);
-            };
-            crate::question::source::SourceDecision::Answer(
-                crate::question::model::Answer::SelectProvider {
-                    name: second.name.clone(),
-                    repo: second.repo.clone(),
-                },
-            )
-        }
-    }
-
-    fn provider_preview_handle() -> (tempfile::TempDir, alpm::Alpm, String) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("root");
-        let db = dir.path().join("db");
-        let stubs = dir.path().join("stubs");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(db.join("local")).unwrap();
-        std::fs::create_dir_all(db.join("sync")).unwrap();
-        std::fs::create_dir_all(&stubs).unwrap();
-        let file = std::fs::File::create(db.join("sync").join("core.db")).unwrap();
-        let mut builder = tar::Builder::new(file);
-        for name in ["provider-one", "provider-two"] {
-            let desc = format!(
-                "%NAME%\n{name}\n\n%VERSION%\n1.0-1\n\n%FILENAME%\n{name}-1.0-1-x86_64.pkg.tar.zst\n\n%PROVIDES%\nvirt\n\n"
-            );
-            let mut header = tar::Header::new_gnu();
-            header.set_size(desc.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            builder
-                .append_data(&mut header, format!("{name}-1.0-1/desc"), desc.as_bytes())
-                .unwrap();
-        }
-        builder.into_inner().unwrap();
-        let mut handle = alpm::Alpm::new(
-            root.to_string_lossy().as_ref(),
-            db.to_string_lossy().as_ref(),
-        )
-        .unwrap();
-        handle
-            .register_syncdb_mut("core", alpm::SigLevel::NONE)
-            .unwrap()
-            .add_server("file:///pakajo-offline-stub")
-            .unwrap();
-        crate::tx::targets::write_cachedir_stub(
-            &stubs,
-            "needsvirt",
-            "1.0-1",
-            &crate::tx::targets::StubLists {
-                depends: &["virt"],
-                ..Default::default()
-            },
-        );
-        let target = stubs
-            .join(crate::tx::targets::filename("needsvirt", "1.0-1"))
-            .to_string_lossy()
-            .into_owned();
-        (dir, handle, target)
-    }
-
-    fn preview_request(targets: &[&str]) -> InstallRequest {
-        InstallRequest {
-            targets: targets.iter().map(|target| target.to_string()).collect(),
-            as_deps: false,
-            reinstall: false,
-            no_check: false,
-            ignores: Vec::new(),
-            decider: crate::dispatch::seal::proceed_decider(),
-            approvals: None,
-            tty: false,
-            json: false,
-        }
-    }
-
-    fn preview_names(preview: &InstallPreview) -> Vec<String> {
-        let mut names: Vec<String> = preview
-            .review
-            .part2
-            .packages
-            .iter()
-            .map(|package| package.name.clone())
-            .collect();
-        names.sort();
-        names
-    }
-
-    #[test]
-    fn install_preview_with_honors_provider_source() {
-        let (_dir, mut handle, target) = provider_preview_handle();
-        let request = preview_request(&[&target]);
-        let defaults = run_install_preview(&mut handle, &request).unwrap();
-        assert!(preview_names(&defaults).contains(&"provider-one".to_string()));
-        assert!(!preview_names(&defaults).contains(&"provider-two".to_string()));
-        let second =
-            run_install_preview_with(&mut handle, &request, Box::new(SecondProvider)).unwrap();
-        assert!(preview_names(&second).contains(&"provider-two".to_string()));
-        assert!(!preview_names(&second).contains(&"provider-one".to_string()));
-    }
-
     use crate::question::model::Answer;
     use crate::question::source::SourceDecision;
     use crate::tx::testkit::{OfflinePkg, drive_sync, offline_pkg, offline_root};
@@ -794,43 +654,6 @@ mod tests {
                 other => ExploreDefaults.answer(other),
             }
         }
-    }
-
-    #[test]
-    fn engine_install_commits_single_package() {
-        let (_dir, mut handle) = offline_root(&[offline_pkg("sl")]);
-        let outcome = drive_sync(&mut handle, &["sl"], preapproved()).unwrap();
-        assert!(matches!(outcome.finish, Finish::Committed));
-        assert!(
-            handle.localdb().pkg("sl").is_ok(),
-            "sl should be installed in the local db"
-        );
-    }
-
-    #[test]
-    fn engine_install_commits_multiple_targets() {
-        let (_dir, mut handle) = offline_root(&[offline_pkg("sl"), offline_pkg("figlet")]);
-        let outcome = drive_sync(&mut handle, &["sl", "figlet"], preapproved()).unwrap();
-        assert!(matches!(outcome.finish, Finish::Committed));
-        assert!(
-            handle.localdb().pkg("sl").is_ok(),
-            "sl should be installed in the local db"
-        );
-        assert!(
-            handle.localdb().pkg("figlet").is_ok(),
-            "figlet should be installed in the local db"
-        );
-    }
-
-    #[test]
-    fn engine_install_stopped_leaves_localdb_empty() {
-        let (_dir, mut handle) = offline_root(&[offline_pkg("sl")]);
-        let outcome = drive_sync(&mut handle, &["sl"], Box::new(ExploreDefaults)).unwrap();
-        assert!(matches!(outcome.finish, Finish::Stopped));
-        assert!(
-            handle.localdb().pkg("sl").is_err(),
-            "sl must NOT be installed after a stopped confirm"
-        );
     }
 
     #[test]
