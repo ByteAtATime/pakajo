@@ -28,6 +28,24 @@ pub struct SysupgradeRequest {
     pub approvals: Option<String>,
     pub tty: bool,
     pub json: bool,
+    pub print_nothing_to_do: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NothingToDoSink {
+    Stdout,
+    Stderr,
+}
+
+pub fn nothing_to_do_sink(print_nothing_to_do: bool, json: bool) -> Option<NothingToDoSink> {
+    if !print_nothing_to_do {
+        return None;
+    }
+    if json {
+        Some(NothingToDoSink::Stderr)
+    } else {
+        Some(NothingToDoSink::Stdout)
+    }
 }
 
 pub fn sysupgrade(request: SysupgradeRequest) -> DispatchStream {
@@ -175,10 +193,10 @@ fn run_after_repo(
     match after_repo(&repo_phase, &aur_targets) {
         AfterRepo::BuildAur => {}
         AfterRepo::NothingToDo => {
-            if request.json {
-                eprintln!(" there is nothing to do");
-            } else {
-                println!(" there is nothing to do");
+            match nothing_to_do_sink(request.print_nothing_to_do, request.json) {
+                Some(NothingToDoSink::Stderr) => eprintln!(" there is nothing to do"),
+                Some(NothingToDoSink::Stdout) => println!(" there is nothing to do"),
+                None => {}
             }
             send_done(tx, ChildOutcome::Success);
             return;
@@ -253,4 +271,23 @@ fn detect_aur_targets(
         return None;
     }
     Some(targets)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NothingToDoSink, nothing_to_do_sink};
+
+    #[test]
+    fn nothing_to_do_prints_for_cli_callers_only() {
+        assert_eq!(nothing_to_do_sink(false, false), None);
+        assert_eq!(nothing_to_do_sink(false, true), None);
+        assert_eq!(
+            nothing_to_do_sink(true, false),
+            Some(NothingToDoSink::Stdout)
+        );
+        assert_eq!(
+            nothing_to_do_sink(true, true),
+            Some(NothingToDoSink::Stderr)
+        );
+    }
 }

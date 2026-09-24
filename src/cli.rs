@@ -85,6 +85,7 @@ fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
         approvals: None,
         tty,
         json: args.json,
+        print_nothing_to_do: true,
     };
     outcome_code(&drain(crate::dispatch::sysupgrade(request), args.json))
 }

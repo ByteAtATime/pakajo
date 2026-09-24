@@ -152,6 +152,7 @@ impl crate::PakajoApp {
                 approvals,
                 tty: false,
                 json: false,
+                print_nothing_to_do: false,
             });
         self.transaction = Some(transaction);
         eprintln!("[pakajo] sysupgrade repo apply started");
