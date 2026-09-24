@@ -1,121 +1,110 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use anyhow::Context as _;
-
-use crate::events::TransactionSummary;
-use crate::question::{Conflict, ProviderCandidate, ProviderPrompt, QuestionSet};
+use crate::question::model::Question;
+use crate::question::{Conflict, ProviderPrompt, QuestionSet};
 
 pub use crate::tx::convert::PrepareFailure;
-pub(crate) use crate::tx::convert::extract_prepare_failure;
 
-#[derive(Default)]
-pub(crate) struct RecorderState {
-    conflicts: Vec<Conflict>,
-    providers: Vec<ProviderPrompt>,
-    had_unsupported: bool,
-    unsupported_summary: String,
-}
-
-pub(crate) struct SysupgradeDryRun {
-    pub summary: TransactionSummary,
-    pub questions: QuestionSet,
-    pub prepare_error: Option<PrepareFailure>,
-}
-
-pub(crate) fn dry_sysupgrade(handle: &mut alpm::Alpm) -> anyhow::Result<SysupgradeDryRun> {
-    let state = attach_recorder(handle);
-    handle
-        .trans_init(alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
-        .context("failed to init sysupgrade preview transaction")?;
-    handle
-        .sync_sysupgrade(false)
-        .context("sync_sysupgrade failed to resolve upgrade targets")?;
-    let prepare_error = handle.trans_prepare().err().map(extract_prepare_failure);
-    let questions = snapshot(&state);
-    let summary = crate::tx::convert::build_summary(handle);
-    let _ = handle.trans_release();
-    Ok(SysupgradeDryRun {
-        summary,
-        questions,
-        prepare_error,
-    })
-}
-
-pub fn default_repo_summary(
-    handle: &mut alpm::Alpm,
-) -> anyhow::Result<crate::events::TransactionSummary> {
-    dry_sysupgrade(handle).map(|dry| dry.summary)
-}
-
-pub(crate) fn attach_recorder(handle: &mut alpm::Alpm) -> Rc<RefCell<RecorderState>> {
-    let state = Rc::new(RefCell::new(RecorderState::default()));
-    handle.set_question_cb(
-        state.clone(),
-        |any_question: alpm::AnyQuestion, data: &mut Rc<RefCell<RecorderState>>| {
-            let mut s = data.borrow_mut();
-            match any_question.question() {
-                alpm::Question::Conflict(mut cq) => {
-                    let c = cq.conflict();
-                    s.conflicts.push(Conflict {
-                        incoming: c.package1().name().to_string(),
-                        removable: c.package2().name().to_string(),
-                    });
-                    cq.set_remove(true);
-                }
-                alpm::Question::Replace(rq) => {
-                    rq.set_replace(true);
-                    s.had_unsupported = true;
-                    s.unsupported_summary.push_str("replace; ");
-                }
-                alpm::Question::InstallIgnorepkg(mut iq) => {
-                    iq.set_install(false);
-                    s.had_unsupported = true;
-                    s.unsupported_summary.push_str("install-ignorepkg; ");
-                }
-                alpm::Question::Corrupted(mut cq) => {
-                    cq.set_remove(true);
-                    s.had_unsupported = true;
-                    s.unsupported_summary.push_str("corrupted; ");
-                }
-                alpm::Question::RemovePkgs(mut rq) => {
-                    rq.set_skip(false);
-                    s.had_unsupported = true;
-                    s.unsupported_summary.push_str("remove-pkgs; ");
-                }
-                alpm::Question::SelectProvider(mut spq) => {
-                    let depend = spq.depend().to_string();
-                    let candidates: Vec<ProviderCandidate> = spq
-                        .providers()
-                        .into_iter()
-                        .map(|p| ProviderCandidate {
-                            name: p.name().to_string(),
-                            repo: p.db().map(|d| d.name().to_string()),
-                            version: Some(p.version().to_string()),
-                        })
-                        .collect();
-                    s.providers.push(ProviderPrompt { depend, candidates });
-                    spq.set_index(0);
-                }
-                alpm::Question::ImportKey(mut iq) => {
-                    iq.set_import(false);
-                    s.had_unsupported = true;
-                    s.unsupported_summary.push_str("import-key; ");
-                }
+pub fn question_set_from_review(review: &crate::question::review::Review) -> QuestionSet {
+    let mut conflicts = Vec::new();
+    let mut providers = Vec::new();
+    let mut unsupported_summary = String::new();
+    for question in &review.part1 {
+        match question {
+            Question::Conflict {
+                incoming,
+                removable,
+            } => conflicts.push(Conflict {
+                incoming: incoming.clone(),
+                removable: removable.clone(),
+            }),
+            Question::SelectProvider { depend, candidates } => {
+                providers.push(ProviderPrompt {
+                    depend: depend.clone(),
+                    candidates: candidates.clone(),
+                });
             }
-        },
-    );
-    state
+            Question::Replace { .. } => unsupported_summary.push_str("replace; "),
+            Question::InstallIgnorepkg { .. } => {
+                unsupported_summary.push_str("install-ignorepkg; ");
+            }
+            Question::Corrupted { .. } => unsupported_summary.push_str("corrupted; "),
+            Question::RemovePkgs { .. } => unsupported_summary.push_str("remove-pkgs; "),
+            Question::ImportKey { .. } => unsupported_summary.push_str("import-key; "),
+            Question::HoldPkgs { .. }
+            | Question::Proceed { .. }
+            | Question::GroupMembers { .. } => {}
+        }
+    }
+    QuestionSet {
+        conflicts,
+        providers,
+        had_unsupported_question: !unsupported_summary.is_empty(),
+        unsupported_summary,
+        held: Vec::new(),
+    }
 }
 
-pub(crate) fn snapshot(state: &Rc<RefCell<RecorderState>>) -> QuestionSet {
-    let s = state.borrow();
-    QuestionSet {
-        conflicts: s.conflicts.clone(),
-        providers: s.providers.clone(),
-        had_unsupported_question: s.had_unsupported,
-        unsupported_summary: s.unsupported_summary.clone(),
-        held: vec![],
+#[cfg(test)]
+mod converter_tests {
+    use super::question_set_from_review;
+    use super::{Conflict, ProviderPrompt};
+    use crate::question::model::{ProviderCandidate, Question, TransactionKind};
+    use crate::question::review::Review;
+
+    fn review_of(part1: Vec<Question>) -> Review {
+        Review {
+            part1,
+            part2: crate::events::TransactionSummary::default(),
+            generated_by: crate::question::review::ExploreStamp::default(),
+        }
+    }
+
+    #[test]
+    fn review_maps_conflicts_providers_and_unsupported() {
+        let part1 = vec![
+            Question::Conflict {
+                incoming: "newpkg".to_string(),
+                removable: "oldpkg".to_string(),
+            },
+            Question::SelectProvider {
+                depend: "virt".to_string(),
+                candidates: vec![ProviderCandidate {
+                    name: "provider-one".to_string(),
+                    repo: Some("core".to_string()),
+                    version: Some("1.0-1".to_string()),
+                }],
+            },
+            Question::Replace {
+                old: "nginx".to_string(),
+                new: "nginx-mainline".to_string(),
+                repo: None,
+            },
+            Question::Proceed {
+                summary: crate::events::TransactionSummary::default(),
+                kind: TransactionKind::Install,
+            },
+        ];
+        let got = question_set_from_review(&review_of(part1));
+        assert_eq!(
+            got.conflicts,
+            vec![Conflict {
+                incoming: "newpkg".to_string(),
+                removable: "oldpkg".to_string(),
+            }]
+        );
+        assert_eq!(
+            got.providers,
+            vec![ProviderPrompt {
+                depend: "virt".to_string(),
+                candidates: vec![ProviderCandidate {
+                    name: "provider-one".to_string(),
+                    repo: Some("core".to_string()),
+                    version: Some("1.0-1".to_string()),
+                }],
+            }]
+        );
+        assert!(got.had_unsupported_question);
+        assert_eq!(got.unsupported_summary, "replace; ");
+        assert!(got.held.is_empty());
     }
 }
 
@@ -216,20 +205,35 @@ mod tests {
              rootless sync_sysupgrade. missing from spike: {missing:?}"
         );
 
-        let preview =
-            crate::dry_run::dry_sysupgrade(&mut handle).expect("dry_sysupgrade should succeed");
+        let spec = crate::tx::driver::RunSpec {
+            kind: crate::tx::driver::RunKind::Upgrade,
+            targets: Vec::new(),
+            stub_targets: Vec::new(),
+            explore: true,
+            as_deps: false,
+            reinstall: false,
+            dep_names: Vec::new(),
+        };
+        let outcome =
+            crate::tx::compose::preview(&mut handle, spec).expect("preview should succeed");
+        let review = outcome.review.as_ref().expect("explore carries a review");
+        let questions = crate::dry_run::question_set_from_review(review);
+        let prepare_error = match outcome.finish {
+            crate::tx::driver::Finish::PrepareFailed(failure) => Some(failure),
+            crate::tx::driver::Finish::Stopped | crate::tx::driver::Finish::Committed => None,
+        };
         assert!(
-            !preview.summary.packages.is_empty(),
+            !outcome.summary.packages.is_empty(),
             "preview summary must list the direct upgrade set"
         );
         eprintln!(
             "[preview] upgrades={} conflicts={} providers={} prepare_error={:?}",
-            preview.summary.packages.len(),
-            preview.questions.conflicts.len(),
-            preview.questions.providers.len(),
-            preview.prepare_error,
+            outcome.summary.packages.len(),
+            questions.conflicts.len(),
+            questions.providers.len(),
+            prepare_error,
         );
-        for pkg in preview.summary.packages.iter().take(3) {
+        for pkg in outcome.summary.packages.iter().take(3) {
             eprintln!(
                 "[preview] {} {} -> {}",
                 pkg.name,

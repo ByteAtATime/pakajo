@@ -57,7 +57,26 @@ pub fn sysupgrade_preview(request: &SysupgradePreviewRequest) -> anyhow::Result<
             Vec::new()
         }
     };
-    let dry = crate::dry_run::dry_sysupgrade(&mut handle)?;
+    let spec = crate::tx::driver::RunSpec {
+        kind: crate::tx::driver::RunKind::Upgrade,
+        targets: Vec::new(),
+        stub_targets: Vec::new(),
+        explore: true,
+        as_deps: false,
+        reinstall: false,
+        dep_names: Vec::new(),
+    };
+    let outcome = crate::tx::compose::preview(&mut handle, spec)?;
+    let review = outcome
+        .review
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("upgrade explore run produced no review"))?;
+    let summary = review.part2.clone();
+    let questions = crate::dry_run::question_set_from_review(review);
+    let prepare_error = match outcome.finish {
+        crate::tx::driver::Finish::PrepareFailed(failure) => Some(failure),
+        crate::tx::driver::Finish::Stopped | crate::tx::driver::Finish::Committed => None,
+    };
     let aur_names: Vec<String> = aur.iter().map(|candidate| candidate.name.clone()).collect();
     let pkgbuild_diffs = if aur_names.is_empty() {
         Vec::new()
@@ -71,9 +90,9 @@ pub fn sysupgrade_preview(request: &SysupgradePreviewRequest) -> anyhow::Result<
         }
     };
     Ok(Preview {
-        summary: dry.summary,
-        questions: dry.questions,
-        prepare_error: dry.prepare_error,
+        summary,
+        questions,
+        prepare_error,
         aur,
         pkgbuild_diffs,
     })
