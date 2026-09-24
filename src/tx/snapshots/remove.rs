@@ -5,7 +5,7 @@ use crate::question::source::{
     AnswerSource, ApprovalsReplay, ExploreDefaults, SourceDecision, derive_answers,
 };
 use crate::tx::driver::{RemoveSpec, RunKind, RunSpec};
-use crate::tx::testkit::{OfflinePkg, drive_sync, offline_pkg, offline_root};
+use crate::tx::fixtures::{Pkg, discard, drive_sync, fixture, script, sync_spec};
 
 enum RemoveSource {
     Hold(bool),
@@ -16,34 +16,26 @@ enum RemoveSource {
 
 struct RemoveCase {
     name: &'static str,
-    packages: Vec<OfflinePkg>,
+    packages: Vec<Pkg>,
     preinstall: Vec<&'static str>,
     holds: Vec<&'static str>,
     targets: Vec<&'static str>,
     source: RemoveSource,
 }
 
-struct Discard;
-
-impl crate::events::InstallSink for Discard {
-    fn event(&mut self, _event: crate::events::InstallEvent) {}
-}
-
 fn remove_cases() -> Vec<RemoveCase> {
-    let member_one = OfflinePkg {
-        name: "member-one",
-        groups: &["tools"],
-        ..offline_pkg("member-one")
+    let member_one = Pkg {
+        groups: vec!["tools"],
+        ..Pkg::plain("member-one")
     };
-    let member_two = OfflinePkg {
-        name: "member-two",
-        groups: &["tools"],
-        ..offline_pkg("member-two")
+    let member_two = Pkg {
+        groups: vec!["tools"],
+        ..Pkg::plain("member-two")
     };
     vec![
         RemoveCase {
             name: "hold accept",
-            packages: vec![offline_pkg("sl")],
+            packages: vec![Pkg::plain("sl")],
             preinstall: vec!["sl"],
             holds: vec!["sl"],
             targets: vec!["sl"],
@@ -51,7 +43,7 @@ fn remove_cases() -> Vec<RemoveCase> {
         },
         RemoveCase {
             name: "hold decline",
-            packages: vec![offline_pkg("sl")],
+            packages: vec![Pkg::plain("sl")],
             preinstall: vec!["sl"],
             holds: vec!["sl"],
             targets: vec!["sl"],
@@ -59,7 +51,7 @@ fn remove_cases() -> Vec<RemoveCase> {
         },
         RemoveCase {
             name: "missing skip",
-            packages: vec![offline_pkg("sl")],
+            packages: vec![Pkg::plain("sl")],
             preinstall: vec!["sl"],
             holds: Vec::new(),
             targets: vec!["sl", "ghost"],
@@ -67,7 +59,7 @@ fn remove_cases() -> Vec<RemoveCase> {
         },
         RemoveCase {
             name: "missing abort",
-            packages: vec![offline_pkg("sl")],
+            packages: vec![Pkg::plain("sl")],
             preinstall: vec!["sl"],
             holds: Vec::new(),
             targets: vec!["sl", "ghost"],
@@ -75,7 +67,7 @@ fn remove_cases() -> Vec<RemoveCase> {
         },
         RemoveCase {
             name: "sealed replay",
-            packages: vec![offline_pkg("sl")],
+            packages: vec![Pkg::plain("sl")],
             preinstall: vec!["sl"],
             holds: vec!["sl"],
             targets: vec!["sl"],
@@ -91,7 +83,7 @@ fn remove_cases() -> Vec<RemoveCase> {
         },
         RemoveCase {
             name: "local prefixed target",
-            packages: vec![offline_pkg("sl")],
+            packages: vec![Pkg::plain("sl")],
             preinstall: vec!["sl"],
             holds: Vec::new(),
             targets: vec!["local/sl"],
@@ -101,27 +93,18 @@ fn remove_cases() -> Vec<RemoveCase> {
 }
 
 fn scripted_source(hold: bool, skip: bool) -> Box<dyn AnswerSource> {
-    struct Script {
-        hold: bool,
-        skip: bool,
-    }
-    impl AnswerSource for Script {
-        fn answer(&self, question: &Question) -> SourceDecision {
-            match question {
-                Question::HoldPkgs { names } => SourceDecision::Answer(Answer::HoldPkgs {
-                    names: names.clone(),
-                    proceed: self.hold,
-                }),
-                Question::RemovePkgs { names, .. } => SourceDecision::Answer(Answer::RemovePkgs {
-                    names: names.clone(),
-                    skip: self.skip,
-                }),
-                Question::Proceed { .. } => SourceDecision::Answer(Answer::Proceed),
-                _ => SourceDecision::Answer(Answer::Stop),
-            }
-        }
-    }
-    Box::new(Script { hold, skip })
+    script(move |question| match question {
+        Question::HoldPkgs { names } => SourceDecision::Answer(Answer::HoldPkgs {
+            names: names.clone(),
+            proceed: hold,
+        }),
+        Question::RemovePkgs { names, .. } => SourceDecision::Answer(Answer::RemovePkgs {
+            names: names.clone(),
+            skip,
+        }),
+        Question::Proceed { .. } => SourceDecision::Answer(Answer::Proceed),
+        _ => SourceDecision::Answer(Answer::Stop),
+    })
 }
 
 fn spec_for(case: &RemoveCase, explore: bool) -> RunSpec {
@@ -130,16 +113,7 @@ fn spec_for(case: &RemoveCase, explore: bool) -> RunSpec {
             flags: alpm::TransFlag::NONE,
             holds: case.holds.iter().map(|hold| hold.to_string()).collect(),
         }),
-        targets: case
-            .targets
-            .iter()
-            .map(|target| target.to_string())
-            .collect(),
-        stub_targets: Vec::new(),
-        explore,
-        as_deps: false,
-        reinstall: false,
-        dep_names: Vec::new(),
+        ..sync_spec(&case.targets, explore)
     }
 }
 
@@ -148,7 +122,7 @@ fn sealed_hold_source(handle: &mut alpm::Alpm, case: &RemoveCase) -> Box<dyn Ans
         handle,
         &spec_for(case, true),
         Box::new(ExploreDefaults),
-        Box::new(Discard),
+        discard(),
     )
     .expect("explore pass captures sealed questions");
     let review = preview.review.expect("explore run carries a review");
@@ -173,7 +147,7 @@ fn remove_source(source: &RemoveSource) -> Option<Box<dyn AnswerSource>> {
 }
 
 fn run_remove_case(case: &RemoveCase) -> String {
-    let (_dir, mut handle) = offline_root(&case.packages);
+    let (_dir, mut handle) = fixture(&case.packages);
     for target in &case.preinstall {
         drive_sync(&mut handle, std::slice::from_ref(target), approved()).unwrap();
     }
@@ -181,12 +155,7 @@ fn run_remove_case(case: &RemoveCase) -> String {
         Some(source) => source,
         None => sealed_hold_source(&mut handle, case),
     };
-    let result = crate::tx::driver::run(
-        &mut handle,
-        &spec_for(case, false),
-        source,
-        Box::new(Discard),
-    );
+    let result = crate::tx::driver::run(&mut handle, &spec_for(case, false), source, discard());
     render_outcome(&result, &handle)
 }
 

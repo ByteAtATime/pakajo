@@ -270,6 +270,12 @@ pub trait InstallSink {
     fn event(&mut self, event: InstallEvent);
 }
 
+pub(crate) struct DiscardSink;
+
+impl InstallSink for DiscardSink {
+    fn event(&mut self, _event: InstallEvent) {}
+}
+
 pub fn read_event_stream<R: std::io::BufRead, S: InstallSink + ?Sized>(reader: R, sink: &mut S) {
     for line in reader.lines() {
         match line {

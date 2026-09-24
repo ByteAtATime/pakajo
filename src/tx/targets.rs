@@ -174,97 +174,26 @@ pub(crate) fn write_cachedir_stub(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tx::fixtures::{Pkg, fixture_full};
     use std::cell::RefCell;
     use std::fs::File;
     use std::rc::Rc;
 
-    struct FixturePackage {
-        name: &'static str,
-        version: &'static str,
-        provides: &'static [&'static str],
-        conflicts: &'static [&'static str],
-        groups: &'static [&'static str],
+    fn pkg(name: &'static str, version: &'static str) -> Pkg {
+        Pkg::make(name, version, &[], &[], &[])
     }
 
-    fn pkg(name: &'static str, version: &'static str) -> FixturePackage {
-        FixturePackage {
-            name,
-            version,
-            provides: &[],
-            conflicts: &[],
-            groups: &[],
-        }
-    }
-
-    fn push_tag_list(out: &mut String, tag: &str, entries: &[&str]) {
-        if entries.is_empty() {
-            return;
-        }
-        out.push_str(tag);
-        out.push('\n');
-        for entry in entries {
-            out.push_str(entry);
-            out.push('\n');
-        }
-        out.push('\n');
-    }
-
-    fn desc(package: &FixturePackage) -> Vec<u8> {
-        let mut out = format!(
-            "%NAME%\n{}\n\n%VERSION%\n{}\n\n%FILENAME%\n{}\n\n",
-            package.name,
-            package.version,
-            filename(package.name, package.version),
-        );
-        push_tag_list(&mut out, "%PROVIDES%", package.provides);
-        push_tag_list(&mut out, "%CONFLICTS%", package.conflicts);
-        push_tag_list(&mut out, "%GROUPS%", package.groups);
-        out.into_bytes()
-    }
-
-    fn write_syncdb(dbpath: &Path, repo: &str, packages: &[FixturePackage]) {
-        let file = File::create(dbpath.join("sync").join(format!("{repo}.db"))).unwrap();
-        let mut builder = tar::Builder::new(file);
-        for package in packages {
-            let content = desc(package);
-            let mut header = tar::Header::new_gnu();
-            header.set_size(content.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            builder
-                .append_data(
-                    &mut header,
-                    format!("{}-{}/desc", package.name, package.version),
-                    content.as_slice(),
-                )
-                .unwrap();
-        }
-        builder.into_inner().unwrap();
-    }
-
-    fn fixture(
-        repos: &[(&str, Vec<FixturePackage>)],
-        local: &[FixturePackage],
-    ) -> (tempfile::TempDir, Alpm) {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("local")).unwrap();
-        std::fs::create_dir_all(dir.path().join("sync")).unwrap();
-        let handle = Alpm::new("/", dir.path().to_string_lossy().as_ref()).unwrap();
-        for (repo, packages) in repos {
-            write_syncdb(dir.path(), repo, packages);
-        }
-        for package in local {
-            let dir_path = dir
-                .path()
-                .join("local")
-                .join(format!("{}-{}", package.name, package.version));
-            std::fs::create_dir_all(&dir_path).unwrap();
-            std::fs::write(dir_path.join("desc"), desc(package)).unwrap();
-        }
-        for (repo, _) in repos {
-            handle.register_syncdb(*repo, alpm::SigLevel::NONE).unwrap();
-        }
-        (dir, handle)
+    fn providers() -> Vec<Pkg> {
+        vec![
+            Pkg {
+                provides: vec!["virt"],
+                ..Pkg::plain("provider-one")
+            },
+            Pkg {
+                provides: vec!["virt"],
+                ..Pkg::plain("provider-two")
+            },
+        ]
     }
 
     fn err(handle: &Alpm, target: &str) -> String {
@@ -281,25 +210,6 @@ mod tests {
             pkg.version().to_string(),
             pkg.db().unwrap().name().to_string(),
         )
-    }
-
-    fn providers() -> Vec<FixturePackage> {
-        vec![
-            FixturePackage {
-                name: "provider-one",
-                version: "1.0-1",
-                provides: &["virt"],
-                conflicts: &[],
-                groups: &[],
-            },
-            FixturePackage {
-                name: "provider-two",
-                version: "1.0-1",
-                provides: &["virt"],
-                conflicts: &[],
-                groups: &[],
-            },
-        ]
     }
 
     fn unresolvable(handle: &Alpm, targets: &[&str]) -> Option<String> {
@@ -353,7 +263,7 @@ mod tests {
 
     #[test]
     fn unresolvable_target_probes_pins_skips_and_first_failure() {
-        let (_dir, handle) = fixture(
+        let (_dir, handle) = fixture_full(
             &[
                 ("core", vec![pkg("foo", "1.0-1")]),
                 ("extra", vec![pkg("foo", "2.0-1")]),
@@ -374,9 +284,9 @@ mod tests {
             unresolvable(&handle, &["foo", "ghost", "nope/foo"]),
             Some("ghost".to_string())
         );
-        let (_dir, handle) = fixture(&[("repoa", providers())], &[]);
+        let (_dir, handle) = fixture_full(&[("repoa", providers())], &[]);
         assert_eq!(unresolvable(&handle, &["virt"]), None);
-        let (_dir, mut handle) = fixture(&[("repoa", vec![pkg("skipme", "1.0-1")])], &[]);
+        let (_dir, mut handle) = fixture_full(&[("repoa", vec![pkg("skipme", "1.0-1")])], &[]);
         handle.add_ignorepkg("skipme").unwrap();
         handle.set_question_cb((), |question, _| {
             if let alpm::Question::InstallIgnorepkg(mut iq) = question.question() {
@@ -392,7 +302,7 @@ mod tests {
         assert_eq!(split_pin("/b"), None);
         assert_eq!(split_pin("b"), None);
         assert_eq!(split_pin("a/b/c"), Some(("a", "b/c")));
-        let (_dir, handle) = fixture(
+        let (_dir, handle) = fixture_full(
             &[
                 ("repoa", vec![pkg("dup", "1.0-1"), pkg("common", "1.0-1")]),
                 ("repob", vec![pkg("dup", "2.0-1"), pkg("onlyb", "1.0-1")]),
@@ -419,7 +329,8 @@ mod tests {
 
     #[test]
     fn provider_selection() {
-        let (_dir, handle) = fixture(&[("repoa", providers())], &[pkg("provider-one", "1.0-1")]);
+        let (_dir, handle) =
+            fixture_full(&[("repoa", providers())], &[pkg("provider-one", "1.0-1")]);
         let asked: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
         handle.set_question_cb(asked.clone(), |question, data| {
             if matches!(question.question(), alpm::Question::SelectProvider(_)) {
@@ -430,7 +341,7 @@ mod tests {
         assert_eq!(resolved.packages[0].name(), "provider-one");
         assert!(!*asked.borrow());
 
-        let (_dir, handle) = fixture(&[("repoa", providers())], &[]);
+        let (_dir, handle) = fixture_full(&[("repoa", providers())], &[]);
         handle.set_question_cb((), |question, _| {
             if let alpm::Question::SelectProvider(mut spq) = question.question() {
                 spq.set_index(1);
@@ -439,7 +350,7 @@ mod tests {
         let resolved = resolve_targets(&handle, &["virt".to_string()]).unwrap();
         assert_eq!(resolved.packages[0].name(), "provider-two");
 
-        let (_dir, handle) = fixture(&[("repoa", providers())], &[]);
+        let (_dir, handle) = fixture_full(&[("repoa", providers())], &[]);
         handle.set_question_cb((), |question, _| {
             if let alpm::Question::SelectProvider(mut spq) = question.question() {
                 spq.set_index(-1);
@@ -450,7 +361,7 @@ mod tests {
 
     #[test]
     fn search_gated_db_needs_a_pin_and_restores_usage() {
-        let (_dir, handle) = fixture(
+        let (_dir, handle) = fixture_full(
             &[
                 ("repoa", vec![pkg("common", "1.0-1")]),
                 ("repob", vec![pkg("onlyb", "1.0-1")]),
@@ -471,7 +382,7 @@ mod tests {
 
     #[test]
     fn ignored_targets_are_skipped_under_bare_name() {
-        let (_dir, mut handle) = fixture(&[("repoa", vec![pkg("skipme", "1.0-1")])], &[]);
+        let (_dir, mut handle) = fixture_full(&[("repoa", vec![pkg("skipme", "1.0-1")])], &[]);
         handle.add_ignorepkg("skipme").unwrap();
         let asked: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
         handle.set_question_cb(asked.clone(), |question, data| {

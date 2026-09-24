@@ -472,13 +472,12 @@ mod tests {
 
     #[test]
     fn find_groups_resolves_base_devel() {
-        use crate::tx::testkit::{offline_pkg, offline_root};
-        let make = crate::tx::testkit::OfflinePkg {
-            name: "make",
-            groups: &["base-devel"],
-            ..offline_pkg("make")
+        use crate::tx::fixtures::{Pkg, fixture};
+        let make = Pkg {
+            groups: vec!["base-devel"],
+            ..Pkg::plain("make")
         };
-        let (_dir, handle) = offline_root(&[make]);
+        let (_dir, handle) = fixture(&[make]);
         let groups = find_groups(&handle, "base-devel");
         assert!(!groups.is_empty(), "base-devel group must resolve");
         let members: Vec<String> = groups
@@ -494,13 +493,12 @@ mod tests {
 
     #[test]
     fn group_index_includes_base_devel() {
-        use crate::tx::testkit::{offline_pkg, offline_root};
-        let make = crate::tx::testkit::OfflinePkg {
-            name: "make",
-            groups: &["base-devel"],
-            ..offline_pkg("make")
+        use crate::tx::fixtures::{Pkg, fixture};
+        let make = Pkg {
+            groups: vec!["base-devel"],
+            ..Pkg::plain("make")
         };
-        let (_dir, handle) = offline_root(&[make]);
+        let (_dir, handle) = fixture(&[make]);
         let index = group_index(&handle);
         assert!(
             index.iter().any(|(name, _)| name == "base-devel"),
@@ -511,13 +509,12 @@ mod tests {
     #[test]
     fn local_group_lists_installed_members() {
         use crate::question::source::ExploreDefaults;
-        use crate::tx::testkit::{drive_sync, offline_pkg, offline_root};
-        let make = crate::tx::testkit::OfflinePkg {
-            name: "make",
-            groups: &["base-devel"],
-            ..offline_pkg("make")
+        use crate::tx::fixtures::{Pkg, drive_sync, fixture};
+        let make = Pkg {
+            groups: vec!["base-devel"],
+            ..Pkg::plain("make")
         };
-        let (_dir, mut handle) = offline_root(&[make]);
+        let (_dir, mut handle) = fixture(&[make]);
         assert!(
             local_group(&handle, "base-devel").is_none(),
             "local base-devel must be absent before any member is installed"

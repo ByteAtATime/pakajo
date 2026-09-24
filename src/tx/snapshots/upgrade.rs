@@ -2,78 +2,14 @@ use super::{approved, installed_names, snapshot_settings, summary_package_lines}
 use crate::dispatch::sysupgrade::upgrade_review;
 use crate::question::model::{Answer, Question};
 use crate::question::source::{AnswerSource, ExploreDefaults, SourceDecision};
+use crate::tx::fixtures::{Pkg, fixture_full};
 
-struct SyncPkg {
-    name: &'static str,
-    version: &'static str,
-    extra: &'static str,
+fn sync_pkg(name: &'static str, version: &'static str) -> Pkg {
+    Pkg::make(name, version, &[], &[], &[])
 }
 
-struct LocalPkg {
-    name: &'static str,
-    version: &'static str,
-}
-
-fn sync_pkg(name: &'static str, version: &'static str) -> SyncPkg {
-    SyncPkg {
-        name,
-        version,
-        extra: "",
-    }
-}
-
-fn local_pkg(name: &'static str, version: &'static str) -> LocalPkg {
-    LocalPkg { name, version }
-}
-
-fn upgrade_fixture(local: &[LocalPkg], sync: &[SyncPkg]) -> (tempfile::TempDir, alpm::Alpm) {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("root");
-    let db = dir.path().join("db");
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::create_dir_all(db.join("local")).unwrap();
-    std::fs::create_dir_all(db.join("sync")).unwrap();
-    for entry in local {
-        let entry_dir = db
-            .join("local")
-            .join(format!("{}-{}", entry.name, entry.version));
-        std::fs::create_dir_all(&entry_dir).unwrap();
-        let desc = format!("%NAME%\n{}\n\n%VERSION%\n{}\n\n", entry.name, entry.version);
-        std::fs::write(entry_dir.join("desc"), desc).unwrap();
-        std::fs::write(entry_dir.join("files"), "%FILES%\n").unwrap();
-    }
-    std::fs::write(db.join("local").join("ALPM_DB_VERSION"), "9").unwrap();
-    let file = std::fs::File::create(db.join("sync").join("core.db")).unwrap();
-    let mut builder = tar::Builder::new(file);
-    for entry in sync {
-        let desc = format!(
-            "%NAME%\n{}\n\n%VERSION%\n{}\n\n%FILENAME%\n{}-{}-x86_64.pkg.tar.zst\n\n{}",
-            entry.name, entry.version, entry.name, entry.version, entry.extra
-        );
-        let mut header = tar::Header::new_gnu();
-        header.set_size(desc.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        builder
-            .append_data(
-                &mut header,
-                format!("{}-{}/desc", entry.name, entry.version),
-                desc.as_bytes(),
-            )
-            .unwrap();
-    }
-    builder.into_inner().unwrap();
-    let mut handle = alpm::Alpm::new(
-        root.to_string_lossy().as_ref(),
-        db.to_string_lossy().as_ref(),
-    )
-    .unwrap();
-    handle
-        .register_syncdb_mut("core", alpm::SigLevel::NONE)
-        .unwrap()
-        .add_server("file:///pakajo-offline-stub")
-        .unwrap();
-    (dir, handle)
+fn local_pkg(name: &'static str, version: &'static str) -> Pkg {
+    Pkg::make(name, version, &[], &[], &[])
 }
 
 fn question_kind(question: &Question) -> &'static str {
@@ -121,8 +57,8 @@ fn render_question(question: &Question) -> String {
     )
 }
 
-fn run_upgrade_case(local: &[LocalPkg], sync: &[SyncPkg]) -> String {
-    let (_dir, mut handle) = upgrade_fixture(local, sync);
+fn run_upgrade_case(local: &[Pkg], sync: &[Pkg]) -> String {
+    let (_dir, mut handle) = fixture_full(&[("core", sync.to_vec())], local);
     let assessed =
         upgrade_review(&mut handle, approved()).expect("upgrade explore review succeeds");
     let mut rendered = String::new();
@@ -166,15 +102,13 @@ fn upgrade_replace_conflict_snapshot() {
                     local_pkg("clash-b", "0.5-1"),
                 ],
                 &[
-                    SyncPkg {
-                        name: "dummy-new",
-                        version: "2.0-1",
-                        extra: "%REPLACES%\ndummy-old\n\n",
+                    Pkg {
+                        replaces: vec!["dummy-old"],
+                        ..sync_pkg("dummy-new", "2.0-1")
                     },
-                    SyncPkg {
-                        name: "clash-b",
-                        version: "1.0-1",
-                        extra: "%CONFLICTS%\nclash-a\n\n",
+                    Pkg {
+                        conflicts: vec!["clash-a"],
+                        ..sync_pkg("clash-b", "1.0-1")
                     },
                 ],
             )
@@ -190,20 +124,17 @@ fn upgrade_provider_snapshot() {
             run_upgrade_case(
                 &[local_pkg("needsvirt", "1.0-1")],
                 &[
-                    SyncPkg {
-                        name: "needsvirt",
-                        version: "2.0-1",
-                        extra: "%DEPENDS%\nvirt\n\n",
+                    Pkg {
+                        depends: vec!["virt"],
+                        ..sync_pkg("needsvirt", "2.0-1")
                     },
-                    SyncPkg {
-                        name: "provider-one",
-                        version: "1.0-1",
-                        extra: "%PROVIDES%\nvirt\n\n",
+                    Pkg {
+                        provides: vec!["virt"],
+                        ..sync_pkg("provider-one", "1.0-1")
                     },
-                    SyncPkg {
-                        name: "provider-two",
-                        version: "1.0-1",
-                        extra: "%PROVIDES%\nvirt\n\n",
+                    Pkg {
+                        provides: vec!["virt"],
+                        ..sync_pkg("provider-two", "1.0-1")
                     },
                 ],
             )

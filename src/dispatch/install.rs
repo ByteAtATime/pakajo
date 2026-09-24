@@ -631,7 +631,7 @@ mod tests {
 
     use crate::question::model::Answer;
     use crate::question::source::SourceDecision;
-    use crate::tx::testkit::{OfflinePkg, drive_sync, offline_pkg, offline_root};
+    use crate::tx::fixtures::{Pkg, drive_sync, fixture};
 
     fn preapproved() -> Box<dyn AnswerSource> {
         crate::tx::prompt::with_authorized_proceed(Box::new(ExploreDefaults), true)
@@ -658,12 +658,11 @@ mod tests {
 
     #[test]
     fn engine_conflict_decline_fails_without_committing() {
-        let gvim = OfflinePkg {
-            name: "gvim",
-            conflicts: &["vim"],
-            ..offline_pkg("gvim")
+        let gvim = Pkg {
+            conflicts: vec!["vim"],
+            ..Pkg::plain("gvim")
         };
-        let (_dir, mut handle) = offline_root(&[offline_pkg("vim"), gvim]);
+        let (_dir, mut handle) = fixture(&[Pkg::plain("vim"), gvim]);
         drive_sync(&mut handle, &["vim"], preapproved()).unwrap();
         assert!(
             handle.localdb().pkg("vim").is_ok(),
@@ -711,22 +710,19 @@ mod tests {
             }
         }
 
-        let netapp = OfflinePkg {
-            name: "netapp",
-            depends: &["sdl"],
-            ..offline_pkg("netapp")
+        let netapp = Pkg {
+            depends: vec!["sdl"],
+            ..Pkg::plain("netapp")
         };
-        let sdl_one = OfflinePkg {
-            name: "sdl-one",
-            provides: &["sdl"],
-            ..offline_pkg("sdl-one")
+        let sdl_one = Pkg {
+            provides: vec!["sdl"],
+            ..Pkg::plain("sdl-one")
         };
-        let sdl_two = OfflinePkg {
-            name: "sdl-two",
-            provides: &["sdl"],
-            ..offline_pkg("sdl-two")
+        let sdl_two = Pkg {
+            provides: vec!["sdl"],
+            ..Pkg::plain("sdl-two")
         };
-        let (_dir, mut handle) = offline_root(&[netapp, sdl_one, sdl_two]);
+        let (_dir, mut handle) = fixture(&[netapp, sdl_one, sdl_two]);
         let recorded: RecordedProviders = Arc::new(Mutex::new(Vec::new()));
         let outcome = drive_sync(
             &mut handle,

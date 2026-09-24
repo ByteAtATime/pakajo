@@ -604,63 +604,20 @@ mod tests {
     use crate::events::{InstallEvent, InstallSink, LogLevel};
     use crate::question::model::{Answer, Question};
     use crate::question::source::{FailClosed, SourceDecision};
+    use crate::tx::fixtures::{
+        Pkg, deny, discard, fixture, fixture_full, proceed, remove_spec, script, stop,
+        summary_names, sync_spec, upgrade_spec,
+    };
     use std::cell::Cell;
-    use std::fs::File;
     use std::path::Path;
 
-    struct Script {
-        respond: Box<dyn Fn(&Question) -> SourceDecision>,
-    }
-
-    impl AnswerSource for Script {
-        fn answer(&self, question: &Question) -> SourceDecision {
-            (self.respond)(question)
-        }
-    }
-
-    fn script(respond: impl Fn(&Question) -> SourceDecision + 'static) -> Box<dyn AnswerSource> {
-        Box::new(Script {
-            respond: Box::new(respond),
-        })
-    }
-
-    fn deny() -> Box<dyn AnswerSource> {
-        script(|question| {
-            SourceDecision::Abort(FailClosed {
-                key: question.key(),
-                reason: "denied in test".to_string(),
-            })
-        })
-    }
-
-    fn stop() -> Box<dyn AnswerSource> {
-        script(|_| SourceDecision::Answer(Answer::Stop))
-    }
-
-    fn proceed() -> Box<dyn AnswerSource> {
-        script(|question| match question {
-            Question::Proceed { .. } => SourceDecision::Answer(Answer::Proceed),
-            _ => SourceDecision::Answer(Answer::Stop),
-        })
-    }
-
-    fn group_answer(selected: &[&str]) -> Box<dyn AnswerSource> {
+    fn group_answer(selected: &[&str]) -> Box<dyn crate::question::source::AnswerSource> {
         let owned: Vec<String> = selected.iter().map(|name| name.to_string()).collect();
         script(move |_| {
             SourceDecision::Answer(Answer::GroupMembers {
                 selected: owned.clone(),
             })
         })
-    }
-
-    struct Discard;
-
-    impl InstallSink for Discard {
-        fn event(&mut self, _event: InstallEvent) {}
-    }
-
-    fn discard() -> Box<dyn InstallSink> {
-        Box::new(Discard)
     }
 
     #[derive(Clone, Default)]
@@ -686,171 +643,12 @@ mod tests {
         }
     }
 
-    fn spec(targets: &[&str], explore: bool) -> RunSpec {
-        RunSpec {
-            kind: RunKind::Sync,
-            targets: targets.iter().map(|t| t.to_string()).collect(),
-            stub_targets: Vec::new(),
-            explore,
-            as_deps: false,
-            reinstall: false,
-            dep_names: Vec::new(),
-        }
-    }
-
-    #[derive(Clone)]
-    struct Pkg {
-        name: &'static str,
-        version: &'static str,
-        depends: Vec<&'static str>,
-        provides: Vec<&'static str>,
-        conflicts: Vec<&'static str>,
-        replaces: Vec<&'static str>,
-        groups: Vec<&'static str>,
-    }
-
-    fn make(
-        name: &'static str,
-        version: &'static str,
-        depends: &[&'static str],
-        provides: &[&'static str],
-        groups: &[&'static str],
-    ) -> Pkg {
-        Pkg {
-            name,
-            version,
-            depends: depends.to_vec(),
-            provides: provides.to_vec(),
-            conflicts: Vec::new(),
-            replaces: Vec::new(),
-            groups: groups.to_vec(),
-        }
-    }
-
-    fn desc(package: &Pkg) -> Vec<u8> {
-        let mut out = format!(
-            "%NAME%\n{}\n\n%VERSION%\n{}\n\n%FILENAME%\n{}\n\n",
-            package.name,
-            package.version,
-            crate::tx::targets::filename(package.name, package.version),
-        );
-        for (tag, entries) in [
-            ("%DEPENDS%\n", &package.depends),
-            ("%CONFLICTS%\n", &package.conflicts),
-            ("%REPLACES%\n", &package.replaces),
-            ("%PROVIDES%\n", &package.provides),
-            ("%GROUPS%\n", &package.groups),
-        ] {
-            if entries.is_empty() {
-                continue;
-            }
-            out.push_str(tag);
-            for entry in entries {
-                out.push_str(entry);
-                out.push('\n');
-            }
-            out.push('\n');
-        }
-        out.into_bytes()
-    }
-
-    fn write_syncdb(dbpath: &Path, repo: &str, packages: &[Pkg]) {
-        let file = File::create(dbpath.join("sync").join(format!("{repo}.db"))).unwrap();
-        let mut builder = tar::Builder::new(file);
-        for package in packages {
-            let content = desc(package);
-            let mut header = tar::Header::new_gnu();
-            header.set_size(content.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            builder
-                .append_data(
-                    &mut header,
-                    format!("{}-{}/desc", package.name, package.version),
-                    content.as_slice(),
-                )
-                .unwrap();
-        }
-        builder.into_inner().unwrap();
-    }
-
-    fn fixture_full(sync: &[(&str, Vec<Pkg>)], local: &[Pkg]) -> (tempfile::TempDir, alpm::Alpm) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("root");
-        let db = dir.path().join("db");
-        let cache = dir.path().join("cache");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(db.join("local")).unwrap();
-        std::fs::create_dir_all(db.join("sync")).unwrap();
-        std::fs::create_dir_all(&cache).unwrap();
-        let mut handle = alpm::Alpm::new(
-            root.to_string_lossy().as_ref(),
-            db.to_string_lossy().as_ref(),
-        )
-        .unwrap();
-        for (repo, packages) in sync {
-            write_syncdb(&db, repo, packages);
-            for package in packages {
-                crate::tx::targets::write_cachedir_stub(
-                    &cache,
-                    package.name,
-                    package.version,
-                    &crate::tx::targets::StubLists {
-                        depends: &package.depends,
-                        provides: &package.provides,
-                        conflicts: &package.conflicts,
-                        replaces: &package.replaces,
-                        groups: &package.groups,
-                    },
-                );
-            }
-        }
-        for package in local {
-            let dir_path = db
-                .join("local")
-                .join(format!("{}-{}", package.name, package.version));
-            std::fs::create_dir_all(&dir_path).unwrap();
-            std::fs::write(dir_path.join("desc"), desc(package)).unwrap();
-            std::fs::write(dir_path.join("files"), b"%FILES%\n").unwrap();
-        }
-        for (repo, _) in sync {
-            handle
-                .register_syncdb_mut(*repo, alpm::SigLevel::NONE)
-                .unwrap()
-                .add_server("file:///pakajo-offline-stub")
-                .unwrap();
-        }
-        handle
-            .add_cachedir(cache.to_string_lossy().as_ref())
-            .unwrap();
-        (dir, handle)
-    }
-
-    fn fixture(packages: &[Pkg]) -> (tempfile::TempDir, alpm::Alpm) {
-        fixture_full(&[("core", packages.to_vec())], &[])
-    }
-
-    fn plain(name: &'static str) -> Pkg {
-        make(name, "1.0-1", &[], &[], &[])
-    }
-
     fn tools_fixture() -> (tempfile::TempDir, alpm::Alpm) {
         fixture(&[
-            make("a", "1.0-1", &[], &[], &["tools"]),
-            make("b", "1.0-1", &[], &[], &["tools"]),
-            make("c", "1.0-1", &[], &[], &["tools"]),
+            Pkg::make("a", "1.0-1", &[], &[], &["tools"]),
+            Pkg::make("b", "1.0-1", &[], &[], &["tools"]),
+            Pkg::make("c", "1.0-1", &[], &[], &["tools"]),
         ])
-    }
-
-    fn summary_names(outcome: &RunOutcome) -> Vec<String> {
-        let mut names: Vec<String> = outcome
-            .summary
-            .packages
-            .iter()
-            .map(|package| package.name.clone())
-            .collect();
-        names.sort();
-        names
     }
 
     fn release(handle: &mut alpm::Alpm) {
@@ -869,12 +667,13 @@ mod tests {
         let conflicting = Pkg {
             version: "2.0-1",
             conflicts: vec!["oldpkg"],
-            ..plain("newpkg")
+            ..Pkg::plain("newpkg")
         };
-        let (_dir, mut handle) = fixture_full(&[("core", vec![conflicting])], &[plain("oldpkg")]);
+        let (_dir, mut handle) =
+            fixture_full(&[("core", vec![conflicting])], &[Pkg::plain("oldpkg")]);
         let outcome = run(
             &mut handle,
-            &spec(&["newpkg"], true),
+            &sync_spec(&["newpkg"], true),
             Box::new(ExploreDefaults),
             discard(),
         )
@@ -897,13 +696,13 @@ mod tests {
         release(&mut handle);
 
         let providers = vec![
-            make("provider-one", "1.0-1", &[], &["virt"], &[]),
-            make("provider-two", "1.0-1", &[], &["virt"], &[]),
+            Pkg::make("provider-one", "1.0-1", &[], &["virt"], &[]),
+            Pkg::make("provider-two", "1.0-1", &[], &["virt"], &[]),
         ];
         let (_dir, mut handle) = fixture(&providers);
         let outcome = run(
             &mut handle,
-            &spec(&["virt"], true),
+            &sync_spec(&["virt"], true),
             Box::new(ExploreDefaults),
             discard(),
         )
@@ -913,11 +712,11 @@ mod tests {
         assert_eq!(review.part2.packages.len(), 1);
         release(&mut handle);
 
-        let (_dir, mut handle) = fixture(&[plain("skipme")]);
+        let (_dir, mut handle) = fixture(&[Pkg::plain("skipme")]);
         handle.add_ignorepkg("skipme").unwrap();
         let outcome = run(
             &mut handle,
-            &spec(&["skipme"], true),
+            &sync_spec(&["skipme"], true),
             Box::new(ExploreDefaults),
             discard(),
         )
@@ -930,7 +729,7 @@ mod tests {
         let (_dir, mut handle) = tools_fixture();
         let outcome = run(
             &mut handle,
-            &spec(&["tools"], true),
+            &sync_spec(&["tools"], true),
             Box::new(ExploreDefaults),
             discard(),
         )
@@ -943,43 +742,22 @@ mod tests {
         );
         release(&mut handle);
 
-        let (_dir, mut handle) = fixture(&[plain("solo")]);
-        let outcome = run(&mut handle, &spec(&["solo"], false), proceed(), discard()).unwrap();
+        let (_dir, mut handle) = fixture(&[Pkg::plain("solo")]);
+        let outcome = run(
+            &mut handle,
+            &sync_spec(&["solo"], false),
+            proceed(),
+            discard(),
+        )
+        .unwrap();
         assert!(matches!(outcome.finish, Finish::Committed));
         assert!(outcome.review.is_none());
         release(&mut handle);
     }
 
-    fn sync_spec(explore: bool, as_deps: bool, reinstall: bool) -> RunSpec {
-        RunSpec {
-            kind: RunKind::Sync,
-            targets: Vec::new(),
-            stub_targets: Vec::new(),
-            explore,
-            as_deps,
-            reinstall,
-            dep_names: Vec::new(),
-        }
-    }
-
-    fn remove_spec(flags: alpm::TransFlag, explore: bool, targets: &[&str]) -> RunSpec {
-        RunSpec {
-            kind: RunKind::Remove(RemoveSpec {
-                flags,
-                holds: Vec::new(),
-            }),
-            targets: targets.iter().map(|t| t.to_string()).collect(),
-            stub_targets: Vec::new(),
-            explore,
-            as_deps: false,
-            reinstall: false,
-            dep_names: Vec::new(),
-        }
-    }
-
     #[test]
     fn removepkgs_mismatch_fails_closed() {
-        let (_dir, mut handle) = fixture_full(&[], &[plain("sl")]);
+        let (_dir, mut handle) = fixture_full(&[], &[Pkg::plain("sl")]);
         let recorder = Recorder::default();
         let seen = recorder.seen.clone();
         let mismatched = script(|_| {
@@ -1028,10 +806,12 @@ mod tests {
             ),
             (true, true, true, F::ALL_DEPS | F::DB_ONLY | F::NO_LOCK),
         ] {
-            assert_eq!(
-                trans_init_flags(&sync_spec(explore, as_deps, reinstall)),
-                expected
-            );
+            let spec = RunSpec {
+                as_deps,
+                reinstall,
+                ..sync_spec(&[], explore)
+            };
+            assert_eq!(trans_init_flags(&spec), expected);
         }
         assert_eq!(trans_init_flags(&remove_spec(F::NONE, false, &[])), F::NONE);
         assert_eq!(
@@ -1046,7 +826,7 @@ mod tests {
 
     #[test]
     fn remove_queues_local_group_members() {
-        let local = [make("member", "1.0-1", &[], &[], &["fakegrp"])];
+        let local = [Pkg::make("member", "1.0-1", &[], &[], &["fakegrp"])];
         let (_dir, mut handle) = fixture_full(&[], &local);
         let outcome = run(
             &mut handle,
@@ -1117,10 +897,10 @@ mod tests {
 
     #[test]
     fn explore_runs_under_foreign_lock_without_committing() {
-        let (_dir, mut handle) = fixture(&[plain("foo")]);
+        let (_dir, mut handle) = fixture(&[Pkg::plain("foo")]);
         let mut holder = peer(Path::new(handle.dbpath()));
         holder.trans_init(alpm::TransFlag::NONE).unwrap();
-        let outcome = run(&mut handle, &spec(&["foo"], true), deny(), discard()).unwrap();
+        let outcome = run(&mut handle, &sync_spec(&["foo"], true), deny(), discard()).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert_eq!(summary_names(&outcome), vec!["foo".to_string()]);
         assert!(handle.localdb().pkg("foo").is_err());
@@ -1130,13 +910,13 @@ mod tests {
 
     #[test]
     fn denied_question_aborts_with_reason() {
-        let (_dir, mut handle) = fixture(&[plain("skipme")]);
+        let (_dir, mut handle) = fixture(&[Pkg::plain("skipme")]);
         handle.add_ignorepkg("skipme").unwrap();
         let recorder = Recorder::default();
         let seen = recorder.seen.clone();
         let error = run(
             &mut handle,
-            &spec(&["skipme"], false),
+            &sync_spec(&["skipme"], false),
             deny(),
             Box::new(recorder),
         )
@@ -1167,8 +947,14 @@ mod tests {
 
     #[test]
     fn unsatisfiable_dep_reports_prepare_failure() {
-        let (_dir, mut handle) = fixture(&[make("needy", "1.0-1", &["ghost>=9"], &[], &[])]);
-        let outcome = run(&mut handle, &spec(&["needy"], false), stop(), discard()).unwrap();
+        let (_dir, mut handle) = fixture(&[Pkg::make("needy", "1.0-1", &["ghost>=9"], &[], &[])]);
+        let outcome = run(
+            &mut handle,
+            &sync_spec(&["needy"], false),
+            stop(),
+            discard(),
+        )
+        .unwrap();
         let Finish::PrepareFailed(PrepareFailure::Unsatisfied(missing)) = outcome.finish else {
             panic!("expected an unsatisfied prepare failure");
         };
@@ -1193,7 +979,7 @@ mod tests {
         strict(&mut handle);
         let recorder = Recorder::default();
         let seen = recorder.seen.clone();
-        let mut stubbed = spec(&[], true);
+        let mut stubbed = sync_spec(&[], true);
         stubbed.stub_targets = vec![target.clone()];
         let outcome = run(&mut handle, &stubbed, stop(), Box::new(recorder)).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
@@ -1207,7 +993,7 @@ mod tests {
 
         let (_dir, mut handle) = fixture(&[]);
         strict(&mut handle);
-        let error = run(&mut handle, &spec(&[&target], true), stop(), discard()).unwrap_err();
+        let error = run(&mut handle, &sync_spec(&[&target], true), stop(), discard()).unwrap_err();
         assert!(format!("{error:#}").contains("failed to load package file"));
         release(&mut handle);
     }
@@ -1217,7 +1003,7 @@ mod tests {
         let (_dir, mut handle) = tools_fixture();
         let outcome = run(
             &mut handle,
-            &spec(&["tools"], true),
+            &sync_spec(&["tools"], true),
             group_answer(&["a", "c"]),
             discard(),
         )
@@ -1232,7 +1018,7 @@ mod tests {
         let (_dir, mut handle) = tools_fixture();
         let outcome = run(
             &mut handle,
-            &spec(&["tools"], true),
+            &sync_spec(&["tools"], true),
             group_answer(&[]),
             discard(),
         )
@@ -1242,13 +1028,13 @@ mod tests {
         release(&mut handle);
 
         let sync = [
-            ("core", vec![make("a", "1.0-1", &[], &[], &["tools"])]),
-            ("extra", vec![make("b", "1.0-1", &[], &[], &["tools"])]),
+            ("core", vec![Pkg::make("a", "1.0-1", &[], &[], &["tools"])]),
+            ("extra", vec![Pkg::make("b", "1.0-1", &[], &[], &["tools"])]),
         ];
         let (_dir, mut handle) = fixture_full(&sync, &[]);
         let outcome = run(
             &mut handle,
-            &spec(&["tools"], true),
+            &sync_spec(&["tools"], true),
             group_answer(&["a", "b"]),
             discard(),
         )
@@ -1268,7 +1054,7 @@ mod tests {
         let seen = recorder.seen.clone();
         let error = run(
             &mut handle,
-            &spec(&["tools"], false),
+            &sync_spec(&["tools"], false),
             group_answer(&["ghost"]),
             Box::new(recorder),
         )
@@ -1293,17 +1079,29 @@ mod tests {
                 remove: true,
             })
         });
-        let error = run(&mut handle, &spec(&["tools"], false), mismatched, discard()).unwrap_err();
+        let error = run(
+            &mut handle,
+            &sync_spec(&["tools"], false),
+            mismatched,
+            discard(),
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("did not match"));
         release(&mut handle);
 
-        let (_dir, mut handle) = fixture(&[plain("solo")]);
+        let (_dir, mut handle) = fixture(&[Pkg::plain("solo")]);
         let mismatched = script(|_| {
             SourceDecision::Answer(Answer::GroupMembers {
                 selected: Vec::new(),
             })
         });
-        let error = run(&mut handle, &spec(&["solo"], false), mismatched, discard()).unwrap_err();
+        let error = run(
+            &mut handle,
+            &sync_spec(&["solo"], false),
+            mismatched,
+            discard(),
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("Proceed"));
         assert!(handle.localdb().pkg("solo").is_err());
         release(&mut handle);
@@ -1313,12 +1111,12 @@ mod tests {
     fn provider_answer_resolves_by_name_across_orders() {
         for order in [
             vec![
-                make("provider-one", "1.0-1", &[], &["virt"], &[]),
-                make("provider-two", "1.0-1", &[], &["virt"], &[]),
+                Pkg::make("provider-one", "1.0-1", &[], &["virt"], &[]),
+                Pkg::make("provider-two", "1.0-1", &[], &["virt"], &[]),
             ],
             vec![
-                make("provider-two", "1.0-1", &[], &["virt"], &[]),
-                make("provider-one", "1.0-1", &[], &["virt"], &[]),
+                Pkg::make("provider-two", "1.0-1", &[], &["virt"], &[]),
+                Pkg::make("provider-one", "1.0-1", &[], &["virt"], &[]),
             ],
         ] {
             let (_dir, mut handle) = fixture(&order);
@@ -1329,7 +1127,7 @@ mod tests {
                 }),
                 _ => SourceDecision::Answer(Answer::Stop),
             });
-            let outcome = run(&mut handle, &spec(&["virt"], true), source, discard()).unwrap();
+            let outcome = run(&mut handle, &sync_spec(&["virt"], true), source, discard()).unwrap();
             assert!(matches!(outcome.finish, Finish::Stopped));
             assert_eq!(summary_names(&outcome), vec!["provider-two".to_string()]);
             release(&mut handle);
@@ -1338,10 +1136,10 @@ mod tests {
 
     #[test]
     fn needed_skips_installed_and_reinstall_requeues() {
-        let sync = [plain("foo")];
-        let local = [plain("foo")];
+        let sync = [Pkg::plain("foo")];
+        let local = [Pkg::plain("foo")];
         let (_dir, mut handle) = fixture_full(&[("core", sync.to_vec())], &local);
-        let outcome = run(&mut handle, &spec(&["foo"], true), stop(), discard()).unwrap();
+        let outcome = run(&mut handle, &sync_spec(&["foo"], true), stop(), discard()).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert!(outcome.summary.packages.is_empty());
         release(&mut handle);
@@ -1352,7 +1150,7 @@ mod tests {
             explore: true,
             as_deps: false,
             reinstall: true,
-            ..spec(&[], true)
+            ..sync_spec(&[], true)
         };
         let outcome = run(&mut handle, &reinstall, stop(), discard()).unwrap();
         assert_eq!(summary_names(&outcome), vec!["foo".to_string()]);
@@ -1361,9 +1159,18 @@ mod tests {
 
     #[test]
     fn commit_marks_explicit_depend_and_as_deps_reasons() {
-        let sync = vec![make("app", "1.0-1", &["lib"], &[], &[]), plain("lib")];
+        let sync = vec![
+            Pkg::make("app", "1.0-1", &["lib"], &[], &[]),
+            Pkg::plain("lib"),
+        ];
         let (_dir, mut handle) = fixture_full(&[("core", sync)], &[]);
-        let outcome = run(&mut handle, &spec(&["app"], false), proceed(), discard()).unwrap();
+        let outcome = run(
+            &mut handle,
+            &sync_spec(&["app"], false),
+            proceed(),
+            discard(),
+        )
+        .unwrap();
         assert!(matches!(outcome.finish, Finish::Committed));
         assert_eq!(
             handle.localdb().pkg("app").unwrap().reason(),
@@ -1375,13 +1182,13 @@ mod tests {
         );
         release(&mut handle);
 
-        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
+        let (_dir, mut handle) = fixture_full(&[("core", vec![Pkg::plain("solo")])], &[]);
         let as_deps = RunSpec {
             targets: vec!["solo".to_string()],
             explore: false,
             as_deps: true,
             reinstall: false,
-            ..spec(&[], false)
+            ..sync_spec(&[], false)
         };
         let outcome = run(&mut handle, &as_deps, proceed(), discard()).unwrap();
         assert!(matches!(outcome.finish, Finish::Committed));
@@ -1396,7 +1203,7 @@ mod tests {
         RunSpec {
             targets: targets.iter().map(|target| target.to_string()).collect(),
             dep_names: dep_names.iter().map(|name| name.to_string()).collect(),
-            ..spec(&[], false)
+            ..sync_spec(&[], false)
         }
     }
 
@@ -1417,7 +1224,7 @@ mod tests {
 
     #[test]
     fn dep_names_mark_only_fresh_installs_depend() {
-        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
+        let (_dir, mut handle) = fixture_full(&[("core", vec![Pkg::plain("solo")])], &[]);
         committed(
             &dep_spec(&["solo"], &["solo"]),
             proceed(),
@@ -1426,7 +1233,8 @@ mod tests {
         );
         assert_eq!(reason_of(&handle, "solo"), alpm::PackageReason::Depend);
         release(&mut handle);
-        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[plain("solo")]);
+        let (_dir, mut handle) =
+            fixture_full(&[("core", vec![Pkg::plain("solo")])], &[Pkg::plain("solo")]);
         let reinstall = RunSpec {
             reinstall: true,
             ..dep_spec(&["solo"], &["solo"])
@@ -1434,7 +1242,7 @@ mod tests {
         committed(&reinstall, proceed(), discard(), &mut handle);
         assert_eq!(reason_of(&handle, "solo"), alpm::PackageReason::Explicit);
         release(&mut handle);
-        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
+        let (_dir, mut handle) = fixture_full(&[("core", vec![Pkg::plain("solo")])], &[]);
         committed(&dep_spec(&["solo"], &[]), proceed(), discard(), &mut handle);
         assert_eq!(reason_of(&handle, "solo"), alpm::PackageReason::Explicit);
         release(&mut handle);
@@ -1442,7 +1250,8 @@ mod tests {
 
     #[test]
     fn as_deps_still_marks_upgraded_package_depend() {
-        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[plain("solo")]);
+        let (_dir, mut handle) =
+            fixture_full(&[("core", vec![Pkg::plain("solo")])], &[Pkg::plain("solo")]);
         assert_eq!(reason_of(&handle, "solo"), alpm::PackageReason::Explicit);
         let as_deps = RunSpec {
             as_deps: true,
@@ -1456,7 +1265,7 @@ mod tests {
 
     #[test]
     fn stopped_or_unknown_deps_install_nothing_unexpected() {
-        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
+        let (_dir, mut handle) = fixture_full(&[("core", vec![Pkg::plain("solo")])], &[]);
         let outcome = run(
             &mut handle,
             &dep_spec(&["solo"], &["solo"]),
@@ -1467,7 +1276,7 @@ mod tests {
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert!(handle.localdb().pkg("solo").is_err());
         release(&mut handle);
-        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
+        let (_dir, mut handle) = fixture_full(&[("core", vec![Pkg::plain("solo")])], &[]);
         let recorder = Recorder::default();
         let seen = recorder.seen.clone();
         committed(
@@ -1490,9 +1299,10 @@ mod tests {
         let conflicting = Pkg {
             version: "2.0-1",
             conflicts: vec!["oldpkg"],
-            ..plain("newpkg")
+            ..Pkg::plain("newpkg")
         };
-        let (_dir, mut handle) = fixture_full(&[("core", vec![conflicting])], &[plain("oldpkg")]);
+        let (_dir, mut handle) =
+            fixture_full(&[("core", vec![conflicting])], &[Pkg::plain("oldpkg")]);
         let source = script(|question| match question {
             Question::Conflict {
                 incoming,
@@ -1506,7 +1316,13 @@ mod tests {
             Question::Proceed { .. } => SourceDecision::Answer(Answer::Proceed),
             _ => SourceDecision::Answer(Answer::Stop),
         });
-        let outcome = run(&mut handle, &spec(&["newpkg"], false), source, discard()).unwrap();
+        let outcome = run(
+            &mut handle,
+            &sync_spec(&["newpkg"], false),
+            source,
+            discard(),
+        )
+        .unwrap();
         assert!(matches!(outcome.finish, Finish::Committed));
         assert!(handle.localdb().pkg("newpkg").is_ok());
         assert!(handle.localdb().pkg("oldpkg").is_err());
@@ -1519,8 +1335,8 @@ mod tests {
         );
         release(&mut handle);
 
-        let (_dir, mut handle) = fixture_full(&[("core", vec![plain("solo")])], &[]);
-        let outcome = run(&mut handle, &spec(&["solo"], false), stop(), discard()).unwrap();
+        let (_dir, mut handle) = fixture_full(&[("core", vec![Pkg::plain("solo")])], &[]);
+        let outcome = run(&mut handle, &sync_spec(&["solo"], false), stop(), discard()).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         assert!(handle.localdb().pkg("solo").is_err());
         release(&mut handle);
@@ -1528,7 +1344,7 @@ mod tests {
 
     #[test]
     fn first_denial_wins_across_questions() {
-        let (_dir, mut handle) = fixture(&[plain("aaa"), plain("bbb")]);
+        let (_dir, mut handle) = fixture(&[Pkg::plain("aaa"), Pkg::plain("bbb")]);
         handle.add_ignorepkg("aaa").unwrap();
         handle.add_ignorepkg("bbb").unwrap();
         let calls = Rc::new(Cell::new(0));
@@ -1536,29 +1352,27 @@ mod tests {
         let source = {
             let calls = Rc::clone(&calls);
             let first = Rc::clone(&first);
-            Box::new(Script {
-                respond: Box::new(move |question: &Question| {
-                    calls.set(calls.get() + 1);
-                    let Question::InstallIgnorepkg { name } = question else {
-                        return SourceDecision::Answer(Answer::Stop);
-                    };
-                    if calls.get() == 1 {
-                        *first.borrow_mut() = name.clone();
-                        return SourceDecision::Abort(FailClosed {
-                            key: question.key(),
-                            reason: "first denial".to_string(),
-                        });
-                    }
-                    SourceDecision::Answer(Answer::InstallIgnorepkg {
-                        name: name.clone(),
-                        install: true,
-                    })
-                }),
-            }) as Box<dyn AnswerSource>
+            script(move |question: &Question| {
+                calls.set(calls.get() + 1);
+                let Question::InstallIgnorepkg { name } = question else {
+                    return SourceDecision::Answer(Answer::Stop);
+                };
+                if calls.get() == 1 {
+                    *first.borrow_mut() = name.clone();
+                    return SourceDecision::Abort(FailClosed {
+                        key: question.key(),
+                        reason: "first denial".to_string(),
+                    });
+                }
+                SourceDecision::Answer(Answer::InstallIgnorepkg {
+                    name: name.clone(),
+                    install: true,
+                })
+            })
         };
         let error = run(
             &mut handle,
-            &spec(&["aaa", "bbb"], false),
+            &sync_spec(&["aaa", "bbb"], false),
             source,
             discard(),
         )
@@ -1570,7 +1384,7 @@ mod tests {
 
     #[test]
     fn commit_surfaces_post_transaction_hook_runs() {
-        let (_dir, mut handle) = fixture(&[plain("solo")]);
+        let (_dir, mut handle) = fixture(&[Pkg::plain("solo")]);
         let hookdir = tempfile::tempdir().unwrap();
         std::fs::write(
             hookdir.path().join("probe.hook"),
@@ -1584,7 +1398,7 @@ mod tests {
         let seen = recorder.seen.clone();
         let outcome = run(
             &mut handle,
-            &spec(&["solo"], false),
+            &sync_spec(&["solo"], false),
             proceed(),
             Box::new(recorder),
         )
@@ -1605,7 +1419,7 @@ mod tests {
 
     #[test]
     fn tty_event_lifecycle() {
-        let (_dir, mut handle) = fixture(&[plain("solo")]);
+        let (_dir, mut handle) = fixture(&[Pkg::plain("solo")]);
         let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let asked = log.clone();
         let source = script(move |question| {
@@ -1618,7 +1432,7 @@ mod tests {
         });
         let outcome = run(
             &mut handle,
-            &spec(&["solo"], false),
+            &sync_spec(&["solo"], false),
             source,
             Box::new(OrderSink { log: log.clone() }),
         )
@@ -1630,10 +1444,16 @@ mod tests {
         );
         release(&mut handle);
 
-        let (_dir, mut handle) = fixture(&[plain("foo")]);
+        let (_dir, mut handle) = fixture(&[Pkg::plain("foo")]);
         let recorder = Recorder::default();
         let seen = recorder.seen.clone();
-        let outcome = run(&mut handle, &spec(&[], false), stop(), Box::new(recorder)).unwrap();
+        let outcome = run(
+            &mut handle,
+            &sync_spec(&[], false),
+            stop(),
+            Box::new(recorder),
+        )
+        .unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         let seen = seen.borrow();
         assert_eq!(seen.len(), 1);
@@ -1647,18 +1467,6 @@ mod tests {
         release(&mut handle);
     }
 
-    fn upgrade_spec(targets: &[&str], explore: bool) -> RunSpec {
-        RunSpec {
-            kind: RunKind::Upgrade,
-            targets: targets.iter().map(|t| t.to_string()).collect(),
-            stub_targets: Vec::new(),
-            explore,
-            as_deps: false,
-            reinstall: false,
-            dep_names: Vec::new(),
-        }
-    }
-
     struct NewerPair {
         sync: Vec<Pkg>,
         local: Vec<Pkg>,
@@ -1666,8 +1474,8 @@ mod tests {
 
     fn newer(local_version: &'static str, sync_version: &'static str) -> NewerPair {
         NewerPair {
-            sync: vec![make("foo", sync_version, &[], &[], &[])],
-            local: vec![make("foo", local_version, &[], &[], &[])],
+            sync: vec![Pkg::make("foo", sync_version, &[], &[], &[])],
+            local: vec![Pkg::make("foo", local_version, &[], &[], &[])],
         }
     }
 
@@ -1765,11 +1573,11 @@ mod tests {
     fn upgrade_asks_replace_question_before_proceed() {
         let replacer = Pkg {
             replaces: vec!["foo"],
-            ..make("bar", "2.0-1", &[], &[], &[])
+            ..Pkg::make("bar", "2.0-1", &[], &[], &[])
         };
         let (_dir, mut handle) = fixture_full(
             &[("core", vec![replacer])],
-            &[make("foo", "1.0-1", &[], &[], &[])],
+            &[Pkg::make("foo", "1.0-1", &[], &[], &[])],
         );
         let order: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let source = {
@@ -1834,10 +1642,10 @@ mod tests {
     #[test]
     fn upgrade_queues_explicit_targets_and_candidates() {
         let sync = vec![
-            make("baz", "1.0-1", &[], &[], &[]),
-            make("foo", "2.0-1", &[], &[], &[]),
+            Pkg::make("baz", "1.0-1", &[], &[], &[]),
+            Pkg::make("foo", "2.0-1", &[], &[], &[]),
         ];
-        let local = vec![make("foo", "1.0-1", &[], &[], &[])];
+        let local = vec![Pkg::make("foo", "1.0-1", &[], &[], &[])];
         let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
         let outcome = run(
             &mut handle,

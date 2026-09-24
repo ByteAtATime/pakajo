@@ -537,17 +537,13 @@ mod tests {
         }
     }
 
-    struct Script;
-
-    impl AnswerSource for Script {
-        fn answer(&self, _question: &Question) -> SourceDecision {
-            SourceDecision::Answer(Answer::Stop)
-        }
+    fn script() -> Box<dyn AnswerSource> {
+        crate::tx::fixtures::script(|_| SourceDecision::Answer(Answer::Stop))
     }
 
     #[test]
     fn authorized_proceed_answers_proceed_and_delegates_rest() {
-        let source = with_authorized_proceed(Box::new(Script), true);
+        let source = with_authorized_proceed(script(), true);
         assert!(matches!(
             source.answer(&Question::Proceed {
                 summary: summary(),
@@ -559,7 +555,7 @@ mod tests {
             source.answer(&conflict()),
             SourceDecision::Answer(Answer::Stop)
         ));
-        let denied = with_authorized_proceed(Box::new(Script), false);
+        let denied = with_authorized_proceed(script(), false);
         assert!(matches!(
             denied.answer(&Question::Proceed {
                 summary: summary(),

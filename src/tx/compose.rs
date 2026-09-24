@@ -1,11 +1,6 @@
+use crate::events::DiscardSink;
 use crate::question::source::{AnswerSource, ExploreDefaults};
 use crate::tx::driver::{RunOutcome, RunSpec, run};
-
-struct DiscardSink;
-
-impl crate::events::InstallSink for DiscardSink {
-    fn event(&mut self, _event: crate::events::InstallEvent) {}
-}
 
 pub fn preview(handle: &mut alpm::Alpm, spec: RunSpec) -> anyhow::Result<RunOutcome> {
     preview_with(handle, spec, Box::new(ExploreDefaults))
@@ -25,58 +20,18 @@ mod tests {
     use super::*;
     use crate::question::model::{Answer, Question};
     use crate::question::source::SourceDecision;
-    use crate::tx::driver::{Finish, RunKind};
+    use crate::tx::driver::Finish;
+    use crate::tx::fixtures::{Pkg, summary_names};
 
     fn spec(targets: &[&str]) -> RunSpec {
-        RunSpec {
-            kind: RunKind::Sync,
-            targets: targets.iter().map(|t| t.to_string()).collect(),
-            stub_targets: Vec::new(),
-            explore: true,
-            as_deps: false,
-            reinstall: false,
-            dep_names: Vec::new(),
-        }
-    }
-
-    fn fixture(packages: &[&'static str]) -> (tempfile::TempDir, alpm::Alpm) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("root");
-        let db = dir.path().join("db");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(db.join("local")).unwrap();
-        std::fs::create_dir_all(db.join("sync")).unwrap();
-        let file = std::fs::File::create(db.join("sync").join("core.db")).unwrap();
-        let mut builder = tar::Builder::new(file);
-        for name in packages {
-            let desc = format!(
-                "%NAME%\n{name}\n\n%VERSION%\n1.0-1\n\n%FILENAME%\n{name}-1.0-1-x86_64.pkg.tar.zst\n\n"
-            );
-            let mut header = tar::Header::new_gnu();
-            header.set_size(desc.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            builder
-                .append_data(&mut header, format!("{name}-1.0-1/desc"), desc.as_bytes())
-                .unwrap();
-        }
-        builder.into_inner().unwrap();
-        let mut handle = alpm::Alpm::new(
-            root.to_string_lossy().as_ref(),
-            db.to_string_lossy().as_ref(),
-        )
-        .unwrap();
-        handle
-            .register_syncdb_mut("core", alpm::SigLevel::NONE)
-            .unwrap()
-            .add_server("file:///pakajo-offline-stub")
-            .unwrap();
-        (dir, handle)
+        crate::tx::fixtures::sync_spec(targets, true)
     }
 
     #[test]
     fn preview_explores_with_explore_defaults_and_returns_review() {
-        let (_dir, mut handle) = fixture(&["solo"]);
+        use crate::tx::fixtures::Pkg;
+
+        let (_dir, mut handle) = crate::tx::fixtures::fixture(&[Pkg::plain("solo")]);
         let outcome = preview(&mut handle, spec(&["solo"])).unwrap();
         assert!(matches!(outcome.finish, Finish::Stopped));
         let review = outcome.review.expect("explore run carries a review");
@@ -114,49 +69,22 @@ mod tests {
     }
 
     fn provider_fixture() -> (tempfile::TempDir, alpm::Alpm) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("root");
-        let db = dir.path().join("db");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(db.join("local")).unwrap();
-        std::fs::create_dir_all(db.join("sync")).unwrap();
-        let file = std::fs::File::create(db.join("sync").join("core.db")).unwrap();
-        let mut builder = tar::Builder::new(file);
-        for name in ["provider-one", "provider-two"] {
-            let desc = format!(
-                "%NAME%\n{name}\n\n%VERSION%\n1.0-1\n\n%FILENAME%\n{name}-1.0-1-x86_64.pkg.tar.zst\n\n%PROVIDES%\nvirt\n\n"
-            );
-            let mut header = tar::Header::new_gnu();
-            header.set_size(desc.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            builder
-                .append_data(&mut header, format!("{name}-1.0-1/desc"), desc.as_bytes())
-                .unwrap();
-        }
-        builder.into_inner().unwrap();
-        let mut handle = alpm::Alpm::new(
-            root.to_string_lossy().as_ref(),
-            db.to_string_lossy().as_ref(),
+        crate::tx::fixtures::fixture_full(
+            &[(
+                "core",
+                vec![
+                    Pkg {
+                        provides: vec!["virt"],
+                        ..Pkg::plain("provider-one")
+                    },
+                    Pkg {
+                        provides: vec!["virt"],
+                        ..Pkg::plain("provider-two")
+                    },
+                ],
+            )],
+            &[],
         )
-        .unwrap();
-        handle
-            .register_syncdb_mut("core", alpm::SigLevel::NONE)
-            .unwrap()
-            .add_server("file:///pakajo-offline-stub")
-            .unwrap();
-        (dir, handle)
-    }
-
-    fn summary_names(outcome: &RunOutcome) -> Vec<String> {
-        let mut names: Vec<String> = outcome
-            .summary
-            .packages
-            .iter()
-            .map(|package| package.name.clone())
-            .collect();
-        names.sort();
-        names
     }
 
     #[test]
