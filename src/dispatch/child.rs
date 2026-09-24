@@ -1,23 +1,20 @@
 use crate::cli::{ConsoleSink, EscalatedSink, InstallTarget, JsonSink, classify_target, privs};
 use crate::dispatch::operation::ChildOperation;
 use crate::events::{InstallEvent, InstallSink};
+use crate::question::model::Question;
 use anyhow::Context as _;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Presentation {
-    Console,
-    InteractiveStream,
-    SilentStream,
+struct ChildWire {
+    sealed: Option<crate::question::approvals::SealedApprovals>,
+    authorized: bool,
+    stream: bool,
+    interactive: bool,
+    tty: bool,
 }
 
-pub fn select_presentation(stream: bool, interactive: bool, tty: bool) -> Presentation {
-    if !stream {
-        return Presentation::Console;
-    }
-    if interactive && tty {
-        Presentation::InteractiveStream
-    } else {
-        Presentation::SilentStream
+impl ChildWire {
+    fn is_silent(&self) -> bool {
+        self.stream && !(self.interactive && self.tty)
     }
 }
 
@@ -94,58 +91,80 @@ pub fn run(argv: &[String]) -> i32 {
     code_from(operation.execute())
 }
 
-fn upgrade_repo_source_sink(
-    presentation: Presentation,
+fn silent_inner(
     sealed: Option<crate::question::approvals::SealedApprovals>,
+) -> Box<dyn crate::question::source::AnswerSource> {
+    match sealed {
+        Some(sealed) => Box::new(crate::question::source::ApprovalsReplay::new(sealed)),
+        None => Box::new(crate::question::source::FailClosedSource),
+    }
+}
+
+fn tty_source(authorized: bool, to_stderr: bool) -> Box<dyn crate::question::source::AnswerSource> {
+    let input = stdin_input();
+    if !to_stderr {
+        return engine_source(
+            authorized,
+            crate::tx::prompt::InteractiveSource::new(
+                std::rc::Rc::clone(&input),
+                std::io::stdout(),
+                crate::color::stdout_color(),
+            ),
+            crate::tx::prompt::TtyImportPrompter::new(
+                std::rc::Rc::clone(&input),
+                std::io::stdout(),
+                crate::color::stdout_color(),
+            ),
+        );
+    }
+    engine_source(
+        authorized,
+        crate::tx::prompt::InteractiveSource::new(
+            std::rc::Rc::clone(&input),
+            std::io::stderr(),
+            crate::color::stderr_color(),
+        ),
+        crate::tx::prompt::TtyImportPrompter::new(
+            std::rc::Rc::clone(&input),
+            std::io::stderr(),
+            crate::color::stderr_color(),
+        ),
+    )
+}
+
+fn runtime_emit(question: Question) {
+    JsonSink::new().event(InstallEvent::RuntimePrompt { question })
+}
+
+fn child_source_sink<E>(
+    wire: &ChildWire,
+    channel: Option<E>,
 ) -> (
     Box<dyn crate::question::source::AnswerSource>,
     Box<dyn InstallSink>,
-) {
-    match presentation {
-        Presentation::InteractiveStream => {
-            let input = stdin_input();
-            let source = engine_source(
-                false,
-                crate::tx::prompt::InteractiveSource::new(
-                    std::rc::Rc::clone(&input),
-                    std::io::stderr(),
-                    crate::color::stderr_color(),
-                ),
-                crate::tx::prompt::TtyImportPrompter::new(
-                    std::rc::Rc::clone(&input),
-                    std::io::stderr(),
-                    crate::color::stderr_color(),
-                ),
-            );
-            (source, Box::new(EscalatedSink::new()))
-        }
-        Presentation::Console => {
-            let input = stdin_input();
-            let source = engine_source(
-                false,
-                crate::tx::prompt::InteractiveSource::new(
-                    std::rc::Rc::clone(&input),
-                    std::io::stdout(),
-                    crate::color::stdout_color(),
-                ),
-                crate::tx::prompt::TtyImportPrompter::new(
-                    std::rc::Rc::clone(&input),
-                    std::io::stdout(),
-                    crate::color::stdout_color(),
-                ),
-            );
-            (source, Box::new(ConsoleSink::new()))
-        }
-        Presentation::SilentStream => {
-            let inner: Box<dyn crate::question::source::AnswerSource> = match sealed {
-                Some(sealed) => Box::new(crate::question::source::ApprovalsReplay::new(sealed)),
-                None => Box::new(crate::question::source::FailClosedSource),
-            };
-            let source = crate::tx::prompt::stdin_channel_source(inner, |question| {
-                JsonSink::new().event(InstallEvent::RuntimePrompt { question })
-            });
-            (source, Box::new(JsonSink::new()))
-        }
+)
+where
+    E: Fn(Question) + 'static,
+{
+    if !wire.stream {
+        return (
+            tty_source(wire.authorized, false),
+            Box::new(ConsoleSink::new()),
+        );
+    }
+    if wire.interactive && wire.tty {
+        return (
+            tty_source(wire.authorized, true),
+            Box::new(EscalatedSink::new()),
+        );
+    }
+    let inner = silent_inner(wire.sealed.clone());
+    match channel {
+        Some(emit) => (
+            crate::tx::prompt::stdin_channel_source(inner, emit),
+            Box::new(JsonSink::new()),
+        ),
+        None => (inner, Box::new(JsonSink::new())),
     }
 }
 
@@ -156,15 +175,29 @@ pub(crate) fn run_upgrade_repo_direct(
     approvals_payload: Option<&str>,
     stream: bool,
 ) -> anyhow::Result<crate::tx::driver::RunOutcome> {
-    let presentation = select_presentation(stream, interactive, privs::stdin_is_tty());
-    if !matches!(presentation, Presentation::SilentStream) {
-        let (source, sink) = upgrade_repo_source_sink(presentation, None);
-        return crate::upgrade::run_upgrade_repo(no_refresh, ignores, source, sink);
-    }
-    let sealed = approvals_payload
-        .map(crate::dispatch::seal::decode_seal)
-        .transpose()?;
-    let (source, sink) = upgrade_repo_source_sink(Presentation::SilentStream, sealed);
+    let tty = privs::stdin_is_tty();
+    let probe = ChildWire {
+        sealed: None,
+        authorized: false,
+        stream,
+        interactive,
+        tty,
+    };
+    let sealed = if probe.is_silent() {
+        approvals_payload
+            .map(crate::dispatch::seal::decode_seal)
+            .transpose()?
+    } else {
+        None
+    };
+    let wire = ChildWire {
+        sealed,
+        authorized: false,
+        stream,
+        interactive,
+        tty,
+    };
+    let (source, sink) = child_source_sink(&wire, Some(runtime_emit));
     crate::upgrade::run_upgrade_repo(no_refresh, ignores, source, sink)
 }
 
@@ -192,71 +225,17 @@ impl ChildOperation {
                     reinstall: false,
                     dep_names: Vec::new(),
                 };
-                let presentation =
-                    select_presentation(*stream, *interactive, privs::stdin_is_tty());
-                match presentation {
-                    Presentation::InteractiveStream => {
-                        let input = stdin_input();
-                        let source = engine_source(
-                            false,
-                            crate::tx::prompt::InteractiveSource::new(
-                                std::rc::Rc::clone(&input),
-                                std::io::stderr(),
-                                crate::color::stderr_color(),
-                            ),
-                            crate::tx::prompt::TtyImportPrompter::new(
-                                std::rc::Rc::clone(&input),
-                                std::io::stderr(),
-                                crate::color::stderr_color(),
-                            ),
-                        );
-                        let outcome = crate::tx::prompt::execute_with_source(
-                            source,
-                            &mut handle,
-                            &spec,
-                            Box::new(EscalatedSink::new()),
-                        )?;
-                        finish_transaction(outcome)
-                    }
-                    Presentation::Console => {
-                        let input = stdin_input();
-                        let source = engine_source(
-                            false,
-                            crate::tx::prompt::InteractiveSource::new(
-                                std::rc::Rc::clone(&input),
-                                std::io::stdout(),
-                                crate::color::stdout_color(),
-                            ),
-                            crate::tx::prompt::TtyImportPrompter::new(
-                                std::rc::Rc::clone(&input),
-                                std::io::stdout(),
-                                crate::color::stdout_color(),
-                            ),
-                        );
-                        let outcome = crate::tx::prompt::execute_with_source(
-                            source,
-                            &mut handle,
-                            &spec,
-                            Box::new(ConsoleSink::new()),
-                        )?;
-                        finish_transaction(outcome)
-                    }
-                    Presentation::SilentStream => {
-                        let inner: Box<dyn crate::question::source::AnswerSource> = match sealed {
-                            Some(sealed) => {
-                                Box::new(crate::question::source::ApprovalsReplay::new(sealed))
-                            }
-                            None => Box::new(crate::question::source::FailClosedSource),
-                        };
-                        let outcome = crate::tx::prompt::execute_with_source(
-                            inner,
-                            &mut handle,
-                            &spec,
-                            Box::new(JsonSink::new()),
-                        )?;
-                        finish_transaction(outcome)
-                    }
-                }
+                let wire = ChildWire {
+                    sealed,
+                    authorized: false,
+                    stream: *stream,
+                    interactive: *interactive,
+                    tty: privs::stdin_is_tty(),
+                };
+                let (source, sink) = child_source_sink(&wire, None::<fn(Question)>);
+                let outcome =
+                    crate::tx::prompt::execute_with_source(source, &mut handle, &spec, sink)?;
+                finish_transaction(outcome)
             }
             ChildOperation::Install {
                 targets,
@@ -288,95 +267,30 @@ impl ChildOperation {
                         "cannot build packages as root; re-run without privilege escalation"
                     );
                 }
-                let presentation =
-                    select_presentation(*stream, *interactive, privs::stdin_is_tty());
                 let authorized = sealed
                     .as_ref()
                     .map(|sealed| sealed.proceed)
                     .unwrap_or(false);
-                match presentation {
-                    Presentation::InteractiveStream | Presentation::Console => {
-                        let spec = crate::tx::driver::RunSpec {
-                            kind: crate::tx::driver::RunKind::Sync,
-                            targets: targets.clone(),
-                            stub_targets: Vec::new(),
-                            explore: false,
-                            as_deps: *as_deps,
-                            reinstall: *reinstall,
-                            dep_names: dep_names.clone(),
-                        };
-                        let input = stdin_input();
-                        let outcome = if matches!(presentation, Presentation::InteractiveStream) {
-                            let source = engine_source(
-                                authorized,
-                                crate::tx::prompt::InteractiveSource::new(
-                                    std::rc::Rc::clone(&input),
-                                    std::io::stderr(),
-                                    crate::color::stderr_color(),
-                                ),
-                                crate::tx::prompt::TtyImportPrompter::new(
-                                    std::rc::Rc::clone(&input),
-                                    std::io::stderr(),
-                                    crate::color::stderr_color(),
-                                ),
-                            );
-                            crate::tx::prompt::execute_with_source(
-                                source,
-                                &mut handle,
-                                &spec,
-                                Box::new(EscalatedSink::new()),
-                            )?
-                        } else {
-                            let source = engine_source(
-                                authorized,
-                                crate::tx::prompt::InteractiveSource::new(
-                                    std::rc::Rc::clone(&input),
-                                    std::io::stdout(),
-                                    crate::color::stdout_color(),
-                                ),
-                                crate::tx::prompt::TtyImportPrompter::new(
-                                    std::rc::Rc::clone(&input),
-                                    std::io::stdout(),
-                                    crate::color::stdout_color(),
-                                ),
-                            );
-                            crate::tx::prompt::execute_with_source(
-                                source,
-                                &mut handle,
-                                &spec,
-                                Box::new(ConsoleSink::new()),
-                            )?
-                        };
-                        finish_transaction(outcome)
-                    }
-                    Presentation::SilentStream => {
-                        let spec = crate::tx::driver::RunSpec {
-                            kind: crate::tx::driver::RunKind::Sync,
-                            targets: targets.clone(),
-                            stub_targets: Vec::new(),
-                            explore: false,
-                            as_deps: *as_deps,
-                            reinstall: *reinstall,
-                            dep_names,
-                        };
-                        let inner: Box<dyn crate::question::source::AnswerSource> = match sealed {
-                            Some(sealed) => {
-                                Box::new(crate::question::source::ApprovalsReplay::new(sealed))
-                            }
-                            None => Box::new(crate::question::source::FailClosedSource),
-                        };
-                        let source = crate::tx::prompt::stdin_channel_source(inner, |question| {
-                            JsonSink::new().event(InstallEvent::RuntimePrompt { question })
-                        });
-                        let outcome = crate::tx::prompt::execute_with_source(
-                            source,
-                            &mut handle,
-                            &spec,
-                            Box::new(JsonSink::new()),
-                        )?;
-                        finish_transaction(outcome)
-                    }
-                }
+                let spec = crate::tx::driver::RunSpec {
+                    kind: crate::tx::driver::RunKind::Sync,
+                    targets: targets.clone(),
+                    stub_targets: Vec::new(),
+                    explore: false,
+                    as_deps: *as_deps,
+                    reinstall: *reinstall,
+                    dep_names,
+                };
+                let wire = ChildWire {
+                    sealed,
+                    authorized,
+                    stream: *stream,
+                    interactive: *interactive,
+                    tty: privs::stdin_is_tty(),
+                };
+                let (source, sink) = child_source_sink(&wire, Some(runtime_emit));
+                let outcome =
+                    crate::tx::prompt::execute_with_source(source, &mut handle, &spec, sink)?;
+                finish_transaction(outcome)
             }
             ChildOperation::UpgradeRepo {
                 no_refresh,
@@ -385,13 +299,27 @@ impl ChildOperation {
                 approvals_path,
                 stream,
             } => {
-                let presentation =
-                    select_presentation(*stream, *interactive, privs::stdin_is_tty());
-                let sealed = match presentation {
-                    Presentation::SilentStream => read_seal(approvals_path.as_deref())?,
-                    _ => None,
+                let tty = privs::stdin_is_tty();
+                let probe = ChildWire {
+                    sealed: None,
+                    authorized: false,
+                    stream: *stream,
+                    interactive: *interactive,
+                    tty,
                 };
-                let (source, sink) = upgrade_repo_source_sink(presentation, sealed);
+                let sealed = if probe.is_silent() {
+                    read_seal(approvals_path.as_deref())?
+                } else {
+                    None
+                };
+                let wire = ChildWire {
+                    sealed,
+                    authorized: false,
+                    stream: *stream,
+                    interactive: *interactive,
+                    tty,
+                };
+                let (source, sink) = child_source_sink(&wire, Some(runtime_emit));
                 let outcome = crate::upgrade::run_upgrade_repo(*no_refresh, ignores, source, sink)?;
                 upgrade_outcome_code(outcome)
             }
@@ -404,23 +332,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn presentation_keys_on_interactive_plus_terminal() {
-        use Presentation::{Console, InteractiveStream, SilentStream};
+    fn wire_keys_silent_on_stream_without_terminal() {
         let cases = [
-            ((true, true, true), InteractiveStream),
-            ((true, false, true), SilentStream),
-            ((true, true, false), SilentStream),
-            ((true, false, false), SilentStream),
-            ((false, false, true), Console),
-            ((false, true, true), Console),
-            ((false, false, false), Console),
-            ((false, true, false), Console),
+            ((true, true, true), false),
+            ((true, false, true), true),
+            ((true, true, false), true),
+            ((true, false, false), true),
+            ((false, false, true), false),
+            ((false, true, true), false),
+            ((false, false, false), false),
+            ((false, true, false), false),
         ];
         for ((stream, interactive, tty), expected) in cases {
+            let wire = ChildWire {
+                sealed: None,
+                authorized: false,
+                stream,
+                interactive,
+                tty,
+            };
             assert_eq!(
-                select_presentation(stream, interactive, tty),
+                wire.is_silent(),
                 expected,
-                "select_presentation(stream={stream}, interactive={interactive}, tty={tty})"
+                "is_silent(stream={stream}, interactive={interactive}, tty={tty})"
             );
         }
     }
@@ -466,7 +400,14 @@ mod tests {
             remove: true,
         };
         let sealed = seal(std::slice::from_ref(&question), &[answer], true).expect("seal succeeds");
-        let (source, _) = upgrade_repo_source_sink(Presentation::SilentStream, Some(sealed));
+        let wire = ChildWire {
+            sealed: Some(sealed),
+            authorized: false,
+            stream: true,
+            interactive: false,
+            tty: true,
+        };
+        let (source, _) = child_source_sink(&wire, Some(runtime_emit));
         assert!(
             matches!(
                 source.answer(&question),
@@ -487,7 +428,14 @@ mod tests {
             removable_version: "1.0-1".to_string(),
             conflict_reason: None,
         };
-        let (source, _) = upgrade_repo_source_sink(Presentation::SilentStream, None);
+        let wire = ChildWire {
+            sealed: None,
+            authorized: false,
+            stream: true,
+            interactive: false,
+            tty: true,
+        };
+        let (source, _) = child_source_sink(&wire, Some(runtime_emit));
         assert!(
             matches!(source.answer(&question), SourceDecision::Abort(_)),
             "unsealed upgrade answers nothing"
