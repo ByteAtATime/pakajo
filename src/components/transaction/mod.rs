@@ -457,7 +457,10 @@ impl Transaction {
                 .collect();
             self.model.aur_upgrades = run.aur.clone();
         }
-        let idle_upgrade = upgrade && run.questions.is_empty() && run.summary.packages.is_empty();
+        let idle_upgrade = upgrade
+            && run.questions.is_empty()
+            && run.summary.packages.is_empty()
+            && run.aur.is_empty();
         self.model.summary = Some(run.summary);
         self.model.revalidations = 0;
         self.model.unstables = 0;
@@ -1142,6 +1145,25 @@ mod tests {
             transaction.model.review_notice.as_deref(),
             Some("System is up to date")
         );
+    }
+
+    #[test]
+    fn sysupgrade_aur_only_upgrade_shows_checkout_with_aur() {
+        let mut transaction = upgrade_transaction();
+        transaction.update(TransactionMessage::Explored(Ok(upgrade_run(
+            Vec::new(),
+            pakajo::events::TransactionSummary::default(),
+            vec![aur_candidate("yay")],
+        ))));
+        assert_eq!(transaction.model.aur_names, vec![s("yay")]);
+        assert_eq!(transaction.model.aur_upgrades.len(), 1);
+        assert!(transaction.model.install_review.is_none());
+        assert!(transaction.model.checkout.is_some());
+        assert!(matches!(
+            transaction.model.status,
+            TransactionStatus::Checking
+        ));
+        assert!(transaction.model.review_notice.is_none());
     }
 
     #[test]
