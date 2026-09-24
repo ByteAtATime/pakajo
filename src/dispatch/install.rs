@@ -27,8 +27,6 @@ pub struct InstallRequest {
 
 pub struct InstallPreview {
     pub review: Review,
-    pub aur: Vec<crate::upgrade::AurUpgradeCandidate>,
-    pub pkgbuild_diffs: Vec<crate::pkgbuild::PkgbuildDiff>,
     pub prepare_error: Option<crate::tx::convert::PrepareFailure>,
 }
 
@@ -95,8 +93,6 @@ pub(crate) fn run_install_preview_with(
     };
     Ok(InstallPreview {
         review,
-        aur: Vec::new(),
-        pkgbuild_diffs: Vec::new(),
         prepare_error,
     })
 }
