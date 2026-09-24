@@ -128,7 +128,11 @@ fn merge_plan_conflicts(mut review: Review, plan: Option<&Plan>) -> Review {
             removable_version: String::new(),
             conflict_reason: None,
         };
-        if !review.part1.contains(&question) {
+        if !review
+            .part1
+            .iter()
+            .any(|existing| existing.key() == question.key())
+        {
             review.part1.push(question);
         }
     }
@@ -472,11 +476,11 @@ mod tests {
             removable_version: "1.0-1".to_string(),
             conflict_reason: None,
         };
-        let nvidia = Question::Conflict {
+        let nvidia_versioned = Question::Conflict {
             incoming: "nvidia-470xx-utils".to_string(),
-            incoming_version: String::new(),
+            incoming_version: "6.0-1".to_string(),
             removable: "nvidia-utils".to_string(),
-            removable_version: String::new(),
+            removable_version: "5.0-1".to_string(),
             conflict_reason: None,
         };
         let plan = Plan {
@@ -484,14 +488,14 @@ mod tests {
             ..Default::default()
         };
         let review = Review {
-            part1: vec![linux.clone()],
+            part1: vec![linux.clone(), nvidia_versioned.clone()],
             ..Default::default()
         };
         assert_eq!(
             merge_plan_conflicts(review, Some(&plan)).part1,
             [
                 linux.clone(),
-                nvidia.clone(),
+                nvidia_versioned.clone(),
                 Question::Conflict {
                     incoming: "cava-git".to_string(),
                     incoming_version: String::new(),
