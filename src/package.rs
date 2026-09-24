@@ -525,7 +525,7 @@ mod tests {
         drive_sync(
             &mut handle,
             &["make"],
-            crate::tx::prompt::with_preapproved_proceed(Box::new(ExploreDefaults)),
+            crate::tx::prompt::with_authorized_proceed(Box::new(ExploreDefaults), true),
         )
         .expect("make should install first");
         let group = local_group(&handle, "base-devel")

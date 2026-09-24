@@ -10,7 +10,10 @@ pub(super) fn snapshot_settings() -> insta::Settings {
 }
 
 fn approved() -> Box<dyn crate::question::source::AnswerSource> {
-    crate::tx::prompt::with_preapproved_proceed(Box::new(crate::question::source::ExploreDefaults))
+    crate::tx::prompt::with_authorized_proceed(
+        Box::new(crate::question::source::ExploreDefaults),
+        true,
+    )
 }
 
 fn installed_names(handle: &alpm::Alpm) -> Vec<String> {

@@ -9,7 +9,6 @@ const REINSTALL: &str = "--reinstall";
 const NO_REFRESH: &str = "--no-refresh";
 const IGNORE: &str = "--ignore";
 const APPROVALS_FILE: &str = "--approvals-file";
-const PRECONFIRMED: &str = "--preconfirmed";
 const INTERACTIVE: &str = "--interactive";
 
 pub enum PrivilegedOperation {
@@ -22,7 +21,6 @@ pub enum PrivilegedOperation {
         targets: Vec<String>,
         as_deps: bool,
         reinstall: bool,
-        preconfirmed: bool,
         interactive: bool,
         approvals: Option<crate::dispatch::approvals::ApprovalsFile>,
     },
@@ -56,7 +54,6 @@ pub enum ChildOperation {
         targets: Vec<String>,
         as_deps: bool,
         reinstall: bool,
-        preconfirmed: bool,
         interactive: bool,
         approvals_path: Option<String>,
         stream: bool,
@@ -93,7 +90,6 @@ impl PrivilegedOperation {
                 targets,
                 as_deps,
                 reinstall,
-                preconfirmed,
                 interactive,
                 ..
             } => {
@@ -106,9 +102,6 @@ impl PrivilegedOperation {
                 }
                 if *reinstall {
                     argv.push(REINSTALL.to_string());
-                }
-                if *preconfirmed {
-                    argv.push(PRECONFIRMED.to_string());
                 }
                 if let Some(path) = approvals_path {
                     argv.push(APPROVALS_FILE.to_string());
@@ -186,7 +179,6 @@ fn decode_install(argv: &[String]) -> Option<ChildOperation> {
     let mut stream = false;
     let mut as_deps = false;
     let mut reinstall = false;
-    let mut preconfirmed = false;
     let mut interactive = false;
     let mut approvals_path = None;
     let mut targets = Vec::new();
@@ -196,7 +188,6 @@ fn decode_install(argv: &[String]) -> Option<ChildOperation> {
             STREAM => stream = true,
             AS_DEPS => as_deps = true,
             REINSTALL => reinstall = true,
-            PRECONFIRMED => preconfirmed = true,
             INTERACTIVE => interactive = true,
             APPROVALS_FILE => approvals_path = Some(parts.next()?.clone()),
             _ => {
@@ -211,7 +202,6 @@ fn decode_install(argv: &[String]) -> Option<ChildOperation> {
         targets,
         as_deps,
         reinstall,
-        preconfirmed,
         interactive,
         approvals_path,
         stream,
@@ -334,7 +324,6 @@ mod tests {
             targets: vec!["sl".to_string(), "figlet".to_string()],
             as_deps: true,
             reinstall: false,
-            preconfirmed: false,
             interactive: false,
             approvals: None,
         };
@@ -357,7 +346,6 @@ mod tests {
                 targets: vec!["sl".to_string(), "figlet".to_string()],
                 as_deps: true,
                 reinstall: false,
-                preconfirmed: false,
                 interactive: false,
                 approvals_path: Some("/tmp/pakajo-approvals-1.json".to_string()),
                 stream: true,
@@ -367,16 +355,14 @@ mod tests {
 
     #[test]
     fn install_flag_wire_round_trip() {
-        for (as_deps, reinstall, preconfirmed, interactive, flag) in [
-            (false, true, false, false, "--reinstall"),
-            (false, false, true, false, "--preconfirmed"),
-            (false, false, false, true, "--interactive"),
+        for (as_deps, reinstall, interactive, flag) in [
+            (false, true, false, "--reinstall"),
+            (false, false, true, "--interactive"),
         ] {
             let operation = PrivilegedOperation::Install {
                 targets: vec!["sl".to_string()],
                 as_deps,
                 reinstall,
-                preconfirmed,
                 interactive,
                 approvals: None,
             };
@@ -388,7 +374,6 @@ mod tests {
                     targets: vec!["sl".to_string()],
                     as_deps,
                     reinstall,
-                    preconfirmed,
                     interactive,
                     approvals_path: None,
                     stream: true,

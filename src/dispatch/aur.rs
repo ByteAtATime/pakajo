@@ -37,7 +37,7 @@ pub fn install_aur<S: InstallSink + ?Sized>(
     review_if_requested(decision, &pkgbuilds, sink, decider)?;
     let arch = alpm.architectures().first();
     let stale = stale_repo_deps(&alpm, &plan, arch);
-    install_repo_packages(&plan, &params, !plan.bases.is_empty(), sink, &stale)?;
+    install_repo_packages(&plan, &params, sink, &stale)?;
     reject_pkgbuild_bases(&plan)?;
     for (pkgbase, members) in plan.aur_builds() {
         install_aur_base(pkgbase, members, &params, arch, sink)?;
@@ -135,7 +135,6 @@ fn install_aur_base<S: InstallSink + ?Sized>(
         &built.artifacts,
         params,
         params.reinstall && explicit,
-        true,
         &dep_names,
         sink,
     )
@@ -266,7 +265,6 @@ fn repo_child_inputs(plan: &Plan, files: &[String]) -> (Vec<String>, Vec<String>
 fn install_repo_packages<S: InstallSink + ?Sized>(
     plan: &Plan,
     params: &BuildParams<'_>,
-    preconfirmed: bool,
     sink: &mut S,
     stale: &[RepoInstall],
 ) -> anyhow::Result<()> {
@@ -280,14 +278,7 @@ fn install_repo_packages<S: InstallSink + ?Sized>(
     if targets.is_empty() {
         return Ok(());
     }
-    run_install_child(
-        &targets,
-        params,
-        params.reinstall,
-        preconfirmed,
-        &deps,
-        sink,
-    )
+    run_install_child(&targets, params, params.reinstall, &deps, sink)
 }
 
 fn resolve_and_report<S: InstallSink + ?Sized>(
@@ -390,7 +381,6 @@ fn run_install_child<S: InstallSink + ?Sized>(
     targets: &[String],
     params: &BuildParams<'_>,
     reinstall: bool,
-    preconfirmed: bool,
     dep_names: &[String],
     sink: &mut S,
 ) -> anyhow::Result<()> {
@@ -399,7 +389,6 @@ fn run_install_child<S: InstallSink + ?Sized>(
         targets: targets.to_vec(),
         as_deps: params.as_deps,
         reinstall,
-        preconfirmed,
         interactive: params.interactive,
         approvals: Some(sealed),
     };

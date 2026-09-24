@@ -233,7 +233,6 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
                 targets,
                 as_deps: request.as_deps,
                 reinstall: peeled.reinstall,
-                preconfirmed: false,
                 interactive: request.tty && !request.json,
                 approvals: sealed,
             }),
@@ -281,7 +280,6 @@ fn run_root_install(request: InstallRequest, tx: &mut futures::channel::mpsc::Se
             targets,
             as_deps: request.as_deps,
             reinstall: peeled.reinstall,
-            preconfirmed: false,
             interactive: request.tty && !request.json,
             approvals_path: sealed
                 .as_ref()
@@ -776,7 +774,7 @@ mod tests {
     use crate::tx::testkit::{OfflinePkg, drive_sync, offline_pkg, offline_root};
 
     fn preapproved() -> Box<dyn AnswerSource> {
-        crate::tx::prompt::with_preapproved_proceed(Box::new(ExploreDefaults))
+        crate::tx::prompt::with_authorized_proceed(Box::new(ExploreDefaults), true)
     }
 
     struct DeclineConflicts;

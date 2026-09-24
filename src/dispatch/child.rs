@@ -59,16 +59,12 @@ fn upgrade_outcome_code(outcome: crate::tx::driver::RunOutcome) -> anyhow::Resul
 }
 
 fn engine_source<R: std::io::BufRead + 'static, W: std::io::Write + 'static>(
-    preconfirmed: bool,
+    authorized: bool,
     source: crate::tx::prompt::InteractiveSource<R, W>,
     prompter: crate::tx::prompt::TtyImportPrompter<R, W>,
 ) -> Box<dyn crate::question::source::AnswerSource> {
     let runtime = crate::tx::prompt::tty_runtime_source(source, prompter);
-    if preconfirmed {
-        crate::tx::prompt::with_preapproved_proceed(runtime)
-    } else {
-        runtime
-    }
+    crate::tx::prompt::with_authorized_proceed(runtime, authorized)
 }
 
 fn repo_names_acceptable(handle: &alpm::Alpm, repo_names: &[String]) -> bool {
@@ -266,7 +262,6 @@ impl ChildOperation {
                 targets,
                 as_deps,
                 reinstall,
-                preconfirmed,
                 interactive,
                 approvals_path,
                 stream,
@@ -295,7 +290,10 @@ impl ChildOperation {
                 }
                 let presentation =
                     select_presentation(*stream, *interactive, privs::stdin_is_tty());
-                let preconfirmed = *preconfirmed;
+                let authorized = sealed
+                    .as_ref()
+                    .map(|sealed| sealed.proceed)
+                    .unwrap_or(false);
                 match presentation {
                     Presentation::InteractiveStream | Presentation::Console => {
                         let spec = crate::tx::driver::RunSpec {
@@ -310,7 +308,7 @@ impl ChildOperation {
                         let input = stdin_input();
                         let outcome = if matches!(presentation, Presentation::InteractiveStream) {
                             let source = engine_source(
-                                preconfirmed,
+                                authorized,
                                 crate::tx::prompt::InteractiveSource::new(
                                     std::rc::Rc::clone(&input),
                                     std::io::stderr(),
@@ -330,7 +328,7 @@ impl ChildOperation {
                             )?
                         } else {
                             let source = engine_source(
-                                preconfirmed,
+                                authorized,
                                 crate::tx::prompt::InteractiveSource::new(
                                     std::rc::Rc::clone(&input),
                                     std::io::stdout(),

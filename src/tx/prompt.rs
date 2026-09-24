@@ -454,18 +454,22 @@ pub fn stdin_channel_source(
     ))
 }
 
-pub fn with_preapproved_proceed(inner: Box<dyn AnswerSource>) -> Box<dyn AnswerSource> {
-    Box::new(PreapprovedProceed { inner })
-}
-
-struct PreapprovedProceed {
+pub fn with_authorized_proceed(
     inner: Box<dyn AnswerSource>,
+    authorized: bool,
+) -> Box<dyn AnswerSource> {
+    Box::new(AuthorizedProceed { inner, authorized })
 }
 
-impl AnswerSource for PreapprovedProceed {
+struct AuthorizedProceed {
+    inner: Box<dyn AnswerSource>,
+    authorized: bool,
+}
+
+impl AnswerSource for AuthorizedProceed {
     fn answer(&self, question: &Question) -> SourceDecision {
         match question {
-            Question::Proceed { .. } => SourceDecision::Answer(Answer::Proceed),
+            Question::Proceed { .. } if self.authorized => SourceDecision::Answer(Answer::Proceed),
             other => self.inner.answer(other),
         }
     }
@@ -542,8 +546,8 @@ mod tests {
     }
 
     #[test]
-    fn preapproved_proceed_answers_proceed_and_delegates_rest() {
-        let source = with_preapproved_proceed(Box::new(Script));
+    fn authorized_proceed_answers_proceed_and_delegates_rest() {
+        let source = with_authorized_proceed(Box::new(Script), true);
         assert!(matches!(
             source.answer(&Question::Proceed {
                 summary: summary(),
@@ -553,6 +557,14 @@ mod tests {
         ));
         assert!(matches!(
             source.answer(&conflict()),
+            SourceDecision::Answer(Answer::Stop)
+        ));
+        let denied = with_authorized_proceed(Box::new(Script), false);
+        assert!(matches!(
+            denied.answer(&Question::Proceed {
+                summary: summary(),
+                kind: TransactionKind::Install,
+            }),
             SourceDecision::Answer(Answer::Stop)
         ));
     }
