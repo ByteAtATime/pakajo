@@ -9,7 +9,7 @@ use crate::dispatch::operation::{BuildOperation, MARKER, PrivilegedOperation};
 use crate::dispatch::protocol::Decider;
 use crate::events::{InstallEvent, InstallSink, read_event_stream};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChildOutcome {
     Success,
     Stopped { idle: bool },

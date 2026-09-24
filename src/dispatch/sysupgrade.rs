@@ -2,9 +2,12 @@ use futures::SinkExt as _;
 
 use crate::dispatch::approvals::ApprovalsFile;
 use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem, send_done};
-use crate::dispatch::operation::{ChildOperation, PrivilegedOperation};
+use crate::dispatch::operation::PrivilegedOperation;
 use crate::dispatch::protocol::Decider;
-use crate::dispatch::session::{PhasePlan, RepoPhaseDecision, repo_phase_decision, run_phases};
+use crate::dispatch::session::{
+    AfterRepo, PhasePlan, RepoPhase, after_repo, repo_phase_from_child, repo_phase_from_result,
+    run_phases,
+};
 use crate::events::InstallEvent;
 
 #[derive(Debug, Clone)]
@@ -90,13 +93,18 @@ fn detect_aur_upgrades(
 }
 
 fn run_sysupgrade(request: SysupgradeRequest, mut tx: futures::channel::mpsc::Sender<StreamItem>) {
+    let interactive = request.tty && !request.json;
     if crate::cli::privs::is_root() {
-        run_root_sysupgrade(request, &mut tx);
+        let phase = repo_phase_from_result(crate::dispatch::child::run_upgrade_repo_direct(
+            request.no_refresh,
+            &request.ignores,
+            interactive,
+            request.approvals.as_deref(),
+            request.json,
+        ));
+        run_after_repo(request, phase, &mut tx);
         return;
     }
-    let Some(aur_targets) = resolve_aur_targets(&request, &mut tx) else {
-        return;
-    };
     let sealed = match request
         .approvals
         .as_deref()
@@ -109,68 +117,54 @@ fn run_sysupgrade(request: SysupgradeRequest, mut tx: futures::channel::mpsc::Se
             return;
         }
     };
-    run_phases(
-        PhasePlan {
-            privileged: Some(PrivilegedOperation::UpgradeRepo {
-                no_refresh: request.no_refresh,
-                ignores: request.ignores,
-                interactive: request.tty && !request.json,
-                approvals: sealed,
-            }),
-            aur_targets,
-            files: Vec::new(),
-            as_deps: false,
-            reinstall: false,
-            no_check: false,
-            repo_verb: "upgraded",
-            approvals_payload: request.approvals,
-            decider: request.decider,
-            tty: request.tty,
-            interactive: request.tty && !request.json,
-        },
-        &mut tx,
-    );
-}
-
-fn run_root_sysupgrade(
-    request: SysupgradeRequest,
-    tx: &mut futures::channel::mpsc::Sender<StreamItem>,
-) {
-    let Some(aur_targets) = resolve_aur_targets(&request, tx) else {
+    let Some(outcome) = run_repo_phase(&request, interactive, sealed, &mut tx) else {
         return;
     };
-    let sealed = match request
-        .approvals
-        .as_deref()
-        .map(|payload| ApprovalsFile::write(payload.as_bytes()))
-        .transpose()
-    {
-        Ok(sealed) => sealed,
-        Err(error) => {
-            send_done(tx, ChildOutcome::Failed(format!("{error:#}")));
+    run_after_repo(request, repo_phase_from_child(&outcome), &mut tx);
+}
+
+fn run_repo_phase(
+    request: &SysupgradeRequest,
+    interactive: bool,
+    approvals: Option<ApprovalsFile>,
+    tx: &mut futures::channel::mpsc::Sender<StreamItem>,
+) -> Option<ChildOutcome> {
+    let operation = PrivilegedOperation::UpgradeRepo {
+        no_refresh: request.no_refresh,
+        ignores: request.ignores.clone(),
+        interactive,
+        approvals,
+    };
+    match crate::dispatch::session::forward(operation.dispatch(request.tty), tx) {
+        crate::dispatch::session::ForwardEnd::Done(outcome) => Some(outcome),
+        crate::dispatch::session::ForwardEnd::InnerEnded => {
+            send_done(tx, ChildOutcome::Failed("stream ended".to_string()));
+            None
+        }
+        crate::dispatch::session::ForwardEnd::ReceiverGone => None,
+    }
+}
+
+fn run_after_repo(
+    request: SysupgradeRequest,
+    repo_phase: RepoPhase,
+    tx: &mut futures::channel::mpsc::Sender<StreamItem>,
+) {
+    let Some(aur_targets) = detect_aur_targets(&request, tx) else {
+        return;
+    };
+    match after_repo(&repo_phase, &aur_targets) {
+        AfterRepo::BuildAur => {}
+        AfterRepo::NothingToDo => {
+            if request.json {
+                eprintln!(" there is nothing to do");
+            } else {
+                println!(" there is nothing to do");
+            }
+            send_done(tx, ChildOutcome::Success);
             return;
         }
-    };
-    let operation = ChildOperation::UpgradeRepo {
-        no_refresh: request.no_refresh,
-        ignores: request.ignores,
-        interactive: request.tty && !request.json,
-        approvals_path: sealed
-            .as_ref()
-            .map(|file| file.path().to_string_lossy().into_owned()),
-        stream: request.json,
-    };
-    let outcome = match operation.execute() {
-        Ok(code) => crate::dispatch::exec::map_exit_code(
-            crate::dispatch::exec::ChildKind::UpgradeRepo,
-            code,
-            "direct",
-        ),
-        Err(error) => ChildOutcome::Failed(format!("{error:#}")),
-    };
-    match repo_phase_decision(&outcome, !request.repo_only && !aur_targets.is_empty()) {
-        RepoPhaseDecision::ContinueToAur => {}
-        RepoPhaseDecision::Finish(outcome) => {
+        AfterRepo::Done(outcome) => {
             send_done(tx, outcome);
             return;
         }
@@ -178,6 +172,7 @@ fn run_root_sysupgrade(
     run_phases(
         PhasePlan {
             privileged: None,
+            repo_committed: matches!(repo_phase, RepoPhase::Committed),
             aur_targets,
             files: Vec::new(),
             as_deps: false,
@@ -193,7 +188,7 @@ fn run_root_sysupgrade(
     );
 }
 
-fn resolve_aur_targets(
+fn detect_aur_targets(
     request: &SysupgradeRequest,
     tx: &mut futures::channel::mpsc::Sender<StreamItem>,
 ) -> Option<Vec<String>> {

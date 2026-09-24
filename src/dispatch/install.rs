@@ -206,6 +206,7 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
         run_phases(
             PhasePlan {
                 privileged: None,
+                repo_committed: false,
                 aur_targets: peeled.names,
                 files: peeled.files,
                 as_deps: request.as_deps,
@@ -241,6 +242,7 @@ fn run_install(request: InstallRequest, mut tx: futures::channel::mpsc::Sender<S
                 interactive: request.tty && !request.json,
                 approvals: sealed,
             }),
+            repo_committed: false,
             aur_targets: Vec::new(),
             files: Vec::new(),
             as_deps: request.as_deps,
@@ -307,6 +309,7 @@ fn run_root_install(request: InstallRequest, tx: &mut futures::channel::mpsc::Se
     run_phases(
         PhasePlan {
             privileged: None,
+            repo_committed: false,
             aur_targets: peeled.names,
             files: peeled.files,
             as_deps: request.as_deps,

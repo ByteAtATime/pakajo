@@ -112,6 +112,74 @@ pub fn run(argv: &[String]) -> i32 {
     code_from(operation.execute())
 }
 
+pub(crate) fn run_upgrade_repo_direct(
+    no_refresh: bool,
+    ignores: &[String],
+    interactive: bool,
+    approvals_payload: Option<&str>,
+    stream: bool,
+) -> anyhow::Result<crate::tx::driver::RunOutcome> {
+    let presentation = select_presentation(stream, interactive, privs::stdin_is_tty());
+    match presentation {
+        Presentation::InteractiveStream => {
+            let input = stdin_input();
+            let source = engine_source(
+                false,
+                crate::tx::prompt::InteractiveSource::new(
+                    std::rc::Rc::clone(&input),
+                    std::io::stderr(),
+                    crate::color::stderr_color(),
+                ),
+                crate::tx::prompt::TtyImportPrompter::new(
+                    std::rc::Rc::clone(&input),
+                    std::io::stderr(),
+                    crate::color::stderr_color(),
+                ),
+            );
+            crate::upgrade::run_upgrade_repo(
+                no_refresh,
+                ignores,
+                source,
+                Box::new(EscalatedSink::new()),
+            )
+        }
+        Presentation::Console => {
+            let input = stdin_input();
+            let source = engine_source(
+                false,
+                crate::tx::prompt::InteractiveSource::new(
+                    std::rc::Rc::clone(&input),
+                    std::io::stdout(),
+                    crate::color::stdout_color(),
+                ),
+                crate::tx::prompt::TtyImportPrompter::new(
+                    std::rc::Rc::clone(&input),
+                    std::io::stdout(),
+                    crate::color::stdout_color(),
+                ),
+            );
+            crate::upgrade::run_upgrade_repo(
+                no_refresh,
+                ignores,
+                source,
+                Box::new(ConsoleSink::new()),
+            )
+        }
+        Presentation::SilentStream => {
+            let approvals = approvals_payload
+                .map(|payload| {
+                    serde_json::from_str::<crate::question::Approvals>(payload)
+                        .with_context(|| "failed to parse approvals payload")
+                })
+                .transpose()?;
+            let source: Box<dyn crate::question::source::AnswerSource> = Box::new(
+                crate::question::source::LegacyApprovalsSource::new(approvals),
+            );
+            crate::upgrade::run_upgrade_repo(no_refresh, ignores, source, Box::new(JsonSink::new()))
+        }
+    }
+}
+
 impl ChildOperation {
     pub fn execute(&self) -> anyhow::Result<i32> {
         match self {
