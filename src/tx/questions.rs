@@ -80,11 +80,22 @@ impl QuestionSession {
             alpm::Question::Conflict(mut asked) => {
                 let disputed = asked.conflict();
                 let incoming = disputed.package1().name().to_string();
+                let incoming_version = disputed.package1().version().to_string();
                 let removable = disputed.package2().name().to_string();
+                let removable_version = disputed.package2().version().to_string();
+                let reason = disputed.reason().name().to_string();
+                let conflict_reason = if reason != incoming && reason != removable {
+                    Some(reason)
+                } else {
+                    None
+                };
                 self.decide_bool(
                     Question::Conflict {
                         incoming,
+                        incoming_version,
                         removable,
+                        removable_version,
+                        conflict_reason,
                     },
                     |remove| asked.set_remove(remove),
                 );

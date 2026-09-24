@@ -12,6 +12,7 @@ pub fn question_set_from_review(review: &crate::question::review::Review) -> Que
             Question::Conflict {
                 incoming,
                 removable,
+                ..
             } => conflicts.push(Conflict {
                 incoming: incoming.clone(),
                 removable: removable.clone(),
@@ -63,7 +64,10 @@ mod converter_tests {
         let part1 = vec![
             Question::Conflict {
                 incoming: "newpkg".to_string(),
+                incoming_version: "1.0-1".to_string(),
                 removable: "oldpkg".to_string(),
+                removable_version: "1.0-1".to_string(),
+                conflict_reason: None,
             },
             Question::SelectProvider {
                 depend: "virt".to_string(),

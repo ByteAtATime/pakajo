@@ -1620,6 +1620,7 @@ mod tests {
             Question::Conflict {
                 incoming,
                 removable,
+                ..
             } => SourceDecision::Answer(Answer::Conflict {
                 incoming: incoming.clone(),
                 removable: removable.clone(),

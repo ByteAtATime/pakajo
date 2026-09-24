@@ -123,7 +123,10 @@ fn merge_plan_conflicts(mut review: Review, plan: Option<&Plan>) -> Review {
     for conflict in plan_conflicts_to_questions(&plan.conflicts) {
         let question = Question::Conflict {
             incoming: conflict.incoming,
+            incoming_version: String::new(),
             removable: conflict.removable,
+            removable_version: String::new(),
+            conflict_reason: None,
         };
         if !review.part1.contains(&question) {
             review.part1.push(question);
@@ -464,11 +467,17 @@ mod tests {
     fn merge_plan_conflicts_dedupes_while_preserving_order() {
         let linux = Question::Conflict {
             incoming: "linux".to_string(),
+            incoming_version: "1.0-1".to_string(),
             removable: "linux-lts".to_string(),
+            removable_version: "1.0-1".to_string(),
+            conflict_reason: None,
         };
         let nvidia = Question::Conflict {
             incoming: "nvidia-470xx-utils".to_string(),
+            incoming_version: String::new(),
             removable: "nvidia-utils".to_string(),
+            removable_version: String::new(),
+            conflict_reason: None,
         };
         let plan = Plan {
             conflicts: conflicting_report(),
@@ -485,11 +494,17 @@ mod tests {
                 nvidia.clone(),
                 Question::Conflict {
                     incoming: "cava-git".to_string(),
+                    incoming_version: String::new(),
                     removable: "cava".to_string(),
+                    removable_version: String::new(),
+                    conflict_reason: None,
                 },
                 Question::Conflict {
                     incoming: "cava-git".to_string(),
+                    incoming_version: String::new(),
                     removable: "cava-old".to_string(),
+                    removable_version: String::new(),
+                    conflict_reason: None,
                 },
             ]
         );

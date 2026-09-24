@@ -146,7 +146,10 @@ mod tests {
         (
             Question::Conflict {
                 incoming: "cava-git".to_string(),
+                incoming_version: "1.0-1".to_string(),
                 removable: "cava".to_string(),
+                removable_version: "1.0-1".to_string(),
+                conflict_reason: None,
             },
             Answer::Conflict {
                 incoming: "cava-git".to_string(),

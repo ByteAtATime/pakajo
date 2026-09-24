@@ -14,10 +14,17 @@ pub fn render(question: &Question, colored: bool) -> String {
     match question {
         Question::Conflict {
             incoming,
+            incoming_version,
             removable,
-        } => colon_text(
+            removable_version,
+            conflict_reason,
+        } => render_conflict(
+            incoming,
+            incoming_version,
+            removable,
+            removable_version,
+            conflict_reason.as_deref(),
             colored,
-            &format!("{incoming} and {removable} are in conflict. Remove {removable}? [y/N] "),
         ),
         Question::SelectProvider { depend, candidates } => {
             render_provider(depend, candidates, colored)
@@ -30,6 +37,34 @@ pub fn render(question: &Question, colored: bool) -> String {
         Question::ImportKey { fingerprint, uid } => render_import_key(fingerprint, uid, colored),
         Question::Proceed { summary, kind } => render_proceed(summary, *kind, colored),
         Question::GroupMembers { group, members } => render_group(group, members, colored),
+    }
+}
+
+fn render_conflict(
+    incoming: &str,
+    incoming_version: &str,
+    removable: &str,
+    removable_version: &str,
+    conflict_reason: Option<&str>,
+    colored: bool,
+) -> String {
+    let incoming_label = versioned_label(incoming, incoming_version, colored);
+    let removable_label = versioned_label(removable, removable_version, colored);
+    let middle = match conflict_reason {
+        Some(reason) => format!("are in conflict ({reason}). Remove {removable}? [y/N] "),
+        None => format!("are in conflict. Remove {removable}? [y/N] "),
+    };
+    colon_text(
+        colored,
+        &format!("{incoming_label} and {removable_label} {middle}"),
+    )
+}
+
+fn versioned_label(name: &str, version: &str, colored: bool) -> String {
+    if version.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}-{}", color::paint(colored, color::VERSION, version))
     }
 }
 
@@ -180,6 +215,7 @@ fn decide(question: &Question, line: &str) -> SourceDecision {
         Question::Conflict {
             incoming,
             removable,
+            ..
         } => SourceDecision::Answer(Answer::Conflict {
             incoming: incoming.clone(),
             removable: removable.clone(),
@@ -490,7 +526,10 @@ mod tests {
     fn conflict() -> Question {
         Question::Conflict {
             incoming: "newpkg".to_string(),
+            incoming_version: "2.0-1".to_string(),
             removable: "oldpkg".to_string(),
+            removable_version: "1.0-1".to_string(),
+            conflict_reason: None,
         }
     }
 
@@ -523,7 +562,17 @@ mod tests {
         let cases: Vec<(Question, &str)> = vec![
             (
                 conflict(),
-                "newpkg and oldpkg are in conflict. Remove oldpkg? [y/N] ",
+                "newpkg-2.0-1 and oldpkg-1.0-1 are in conflict. Remove oldpkg? [y/N] ",
+            ),
+            (
+                Question::Conflict {
+                    incoming: "newpkg".to_string(),
+                    incoming_version: "2.0-1".to_string(),
+                    removable: "oldpkg".to_string(),
+                    removable_version: "1.0-1".to_string(),
+                    conflict_reason: Some("libfoo".to_string()),
+                },
+                "newpkg-2.0-1 and oldpkg-1.0-1 are in conflict (libfoo). Remove oldpkg? [y/N] ",
             ),
             (
                 Question::SelectProvider {

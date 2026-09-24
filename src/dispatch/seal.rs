@@ -29,7 +29,10 @@ impl SealedDecider {
     fn conflict_removed(&self, incoming: &str, removable: &str) -> bool {
         let key = Question::Conflict {
             incoming: incoming.to_string(),
+            incoming_version: String::new(),
             removable: removable.to_string(),
+            removable_version: String::new(),
+            conflict_reason: None,
         }
         .key();
         let Ok(index) = self
@@ -104,7 +107,10 @@ mod tests {
             vec![
                 Question::Conflict {
                     incoming: s("foo"),
+                    incoming_version: "1.0-1".to_string(),
                     removable: s("bar"),
+                    removable_version: "1.0-1".to_string(),
+                    conflict_reason: None,
                 },
                 Question::InstallIgnorepkg { name: s("glibc") },
                 Question::RemovePkgs {

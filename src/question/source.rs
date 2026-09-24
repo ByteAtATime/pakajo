@@ -47,6 +47,7 @@ impl AnswerSource for ExploreDefaults {
             Question::Conflict {
                 incoming,
                 removable,
+                ..
             } => SourceDecision::Answer(Answer::Conflict {
                 incoming: incoming.clone(),
                 removable: removable.clone(),
@@ -199,6 +200,7 @@ impl AnswerSource for LegacyApprovalsSource {
             Question::Conflict {
                 incoming,
                 removable,
+                ..
             } => match &self.approvals {
                 Some(approvals) if legacy_conflict_approved(approvals, incoming, removable) => {
                     SourceDecision::Answer(Answer::Conflict {
@@ -404,7 +406,10 @@ mod tests {
             (
                 Question::Conflict {
                     incoming: "cava-git".to_string(),
+                    incoming_version: "1.0-1".to_string(),
                     removable: "cava".to_string(),
+                    removable_version: "1.0-1".to_string(),
+                    conflict_reason: None,
                 },
                 Answer::Conflict {
                     incoming: "cava-git".to_string(),
@@ -535,7 +540,10 @@ mod tests {
         for question in [
             Question::Conflict {
                 incoming: s("foo"),
+                incoming_version: s("1.0-1"),
                 removable: s("bar"),
+                removable_version: s("1.0-1"),
+                conflict_reason: None,
             },
             Question::Proceed {
                 summary: summary(),
@@ -556,7 +564,10 @@ mod tests {
     fn approvals_replay_answers_aborts_and_maps_proceed() {
         let conflict = Question::Conflict {
             incoming: s("foo"),
+            incoming_version: s("1.0-1"),
             removable: s("bar"),
+            removable_version: s("1.0-1"),
+            conflict_reason: None,
         };
         let answer = Answer::Conflict {
             incoming: s("foo"),
@@ -637,7 +648,10 @@ mod tests {
     fn revalidate_falls_back_to_remove_for_unanswered_conflict() {
         let question = Question::Conflict {
             incoming: s("foo"),
+            incoming_version: s("1.0-1"),
             removable: s("bar"),
+            removable_version: s("1.0-1"),
+            conflict_reason: None,
         };
         let sealed = seal(&[], &[], false).expect("seal succeeds");
         assert_eq!(
@@ -842,7 +856,10 @@ mod tests {
             assert_eq!(
                 source.answer(&Question::Conflict {
                     incoming: s(incoming),
+                    incoming_version: s("1.0-1"),
                     removable: s(removable),
+                    removable_version: s("1.0-1"),
+                    conflict_reason: None,
                 }),
                 SourceDecision::Answer(Answer::Conflict {
                     incoming: s(incoming),
@@ -858,7 +875,10 @@ mod tests {
         let source = legacy_with(Some(legacy_approvals()));
         let question = Question::Conflict {
             incoming: s("foo"),
+            incoming_version: s("1.0-1"),
             removable: s("bar"),
+            removable_version: s("1.0-1"),
+            conflict_reason: None,
         };
         assert_eq!(
             source.answer(&question),

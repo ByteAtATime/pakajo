@@ -19,7 +19,10 @@ pub enum TransactionKind {
 pub enum Question {
     Conflict {
         incoming: String,
+        incoming_version: String,
         removable: String,
+        removable_version: String,
+        conflict_reason: Option<String>,
     },
     SelectProvider {
         depend: String,
@@ -120,6 +123,7 @@ impl Question {
             Question::Conflict {
                 incoming,
                 removable,
+                ..
             } => QuestionKey::Conflict {
                 first: incoming.min(removable).clone(),
                 second: incoming.max(removable).clone(),
@@ -187,15 +191,24 @@ mod tests {
     fn question_keys_normalize_order() {
         let forward = Question::Conflict {
             incoming: "cava-git".to_string(),
+            incoming_version: "1.0-1".to_string(),
             removable: "cava".to_string(),
+            removable_version: "1.0-1".to_string(),
+            conflict_reason: None,
         };
         let backward = Question::Conflict {
             incoming: "cava".to_string(),
+            incoming_version: "1.0-1".to_string(),
             removable: "cava-git".to_string(),
+            removable_version: "1.0-1".to_string(),
+            conflict_reason: None,
         };
         let unrelated = Question::Conflict {
             incoming: "nginx-mainline".to_string(),
+            incoming_version: "1.0-1".to_string(),
             removable: "nginx".to_string(),
+            removable_version: "1.0-1".to_string(),
+            conflict_reason: None,
         };
         assert_eq!(forward.key(), backward.key());
         assert_eq!(
@@ -238,7 +251,10 @@ mod tests {
         let collectable = [
             Question::Conflict {
                 incoming: "a".to_string(),
+                incoming_version: "1.0-1".to_string(),
                 removable: "b".to_string(),
+                removable_version: "1.0-1".to_string(),
+                conflict_reason: None,
             },
             Question::SelectProvider {
                 depend: "sdl".to_string(),

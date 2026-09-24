@@ -293,6 +293,7 @@ impl InstallReview {
             Question::Conflict {
                 incoming,
                 removable,
+                ..
             } => Answer::Conflict {
                 incoming: incoming.clone(),
                 removable: removable.clone(),
@@ -579,6 +580,7 @@ fn part1_body<'a>(inputs: RowInputs<'a>) -> cosmic::Element<'a, ReviewMessage> {
             Question::Conflict {
                 incoming,
                 removable,
+                ..
             } => {
                 if !in_conflicts {
                     body = body.push(text("Conflicts"));
@@ -718,7 +720,10 @@ mod install_review_tests {
         vec![
             Question::Conflict {
                 incoming: s("cava-git"),
+                incoming_version: s("1.0-1"),
                 removable: s("cava"),
+                removable_version: s("1.0-1"),
+                conflict_reason: None,
             },
             Question::SelectProvider {
                 depend: s("virt"),
@@ -918,11 +923,17 @@ mod install_review_tests {
         vec![
             Question::Conflict {
                 incoming: s("cava-git"),
+                incoming_version: s("1.0-1"),
                 removable: s("cava"),
+                removable_version: s("1.0-1"),
+                conflict_reason: None,
             },
             Question::Conflict {
                 incoming: s("cava-git"),
+                incoming_version: s("1.0-1"),
                 removable: s("cava"),
+                removable_version: s("1.0-1"),
+                conflict_reason: None,
             },
             Question::InstallIgnorepkg { name: s("glibc") },
             Question::InstallIgnorepkg { name: s("glibc") },

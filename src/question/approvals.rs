@@ -228,7 +228,10 @@ mod tests {
             (
                 Question::Conflict {
                     incoming: s("foo"),
+                    incoming_version: "1.0-1".to_string(),
                     removable: s("bar"),
+                    removable_version: "1.0-1".to_string(),
+                    conflict_reason: None,
                 },
                 Answer::Conflict {
                     incoming: s("foo"),
@@ -482,7 +485,10 @@ mod tests {
             match_answer(
                 &Question::Conflict {
                     incoming: s("foo"),
+                    incoming_version: "1.0-1".to_string(),
                     removable: s("bar"),
+                    removable_version: "1.0-1".to_string(),
+                    conflict_reason: None,
                 },
                 &sealed
             ),
@@ -526,7 +532,10 @@ mod tests {
         );
         let swapped = Question::Conflict {
             incoming: s("bar"),
+            incoming_version: "1.0-1".to_string(),
             removable: s("foo"),
+            removable_version: "1.0-1".to_string(),
+            conflict_reason: None,
         };
         assert_eq!(
             match_answer(&swapped, &sealed),

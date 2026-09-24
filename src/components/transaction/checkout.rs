@@ -159,7 +159,10 @@ mod checkout_tests {
     fn conflict() -> Question {
         Question::Conflict {
             incoming: s("cava-git"),
+            incoming_version: s("1.0-1"),
             removable: s("cava"),
+            removable_version: s("1.0-1"),
+            conflict_reason: None,
         }
     }
 

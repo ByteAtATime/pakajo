@@ -505,7 +505,10 @@ mod tests {
         use crate::question::model::{Answer, Question};
         let question = Question::Conflict {
             incoming: "cava-git".to_string(),
+            incoming_version: "1.0-1".to_string(),
             removable: "cava".to_string(),
+            removable_version: "1.0-1".to_string(),
+            conflict_reason: None,
         };
         let answer = Answer::Conflict {
             incoming: "cava-git".to_string(),
