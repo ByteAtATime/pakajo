@@ -16,6 +16,8 @@ pub enum InstallEvent {
     CheckingIntegrity,
     CheckingDiskSpace,
     LoadingPackages,
+    SyncDatabases,
+    StartSysupgrade,
     KeyringStart,
     RetrievingPackages {
         num: usize,

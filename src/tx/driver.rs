@@ -93,7 +93,16 @@ pub fn run(
     sink: Box<dyn InstallSink>,
 ) -> anyhow::Result<RunOutcome> {
     let events: Rc<RefCell<Box<dyn InstallSink>>> = Rc::new(RefCell::new(sink));
-    forward_alpm_events(handle, &events);
+    run_with_events(handle, spec, source, &events)
+}
+
+pub fn run_with_events(
+    handle: &mut alpm::Alpm,
+    spec: &RunSpec,
+    source: Box<dyn AnswerSource>,
+    events: &Rc<RefCell<Box<dyn InstallSink>>>,
+) -> anyhow::Result<RunOutcome> {
+    forward_alpm_events(handle, events);
     cleanup_on_signal(handle);
     lock_retry(
         || handle.trans_init(trans_init_flags(spec)),
@@ -105,13 +114,16 @@ pub fn run(
         LOCK_POLL_INTERVAL,
     )
     .context("failed to initialize transaction")?;
-    let outcome = drive(handle, spec, source, &events);
+    let outcome = drive(handle, spec, source, events);
     drop(handle.take_raw_question_cb());
     finish_transaction(handle);
     outcome
 }
 
-fn forward_alpm_events(handle: &mut alpm::Alpm, events: &Rc<RefCell<Box<dyn InstallSink>>>) {
+pub(crate) fn forward_alpm_events(
+    handle: &mut alpm::Alpm,
+    events: &Rc<RefCell<Box<dyn InstallSink>>>,
+) {
     handle.set_event_cb(events.clone(), |any_event, data| {
         if let Some(event) = convert_event(any_event) {
             data.borrow_mut().event(event);
@@ -162,7 +174,12 @@ fn drive(
     }
     let queue_result: anyhow::Result<Vec<String>> = match &spec.kind {
         RunKind::Sync => queue_targets(handle, spec, &session).map(|()| Vec::new()),
-        RunKind::Upgrade => queue_upgrade(handle, spec, &session).map(|()| Vec::new()),
+        RunKind::Upgrade => {
+            if !spec.explore {
+                events.borrow_mut().event(InstallEvent::StartSysupgrade);
+            }
+            queue_upgrade(handle, spec, &session).map(|()| Vec::new())
+        }
         RunKind::Remove(_) => queue_remove_targets(handle, &spec.targets),
     };
     let missing = match queue_result {
@@ -2010,6 +2027,58 @@ mod tests {
         assert_eq!(
             summary_names(&outcome),
             vec!["baz".to_string(), "foo".to_string()]
+        );
+        release(&mut handle);
+    }
+
+    #[test]
+    fn upgrade_emits_start_sysupgrade_before_summary() {
+        let NewerPair { sync, local } = newer("1.0-1", "2.0-1");
+        let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let outcome = run(
+            &mut handle,
+            &upgrade_spec(&[], false),
+            proceed(),
+            Box::new(recorder),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Committed));
+        let kinds: Vec<&str> = seen
+            .borrow()
+            .iter()
+            .filter_map(|event| match event {
+                InstallEvent::StartSysupgrade => Some("start"),
+                InstallEvent::TransactionSummary(_) => Some("summary"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, vec!["start", "summary"]);
+        release(&mut handle);
+    }
+
+    #[test]
+    fn upgrade_explore_emits_no_start_sysupgrade() {
+        use crate::question::source::ExploreDefaults;
+
+        let NewerPair { sync, local } = newer("1.0-1", "2.0-1");
+        let (_dir, mut handle) = fixture_full(&[("core", sync)], &local);
+        let recorder = Recorder::default();
+        let seen = recorder.seen.clone();
+        let outcome = run(
+            &mut handle,
+            &upgrade_spec(&[], true),
+            Box::new(ExploreDefaults),
+            Box::new(recorder),
+        )
+        .unwrap();
+        assert!(matches!(outcome.finish, Finish::Stopped));
+        assert!(
+            !seen
+                .borrow()
+                .iter()
+                .any(|event| matches!(event, InstallEvent::StartSysupgrade))
         );
         release(&mut handle);
     }

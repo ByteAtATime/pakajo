@@ -235,7 +235,7 @@ pub fn event_stage(ev: &InstallEvent) -> Option<RepoStage> {
         | PacsaveCreated { .. } => Some(Finalize),
         ResolveDepsDone | CheckDepsDone | InterConflictsDone | FileConflictsDone
         | IntegrityDone | LoadDone | DiskSpaceDone | KeyringDone | KeyDownloadStart
-        | KeyDownloadDone => None,
+        | KeyDownloadDone | SyncDatabases | StartSysupgrade => None,
         _ => None,
     }
 }

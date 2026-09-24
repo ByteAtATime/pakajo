@@ -81,6 +81,14 @@ impl ConsoleSink {
             InstallEvent::CheckingIntegrity => {}
             InstallEvent::CheckingDiskSpace => {}
             InstallEvent::LoadingPackages => println!("loading packages..."),
+            InstallEvent::SyncDatabases => println!(
+                "{}",
+                color::colon(self.color, "Synchronizing package databases...")
+            ),
+            InstallEvent::StartSysupgrade => println!(
+                "{}",
+                color::colon(self.color, "Starting full system upgrade...")
+            ),
             InstallEvent::KeyringStart => {}
             InstallEvent::RetrievingPackages { .. } => {
                 println!("{}", color::colon(self.color, "Retrieving packages..."));
@@ -427,6 +435,18 @@ impl InstallSink for EscalatedSink {
             }
             InstallEvent::CheckingDependencies => {
                 eprintln!("checking dependencies...");
+            }
+            InstallEvent::SyncDatabases => {
+                eprintln!(
+                    "{}",
+                    color::colon(color::stderr_color(), "Synchronizing package databases...")
+                );
+            }
+            InstallEvent::StartSysupgrade => {
+                eprintln!(
+                    "{}",
+                    color::colon(color::stderr_color(), "Starting full system upgrade...")
+                );
             }
             InstallEvent::WaitingForDatabaseLock => {
                 eprintln!(

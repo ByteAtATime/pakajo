@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use anyhow::Context as _;
 
@@ -9,15 +11,22 @@ pub fn run_upgrade_repo(
     no_refresh: bool,
     extra_ignores: &[String],
     source: Box<dyn crate::question::source::AnswerSource>,
-    mut sink: Box<dyn InstallSink>,
+    sink: Box<dyn InstallSink>,
 ) -> anyhow::Result<crate::tx::driver::RunOutcome> {
     let config = crate::pacman::config()?;
     let mut handle = crate::pacman::handle_with_config(&config)?;
     apply_ignores(&mut handle, &config, extra_ignores);
+    let events: Rc<RefCell<Box<dyn InstallSink>>> = Rc::new(RefCell::new(sink));
     if !no_refresh {
+        crate::tx::driver::forward_alpm_events(&mut handle, &events);
+        events.borrow_mut().event(InstallEvent::SyncDatabases);
         crate::pacman::lock::lock_retry(
             || handle.syncdbs_mut().update(false).map(|_| ()),
-            || sink.event(InstallEvent::WaitingForDatabaseLock),
+            || {
+                events
+                    .borrow_mut()
+                    .event(InstallEvent::WaitingForDatabaseLock)
+            },
             crate::pacman::lock::LOCK_POLL_INTERVAL,
         )
         .context("failed to refresh sync DBs")?;
@@ -31,7 +40,7 @@ pub fn run_upgrade_repo(
         reinstall: false,
         dep_names: Vec::new(),
     };
-    crate::tx::prompt::execute_with_source(source, &mut handle, &spec, sink)
+    crate::tx::driver::run_with_events(&mut handle, &spec, source, &events)
 }
 
 pub fn apply_ignores(handle: &mut alpm::Alpm, config: &pacmanconf::Config, extra: &[String]) {
