@@ -500,6 +500,14 @@ impl Transaction {
         };
         match converge(self.model.revalidations, &outcome) {
             Verdict::Converged => {
+                if self.model.kind == InstallKind::Upgrade {
+                    self.model.aur_names = run
+                        .aur
+                        .iter()
+                        .map(|candidate| candidate.name.clone())
+                        .collect();
+                    self.model.aur_upgrades = run.aur.clone();
+                }
                 self.model.summary = Some(run.summary);
                 self.model.review_notice = None;
                 self.model.install_review.take();
@@ -1166,6 +1174,56 @@ mod tests {
             transaction.model.status,
             TransactionStatus::Running
         ));
+    }
+
+    fn converged_upgrade_run(aur: Vec<pakajo::upgrade::AurUpgradeCandidate>) -> RevalidationRun {
+        RevalidationRun {
+            origin: ReviewOrigin::Revalidation,
+            questions: vec![Question::InstallIgnorepkg { name: s("glibc") }],
+            answers: vec![ignorepkg_answer("glibc")],
+            summary: test_summary(),
+            aur,
+        }
+    }
+
+    fn approved_upgrade_transaction(aur: Vec<pakajo::upgrade::AurUpgradeCandidate>) -> Transaction {
+        let mut transaction = upgrade_transaction();
+        transaction.update(TransactionMessage::Explored(Ok(upgrade_run(
+            vec![Question::InstallIgnorepkg { name: s("glibc") }],
+            test_summary(),
+            aur,
+        ))));
+        transaction.update(TransactionMessage::ApproveReview);
+        transaction
+    }
+
+    #[test]
+    fn sysupgrade_converged_revalidation_adopts_latest_aur_candidates() {
+        let mut transaction = approved_upgrade_transaction(vec![aur_candidate("yay")]);
+        assert_eq!(transaction.model.aur_names, vec![s("yay")]);
+        transaction.update(TransactionMessage::Explored(Ok(converged_upgrade_run(
+            Vec::new(),
+        ))));
+        assert!(transaction.model.aur_names.is_empty());
+        assert!(transaction.model.aur_upgrades.is_empty());
+        assert!(transaction.model.install_review.is_none());
+        assert!(transaction.model.checkout.is_some());
+
+        let mut transaction = approved_upgrade_transaction(vec![aur_candidate("yay")]);
+        transaction.model.pending_approvals = None;
+        transaction.update(TransactionMessage::Explored(Ok(converged_upgrade_run(
+            vec![aur_candidate("paru")],
+        ))));
+        assert_eq!(transaction.model.aur_names, vec![s("paru")]);
+        assert_eq!(
+            transaction
+                .model
+                .aur_upgrades
+                .iter()
+                .map(|candidate| candidate.name.clone())
+                .collect::<Vec<_>>(),
+            vec![s("paru")]
+        );
     }
 
     fn remove_transaction() -> Transaction {
