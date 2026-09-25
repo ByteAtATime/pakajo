@@ -61,18 +61,18 @@ pub fn group_thousands(value: i64) -> String {
 
 pub fn terminal_winsize() -> libc::winsize {
     use std::os::unix::io::AsRawFd as _;
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let fd = std::io::stdout().as_raw_fd();
-    let ok = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0;
-    if ok && ws.ws_col > 0 && ws.ws_row > 0 {
-        ws
-    } else {
-        libc::winsize {
-            ws_row: 24,
-            ws_col: 80,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
+    for fd in [std::io::stdout().as_raw_fd(), std::io::stderr().as_raw_fd()] {
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        let ok = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0;
+        if ok && ws.ws_col > 0 {
+            return ws;
         }
+    }
+    libc::winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
     }
 }
 
