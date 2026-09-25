@@ -34,6 +34,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
     for (i, stage) in ordered_aur_stages().iter().enumerate() {
         let state = model.aur_stage_state(*stage);
         let mut section = match *stage {
+            AurStage::Deps => continue,
             AurStage::Resolve => resolve_section(model, state),
             AurStage::Build => build_section(model, state),
             AurStage::Install => aur_install_section(model, state),

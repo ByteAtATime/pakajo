@@ -5,7 +5,7 @@ use pakajo::download::TransferState;
 use pakajo::events::{InstallEvent, TransactionSummary};
 use pakajo::package::PackageSource;
 use pakajo::progress::{
-    AurStage, AurState, BuildStatus, InstallKind, InstallState, RepoStage, RepoState,
+    AurPhase, AurStage, AurState, BuildStatus, InstallKind, InstallState, RepoStage, RepoState,
     VALIDATE_TOTAL, apply_aur_counters, apply_repo_counters, event_stage, finish_aur,
     ordered_aur_stages, ordered_stages,
 };
@@ -357,6 +357,7 @@ impl TransactionModel {
                     StageState::Active
                 }
             }
+            Deps => StageState::Pending,
             Build => {
                 if self.aur.build_order.is_empty() {
                     StageState::Pending
@@ -364,8 +365,10 @@ impl TransactionModel {
                     StageState::Done
                 } else if self.aur_failed_at(Build) {
                     StageState::Failed
-                } else {
+                } else if self.aur.phase == AurPhase::Artifacts {
                     StageState::Active
+                } else {
+                    StageState::Pending
                 }
             }
             Install => {
@@ -626,14 +629,19 @@ mod tests {
             version: None,
         });
         assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Done);
-        assert_eq!(model.aur_stage_state(AurStage::Install), StageState::Active);
+        assert_eq!(
+            model.aur_stage_state(AurStage::Install),
+            StageState::Pending
+        );
         model.apply_event(&InstallEvent::PackageOperation {
             operation: PackageOp::Install,
             package: "pkg-a".to_string(),
             new_version: Some("1.0-1".to_string()),
             old_version: None,
         });
-        assert_eq!(model.aur.install.order.len(), 2);
+        assert_eq!(model.aur.install.order.len(), 1);
+        assert_eq!(model.aur.repo_deps.install.order, ["dep1"]);
+        assert_eq!(model.aur_stage_state(AurStage::Install), StageState::Active);
         model.apply_event(&InstallEvent::HookRun {
             position: 1,
             total: 1,
@@ -715,7 +723,8 @@ mod tests {
         model.finish(ChildOutcome::Failed("install failed".to_string()));
         assert_eq!(model.aur_stage_state(AurStage::Install), StageState::Failed);
         assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Done);
-        assert_eq!(model.aur.install.order.len(), 2);
+        assert_eq!(model.aur.install.order.len(), 1);
+        assert_eq!(model.aur.repo_deps.install.order, ["dep1"]);
     }
 
     #[test]

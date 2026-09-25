@@ -308,6 +308,7 @@ pub fn ordered_stages(kind: InstallKind) -> &'static [RepoStage] {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AurStage {
     Resolve,
+    Deps,
     Build,
     Install,
     Finalize,
@@ -348,12 +349,22 @@ pub struct BuildPackage {
     pub elapsed: Option<std::time::Duration>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AurPhase {
+    #[default]
+    Deps,
+    Artifacts,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AurState {
     pub resolve_started: bool,
     pub deps: HashMap<String, ResolvedDep>,
     pub dep_order: Vec<String>,
     pub resolve_complete: bool,
+    pub phase: AurPhase,
+    pub repo_deps: RepoState,
+    pub repo_dep_count: usize,
     pub builds: HashMap<String, BuildPackage>,
     pub build_order: Vec<String>,
     pub build_ended: Option<Instant>,
@@ -389,8 +400,22 @@ fn event_stage_aur(ev: &InstallEvent) -> Option<AurStage> {
 
 pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant) {
     use InstallEvent::*;
+    if matches!(
+        ev,
+        BuildStarted { .. } | BuildOutput { .. } | BuildCompleted { .. }
+    ) {
+        state.phase = AurPhase::Artifacts;
+    }
     let stage = event_stage_aur(ev);
-    state.last_aur_stage = stage.or(state.last_aur_stage);
+    let deps_event = state.phase == AurPhase::Deps
+        && !matches!(ev, TransactionSummary(_))
+        && (event_stage(ev).is_some() || matches!(ev, Log { .. }));
+    if deps_event {
+        apply_repo_counters(&mut state.repo_deps, ev, now);
+        state.last_aur_stage = Some(AurStage::Deps);
+    } else {
+        state.last_aur_stage = stage.or(state.last_aur_stage);
+    }
     match ev {
         ResolvingAurDependencies { .. } => state.resolve_started = true,
         AurDepResolved {
@@ -409,7 +434,10 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant)
                 },
             );
         }
-        ResolutionComplete { .. } => state.resolve_complete = true,
+        ResolutionComplete { repo_deps, .. } => {
+            state.resolve_complete = true;
+            state.repo_dep_count = *repo_deps;
+        }
         CloningRepo { package } => {
             if !state.builds.contains_key(package) {
                 state.build_order.push(package.clone());
@@ -446,17 +474,18 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant)
                 entry.elapsed = Some(now.saturating_duration_since(entry.started));
             }
         }
-        Log { .. } => apply_finalize(&mut state.finalize, ev),
+        Log { .. } if !deps_event => apply_finalize(&mut state.finalize, ev),
         _ => {}
     }
-    match stage {
-        Some(AurStage::Install) => match event_stage(ev) {
+    match (deps_event, stage) {
+        (true, _) | (_, None) => {}
+        (false, Some(AurStage::Install)) => match event_stage(ev) {
             Some(RepoStage::Install) => apply_install(&mut state.install, ev),
             Some(RepoStage::Download) => state.download.apply(ev, now),
             _ => {}
         },
-        Some(AurStage::Finalize) => apply_finalize(&mut state.finalize, ev),
-        _ => {}
+        (false, Some(AurStage::Finalize)) => apply_finalize(&mut state.finalize, ev),
+        (false, _) => {}
     }
     if !state.build_order.is_empty()
         && state.build_ended.is_none()
@@ -792,6 +821,126 @@ mod tests {
         assert_eq!(build(&state, "done-pkg").status, BuildStatus::Done);
         assert_eq!(build(&state, "live-pkg").status, BuildStatus::Failed);
         assert!(build(&state, "live-pkg").elapsed.is_some());
+    }
+
+    #[test]
+    fn deps_phase_routes_generic_vocab_to_repo_deps_bucket() {
+        let now = Instant::now();
+        let mut state = AurState::default();
+        assert_eq!(state.phase, AurPhase::Deps);
+        apply_aur_counters(&mut state, &retrieving(1, 100), now);
+        apply_aur_counters(&mut state, &init("dep1"), now);
+        apply_aur_counters(&mut state, &file_done("dep1", 100), now);
+        apply_aur_counters(&mut state, &pkg_added("dep1"), now);
+        apply_aur_counters(&mut state, &pkg_progress("dep1", 100), now);
+        apply_aur_counters(&mut state, &hook(1, 1, "Arming..."), now);
+        apply_aur_counters(
+            &mut state,
+            &InstallEvent::ScriptletInfo {
+                line: "scriptlet".to_string(),
+            },
+            now,
+        );
+        apply_aur_counters(&mut state, &log(LogLevel::Warning, "dep warn\n"), now);
+        assert_eq!(state.phase, AurPhase::Deps);
+        assert_eq!(state.last_aur_stage, Some(AurStage::Deps));
+        assert_eq!(state.repo_deps.install.order, ["dep1"]);
+        assert!(state.repo_deps.install.packages["dep1"].completed);
+        assert_eq!(state.repo_deps.download.done, 1);
+        assert_eq!(state.repo_deps.finalize.lines.len(), 2);
+        assert_eq!(state.repo_deps.finalize.alerts.len(), 1);
+        assert!(state.install.order.is_empty());
+        assert!(state.finalize.is_empty());
+        assert_eq!(state.download.total, 0);
+    }
+
+    #[test]
+    fn cloning_repo_does_not_flip_phase() {
+        let now = Instant::now();
+        let mut state = AurState::default();
+        apply_aur_counters(
+            &mut state,
+            &InstallEvent::CloningRepo {
+                package: "pkg-a".to_string(),
+            },
+            now,
+        );
+        assert_eq!(state.phase, AurPhase::Deps);
+        assert_eq!(build(&state, "pkg-a").status, BuildStatus::Fetching);
+        apply_aur_counters(&mut state, &pkg_added("dep1"), now);
+        assert_eq!(state.repo_deps.install.order, ["dep1"]);
+        assert!(state.install.order.is_empty());
+    }
+
+    #[test]
+    fn build_started_flips_phase_monotonically() {
+        let now = Instant::now();
+        let mut state = AurState::default();
+        apply_aur_counters(
+            &mut state,
+            &InstallEvent::CloningRepo {
+                package: "pkg-a".to_string(),
+            },
+            now,
+        );
+        apply_aur_counters(&mut state, &build_started("pkg-a"), now);
+        assert_eq!(state.phase, AurPhase::Artifacts);
+        apply_aur_counters(&mut state, &pkg_added("pkg-a"), now);
+        assert_eq!(state.install.order, ["pkg-a"]);
+        assert!(state.repo_deps.install.order.is_empty());
+        assert_eq!(state.last_aur_stage, Some(AurStage::Install));
+    }
+
+    #[test]
+    fn build_output_and_completed_also_flip_phase() {
+        let now = Instant::now();
+        let mut state = AurState::default();
+        apply_aur_counters(
+            &mut state,
+            &InstallEvent::BuildOutput {
+                package: "pkg-a".to_string(),
+                line: "output".to_string(),
+            },
+            now,
+        );
+        assert_eq!(state.phase, AurPhase::Artifacts);
+        let mut late = AurState::default();
+        apply_aur_counters(&mut late, &build_completed("pkg-a"), now);
+        assert_eq!(late.phase, AurPhase::Artifacts);
+    }
+
+    #[test]
+    fn transaction_summary_dropped_in_both_phases() {
+        let now = Instant::now();
+        let mut state = AurState::default();
+        let summary = InstallEvent::TransactionSummary(TransactionSummary {
+            packages: Vec::new(),
+            total_download_size: 0,
+            total_installed_size: 0,
+            total_removed_size: 0,
+        });
+        apply_aur_counters(&mut state, &summary, now);
+        assert!(state.repo_deps.manifest.is_none());
+        apply_aur_counters(&mut state, &build_started("pkg-a"), now);
+        apply_aur_counters(&mut state, &summary, now);
+        assert!(state.repo_deps.manifest.is_none());
+        assert!(state.install.order.is_empty());
+    }
+
+    #[test]
+    fn resolution_complete_records_repo_dep_count() {
+        let now = Instant::now();
+        let mut state = AurState::default();
+        apply_aur_counters(
+            &mut state,
+            &InstallEvent::ResolutionComplete {
+                aur_packages: 1,
+                repo_deps: 3,
+            },
+            now,
+        );
+        assert!(state.resolve_complete);
+        assert_eq!(state.repo_dep_count, 3);
     }
 
     #[test]
