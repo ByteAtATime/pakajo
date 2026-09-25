@@ -316,7 +316,7 @@ pub enum AurStage {
 
 pub fn ordered_aur_stages() -> &'static [AurStage] {
     use AurStage::*;
-    &[Resolve, Build, Install, Finalize]
+    &[Resolve, Deps, Build, Install, Finalize]
 }
 
 #[derive(Debug, Clone)]

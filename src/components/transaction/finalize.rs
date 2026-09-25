@@ -35,7 +35,7 @@ fn alert_summary(count: usize) -> String {
     }
 }
 
-fn finalize_log(finalize: &FinalizeState) -> Element<'_> {
+pub(super) fn finalize_log(finalize: &FinalizeState) -> Element<'_> {
     let mut col = Column::new().spacing(2);
     for (level, message) in &finalize.alerts {
         let (prefix, color) = match level {

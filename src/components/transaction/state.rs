@@ -357,7 +357,20 @@ impl TransactionModel {
                     StageState::Active
                 }
             }
-            Deps => StageState::Pending,
+            Deps => {
+                if self.aur_failed_at(Deps) {
+                    StageState::Failed
+                } else if done_success || self.aur.phase == AurPhase::Artifacts {
+                    StageState::Done
+                } else if self.aur.repo_deps.download.total > 0
+                    || !self.aur.repo_deps.install.order.is_empty()
+                    || !self.aur.repo_deps.finalize.lines.is_empty()
+                {
+                    StageState::Active
+                } else {
+                    StageState::Pending
+                }
+            }
             Build => {
                 if self.aur.build_order.is_empty() {
                     StageState::Pending
@@ -397,6 +410,20 @@ impl TransactionModel {
                 }
             }
         }
+    }
+
+    pub(crate) fn deps_bucket_empty(&self) -> bool {
+        self.aur.repo_deps.download.total == 0
+            && self.aur.repo_deps.install.order.is_empty()
+            && self.aur.repo_deps.finalize.lines.is_empty()
+    }
+
+    pub(crate) fn deps_section_visible(&self) -> bool {
+        self.aur.repo_dep_count > 0 || !self.deps_bucket_empty()
+    }
+
+    pub(crate) fn artifact_sections_visible(&self) -> bool {
+        !self.aur.build_order.is_empty()
     }
 }
 
@@ -919,5 +946,150 @@ mod tests {
         );
         assert_eq!(upgrade.targets, vec!["system".to_string()]);
         assert!(upgrade.aur_names.is_empty());
+    }
+
+    #[test]
+    fn deps_stage_pending_until_bucket_fills() {
+        let model = aur_model();
+        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Pending);
+        assert!(!model.deps_section_visible());
+    }
+
+    #[test]
+    fn deps_stage_active_after_download_event() {
+        let mut model = aur_model();
+        model.apply_event(&InstallEvent::RetrievingPackages {
+            num: 1,
+            total_bytes: 100,
+        });
+        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Active);
+        assert!(model.deps_section_visible());
+    }
+
+    #[test]
+    fn deps_stage_active_after_install_event() {
+        let mut model = aur_model();
+        model.apply_event(&InstallEvent::PackageOperation {
+            operation: PackageOp::Install,
+            package: "dep1".to_string(),
+            new_version: Some("1.0-1".to_string()),
+            old_version: None,
+        });
+        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Active);
+        assert!(model.deps_section_visible());
+    }
+
+    #[test]
+    fn deps_stage_done_when_phase_flips_to_artifacts() {
+        let mut model = aur_model();
+        model.apply_event(&InstallEvent::RetrievingPackages {
+            num: 1,
+            total_bytes: 100,
+        });
+        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Active);
+        model.apply_event(&InstallEvent::BuildStarted {
+            package: "pkg-a".to_string(),
+        });
+        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Done);
+    }
+
+    #[test]
+    fn deps_stage_done_on_success() {
+        let mut model = aur_model();
+        model.apply_event(&InstallEvent::RetrievingPackages {
+            num: 1,
+            total_bytes: 100,
+        });
+        model.finish(ChildOutcome::Success);
+        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Done);
+    }
+
+    #[test]
+    fn deps_stage_failed_when_failure_attributed_to_deps() {
+        let mut model = aur_model();
+        model.apply_event(&InstallEvent::RetrievingPackages {
+            num: 1,
+            total_bytes: 100,
+        });
+        model.finish(ChildOutcome::Failed("deps failed".to_string()));
+        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Failed);
+    }
+
+    #[test]
+    fn deps_section_visible_with_repo_dep_count() {
+        let mut model = aur_model();
+        model.apply_event(&InstallEvent::ResolutionComplete {
+            aur_packages: 1,
+            repo_deps: 2,
+        });
+        assert!(model.deps_section_visible());
+        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Pending);
+    }
+
+    #[test]
+    fn deps_section_visible_for_stale_only_when_bucket_fills() {
+        let mut model = aur_model();
+        assert!(!model.deps_section_visible());
+        model.apply_event(&InstallEvent::HookRun {
+            position: 1,
+            total: 1,
+            name: "hook".to_string(),
+            desc: Some("Arming...".to_string()),
+        });
+        assert!(model.deps_section_visible());
+        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Active);
+    }
+
+    #[test]
+    fn artifact_sections_hidden_when_build_order_empty() {
+        let model = aur_model();
+        assert!(!model.artifact_sections_visible());
+        let mut built = aur_model();
+        built.apply_event(&InstallEvent::CloningRepo {
+            package: "pkg-a".to_string(),
+        });
+        assert!(built.artifact_sections_visible());
+    }
+
+    #[test]
+    fn toggle_adapts_to_five_aur_stages() {
+        use pakajo::progress::ordered_aur_stages;
+        assert_eq!(ordered_aur_stages().len(), 5);
+        let mut model = aur_model();
+        model.apply_event(&InstallEvent::ResolvingAurDependencies {
+            target: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::AurDepResolved {
+            package: "pkg-a".to_string(),
+            repo: None,
+            version: Some("1.0-1".to_string()),
+        });
+        model.apply_event(&InstallEvent::ResolutionComplete {
+            aur_packages: 1,
+            repo_deps: 1,
+        });
+        model.apply_event(&InstallEvent::RetrievingPackages {
+            num: 1,
+            total_bytes: 100,
+        });
+        model.apply_event(&InstallEvent::CloningRepo {
+            package: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildStarted {
+            package: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildCompleted {
+            package: "pkg-a".to_string(),
+            artifacts: Vec::new(),
+            version: None,
+        });
+        model.finish(ChildOutcome::Success);
+        for (i, stage) in ordered_aur_stages().iter().enumerate() {
+            assert_eq!(model.aur_stage_state(*stage), StageState::Done);
+            model.toggle(i);
+            assert!(model.expanded.contains(&i));
+            model.toggle(i);
+            assert!(!model.expanded.contains(&i));
+        }
     }
 }

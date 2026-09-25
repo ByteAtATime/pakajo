@@ -4,17 +4,18 @@ use std::time::Instant;
 
 use cosmic::iced::alignment::Vertical;
 use cosmic::widget::{Column, Row, space, text};
+use pakajo::download::TransferState;
 use pakajo::progress::{
     AurStage, BuildPackage, BuildStatus, InstallKind, ResolvedDep, ordered_aur_stages,
 };
 use pakajo::utils::format_elapsed;
 
 use super::TransactionMessage;
-use super::finalize::finalize_section;
+use super::finalize::{finalize_log, finalize_section};
 use super::install::{install_section, install_view};
 use super::shared::{
-    ResolvedEntry, counter_suffix, destructive_color, mono_text, muted, resolve_empty_view,
-    resolve_package_row, single_summary, summary_text, tinted,
+    ResolvedEntry, counter_suffix, destructive_color, download_view, mono_text, muted, percent,
+    resolve_empty_view, resolve_package_row, single_summary, summary_text, tinted,
 };
 use super::state::{StageState, TransactionModel, TransactionStatus};
 use super::stepper::{Section, sections_view, toggle_button};
@@ -33,8 +34,19 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
     let mut sections = Vec::new();
     for (i, stage) in ordered_aur_stages().iter().enumerate() {
         let state = model.aur_stage_state(*stage);
+        if state != StageState::Failed {
+            match *stage {
+                AurStage::Deps if !model.deps_section_visible() => continue,
+                AurStage::Build | AurStage::Install | AurStage::Finalize
+                    if !model.artifact_sections_visible() =>
+                {
+                    continue;
+                }
+                _ => {}
+            }
+        }
         let mut section = match *stage {
-            AurStage::Deps => continue,
+            AurStage::Deps => deps_section(model, state),
             AurStage::Resolve => resolve_section(model, state),
             AurStage::Build => build_section(model, state),
             AurStage::Install => aur_install_section(model, state),
@@ -279,18 +291,62 @@ fn build_list_view(
     col.into()
 }
 
+fn with_in_flight_download<'a>(
+    mut section: Section<'a>,
+    download: &'a TransferState,
+) -> Section<'a> {
+    if download.total == 0 || download.done >= download.total {
+        return section;
+    }
+    let view = download_view(download);
+    section.content = Some(match section.content {
+        Some(existing) => Column::new().spacing(8).push(view).push(existing).into(),
+        None => Column::new().spacing(8).push(view).into(),
+    });
+    section.suffix = Some(counter_suffix(download.done, download.total, "packages"));
+    if download.bytes_total.max(0) > 0 {
+        section.progress =
+            Some(percent(download.bytes_done.max(0), download.bytes_total.max(0)) as f32);
+    }
+    section
+}
+
+fn deps_section(model: &TransactionModel, state: StageState) -> Section<'_> {
+    let mut section = install_section(&model.aur.repo_deps.install, state, model.kind);
+    section.label = "Dependencies";
+    let download = &model.aur.repo_deps.download;
+    if state == StageState::Active {
+        section = with_in_flight_download(section, download);
+    }
+    if state == StageState::Done {
+        let count = model.aur.repo_deps.install.order.len();
+        section.summary = Some(summary_text(&[format!("{count} packages")]));
+        let has_install = !model.aur.repo_deps.install.order.is_empty();
+        let has_finalize = !model.aur.repo_deps.finalize.is_empty();
+        if !has_install && !has_finalize {
+            section.content = None;
+        } else {
+            let mut col = Column::new().spacing(8);
+            if has_install {
+                col = col.push(install_view(&model.aur.repo_deps.install, true));
+            }
+            if has_finalize {
+                col = col.push(finalize_log(&model.aur.repo_deps.finalize));
+            }
+            section.content = Some(col.into());
+        }
+    }
+    if state == StageState::Failed && !model.aur.repo_deps.install.order.is_empty() {
+        section.content = Some(install_view(&model.aur.repo_deps.install, false));
+    }
+    section
+}
+
 fn aur_install_section(model: &TransactionModel, state: StageState) -> Section<'_> {
     let mut section = install_section(&model.aur.install, state, model.kind);
     let download = &model.aur.download;
-    if state == StageState::Active && download.total > 0 && download.done < download.total {
-        let line = muted(text(format!(
-            "Downloading {} / {} packages",
-            download.done, download.total
-        )));
-        section.content = Some(match section.content {
-            Some(existing) => Column::new().spacing(8).push(line).push(existing).into(),
-            None => Column::new().spacing(8).push(line).into(),
-        });
+    if state == StageState::Active {
+        section = with_in_flight_download(section, download);
     }
     if state == StageState::Failed && !model.aur.install.order.is_empty() {
         section.content = Some(install_view(&model.aur.install, false));
