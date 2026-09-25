@@ -205,9 +205,9 @@ fn optdep_card(top: &[OptdepEntry], pad: f32) -> Element<'static> {
     let content: Element<'static> = if top.is_empty() {
         muted(text::caption(String::from("No suggestions")))
     } else {
-        let mut list = Column::new().spacing(8.0);
+        let mut list = Column::new();
         for entry in top {
-            list = list.push(optdep_row(entry));
+            list = list.push(container(optdep_row(entry)).padding([4.0, 0.0]));
         }
         list.into()
     };
@@ -260,9 +260,9 @@ fn recent_card(recent: &[RecentPkg], pad: f32) -> Element<'static> {
     let content: Element<'static> = if recent.is_empty() {
         muted(text::caption(String::from("No recent activity")))
     } else {
-        let mut list = Column::new().spacing(8.0);
+        let mut list = Column::new();
         for pkg in recent {
-            list = list.push(recent_row(pkg));
+            list = list.push(container(recent_row(pkg)).padding([4.0, 0.0]));
         }
         list.into()
     };
@@ -279,9 +279,10 @@ fn recent_card(recent: &[RecentPkg], pad: f32) -> Element<'static> {
 }
 
 fn skeleton_card(pad: f32) -> Element<'static> {
-    let mut rows = Column::new().spacing(8.0);
+    let mut rows = Column::new();
     for _ in 0..CARD_ROWS {
-        rows = rows.push(hidden(text::body(String::from("package-name"))));
+        rows = rows
+            .push(container(hidden(text::body(String::from("package-name")))).padding([4.0, 0.0]));
     }
     container(
         Column::new()
