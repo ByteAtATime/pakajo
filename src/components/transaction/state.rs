@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::time::Instant;
 
 use pakajo::dispatch::exec::{AnswerWriter, ChildOutcome};
 use pakajo::download::TransferState;
@@ -10,6 +11,7 @@ use pakajo::progress::{
     ordered_aur_stages, ordered_stages,
 };
 use pakajo::question::model::Question;
+use pakajo::upgrade::AurUpgradeCandidate;
 
 use super::pkgbuild::PkgbuildModel;
 use super::removal::RemovalConfirmModel;
@@ -35,7 +37,7 @@ pub(crate) struct TransactionModel {
     pub(crate) status: TransactionStatus,
     pub(crate) source: PackageSource,
     pub(crate) kind: InstallKind,
-    pub(crate) now: std::time::Instant,
+    pub(crate) now: Instant,
     pub(super) install_review: Option<InstallReview>,
     pub(super) summary: Option<TransactionSummary>,
     pub(super) removal_confirm: Option<RemovalConfirmModel>,
@@ -84,7 +86,7 @@ impl TransactionModel {
             status: TransactionStatus::Checking,
             source,
             kind,
-            now: std::time::Instant::now(),
+            now: Instant::now(),
             install_review: None,
             summary: None,
             removal_confirm: None,
@@ -120,14 +122,15 @@ impl TransactionModel {
         {
             self.pending_import_key = Some(question.clone());
         }
+        let now = Instant::now();
         if self.is_aur() {
-            apply_aur_counters(&mut self.aur, ev, std::time::Instant::now());
+            apply_aur_counters(&mut self.aur, ev, now);
             return;
         }
         if self.is_sysupgrade() {
-            apply_aur_counters(&mut self.aur, ev, std::time::Instant::now());
+            apply_aur_counters(&mut self.aur, ev, now);
         }
-        apply_repo_counters(&mut self.repo_state, ev, std::time::Instant::now());
+        apply_repo_counters(&mut self.repo_state, ev, now);
         if matches!(ev, InstallEvent::TransactionSummary(_)) {
             self.leave_resolve();
             return;
@@ -154,8 +157,8 @@ impl TransactionModel {
     }
 
     pub(crate) fn finish(&mut self, outcome: ChildOutcome) {
-        if self.is_aur() || self.is_sysupgrade() {
-            finish_aur(&mut self.aur, &outcome, std::time::Instant::now());
+        if self.tracks_aur() {
+            finish_aur(&mut self.aur, &outcome, Instant::now());
         }
         if let ChildOutcome::Failed(message) | ChildOutcome::NotFound(message) = &outcome
             && self.failure_message.is_none()
@@ -170,14 +173,8 @@ impl TransactionModel {
         self.answer_channel = None;
     }
 
-    pub(crate) fn adopt_aur_candidates(
-        &mut self,
-        candidates: Vec<pakajo::upgrade::AurUpgradeCandidate>,
-    ) {
-        self.aur_names = candidates
-            .iter()
-            .map(|candidate| candidate.name.clone())
-            .collect();
+    pub(crate) fn adopt_aur_candidates(&mut self, candidates: Vec<AurUpgradeCandidate>) {
+        self.aur_names = candidates.into_iter().map(|c| c.name).collect();
     }
 
     pub(crate) fn set_answer_channel(&mut self, writer: AnswerWriter) {
@@ -239,11 +236,17 @@ impl TransactionModel {
         self.now = now;
     }
 
+    fn tracks_aur(&self) -> bool {
+        self.is_aur() || self.is_sysupgrade()
+    }
+
+    fn done_without_success(&self) -> bool {
+        matches!(self.status, TransactionStatus::Done(_))
+            && !matches!(self.status, TransactionStatus::Done(ChildOutcome::Success))
+    }
+
     pub(crate) fn building(&self) -> bool {
-        if self.is_sysupgrade() {
-            return self.aur.building();
-        }
-        self.is_aur() && self.aur.building()
+        self.tracks_aur() && self.aur.building()
     }
 
     pub(crate) fn overall_progress(&self) -> f32 {
@@ -262,22 +265,27 @@ impl TransactionModel {
     }
 
     fn repo_overall(&self) -> f32 {
-        let weight = |stage: RepoStage| match stage {
-            RepoStage::Resolve | RepoStage::Validate | RepoStage::Finalize => 5.0,
-            RepoStage::Download => 40.0,
-            RepoStage::Install => 45.0,
-        };
-        let total: f32 = self.stages.iter().map(|s| weight(*s)).sum();
+        let total: f32 = self.stages.iter().map(|s| repo_stage_weight(*s)).sum();
         if total <= 0.0 {
             return 0.0;
         }
         let current = self.current_idx.min(self.stages.len());
-        let completed: f32 = self.stages.iter().take(current).map(|s| weight(*s)).sum();
+        let completed: f32 = self
+            .stages
+            .iter()
+            .take(current)
+            .map(|s| repo_stage_weight(*s))
+            .sum();
         let Some(stage) = self.stages.get(current) else {
             return 100.0;
         };
+        let frac = self.repo_stage_fraction(*stage);
+        ((completed + repo_stage_weight(*stage) * frac) / total * 100.0).clamp(0.0, 100.0)
+    }
+
+    fn repo_stage_fraction(&self, stage: RepoStage) -> f32 {
         let repo = &self.repo_state;
-        let frac = match *stage {
+        match stage {
             RepoStage::Resolve => repo.resolve_step() as f32 / 3.0,
             RepoStage::Validate => repo.validate.count() as f32 / VALIDATE_TOTAL as f32,
             RepoStage::Download => download_fraction(&repo.download),
@@ -290,8 +298,7 @@ impl TransactionModel {
             }
             RepoStage::Finalize => 0.0,
         }
-        .clamp(0.0, 1.0);
-        ((completed + weight(*stage) * frac) / total * 100.0).clamp(0.0, 100.0)
+        .clamp(0.0, 1.0)
     }
 
     fn aur_builds_done(&self) -> bool {
@@ -312,9 +319,7 @@ impl TransactionModel {
     }
 
     fn aur_failure_waypoint(&self) -> Option<f32> {
-        if !matches!(self.status, TransactionStatus::Done(_))
-            || matches!(self.status, TransactionStatus::Done(ChildOutcome::Success))
-        {
+        if !self.done_without_success() {
             return None;
         }
         match self.aur.last_aur_stage {
@@ -370,9 +375,7 @@ impl TransactionModel {
     }
 
     fn aur_failed_at(&self, stage: AurStage) -> bool {
-        matches!(self.status, TransactionStatus::Done(_))
-            && !matches!(self.status, TransactionStatus::Done(ChildOutcome::Success))
-            && self.aur.last_aur_stage == Some(stage)
+        self.done_without_success() && self.aur.last_aur_stage == Some(stage)
     }
 
     pub(crate) fn aur_stage_state(&self, stage: AurStage) -> StageState {
@@ -380,7 +383,14 @@ impl TransactionModel {
         if matches!(self.status, TransactionStatus::Checking) {
             return StageState::Pending;
         }
-        let done_success = matches!(self.status, TransactionStatus::Done(ChildOutcome::Success));
+        let succeeded = matches!(self.status, TransactionStatus::Done(ChildOutcome::Success));
+        let active_or_pending = |active: bool| {
+            if active {
+                StageState::Active
+            } else {
+                StageState::Pending
+            }
+        };
         match stage {
             Resolve => {
                 if !self.aur.resolve_started {
@@ -396,15 +406,10 @@ impl TransactionModel {
             Deps => {
                 if self.aur_failed_at(Deps) {
                     StageState::Failed
-                } else if done_success || self.aur.phase == AurPhase::Artifacts {
+                } else if succeeded || self.aur.phase == AurPhase::Artifacts {
                     StageState::Done
-                } else if self.aur.repo_deps.download.total > 0
-                    || !self.aur.repo_deps.install.order.is_empty()
-                    || !self.aur.repo_deps.finalize.lines.is_empty()
-                {
-                    StageState::Active
                 } else {
-                    StageState::Pending
+                    active_or_pending(!self.deps_bucket_empty())
                 }
             }
             Build => {
@@ -414,35 +419,31 @@ impl TransactionModel {
                     StageState::Done
                 } else if self.aur_failed_at(Build) {
                     StageState::Failed
-                } else if self.aur.phase == AurPhase::Artifacts {
-                    StageState::Active
                 } else {
-                    StageState::Pending
+                    active_or_pending(self.aur.phase == AurPhase::Artifacts)
                 }
             }
             Install => {
+                let aur = &self.aur;
                 if self.aur_failed_at(Install) {
                     StageState::Failed
-                } else if done_success {
+                } else if succeeded {
                     StageState::Done
-                } else if !self.aur.install.order.is_empty()
-                    || self.aur.download.total > 0
-                    || !self.aur.finalize.lines.is_empty()
-                {
-                    StageState::Active
                 } else {
-                    StageState::Pending
+                    active_or_pending(
+                        !aur.install.order.is_empty()
+                            || aur.download.total > 0
+                            || !aur.finalize.lines.is_empty(),
+                    )
                 }
             }
             Finalize => {
                 if self.aur_failed_at(Finalize) {
                     StageState::Failed
-                } else if done_success {
+                } else if succeeded {
                     StageState::Done
-                } else if !self.aur.finalize.lines.is_empty() {
-                    StageState::Active
                 } else {
-                    StageState::Pending
+                    active_or_pending(!self.aur.finalize.lines.is_empty())
                 }
             }
         }
@@ -460,6 +461,14 @@ impl TransactionModel {
 
     pub(crate) fn artifact_sections_visible(&self) -> bool {
         !self.aur.build_order.is_empty()
+    }
+}
+
+fn repo_stage_weight(stage: RepoStage) -> f32 {
+    match stage {
+        RepoStage::Resolve | RepoStage::Validate | RepoStage::Finalize => 5.0,
+        RepoStage::Download => 40.0,
+        RepoStage::Install => 45.0,
     }
 }
 
@@ -485,8 +494,9 @@ fn install_fraction(state: &InstallState, expected: usize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pakajo::events::LogLevel;
-    use pakajo::events::{PackageOp, ProgressPhase};
+    use pakajo::events::{DownloadResult, LogLevel, PackageOp, ProgressPhase};
+    use pakajo::question::model::QuestionKey;
+    use std::process::{Command, Stdio};
 
     fn aur_model() -> TransactionModel {
         let mut model =
@@ -495,55 +505,181 @@ mod tests {
         model
     }
 
+    fn resolving(target: &str) -> InstallEvent {
+        InstallEvent::ResolvingAurDependencies {
+            target: target.to_string(),
+        }
+    }
+
+    fn dep_resolved(package: &str, repo: Option<&str>) -> InstallEvent {
+        InstallEvent::AurDepResolved {
+            package: package.to_string(),
+            repo: repo.map(str::to_string),
+            version: Some("1.0-1".to_string()),
+        }
+    }
+
+    fn resolution_complete(repo_deps: usize) -> InstallEvent {
+        InstallEvent::ResolutionComplete {
+            aur_packages: 1,
+            repo_deps,
+        }
+    }
+
+    fn retrieving(num: usize) -> InstallEvent {
+        InstallEvent::RetrievingPackages {
+            num,
+            total_bytes: 100,
+        }
+    }
+
+    fn download_init(filename: &str) -> InstallEvent {
+        InstallEvent::DownloadInit {
+            filename: filename.to_string(),
+            optional: false,
+        }
+    }
+
+    fn download_progress(filename: &str, downloaded: i64, total: i64) -> InstallEvent {
+        InstallEvent::DownloadProgress {
+            filename: filename.to_string(),
+            downloaded,
+            total,
+        }
+    }
+
+    fn download_completed(filename: &str) -> InstallEvent {
+        InstallEvent::DownloadCompleted {
+            filename: filename.to_string(),
+            total: 100,
+            result: DownloadResult::Success,
+        }
+    }
+
+    fn installed(package: &str) -> InstallEvent {
+        InstallEvent::PackageOperation {
+            operation: PackageOp::Install,
+            package: package.to_string(),
+            new_version: Some("1.0-1".to_string()),
+            old_version: None,
+        }
+    }
+
+    fn progressed(package: &str, percent: i32) -> InstallEvent {
+        InstallEvent::Progress {
+            phase: ProgressPhase::Add,
+            package: package.to_string(),
+            percent,
+            current: 1,
+            total: 1,
+        }
+    }
+
+    fn cloning(package: &str) -> InstallEvent {
+        InstallEvent::CloningRepo {
+            package: package.to_string(),
+        }
+    }
+
+    fn build_started(package: &str) -> InstallEvent {
+        InstallEvent::BuildStarted {
+            package: package.to_string(),
+        }
+    }
+
+    fn build_completed(package: &str) -> InstallEvent {
+        InstallEvent::BuildCompleted {
+            package: package.to_string(),
+            artifacts: Vec::new(),
+            version: None,
+        }
+    }
+
+    fn hook(position: usize, total: usize) -> InstallEvent {
+        InstallEvent::HookRun {
+            position,
+            total,
+            name: "hook".to_string(),
+            desc: None,
+        }
+    }
+
+    fn import_key_event() -> InstallEvent {
+        InstallEvent::RuntimePrompt {
+            question: Question::ImportKey {
+                fingerprint: "ABCDEF".to_string(),
+                uid: "Packager <pack@example.com>".to_string(),
+            },
+        }
+    }
+
+    fn drive_resolve_open(model: &mut TransactionModel) {
+        model.apply_event(&resolving("pkg-a"));
+        model.apply_event(&dep_resolved("dep1", Some("extra")));
+        model.apply_event(&dep_resolved("pkg-a", None));
+        model.apply_event(&resolution_complete(1));
+        model.apply_event(&retrieving(1));
+        model.apply_event(&download_init("dep1"));
+    }
+
+    fn drive_dep_downloaded(model: &mut TransactionModel) {
+        model.apply_event(&download_progress("dep1", 100, 100));
+        model.apply_event(&download_completed("dep1"));
+    }
+
+    fn drive_dep_registered(model: &mut TransactionModel) {
+        model.apply_event(&installed("dep1"));
+    }
+
+    fn drive_resolve_with_dep(model: &mut TransactionModel) {
+        drive_resolve_open(model);
+        drive_dep_downloaded(model);
+        drive_dep_registered(model);
+    }
+
+    fn drive_dep_progress(model: &mut TransactionModel, percent: i32) {
+        model.apply_event(&progressed("dep1", percent));
+    }
+
+    fn drive_build_done(model: &mut TransactionModel) {
+        model.apply_event(&cloning("pkg-a"));
+        model.apply_event(&build_started("pkg-a"));
+        model.apply_event(&build_completed("pkg-a"));
+    }
+
+    fn drive_artifact_installed(model: &mut TransactionModel) {
+        model.apply_event(&installed("pkg-a"));
+        model.apply_event(&progressed("pkg-a", 100));
+    }
+
+    fn assert_state(model: &TransactionModel, stage: AurStage, expected: StageState) {
+        assert_eq!(model.aur_stage_state(stage), expected);
+    }
+
     #[test]
     fn aur_resolve_failure() {
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::ResolvingAurDependencies {
-            target: "yay".to_string(),
-        });
-        model.apply_event(&InstallEvent::AurDepResolved {
-            package: "yay".to_string(),
-            repo: None,
-            version: Some("1.0-1".to_string()),
-        });
+        model.apply_event(&resolving("yay"));
+        model.apply_event(&dep_resolved("yay", None));
         model.finish(ChildOutcome::Failed("resolve failed".to_string()));
-        assert_eq!(model.aur_stage_state(AurStage::Resolve), StageState::Failed);
-        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Pending);
+        assert_state(&model, AurStage::Resolve, StageState::Failed);
+        assert_state(&model, AurStage::Build, StageState::Pending);
     }
 
     #[test]
     fn aur_build_failure_attributed_to_build() {
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::ResolvingAurDependencies {
-            target: "yay".to_string(),
-        });
-        model.apply_event(&InstallEvent::AurDepResolved {
-            package: "yay".to_string(),
-            repo: None,
-            version: Some("1.0-1".to_string()),
-        });
-        model.apply_event(&InstallEvent::ResolutionComplete {
-            aur_packages: 1,
-            repo_deps: 0,
-        });
-        model.apply_event(&InstallEvent::CloningRepo {
-            package: "yay".to_string(),
-        });
-        model.apply_event(&InstallEvent::BuildStarted {
-            package: "yay".to_string(),
-        });
+        model.apply_event(&resolving("yay"));
+        model.apply_event(&dep_resolved("yay", None));
+        model.apply_event(&resolution_complete(0));
+        model.apply_event(&cloning("yay"));
+        model.apply_event(&build_started("yay"));
         model.finish(ChildOutcome::Failed("makepkg failed".to_string()));
         assert_eq!(model.failure_message.as_deref(), Some("makepkg failed"));
-        assert_eq!(model.aur_stage_state(AurStage::Resolve), StageState::Done);
-        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Failed);
-        assert_eq!(
-            model.aur_stage_state(AurStage::Install),
-            StageState::Pending
-        );
-        assert_eq!(
-            model.aur_stage_state(AurStage::Finalize),
-            StageState::Pending
-        );
+        assert_state(&model, AurStage::Resolve, StageState::Done);
+        assert_state(&model, AurStage::Build, StageState::Failed);
+        assert_state(&model, AurStage::Install, StageState::Pending);
+        assert_state(&model, AurStage::Finalize, StageState::Pending);
         assert_eq!(
             model.aur.builds.get("yay").expect("yay present").status,
             BuildStatus::Failed
@@ -552,7 +688,6 @@ mod tests {
 
     #[test]
     fn sysupgrade_build_failure_attributed_to_build() {
-        use pakajo::events::TransactionSummary;
         let mut model = TransactionModel::new(
             "system".to_string(),
             PackageSource::Repo,
@@ -565,28 +700,14 @@ mod tests {
             total_installed_size: 0,
             total_removed_size: 0,
         }));
-        model.apply_event(&InstallEvent::PackageOperation {
-            operation: PackageOp::Install,
-            package: "foo".to_string(),
-            new_version: Some("1.0-1".to_string()),
-            old_version: None,
-        });
-        model.apply_event(&InstallEvent::HookRun {
-            position: 1,
-            total: 1,
-            name: "update-desktop-database".to_string(),
-            desc: None,
-        });
-        model.apply_event(&InstallEvent::CloningRepo {
-            package: "bar".to_string(),
-        });
-        model.apply_event(&InstallEvent::BuildStarted {
-            package: "bar".to_string(),
-        });
+        model.apply_event(&installed("foo"));
+        model.apply_event(&hook(1, 1));
+        model.apply_event(&cloning("bar"));
+        model.apply_event(&build_started("bar"));
         model.finish(ChildOutcome::Failed("makepkg failed".to_string()));
         assert_eq!(model.failure_message.as_deref(), Some("makepkg failed"));
         assert_eq!(model.stage_state(4), StageState::Done);
-        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Failed);
+        assert_state(&model, AurStage::Build, StageState::Failed);
         assert!(model.build_owns_failure());
         assert_eq!(
             model.aur.builds.get("bar").expect("bar present").status,
@@ -597,195 +718,59 @@ mod tests {
     #[test]
     fn aur_nested_install_failure_keeps_build_done() {
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::ResolvingAurDependencies {
-            target: "yay".to_string(),
-        });
-        model.apply_event(&InstallEvent::AurDepResolved {
-            package: "yay".to_string(),
-            repo: None,
-            version: Some("1.0-1".to_string()),
-        });
-        model.apply_event(&InstallEvent::ResolutionComplete {
-            aur_packages: 1,
-            repo_deps: 0,
-        });
-        model.apply_event(&InstallEvent::CloningRepo {
-            package: "yay".to_string(),
-        });
-        model.apply_event(&InstallEvent::BuildStarted {
-            package: "yay".to_string(),
-        });
-        model.apply_event(&InstallEvent::BuildCompleted {
-            package: "yay".to_string(),
-            artifacts: Vec::new(),
-            version: None,
-        });
+        model.apply_event(&resolving("yay"));
+        model.apply_event(&dep_resolved("yay", None));
+        model.apply_event(&resolution_complete(0));
+        model.apply_event(&cloning("yay"));
+        model.apply_event(&build_started("yay"));
+        model.apply_event(&build_completed("yay"));
         model.finish(ChildOutcome::Failed("pkexec dismissed".to_string()));
-        assert_eq!(model.aur_stage_state(AurStage::Resolve), StageState::Done);
-        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Done);
-        assert_eq!(
-            model.aur_stage_state(AurStage::Install),
-            StageState::Pending
-        );
+        assert_state(&model, AurStage::Resolve, StageState::Done);
+        assert_state(&model, AurStage::Build, StageState::Done);
+        assert_state(&model, AurStage::Install, StageState::Pending);
     }
 
     #[test]
     fn aur_nested_installs_single_layer() {
-        use pakajo::events::DownloadResult;
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::ResolvingAurDependencies {
-            target: "pkg-a".to_string(),
-        });
-        model.apply_event(&InstallEvent::AurDepResolved {
-            package: "dep1".to_string(),
-            repo: Some("extra".to_string()),
-            version: Some("1.0-1".to_string()),
-        });
-        model.apply_event(&InstallEvent::AurDepResolved {
-            package: "pkg-a".to_string(),
-            repo: None,
-            version: Some("1.0-1".to_string()),
-        });
-        model.apply_event(&InstallEvent::ResolutionComplete {
-            aur_packages: 1,
-            repo_deps: 1,
-        });
-        model.apply_event(&InstallEvent::RetrievingPackages {
-            num: 1,
-            total_bytes: 100,
-        });
-        model.apply_event(&InstallEvent::DownloadInit {
-            filename: "dep1".to_string(),
-            optional: false,
-        });
-        model.apply_event(&InstallEvent::DownloadCompleted {
-            filename: "dep1".to_string(),
-            total: 100,
-            result: DownloadResult::Success,
-        });
-        model.apply_event(&InstallEvent::PackageOperation {
-            operation: PackageOp::Install,
-            package: "dep1".to_string(),
-            new_version: Some("1.0-1".to_string()),
-            old_version: None,
-        });
-        model.apply_event(&InstallEvent::Progress {
-            phase: ProgressPhase::Add,
-            package: "dep1".to_string(),
-            percent: 100,
-            current: 1,
-            total: 1,
-        });
-        model.apply_event(&InstallEvent::CloningRepo {
-            package: "pkg-a".to_string(),
-        });
-        model.apply_event(&InstallEvent::BuildStarted {
-            package: "pkg-a".to_string(),
-        });
+        drive_resolve_open(&mut model);
+        drive_dep_downloaded(&mut model);
+        drive_dep_registered(&mut model);
+        drive_dep_progress(&mut model, 100);
+        model.apply_event(&cloning("pkg-a"));
+        model.apply_event(&build_started("pkg-a"));
         model.apply_event(&InstallEvent::BuildOutput {
             package: "pkg-a".to_string(),
             line: "==> Making package".to_string(),
         });
-        model.apply_event(&InstallEvent::BuildCompleted {
-            package: "pkg-a".to_string(),
-            artifacts: Vec::new(),
-            version: None,
-        });
-        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Done);
-        assert_eq!(
-            model.aur_stage_state(AurStage::Install),
-            StageState::Pending
-        );
-        model.apply_event(&InstallEvent::PackageOperation {
-            operation: PackageOp::Install,
-            package: "pkg-a".to_string(),
-            new_version: Some("1.0-1".to_string()),
-            old_version: None,
-        });
+        model.apply_event(&build_completed("pkg-a"));
+        assert_state(&model, AurStage::Build, StageState::Done);
+        assert_state(&model, AurStage::Install, StageState::Pending);
+        model.apply_event(&installed("pkg-a"));
         assert_eq!(model.aur.install.order.len(), 1);
         assert_eq!(model.aur.repo_deps.install.order, ["dep1"]);
-        assert_eq!(model.aur_stage_state(AurStage::Install), StageState::Active);
-        model.apply_event(&InstallEvent::HookRun {
-            position: 1,
-            total: 1,
-            name: "hook".to_string(),
-            desc: Some("Arming ConditionNeedsUpdate...".to_string()),
-        });
+        assert_state(&model, AurStage::Install, StageState::Active);
+        model.apply_event(&hook(1, 1));
         model.apply_event(&InstallEvent::TransactionDone);
         model.finish(ChildOutcome::Success);
-        assert_eq!(model.aur_stage_state(AurStage::Resolve), StageState::Done);
-        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Done);
-        assert_eq!(model.aur_stage_state(AurStage::Install), StageState::Done);
-        assert_eq!(model.aur_stage_state(AurStage::Finalize), StageState::Done);
+        assert_state(&model, AurStage::Resolve, StageState::Done);
+        assert_state(&model, AurStage::Build, StageState::Done);
+        assert_state(&model, AurStage::Install, StageState::Done);
+        assert_state(&model, AurStage::Finalize, StageState::Done);
     }
 
     #[test]
     fn aur_install_failure_preserves_checklist() {
-        use pakajo::events::DownloadResult;
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::ResolvingAurDependencies {
-            target: "pkg-a".to_string(),
-        });
-        model.apply_event(&InstallEvent::AurDepResolved {
-            package: "dep1".to_string(),
-            repo: Some("extra".to_string()),
-            version: Some("1.0-1".to_string()),
-        });
-        model.apply_event(&InstallEvent::AurDepResolved {
-            package: "pkg-a".to_string(),
-            repo: None,
-            version: Some("1.0-1".to_string()),
-        });
-        model.apply_event(&InstallEvent::ResolutionComplete {
-            aur_packages: 1,
-            repo_deps: 1,
-        });
-        model.apply_event(&InstallEvent::RetrievingPackages {
-            num: 1,
-            total_bytes: 100,
-        });
-        model.apply_event(&InstallEvent::DownloadInit {
-            filename: "dep1".to_string(),
-            optional: false,
-        });
-        model.apply_event(&InstallEvent::DownloadCompleted {
-            filename: "dep1".to_string(),
-            total: 100,
-            result: DownloadResult::Success,
-        });
-        model.apply_event(&InstallEvent::PackageOperation {
-            operation: PackageOp::Install,
-            package: "dep1".to_string(),
-            new_version: Some("1.0-1".to_string()),
-            old_version: None,
-        });
-        model.apply_event(&InstallEvent::Progress {
-            phase: ProgressPhase::Add,
-            package: "dep1".to_string(),
-            percent: 100,
-            current: 1,
-            total: 1,
-        });
-        model.apply_event(&InstallEvent::CloningRepo {
-            package: "pkg-a".to_string(),
-        });
-        model.apply_event(&InstallEvent::BuildStarted {
-            package: "pkg-a".to_string(),
-        });
-        model.apply_event(&InstallEvent::BuildCompleted {
-            package: "pkg-a".to_string(),
-            artifacts: Vec::new(),
-            version: None,
-        });
-        model.apply_event(&InstallEvent::PackageOperation {
-            operation: PackageOp::Install,
-            package: "pkg-a".to_string(),
-            new_version: Some("1.0-1".to_string()),
-            old_version: None,
-        });
+        drive_resolve_open(&mut model);
+        drive_dep_downloaded(&mut model);
+        drive_dep_registered(&mut model);
+        drive_dep_progress(&mut model, 100);
+        drive_build_done(&mut model);
+        model.apply_event(&installed("pkg-a"));
         model.finish(ChildOutcome::Failed("install failed".to_string()));
-        assert_eq!(model.aur_stage_state(AurStage::Install), StageState::Failed);
-        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Done);
+        assert_state(&model, AurStage::Install, StageState::Failed);
+        assert_state(&model, AurStage::Build, StageState::Done);
         assert_eq!(model.aur.install.order.len(), 1);
         assert_eq!(model.aur.repo_deps.install.order, ["dep1"]);
     }
@@ -793,56 +778,27 @@ mod tests {
     #[test]
     fn aur_finalize_active_while_hooks_run() {
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::CloningRepo {
-            package: "pkg-a".to_string(),
-        });
-        model.apply_event(&InstallEvent::BuildCompleted {
-            package: "pkg-a".to_string(),
-            artifacts: Vec::new(),
-            version: None,
-        });
-        assert_eq!(model.aur_stage_state(AurStage::Build), StageState::Done);
-        assert_eq!(
-            model.aur_stage_state(AurStage::Finalize),
-            StageState::Pending
-        );
-        model.apply_event(&InstallEvent::HookRun {
-            position: 1,
-            total: 2,
-            name: "update-desktop-database".to_string(),
-            desc: None,
-        });
-        assert_eq!(
-            model.aur_stage_state(AurStage::Finalize),
-            StageState::Active
-        );
+        model.apply_event(&cloning("pkg-a"));
+        model.apply_event(&build_completed("pkg-a"));
+        assert_state(&model, AurStage::Build, StageState::Done);
+        assert_state(&model, AurStage::Finalize, StageState::Pending);
+        model.apply_event(&hook(1, 2));
+        assert_state(&model, AurStage::Finalize, StageState::Active);
         model.finish(ChildOutcome::Success);
-        assert_eq!(model.aur_stage_state(AurStage::Finalize), StageState::Done);
+        assert_state(&model, AurStage::Finalize, StageState::Done);
     }
 
     #[test]
     fn log_alerts_do_not_advance_stage_state() {
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::CloningRepo {
-            package: "pkg-a".to_string(),
-        });
-        model.apply_event(&InstallEvent::BuildCompleted {
-            package: "pkg-a".to_string(),
-            artifacts: Vec::new(),
-            version: None,
-        });
-        assert_eq!(
-            model.aur_stage_state(AurStage::Finalize),
-            StageState::Pending
-        );
+        model.apply_event(&cloning("pkg-a"));
+        model.apply_event(&build_completed("pkg-a"));
+        assert_state(&model, AurStage::Finalize, StageState::Pending);
         model.apply_event(&InstallEvent::Log {
             level: LogLevel::Error,
             message: "key unknown\n".to_string(),
         });
-        assert_eq!(
-            model.aur_stage_state(AurStage::Finalize),
-            StageState::Pending
-        );
+        assert_state(&model, AurStage::Finalize, StageState::Pending);
         assert_eq!(model.aur.finalize.alerts.len(), 1);
         assert!(!model.aur.finalize.is_empty());
     }
@@ -855,7 +811,7 @@ mod tests {
             InstallKind::Install,
         );
         model.apply_event(&InstallEvent::FailClosed {
-            key: pakajo::question::model::QuestionKey::Proceed,
+            key: QuestionKey::Proceed,
             reason: "denied in test".to_string(),
         });
         assert_eq!(
@@ -869,32 +825,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn runtime_prompt_stores_pending_import_key_until_answered() {
-        let mut model = TransactionModel::new(
-            "firefox".to_string(),
-            PackageSource::Repo,
-            InstallKind::Install,
-        );
-        model.set_answer_channel(test_writer());
-        model.apply_event(&InstallEvent::RuntimePrompt {
-            question: pakajo::question::model::Question::ImportKey {
-                fingerprint: "ABCDEF".to_string(),
-                uid: "Packager <pack@example.com>".to_string(),
-            },
-        });
-        let pending = model.pending_import_key.as_ref().expect("pending prompt");
-        assert!(matches!(
-            pending,
-            Question::ImportKey { fingerprint, uid }
-            if fingerprint == "ABCDEF" && uid == "Packager <pack@example.com>"
-        ));
-        model.answer_import_key(true);
-        assert!(model.pending_import_key.is_none());
-    }
-
     fn test_writer() -> AnswerWriter {
-        use std::process::{Command, Stdio};
         let mut child = Command::new("true")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -905,13 +836,23 @@ mod tests {
         writer
     }
 
-    fn import_key_event() -> InstallEvent {
-        InstallEvent::RuntimePrompt {
-            question: pakajo::question::model::Question::ImportKey {
-                fingerprint: "ABCDEF".to_string(),
-                uid: "Packager <pack@example.com>".to_string(),
-            },
-        }
+    #[test]
+    fn runtime_prompt_stores_pending_import_key_until_answered() {
+        let mut model = TransactionModel::new(
+            "firefox".to_string(),
+            PackageSource::Repo,
+            InstallKind::Install,
+        );
+        model.set_answer_channel(test_writer());
+        model.apply_event(&import_key_event());
+        let pending = model.pending_import_key.as_ref().expect("pending prompt");
+        assert!(matches!(
+            pending,
+            Question::ImportKey { fingerprint, uid }
+            if fingerprint == "ABCDEF" && uid == "Packager <pack@example.com>"
+        ));
+        model.answer_import_key(true);
+        assert!(model.pending_import_key.is_none());
     }
 
     #[test]
@@ -959,121 +900,94 @@ mod tests {
     fn constructor_seeds_single_target_fields() {
         let aur =
             TransactionModel::new("yay".to_string(), PackageSource::Aur, InstallKind::Install);
-        assert_eq!(aur.targets, vec!["yay".to_string()]);
-        assert_eq!(aur.aur_names, vec!["yay".to_string()]);
+        assert_eq!(aur.targets, ["yay"]);
+        assert_eq!(aur.aur_names, ["yay"]);
         let repo = TransactionModel::new(
             "firefox".to_string(),
             PackageSource::Repo,
             InstallKind::Install,
         );
-        assert_eq!(repo.targets, vec!["firefox".to_string()]);
+        assert_eq!(repo.targets, ["firefox"]);
         assert!(repo.aur_names.is_empty());
         let remove = TransactionModel::new(
             "firefox".to_string(),
             PackageSource::Repo,
             InstallKind::Remove,
         );
-        assert_eq!(remove.targets, vec!["firefox".to_string()]);
+        assert_eq!(remove.targets, ["firefox"]);
         assert!(remove.aur_names.is_empty());
         let upgrade = TransactionModel::new(
             "system".to_string(),
             PackageSource::Repo,
             InstallKind::Upgrade,
         );
-        assert_eq!(upgrade.targets, vec!["system".to_string()]);
+        assert_eq!(upgrade.targets, ["system"]);
         assert!(upgrade.aur_names.is_empty());
     }
 
     #[test]
     fn deps_stage_pending_until_bucket_fills() {
         let model = aur_model();
-        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Pending);
+        assert_state(&model, AurStage::Deps, StageState::Pending);
         assert!(!model.deps_section_visible());
     }
 
     #[test]
     fn deps_stage_active_after_download_event() {
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::RetrievingPackages {
-            num: 1,
-            total_bytes: 100,
-        });
-        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Active);
+        model.apply_event(&retrieving(1));
+        assert_state(&model, AurStage::Deps, StageState::Active);
         assert!(model.deps_section_visible());
     }
 
     #[test]
     fn deps_stage_active_after_install_event() {
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::PackageOperation {
-            operation: PackageOp::Install,
-            package: "dep1".to_string(),
-            new_version: Some("1.0-1".to_string()),
-            old_version: None,
-        });
-        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Active);
+        model.apply_event(&installed("dep1"));
+        assert_state(&model, AurStage::Deps, StageState::Active);
         assert!(model.deps_section_visible());
     }
 
     #[test]
     fn deps_stage_done_when_phase_flips_to_artifacts() {
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::RetrievingPackages {
-            num: 1,
-            total_bytes: 100,
-        });
-        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Active);
-        model.apply_event(&InstallEvent::BuildStarted {
-            package: "pkg-a".to_string(),
-        });
-        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Done);
+        model.apply_event(&retrieving(1));
+        assert_state(&model, AurStage::Deps, StageState::Active);
+        model.apply_event(&build_started("pkg-a"));
+        assert_state(&model, AurStage::Deps, StageState::Done);
     }
 
     #[test]
     fn deps_stage_done_on_success() {
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::RetrievingPackages {
-            num: 1,
-            total_bytes: 100,
-        });
+        model.apply_event(&retrieving(1));
         model.finish(ChildOutcome::Success);
-        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Done);
+        assert_state(&model, AurStage::Deps, StageState::Done);
     }
 
     #[test]
     fn deps_stage_failed_when_failure_attributed_to_deps() {
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::RetrievingPackages {
-            num: 1,
-            total_bytes: 100,
-        });
+        model.apply_event(&retrieving(1));
         model.finish(ChildOutcome::Failed("deps failed".to_string()));
-        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Failed);
+        assert_state(&model, AurStage::Deps, StageState::Failed);
     }
 
     #[test]
     fn deps_section_visible_with_repo_dep_count() {
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::ResolutionComplete {
-            aur_packages: 1,
-            repo_deps: 2,
-        });
+        model.apply_event(&resolution_complete(2));
         assert!(model.deps_section_visible());
-        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Pending);
+        assert_state(&model, AurStage::Deps, StageState::Pending);
     }
 
     #[test]
     fn deps_section_visible_for_stale_only_when_bucket_fills() {
         let mut model = aur_model();
         assert!(!model.deps_section_visible());
-        model.apply_event(&InstallEvent::HookRun {
-            position: 1,
-            total: 1,
-            name: "hook".to_string(),
-            desc: Some("Arming...".to_string()),
-        });
+        model.apply_event(&hook(1, 1));
         assert!(model.deps_section_visible());
-        assert_eq!(model.aur_stage_state(AurStage::Deps), StageState::Active);
+        assert_state(&model, AurStage::Deps, StageState::Active);
     }
 
     #[test]
@@ -1081,106 +995,8 @@ mod tests {
         let model = aur_model();
         assert!(!model.artifact_sections_visible());
         let mut built = aur_model();
-        built.apply_event(&InstallEvent::CloningRepo {
-            package: "pkg-a".to_string(),
-        });
+        built.apply_event(&cloning("pkg-a"));
         assert!(built.artifact_sections_visible());
-    }
-
-    fn drive_resolve_open(model: &mut TransactionModel) {
-        model.apply_event(&InstallEvent::ResolvingAurDependencies {
-            target: "pkg-a".to_string(),
-        });
-        model.apply_event(&InstallEvent::AurDepResolved {
-            package: "dep1".to_string(),
-            repo: Some("extra".to_string()),
-            version: Some("1.0-1".to_string()),
-        });
-        model.apply_event(&InstallEvent::AurDepResolved {
-            package: "pkg-a".to_string(),
-            repo: None,
-            version: Some("1.0-1".to_string()),
-        });
-        model.apply_event(&InstallEvent::ResolutionComplete {
-            aur_packages: 1,
-            repo_deps: 1,
-        });
-        model.apply_event(&InstallEvent::RetrievingPackages {
-            num: 1,
-            total_bytes: 100,
-        });
-        model.apply_event(&InstallEvent::DownloadInit {
-            filename: "dep1".to_string(),
-            optional: false,
-        });
-    }
-
-    fn drive_dep_downloaded(model: &mut TransactionModel) {
-        model.apply_event(&InstallEvent::DownloadProgress {
-            filename: "dep1".to_string(),
-            downloaded: 100,
-            total: 100,
-        });
-        model.apply_event(&InstallEvent::DownloadCompleted {
-            filename: "dep1".to_string(),
-            total: 100,
-            result: pakajo::events::DownloadResult::Success,
-        });
-    }
-
-    fn drive_dep_registered(model: &mut TransactionModel) {
-        model.apply_event(&InstallEvent::PackageOperation {
-            operation: PackageOp::Install,
-            package: "dep1".to_string(),
-            new_version: Some("1.0-1".to_string()),
-            old_version: None,
-        });
-    }
-
-    fn drive_resolve_with_dep(model: &mut TransactionModel) {
-        drive_resolve_open(model);
-        drive_dep_downloaded(model);
-        drive_dep_registered(model);
-    }
-
-    fn drive_dep_progress(model: &mut TransactionModel, percent: i32) {
-        model.apply_event(&InstallEvent::Progress {
-            phase: ProgressPhase::Add,
-            package: "dep1".to_string(),
-            percent,
-            current: 1,
-            total: 1,
-        });
-    }
-
-    fn drive_build_done(model: &mut TransactionModel) {
-        model.apply_event(&InstallEvent::CloningRepo {
-            package: "pkg-a".to_string(),
-        });
-        model.apply_event(&InstallEvent::BuildStarted {
-            package: "pkg-a".to_string(),
-        });
-        model.apply_event(&InstallEvent::BuildCompleted {
-            package: "pkg-a".to_string(),
-            artifacts: Vec::new(),
-            version: None,
-        });
-    }
-
-    fn drive_artifact_installed(model: &mut TransactionModel) {
-        model.apply_event(&InstallEvent::PackageOperation {
-            operation: PackageOp::Install,
-            package: "pkg-a".to_string(),
-            new_version: Some("1.0-1".to_string()),
-            old_version: None,
-        });
-        model.apply_event(&InstallEvent::Progress {
-            phase: ProgressPhase::Add,
-            package: "pkg-a".to_string(),
-            percent: 100,
-            current: 1,
-            total: 1,
-        });
     }
 
     #[test]
@@ -1189,11 +1005,7 @@ mod tests {
         assert_eq!(model.overall_progress(), 0.0);
         drive_resolve_open(&mut model);
         assert_eq!(model.overall_progress(), 5.0);
-        model.apply_event(&InstallEvent::DownloadProgress {
-            filename: "dep1".to_string(),
-            downloaded: 50,
-            total: 100,
-        });
+        model.apply_event(&download_progress("dep1", 50, 100));
         let partial = model.overall_progress();
         assert!(partial > 5.0 && partial < 30.0);
         drive_dep_downloaded(&mut model);
@@ -1201,20 +1013,12 @@ mod tests {
         drive_dep_progress(&mut model, 100);
         assert_eq!(model.overall_progress(), 30.0);
         assert_eq!(model.aur.phase, AurPhase::Deps);
-        model.apply_event(&InstallEvent::CloningRepo {
-            package: "pkg-a".to_string(),
-        });
+        model.apply_event(&cloning("pkg-a"));
         assert_eq!(model.overall_progress(), 30.0);
-        model.apply_event(&InstallEvent::BuildStarted {
-            package: "pkg-a".to_string(),
-        });
+        model.apply_event(&build_started("pkg-a"));
         assert_eq!(model.aur.phase, AurPhase::Artifacts);
         assert_eq!(model.overall_progress(), 30.0);
-        model.apply_event(&InstallEvent::BuildCompleted {
-            package: "pkg-a".to_string(),
-            artifacts: Vec::new(),
-            version: None,
-        });
+        model.apply_event(&build_completed("pkg-a"));
         assert_eq!(model.overall_progress(), 65.0);
         drive_artifact_installed(&mut model);
         assert_eq!(model.overall_progress(), 100.0);
@@ -1223,24 +1027,14 @@ mod tests {
     #[test]
     fn aur_overall_failure_freezes_per_stage() {
         let mut resolve = aur_model();
-        resolve.apply_event(&InstallEvent::ResolvingAurDependencies {
-            target: "yay".to_string(),
-        });
-        resolve.apply_event(&InstallEvent::AurDepResolved {
-            package: "yay".to_string(),
-            repo: None,
-            version: Some("1.0-1".to_string()),
-        });
+        resolve.apply_event(&resolving("yay"));
+        resolve.apply_event(&dep_resolved("yay", None));
         resolve.finish(ChildOutcome::Failed("resolve failed".to_string()));
         assert_eq!(resolve.overall_progress(), 5.0);
 
         let mut deps = aur_model();
         drive_resolve_open(&mut deps);
-        deps.apply_event(&InstallEvent::DownloadProgress {
-            filename: "dep1".to_string(),
-            downloaded: 50,
-            total: 100,
-        });
+        deps.apply_event(&download_progress("dep1", 50, 100));
         let before = deps.overall_progress();
         assert!(before > 5.0 && before < 30.0);
         deps.finish(ChildOutcome::Failed("deps failed".to_string()));
@@ -1249,9 +1043,7 @@ mod tests {
         let mut build = aur_model();
         drive_resolve_with_dep(&mut build);
         drive_dep_progress(&mut build, 100);
-        build.apply_event(&InstallEvent::BuildStarted {
-            package: "pkg-a".to_string(),
-        });
+        build.apply_event(&build_started("pkg-a"));
         build.finish(ChildOutcome::Failed("makepkg failed".to_string()));
         assert_eq!(build.overall_progress(), 30.0);
 
@@ -1259,15 +1051,8 @@ mod tests {
         drive_resolve_with_dep(&mut install);
         drive_dep_progress(&mut install, 100);
         drive_build_done(&mut install);
-        install.apply_event(&InstallEvent::RetrievingPackages {
-            num: 1,
-            total_bytes: 100,
-        });
-        install.apply_event(&InstallEvent::DownloadProgress {
-            filename: "pkg-a".to_string(),
-            downloaded: 50,
-            total: 100,
-        });
+        install.apply_event(&retrieving(1));
+        install.apply_event(&download_progress("pkg-a", 50, 100));
         let pre = install.overall_progress();
         assert!((65.0..100.0).contains(&pre));
         install.finish(ChildOutcome::Failed("install failed".to_string()));
@@ -1280,7 +1065,7 @@ mod tests {
         assert_eq!(model.overall_progress(), 0.0);
         let mut failed = aur_model();
         failed.apply_event(&InstallEvent::FailClosed {
-            key: pakajo::question::model::QuestionKey::Proceed,
+            key: QuestionKey::Proceed,
             reason: "denied in test".to_string(),
         });
         assert_eq!(failed.aur.last_aur_stage, None);
@@ -1303,36 +1088,13 @@ mod tests {
 
     #[test]
     fn toggle_adapts_to_five_aur_stages() {
-        use pakajo::progress::ordered_aur_stages;
         assert_eq!(ordered_aur_stages().len(), 5);
         let mut model = aur_model();
-        model.apply_event(&InstallEvent::ResolvingAurDependencies {
-            target: "pkg-a".to_string(),
-        });
-        model.apply_event(&InstallEvent::AurDepResolved {
-            package: "pkg-a".to_string(),
-            repo: None,
-            version: Some("1.0-1".to_string()),
-        });
-        model.apply_event(&InstallEvent::ResolutionComplete {
-            aur_packages: 1,
-            repo_deps: 1,
-        });
-        model.apply_event(&InstallEvent::RetrievingPackages {
-            num: 1,
-            total_bytes: 100,
-        });
-        model.apply_event(&InstallEvent::CloningRepo {
-            package: "pkg-a".to_string(),
-        });
-        model.apply_event(&InstallEvent::BuildStarted {
-            package: "pkg-a".to_string(),
-        });
-        model.apply_event(&InstallEvent::BuildCompleted {
-            package: "pkg-a".to_string(),
-            artifacts: Vec::new(),
-            version: None,
-        });
+        model.apply_event(&resolving("pkg-a"));
+        model.apply_event(&dep_resolved("pkg-a", None));
+        model.apply_event(&resolution_complete(1));
+        model.apply_event(&retrieving(1));
+        drive_build_done(&mut model);
         model.finish(ChildOutcome::Success);
         for (i, stage) in ordered_aur_stages().iter().enumerate() {
             assert_eq!(model.aur_stage_state(*stage), StageState::Done);
