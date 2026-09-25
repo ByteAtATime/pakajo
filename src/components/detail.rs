@@ -12,10 +12,25 @@ use pakajo::utils::{format_bytes, group_thousands};
 use std::time::Duration;
 
 use crate::Element;
+
+pub type OptDepSelection = Vec<(String, String)>;
+
+pub(crate) fn selectable_optdeps(pkg: &Package, selection: &[String]) -> OptDepSelection {
+    selection
+        .iter()
+        .filter_map(|name| {
+            pkg.opt_dependencies
+                .iter()
+                .find(|dep| &dep.name == name && !dep.installed)
+                .map(|dep| (name.clone(), dep.version.clone().unwrap_or_default()))
+        })
+        .collect()
+}
+use crate::PakajoCtx;
 use crate::components::icons;
 use crate::components::search::SearchMessage;
 use crate::components::theme::{accent_color, destructive_color, muted_mono, muted_text as muted};
-use crate::components::transaction::TransactionMessage;
+use crate::components::transaction::{TransactionMessage, TransactionRequest};
 use cosmic::widget::divider;
 
 pub const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -46,6 +61,9 @@ pub struct GroupMember {
 #[derive(Clone)]
 pub enum DetailMessage {
     Load { name: String, source: PackageSource },
+    StartInstall,
+    StartBatchInstall,
+    StartRemove,
     DetailReady { seq: u64, pkg: Box<Package> },
     DetailFailed { seq: u64, message: String },
     ShowLoading { seq: u64 },
@@ -61,6 +79,9 @@ impl std::fmt::Debug for DetailMessage {
                 .field("name", name)
                 .field("source", source)
                 .finish(),
+            Self::StartInstall => f.debug_struct("StartInstall").finish(),
+            Self::StartBatchInstall => f.debug_struct("StartBatchInstall").finish(),
+            Self::StartRemove => f.debug_struct("StartRemove").finish(),
             Self::DetailReady { seq, .. } => {
                 f.debug_struct("DetailReady").field("seq", seq).finish()
             }
@@ -172,7 +193,7 @@ fn render_package<'a>(
     disabled: bool,
     hovered: Option<&'a str>,
 ) -> Element<'a> {
-    let selected = crate::selectable_optdeps(pkg, selection).len();
+    let selected = selectable_optdeps(pkg, selection).len();
     let header = render_header(pkg, installed, checking, pending, selected);
     let details = render_details(pkg);
     let dependencies = render_dependencies(pkg);
@@ -210,14 +231,11 @@ fn render_header<'a>(
     };
 
     let (label, intent) = if installed {
-        (
-            "Remove",
-            crate::Message::Transaction(TransactionMessage::StartRemove),
-        )
+        ("Remove", crate::Message::Detail(DetailMessage::StartRemove))
     } else {
         (
             "Install",
-            crate::Message::Transaction(TransactionMessage::StartInstall),
+            crate::Message::Detail(DetailMessage::StartInstall),
         )
     };
 
@@ -543,7 +561,7 @@ fn render_opt_dependencies<'a>(
     hovered: Option<&'a str>,
     installed: bool,
 ) -> Element<'a> {
-    let selected = crate::selectable_optdeps(pkg, selection).len();
+    let selected = selectable_optdeps(pkg, selection).len();
     let install_link = (installed && selected > 0).then(|| {
         button::custom(optdep_install_label(format!("Install {selected}")))
             .class(cosmic::theme::Button::Custom {
@@ -554,8 +572,7 @@ fn render_opt_dependencies<'a>(
             })
             .padding([2.0, 8.0])
             .on_press_maybe(
-                (!disabled)
-                    .then(|| crate::Message::Transaction(TransactionMessage::StartBatchInstall)),
+                (!disabled).then(|| crate::Message::Detail(DetailMessage::StartBatchInstall)),
             )
     });
     let header: Element<'a> = Column::new()
@@ -740,34 +757,176 @@ pub(crate) fn revalidate_selection(
         .collect()
 }
 
-impl crate::PakajoApp {
+pub struct DetailPane {
+    pub(crate) data: DetailData,
+    pub(crate) seq: u64,
+    pub(crate) pending: Option<u64>,
+    pub(crate) selected_optdeps: Vec<String>,
+    pub(crate) pkg_name: Option<String>,
+    pub(crate) optdep_hover: Option<String>,
+}
+
+impl Default for DetailPane {
+    fn default() -> Self {
+        Self {
+            data: DetailData::None,
+            seq: 0,
+            pending: None,
+            selected_optdeps: Vec::new(),
+            pkg_name: None,
+            optdep_hover: None,
+        }
+    }
+}
+
+impl DetailPane {
+    pub fn update(
+        &mut self,
+        message: DetailMessage,
+        ctx: &PakajoCtx,
+        tx_active: bool,
+    ) -> Task<crate::Message> {
+        match message {
+            DetailMessage::Load { name, source } => self.load_detail(name, source, ctx),
+            DetailMessage::StartInstall => {
+                if tx_active || self.pending.is_some() {
+                    return Task::none();
+                }
+                let Some((name, source, with_deps)) = self.install_target() else {
+                    return Task::none();
+                };
+                self.begin(TransactionRequest::Install {
+                    name,
+                    source,
+                    with_deps,
+                })
+            }
+            DetailMessage::StartBatchInstall => {
+                if tx_active || self.pending.is_some() {
+                    return Task::none();
+                }
+                let Some((_, _, with_deps)) = self.install_target() else {
+                    return Task::none();
+                };
+                if with_deps.is_empty() {
+                    return Task::none();
+                }
+                self.begin(TransactionRequest::BatchInstall { with_deps })
+            }
+            DetailMessage::StartRemove => {
+                if tx_active || self.pending.is_some() {
+                    return Task::none();
+                }
+                let DetailData::Ready { pkg, .. } = &self.data else {
+                    return Task::none();
+                };
+                self.begin(TransactionRequest::Remove {
+                    name: pkg.name.clone(),
+                    source: pkg.source(),
+                })
+            }
+            DetailMessage::DetailReady { seq, pkg } => self.ready(seq, *pkg, ctx),
+            DetailMessage::DetailFailed { seq, message } => {
+                if seq == self.seq {
+                    self.pending = None;
+                    self.data = DetailData::Error(message);
+                }
+                Task::none()
+            }
+            DetailMessage::ShowLoading { seq } => {
+                if seq == self.seq && self.pending == Some(seq) {
+                    self.data = DetailData::Loading;
+                }
+                Task::none()
+            }
+            DetailMessage::OptDepHover(name) => {
+                self.optdep_hover = name;
+                Task::none()
+            }
+            DetailMessage::ToggleOptDep(name) => {
+                if tx_active {
+                    return Task::none();
+                }
+                let DetailData::Ready { pkg, .. } = &self.data else {
+                    return Task::none();
+                };
+                if !pkg
+                    .opt_dependencies
+                    .iter()
+                    .any(|d| d.name == name && !d.installed)
+                {
+                    return Task::none();
+                }
+                if let Some(index) = self.selected_optdeps.iter().position(|n| *n == name) {
+                    self.selected_optdeps.remove(index);
+                } else {
+                    self.selected_optdeps.push(name);
+                }
+                Task::none()
+            }
+        }
+    }
+
+    fn ready(&mut self, seq: u64, pkg: Package, ctx: &PakajoCtx) -> Task<crate::Message> {
+        if seq == self.seq {
+            self.pending = None;
+            self.set_detail_pkg(pkg, ctx);
+        }
+        Task::none()
+    }
+
+    fn install_target(&self) -> Option<(String, PackageSource, OptDepSelection)> {
+        let DetailData::Ready { pkg, .. } = &self.data else {
+            return None;
+        };
+        Some((
+            pkg.name.clone(),
+            pkg.source(),
+            selectable_optdeps(pkg, &self.selected_optdeps),
+        ))
+    }
+
+    fn begin(&self, request: TransactionRequest) -> Task<crate::Message> {
+        Task::done(cosmic::Action::App(crate::Message::Transaction(
+            TransactionMessage::Begin(request),
+        )))
+    }
+
+    pub fn refresh_installed(&mut self, ctx: &PakajoCtx) {
+        let pkg = match &self.data {
+            DetailData::Ready { pkg, .. } => pkg.as_ref().clone(),
+            _ => return,
+        };
+        self.set_detail_pkg(pkg, ctx);
+    }
+
     pub(crate) fn load_detail(
         &mut self,
         name: String,
         source: PackageSource,
+        ctx: &PakajoCtx,
     ) -> Task<crate::Message> {
-        self.detail_seq = self.detail_seq.wrapping_add(1);
-        self.detail_pending = None;
-        let seq = self.detail_seq;
-        if matches!(self.detail, DetailData::None) {
-            self.detail = DetailData::Pending;
+        self.seq = self.seq.wrapping_add(1);
+        self.pending = None;
+        let seq = self.seq;
+        if matches!(self.data, DetailData::None) {
+            self.data = DetailData::Pending;
         }
         match source {
             PackageSource::Repo => {
-                let resolved = self
-                    .ctx
+                let resolved = ctx
                     .alpm
                     .as_ref()
                     .and_then(|alpm| package::find(alpm, &name));
                 match resolved {
-                    Some(pkg) => self.set_detail_pkg(pkg),
-                    None => self.detail = DetailData::Error(format!("package not found: {name}")),
+                    Some(pkg) => self.set_detail_pkg(pkg, ctx),
+                    None => self.data = DetailData::Error(format!("package not found: {name}")),
                 }
                 Task::none()
             }
             PackageSource::Group => {
-                let installed_names = self.ctx.installed_names.clone();
-                let resolved = self.ctx.alpm.as_ref().and_then(|alpm| {
+                let installed_names = ctx.installed_names.clone();
+                let resolved = ctx.alpm.as_ref().and_then(|alpm| {
                     package::find_groups(alpm, &name)
                         .into_iter()
                         .next()
@@ -784,18 +943,18 @@ impl crate::PakajoApp {
                         })
                 });
                 match resolved {
-                    Some(members) => self.detail = DetailData::Group { name, members },
-                    None => self.detail = DetailData::Error(format!("group not found: {name}")),
+                    Some(members) => self.data = DetailData::Group { name, members },
+                    None => self.data = DetailData::Error(format!("group not found: {name}")),
                 }
                 Task::none()
             }
             PackageSource::Aur => {
-                let Some(aur_client) = self.ctx.aur_client.clone() else {
-                    self.detail = DetailData::Error("aur unavailable".to_string());
+                let Some(aur_client) = ctx.aur_client.clone() else {
+                    self.data = DetailData::Error("aur unavailable".to_string());
                     return Task::none();
                 };
-                let db = self.ctx.db.clone();
-                self.detail_pending = Some(seq);
+                let db = ctx.db.clone();
+                self.pending = Some(seq);
                 Task::batch([
                     Task::stream(channel(
                         8,
@@ -889,15 +1048,14 @@ impl crate::PakajoApp {
         }
     }
 
-    pub(crate) fn set_detail_pkg(&mut self, mut pkg: Package) {
+    pub(crate) fn set_detail_pkg(&mut self, mut pkg: Package, ctx: &PakajoCtx) {
         let name = pkg.name.clone();
-        let installed = self
-            .ctx
+        let installed = ctx
             .alpm
             .as_ref()
             .map(|a| pakajo::package::is_installed(a, &name))
             .unwrap_or(false);
-        match self.ctx.alpm.as_ref() {
+        match ctx.alpm.as_ref() {
             Some(alpm) => {
                 for dep in &mut pkg.opt_dependencies {
                     dep.installed = package::opt_dep_installed(alpm, dep);
@@ -909,67 +1067,13 @@ impl crate::PakajoApp {
                 }
             }
         }
-        self.selected_optdeps = revalidate_selection(
-            self.detail_pkg_name.as_deref(),
-            &pkg,
-            &self.selected_optdeps,
-        );
-        self.detail_pkg_name = Some(name);
-        self.detail = DetailData::Ready {
+        self.selected_optdeps =
+            revalidate_selection(self.pkg_name.as_deref(), &pkg, &self.selected_optdeps);
+        self.pkg_name = Some(name);
+        self.data = DetailData::Ready {
             pkg: Box::new(pkg),
             installed,
         };
-    }
-
-    pub(crate) fn handle_detail(&mut self, message: DetailMessage) -> Task<crate::Message> {
-        match message {
-            DetailMessage::Load { name, source } => self.load_detail(name, source),
-            DetailMessage::DetailReady { seq, pkg } => {
-                if seq == self.detail_seq {
-                    self.detail_pending = None;
-                    self.set_detail_pkg(*pkg);
-                }
-                Task::none()
-            }
-            DetailMessage::DetailFailed { seq, message } => {
-                if seq == self.detail_seq {
-                    self.detail_pending = None;
-                    self.detail = DetailData::Error(message);
-                }
-                Task::none()
-            }
-            DetailMessage::ShowLoading { seq } => {
-                if seq == self.detail_seq && self.detail_pending == Some(seq) {
-                    self.detail = DetailData::Loading;
-                }
-                Task::none()
-            }
-            DetailMessage::OptDepHover(name) => {
-                self.optdep_hover = name;
-                Task::none()
-            }
-            DetailMessage::ToggleOptDep(name) => {
-                if self.transaction.as_ref().is_some_and(|t| t.is_active()) {
-                    return Task::none();
-                }
-                let DetailData::Ready { pkg, .. } = &self.detail else {
-                    return Task::none();
-                };
-                if !pkg
-                    .opt_dependencies
-                    .iter()
-                    .any(|d| d.name == name && !d.installed)
-                {
-                    return Task::none();
-                }
-                if let Some(index) = self.selected_optdeps.iter().position(|n| *n == name) {
-                    self.selected_optdeps.remove(index);
-                } else {
-                    self.selected_optdeps.push(name);
-                }
-                Task::none()
-            }
-        }
     }
 }
 

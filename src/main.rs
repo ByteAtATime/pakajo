@@ -20,11 +20,11 @@ use pakajo::pacman::handle;
 use pakajo::search::engine::SearchEngine;
 
 use background::begin_aur_sync_in_background;
-use components::detail::{DetailData, DetailMessage, detail_view};
+use components::detail::{DetailMessage, DetailPane, detail_view};
 use components::footer;
 use components::search::{ListRect, SearchMessage, SearchPane, search_input_id};
 use components::sysupgrade::SysupgradeMessage;
-use components::transaction::{Action, Transaction, TransactionMessage};
+use components::transaction::{Action, Transaction, TransactionMessage, TransactionRequest};
 use components::updates::{RefreshKind, UpdatesMessage, UpdatesPane};
 
 use cosmic::widget::divider;
@@ -59,12 +59,7 @@ pub struct PakajoApp {
     pub(crate) dashboard: Option<DashboardSnapshot>,
     pub(crate) dashboard_seq: u64,
     pub(crate) search: SearchPane,
-    pub(crate) detail: DetailData,
-    pub(crate) detail_seq: u64,
-    pub(crate) detail_pending: Option<u64>,
-    pub(crate) selected_optdeps: Vec<String>,
-    pub(crate) detail_pkg_name: Option<String>,
-    pub(crate) optdep_hover: Option<String>,
+    pub(crate) detail: DetailPane,
     pub(crate) transaction: Option<Transaction>,
     pub(crate) show_transaction: bool,
     pub(crate) updates: UpdatesPane,
@@ -139,12 +134,7 @@ impl Application for PakajoApp {
             dashboard: None,
             dashboard_seq: 0,
             search: SearchPane::default(),
-            detail: DetailData::None,
-            detail_seq: 0,
-            detail_pending: None,
-            selected_optdeps: Vec::new(),
-            detail_pkg_name: None,
-            optdep_hover: None,
+            detail: DetailPane::default(),
             transaction: None,
             show_transaction: false,
             updates: UpdatesPane::default(),
@@ -175,7 +165,13 @@ impl Application for PakajoApp {
                 self.search.update(m, &mut self.ctx, active)
             }
             Message::Dashboard(m) => self.handle_dashboard(m),
-            Message::Detail(m) => self.handle_detail(m),
+            Message::Detail(m) => {
+                let tx_active = self
+                    .transaction
+                    .as_ref()
+                    .is_some_and(Transaction::is_active);
+                self.detail.update(m, &self.ctx, tx_active)
+            }
             Message::Transaction(m) => self.handle_transaction(m),
             Message::Updates(m) => self.updates.update(m),
             Message::Sysupgrade(m) => self.handle_sysupgrade(m),
@@ -297,83 +293,56 @@ impl PakajoApp {
             .filter(|t| t.is_active())
             .map(|t| t.name());
         let detail = detail_view(
-            &self.detail,
+            &self.detail.data,
             active_target,
-            self.detail_pending.is_some(),
-            &self.selected_optdeps,
+            self.detail.pending.is_some(),
+            &self.detail.selected_optdeps,
             self.transaction.as_ref().is_some_and(|t| t.is_active()),
-            self.optdep_hover.as_deref(),
+            self.detail.optdep_hover.as_deref(),
         );
         self.search.view(self.dashboard.as_ref(), detail)
     }
 
     fn handle_transaction(&mut self, message: TransactionMessage) -> Task<Message> {
         match message {
-            TransactionMessage::StartInstall => {
+            TransactionMessage::Begin(request) => {
                 if self
                     .transaction
                     .as_ref()
                     .is_some_and(Transaction::is_active)
-                    || self.detail_pending.is_some()
                 {
                     return Task::none();
                 }
-                let (name, source, with_deps) = match &self.detail {
-                    DetailData::Ready { pkg, .. } => (
-                        pkg.name.clone(),
-                        pkg.source(),
-                        selectable_optdeps(pkg, &self.selected_optdeps),
-                    ),
-                    _ => return Task::none(),
-                };
-                if with_deps.is_empty() {
-                    let (txn, task) = Transaction::start(name, source);
-                    self.transaction = Some(txn);
-                    self.show_transaction = false;
-                    return task;
-                }
-                let wanted = std::iter::once((name, String::new()))
-                    .chain(with_deps)
-                    .collect();
-                self.start_optdep_batch(wanted)
-            }
-            TransactionMessage::StartBatchInstall => {
-                if self
-                    .transaction
-                    .as_ref()
-                    .is_some_and(Transaction::is_active)
-                    || self.detail_pending.is_some()
-                {
-                    return Task::none();
-                }
-                let wanted = match &self.detail {
-                    DetailData::Ready { pkg, .. } => {
-                        selectable_optdeps(pkg, &self.selected_optdeps)
+                match request {
+                    TransactionRequest::Install {
+                        name,
+                        source,
+                        with_deps,
+                    } => {
+                        if with_deps.is_empty() {
+                            let (txn, task) = Transaction::start(name, source);
+                            self.transaction = Some(txn);
+                            self.show_transaction = false;
+                            return task;
+                        }
+                        let wanted = std::iter::once((name, String::new()))
+                            .chain(with_deps)
+                            .collect();
+                        self.start_optdep_batch(wanted)
                     }
-                    _ => return Task::none(),
-                };
-                if wanted.is_empty() {
-                    return Task::none();
+                    TransactionRequest::BatchInstall { with_deps } => {
+                        if with_deps.is_empty() {
+                            return Task::none();
+                        }
+                        self.start_optdep_batch(with_deps)
+                    }
+                    TransactionRequest::Remove { name, source } => {
+                        let (txn, task) = Transaction::start_remove(name, source);
+                        self.transaction = Some(txn);
+                        self.show_transaction = false;
+                        task
+                    }
                 }
-                self.start_optdep_batch(wanted)
-            }
-            TransactionMessage::StartRemove => {
-                if self
-                    .transaction
-                    .as_ref()
-                    .is_some_and(Transaction::is_active)
-                    || self.detail_pending.is_some()
-                {
-                    return Task::none();
-                }
-                let (name, source) = match &self.detail {
-                    DetailData::Ready { pkg, .. } => (pkg.name.clone(), pkg.source()),
-                    _ => return Task::none(),
-                };
-                let (txn, task) = Transaction::start_remove(name, source);
-                self.transaction = Some(txn);
-                self.show_transaction = false;
-                task
             }
             other => {
                 let action = match self.transaction.as_mut() {
@@ -430,7 +399,7 @@ impl PakajoApp {
         let (targets, aur_bucket) =
             components::transaction::partition_batch_targets(&wanted, resolve);
         let (txn, task) = Transaction::start_batch(targets, aur_bucket);
-        self.selected_optdeps.clear();
+        self.detail.selected_optdeps.clear();
         self.transaction = Some(txn);
         self.show_transaction = false;
         task
@@ -447,15 +416,7 @@ impl PakajoApp {
             &mut self.search.results,
             &self.ctx.installed_names,
         );
-        self.refresh_detail_installed();
-    }
-
-    fn refresh_detail_installed(&mut self) {
-        let pkg = match &self.detail {
-            DetailData::Ready { pkg, .. } => pkg.as_ref().clone(),
-            _ => return,
-        };
-        self.set_detail_pkg(pkg);
+        self.detail.refresh_installed(&self.ctx);
     }
 
     fn start_dashboard_refresh(&mut self) -> Task<Message> {
@@ -550,21 +511,6 @@ pub enum Page {
 
 pub(crate) fn page_scroll_id() -> Id {
     Id::new("page-scroll")
-}
-
-pub(crate) fn selectable_optdeps(
-    pkg: &pakajo::package::Package,
-    selection: &[String],
-) -> Vec<(String, String)> {
-    selection
-        .iter()
-        .filter_map(|name| {
-            pkg.opt_dependencies
-                .iter()
-                .find(|dep| &dep.name == name && !dep.installed)
-                .map(|dep| (name.clone(), dep.version.clone().unwrap_or_default()))
-        })
-        .collect()
 }
 
 pub(crate) fn scroll_to_top() -> Task<Message> {

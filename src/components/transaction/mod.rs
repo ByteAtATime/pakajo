@@ -48,10 +48,24 @@ pub(crate) mod review;
 use review::{InstallReview, ReviewMessage};
 
 #[derive(Clone, Debug)]
+pub enum TransactionRequest {
+    Install {
+        name: String,
+        source: PackageSource,
+        with_deps: Vec<(String, String)>,
+    },
+    BatchInstall {
+        with_deps: Vec<(String, String)>,
+    },
+    Remove {
+        name: String,
+        source: PackageSource,
+    },
+}
+
+#[derive(Clone, Debug)]
 pub enum TransactionMessage {
-    StartInstall,
-    StartBatchInstall,
-    StartRemove,
+    Begin(TransactionRequest),
     InstallEvent(InstallEvent),
     InstallDone(ChildOutcome),
     Explored(Result<RevalidationRun, String>),
@@ -239,8 +253,7 @@ impl Transaction {
 
     pub(crate) fn update(&mut self, message: TransactionMessage) -> Action {
         match message {
-            TransactionMessage::StartInstall => Action::None,
-            TransactionMessage::StartBatchInstall => Action::None,
+            TransactionMessage::Begin(_) => Action::None,
             TransactionMessage::InstallEvent(ev) => {
                 self.model.apply_event(&ev);
                 Action::None
@@ -424,7 +437,6 @@ impl Transaction {
                     Action::ViewClosed
                 }
             }
-            TransactionMessage::StartRemove => Action::None,
         }
     }
 
