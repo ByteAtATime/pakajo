@@ -45,6 +45,7 @@ pub struct GroupMember {
 
 #[derive(Clone)]
 pub enum DetailMessage {
+    Load { name: String, source: PackageSource },
     DetailReady { seq: u64, pkg: Box<Package> },
     DetailFailed { seq: u64, message: String },
     ShowLoading { seq: u64 },
@@ -55,6 +56,11 @@ pub enum DetailMessage {
 impl std::fmt::Debug for DetailMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Load { name, source } => f
+                .debug_struct("Load")
+                .field("name", name)
+                .field("source", source)
+                .finish(),
             Self::DetailReady { seq, .. } => {
                 f.debug_struct("DetailReady").field("seq", seq).finish()
             }
@@ -917,6 +923,7 @@ impl crate::PakajoApp {
 
     pub(crate) fn handle_detail(&mut self, message: DetailMessage) -> Task<crate::Message> {
         match message {
+            DetailMessage::Load { name, source } => self.load_detail(name, source),
             DetailMessage::DetailReady { seq, pkg } => {
                 if seq == self.detail_seq {
                     self.detail_pending = None;

@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use cosmic::iced::widget::{Id, scrollable};
-use cosmic::widget::{Column, Row, container, popover, rectangle_tracker, text_input};
+use cosmic::widget::{Column, container, popover, rectangle_tracker, text_input};
 use cosmic::{
     Application,
     app::{self, Core, Settings, Task},
@@ -17,18 +17,12 @@ use pakajo::cli;
 use pakajo::dashboard::{DashboardMessage, DashboardSnapshot};
 use pakajo::db::PackageDb;
 use pakajo::pacman::handle;
-use pakajo::search::SearchFilter;
-use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
 
 use background::begin_aur_sync_in_background;
-use components::dashboard::dashboard_view;
 use components::detail::{DetailData, DetailMessage, detail_view};
 use components::footer;
-use components::search::{
-    ListRect, SearchMessage, SearchState, SelectionScroller, results_scroller, search_bar,
-    search_input_id, search_status_bar,
-};
+use components::search::{ListRect, SearchMessage, SearchPane, search_input_id};
 use components::sysupgrade::SysupgradeMessage;
 use components::transaction::{Action, Transaction, TransactionMessage};
 use components::updates::{RefreshKind, UpdatesMessage, UpdatesPane};
@@ -64,13 +58,7 @@ pub struct PakajoApp {
     pub(crate) ctx: PakajoCtx,
     pub(crate) dashboard: Option<DashboardSnapshot>,
     pub(crate) dashboard_seq: u64,
-    pub(crate) query: String,
-    pub(crate) results: Vec<SearchResult>,
-    pub(crate) search_state: SearchState,
-    pub(crate) search_seq: u64,
-    pub(crate) search_filter: SearchFilter,
-    pub(crate) selected_index: Option<usize>,
-    pub(crate) scroller: SelectionScroller,
+    pub(crate) search: SearchPane,
     pub(crate) detail: DetailData,
     pub(crate) detail_seq: u64,
     pub(crate) detail_pending: Option<u64>,
@@ -150,13 +138,7 @@ impl Application for PakajoApp {
             ctx,
             dashboard: None,
             dashboard_seq: 0,
-            query: String::new(),
-            results: Vec::new(),
-            search_state: SearchState::Idle,
-            search_seq: 0,
-            search_filter: SearchFilter::All,
-            selected_index: None,
-            scroller: SelectionScroller::new(),
+            search: SearchPane::default(),
             detail: DetailData::None,
             detail_seq: 0,
             detail_pending: None,
@@ -188,7 +170,10 @@ impl Application for PakajoApp {
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         let focus = self.ensure_search_focus();
         let task = match message {
-            Message::Search(m) => self.handle_search(m),
+            Message::Search(m) => {
+                let active = self.page == Page::Search && self.overlay_transaction().is_none();
+                self.search.update(m, &mut self.ctx, active)
+            }
             Message::Dashboard(m) => self.handle_dashboard(m),
             Message::Detail(m) => self.handle_detail(m),
             Message::Transaction(m) => self.handle_transaction(m),
@@ -311,51 +296,15 @@ impl PakajoApp {
             .as_ref()
             .filter(|t| t.is_active())
             .map(|t| t.name());
-        let spacing = cosmic::theme::spacing();
-        let page_padding = spacing.space_s as f32;
-        let header = container(search_bar(&self.query)).padding([
-            spacing.space_xs as f32,
-            page_padding,
-            0.0,
-            page_padding,
-        ]);
-        if self.query.trim().is_empty() {
-            let content = Column::new()
-                .spacing(spacing.space_xs as f32)
-                .push(header)
-                .push(dashboard_view(self.dashboard.as_ref()));
-            return container(content).into();
-        }
-        let content = Column::new()
-            .spacing(spacing.space_xs as f32)
-            .push(header)
-            .push(search_status_bar(
-                self.search_state,
-                self.results.len(),
-                self.search_filter,
-                &self.query,
-            ))
-            .push(
-                Column::new().push(divider::horizontal::default()).push(
-                    Row::new()
-                        .push(results_scroller(
-                            &self.results,
-                            self.selected_index,
-                            &self.scroller,
-                        ))
-                        .push(divider::vertical::default())
-                        .push(detail_view(
-                            &self.detail,
-                            active_target,
-                            self.detail_pending.is_some(),
-                            &self.selected_optdeps,
-                            self.transaction.as_ref().is_some_and(|t| t.is_active()),
-                            self.optdep_hover.as_deref(),
-                        )),
-                ),
-            );
-
-        container(content).into()
+        let detail = detail_view(
+            &self.detail,
+            active_target,
+            self.detail_pending.is_some(),
+            &self.selected_optdeps,
+            self.transaction.as_ref().is_some_and(|t| t.is_active()),
+            self.optdep_hover.as_deref(),
+        );
+        self.search.view(self.dashboard.as_ref(), detail)
     }
 
     fn handle_transaction(&mut self, message: TransactionMessage) -> Task<Message> {
@@ -494,7 +443,10 @@ impl PakajoApp {
         if let Some(alpm) = &self.ctx.alpm {
             self.ctx.installed_names = Arc::new(pakajo::package::installed_names(alpm));
         }
-        pakajo::search::apply_installed_to_results(&mut self.results, &self.ctx.installed_names);
+        pakajo::search::apply_installed_to_results(
+            &mut self.search.results,
+            &self.ctx.installed_names,
+        );
         self.refresh_detail_installed();
     }
 
@@ -549,7 +501,7 @@ impl PakajoApp {
     pub(crate) fn goto_page(&mut self, page: Page) -> Task<Message> {
         self.page = page;
         self.search_focus_pending = matches!(page, Page::Search);
-        self.scroller.reset_offset();
+        self.search.scroller.reset_offset();
         scroll_to_top()
     }
 

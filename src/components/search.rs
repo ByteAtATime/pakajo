@@ -10,6 +10,8 @@ use cosmic::iced::widget::scrollable::{AbsoluteOffset, scroll_by, scroll_to};
 use cosmic::iced::{Alignment, Background, Border, Color, Length, Rectangle};
 use cosmic::widget::rectangle_tracker::{RectangleTracker, RectangleUpdate};
 use cosmic::widget::{Column, Row, button, container, scrollable, search_input, space, text};
+use pakajo::dashboard::DashboardSnapshot;
+use pakajo::package::PackageSource;
 
 use pakajo::db::PackageDb;
 use pakajo::search::SearchFilter;
@@ -17,7 +19,199 @@ use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
 
 use crate::Element;
+use crate::PakajoCtx;
+use crate::components::dashboard::dashboard_view;
+use crate::components::detail::DetailMessage;
 use cosmic::widget::divider;
+
+pub struct SearchPane {
+    pub(crate) query: String,
+    pub(crate) results: Vec<SearchResult>,
+    pub(crate) state: SearchState,
+    pub(crate) seq: u64,
+    pub(crate) filter: SearchFilter,
+    pub(crate) selected_index: Option<usize>,
+    pub(crate) scroller: SelectionScroller,
+}
+
+impl Default for SearchPane {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            results: Vec::new(),
+            state: SearchState::Idle,
+            seq: 0,
+            filter: SearchFilter::All,
+            selected_index: None,
+            scroller: SelectionScroller::new(),
+        }
+    }
+}
+
+impl SearchPane {
+    pub fn update(
+        &mut self,
+        message: SearchMessage,
+        ctx: &mut PakajoCtx,
+        active: bool,
+    ) -> Task<crate::Message> {
+        match message {
+            SearchMessage::GroupsLoaded(index) => {
+                ctx.group_index = index;
+                if self.query.trim().is_empty() {
+                    Task::none()
+                } else {
+                    self.begin_search(ctx)
+                }
+            }
+            SearchMessage::QueryChanged(text) => {
+                self.query = text.clone();
+                self.seq = self.seq.wrapping_add(1);
+
+                if text.trim().is_empty() {
+                    self.results.clear();
+                    self.selected_index = None;
+                    self.state = SearchState::Idle;
+                    return Task::none();
+                }
+
+                self.begin_search(ctx)
+            }
+            SearchMessage::FilterChanged(filter) => {
+                if filter == self.filter {
+                    return Task::none();
+                }
+                self.filter = filter;
+                self.seq += 1;
+                if self.query.trim().is_empty() {
+                    Task::none()
+                } else {
+                    self.begin_search(ctx)
+                }
+            }
+            SearchMessage::ResultsReady { seq, results } => {
+                if seq == self.seq {
+                    self.results = results;
+                    self.selected_index = if self.results.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
+                    self.state = SearchState::Done;
+                    self.scroller.reset_offset();
+                    let mut tasks: Vec<Task<crate::Message>> = Vec::new();
+                    if let Some(first) = self.results.first() {
+                        tasks.push(self.load_detail_message(first.name.clone(), first.source));
+                    }
+                    tasks.push(crate::scroll_to_top());
+                    return Task::batch(tasks);
+                }
+                Task::none()
+            }
+            SearchMessage::SelectDelta(delta) => {
+                if !active {
+                    return Task::none();
+                }
+                let Some(i) = next_selected_index(self.results.len(), self.selected_index, delta)
+                else {
+                    return Task::none();
+                };
+                self.selected_index = Some(i);
+                let detail = match self.results.get(i) {
+                    Some(result) => self.load_detail_message(result.name.clone(), result.source),
+                    None => Task::none(),
+                };
+                let scroll = self.scroller.scroll_to_visible(i, Some(delta));
+                Task::batch([detail, scroll])
+            }
+            SearchMessage::SelectIndex(i) => {
+                let Some(result) = self.results.get(i) else {
+                    return Task::none();
+                };
+                self.selected_index = Some(i);
+                let detail = self.load_detail_message(result.name.clone(), result.source);
+                let scroll = self.scroller.scroll_to_visible(i, None);
+                Task::batch([detail, scroll])
+            }
+            SearchMessage::Rects(update) => {
+                self.scroller.track(update);
+                Task::none()
+            }
+            SearchMessage::Scrolled(y) => {
+                self.scroller.scrolled(y);
+                Task::none()
+            }
+        }
+    }
+
+    fn load_detail_message(&self, name: String, source: PackageSource) -> Task<crate::Message> {
+        Task::done(cosmic::Action::App(crate::Message::Detail(
+            DetailMessage::Load { name, source },
+        )))
+    }
+
+    fn begin_search(&mut self, ctx: &PakajoCtx) -> Task<crate::Message> {
+        self.state = SearchState::Searching;
+        let engine = ctx.search_engine.clone();
+        let db = ctx.db.clone();
+        let installed = ctx.installed_names.clone();
+        let group_index = ctx.group_index.clone();
+        let text = self.query.clone();
+        let filter = self.filter;
+        let seq = self.seq;
+        Task::perform(
+            async move { execute_search_for(engine, db, group_index, installed, text, filter) },
+            move |results| {
+                crate::Message::Search(SearchMessage::ResultsReady { seq, results }).into()
+            },
+        )
+    }
+
+    pub fn view<'a>(
+        &'a self,
+        dashboard: Option<&'a DashboardSnapshot>,
+        detail: Element<'a>,
+    ) -> Element<'a> {
+        let spacing = cosmic::theme::spacing();
+        let page_padding = spacing.space_s as f32;
+        let header = container(search_bar(&self.query)).padding([
+            spacing.space_xs as f32,
+            page_padding,
+            0.0,
+            page_padding,
+        ]);
+        if self.query.trim().is_empty() {
+            let content = Column::new()
+                .spacing(spacing.space_xs as f32)
+                .push(header)
+                .push(dashboard_view(dashboard));
+            return container(content).into();
+        }
+        let content = Column::new()
+            .spacing(spacing.space_xs as f32)
+            .push(header)
+            .push(search_status_bar(
+                self.state,
+                self.results.len(),
+                self.filter,
+                &self.query,
+            ))
+            .push(
+                Column::new().push(divider::horizontal::default()).push(
+                    Row::new()
+                        .push(results_scroller(
+                            &self.results,
+                            self.selected_index,
+                            &self.scroller,
+                        ))
+                        .push(divider::vertical::default())
+                        .push(detail),
+                ),
+            );
+
+        container(content).into()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ListRect {
@@ -400,116 +594,6 @@ pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool)
         .padding(0)
         .width(Length::Fill)
         .into()
-}
-
-impl crate::PakajoApp {
-    pub(crate) fn handle_search(&mut self, message: SearchMessage) -> Task<crate::Message> {
-        match message {
-            SearchMessage::GroupsLoaded(index) => {
-                self.ctx.group_index = index;
-                if self.query.trim().is_empty() {
-                    Task::none()
-                } else {
-                    self.begin_search()
-                }
-            }
-            SearchMessage::QueryChanged(text) => {
-                self.query = text.clone();
-                self.search_seq = self.search_seq.wrapping_add(1);
-
-                if text.trim().is_empty() {
-                    self.results.clear();
-                    self.selected_index = None;
-                    self.search_state = SearchState::Idle;
-                    return Task::none();
-                }
-
-                self.begin_search()
-            }
-            SearchMessage::FilterChanged(filter) => {
-                if filter == self.search_filter {
-                    return Task::none();
-                }
-                self.search_filter = filter;
-                self.search_seq += 1;
-                if self.query.trim().is_empty() {
-                    Task::none()
-                } else {
-                    self.begin_search()
-                }
-            }
-            SearchMessage::ResultsReady { seq, results } => {
-                if seq == self.search_seq {
-                    self.results = results;
-                    self.selected_index = if self.results.is_empty() {
-                        None
-                    } else {
-                        Some(0)
-                    };
-                    self.search_state = SearchState::Done;
-                    self.scroller.reset_offset();
-                    let mut tasks: Vec<Task<crate::Message>> = Vec::new();
-                    if let Some(first) = self.results.first() {
-                        tasks.push(self.load_detail(first.name.clone(), first.source));
-                    }
-                    tasks.push(crate::scroll_to_top());
-                    return Task::batch(tasks);
-                }
-                Task::none()
-            }
-            SearchMessage::SelectDelta(delta) => {
-                if !matches!(self.page, crate::Page::Search) || self.overlay_transaction().is_some()
-                {
-                    return Task::none();
-                }
-                let Some(i) = next_selected_index(self.results.len(), self.selected_index, delta)
-                else {
-                    return Task::none();
-                };
-                self.selected_index = Some(i);
-                let detail = match self.results.get(i) {
-                    Some(result) => self.load_detail(result.name.clone(), result.source),
-                    None => Task::none(),
-                };
-                let scroll = self.scroller.scroll_to_visible(i, Some(delta));
-                Task::batch([detail, scroll])
-            }
-            SearchMessage::SelectIndex(i) => {
-                let Some(result) = self.results.get(i) else {
-                    return Task::none();
-                };
-                self.selected_index = Some(i);
-                let detail = self.load_detail(result.name.clone(), result.source);
-                let scroll = self.scroller.scroll_to_visible(i, None);
-                Task::batch([detail, scroll])
-            }
-            SearchMessage::Rects(update) => {
-                self.scroller.track(update);
-                Task::none()
-            }
-            SearchMessage::Scrolled(y) => {
-                self.scroller.scrolled(y);
-                Task::none()
-            }
-        }
-    }
-
-    fn begin_search(&mut self) -> Task<crate::Message> {
-        self.search_state = SearchState::Searching;
-        let engine = self.ctx.search_engine.clone();
-        let db = self.ctx.db.clone();
-        let installed = self.ctx.installed_names.clone();
-        let group_index = self.ctx.group_index.clone();
-        let text = self.query.clone();
-        let filter = self.search_filter;
-        let seq = self.search_seq;
-        Task::perform(
-            async move { execute_search_for(engine, db, group_index, installed, text, filter) },
-            move |results| {
-                crate::Message::Search(SearchMessage::ResultsReady { seq, results }).into()
-            },
-        )
-    }
 }
 
 #[cfg(test)]
