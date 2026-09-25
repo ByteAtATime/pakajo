@@ -3,13 +3,59 @@ use std::io::Write as _;
 use std::time::Instant;
 
 use super::summary::{print_summary, render_summary};
-use crate::color::{HIDE_CURSOR, SHOW_CURSOR};
+use crate::color::{self, HIDE_CURSOR, SHOW_CURSOR};
+use crate::download::{FileTransfer, Meter, Totals};
 use crate::events::{DownloadResult, InstallEvent, InstallSink, LogLevel, ProgressPhase};
-use crate::{
-    color,
-    download::{FileTransfer, Totals},
-    utils::{format_eta, format_rate},
-};
+use crate::utils::{format_eta, format_rate, terminal_cols};
+
+#[derive(Clone, Copy)]
+enum Stream {
+    Out,
+    Err,
+}
+
+impl Stream {
+    fn print(self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        match self {
+            Stream::Out => {
+                print!("{text}");
+                let _ = std::io::stdout().flush();
+            }
+            Stream::Err => {
+                eprint!("{text}");
+                let _ = std::io::stderr().flush();
+            }
+        }
+    }
+
+    fn println(self, text: &str) {
+        match self {
+            Stream::Out => println!("{text}"),
+            Stream::Err => eprintln!("{text}"),
+        }
+    }
+
+    fn colon(self, colored: bool, msg: &str) {
+        self.println(&color::colon(colored, msg));
+    }
+
+    fn warning(self, colored: bool, msg: &str) {
+        self.println(&format!(
+            "{} {msg}",
+            color::paint(colored, color::YELLOW, "warning:")
+        ));
+    }
+
+    fn error(self, colored: bool, msg: &str) {
+        self.println(&format!(
+            "{} {msg}",
+            color::paint(colored, color::RED, "error:")
+        ));
+    }
+}
 
 struct DownloadBars {
     files: HashMap<String, FileTransfer>,
@@ -32,34 +78,13 @@ impl DownloadBars {
         }
     }
 
-    fn total_active(&self) -> bool {
-        self.draw_total
-    }
-
-    #[cfg(test)]
-    fn total_downloaded(&self) -> usize {
-        self.totals.downloaded
-    }
-
-    #[cfg(test)]
-    fn total_xfered(&self) -> i64 {
-        self.totals.xfered
-    }
-
-    fn total_line_index(&self) -> i64 {
-        self.order.len() as i64
-    }
-
     fn draw_total(&self, cols: usize, colored: bool) -> String {
         if !self.draw_total {
             return String::new();
         }
-        draw_download_bar(
+        meter_bar(
             &total_label(self.totals.downloaded, self.totals.howmany),
-            self.totals.meter.sync_xfered,
-            self.totals.meter.total,
-            self.totals.meter.rate,
-            self.totals.meter.eta,
+            &self.totals.meter,
             cols,
             colored,
         )
@@ -86,26 +111,16 @@ impl DownloadBars {
     }
 
     fn move_end(&mut self, color: bool) -> String {
-        if !color {
-            return String::new();
-        }
-        let end = self.order.len() as i64;
-        self.move_to(end, color)
+        self.move_to(self.order.len() as i64, color)
     }
 
     fn move_below_total(&mut self, color: bool) -> String {
-        if !color {
-            return String::new();
-        }
-        let end = self.order.len() as i64 + i64::from(self.total_active());
+        let end = self.order.len() as i64 + i64::from(self.draw_total);
         self.move_to(end, color)
     }
 
     fn claim_line(&mut self, filename: &str, color: bool) -> String {
-        if !color {
-            return String::new();
-        }
-        if self.order.iter().any(|name| name == filename) {
+        if !color || self.order.iter().any(|name| name == filename) {
             return String::new();
         }
         let mut out = self.move_end(true);
@@ -124,14 +139,11 @@ impl DownloadBars {
     }
 
     fn release_head(&mut self) {
-        loop {
-            let head_done = self
-                .order
-                .first()
-                .is_some_and(|name| self.finished.contains(name));
-            if !head_done {
-                break;
-            }
+        while self
+            .order
+            .first()
+            .is_some_and(|name| self.finished.contains(name))
+        {
             if let Some(name) = self.order.first().cloned() {
                 self.finished.remove(&name);
             }
@@ -144,10 +156,10 @@ impl DownloadBars {
         self.files
             .insert(filename.to_string(), FileTransfer::fresh(now));
         let mut out = self.claim_line(filename, color);
-        if !color || !self.total_active() {
+        if !color || !self.draw_total {
             return out;
         }
-        out.push_str(&self.move_to(self.total_line_index(), true));
+        out.push_str(&self.move_to(self.order.len() as i64, true));
         out.push_str(&self.draw_total(cols, color));
         out.push('\n');
         self.cursor += 1;
@@ -173,15 +185,7 @@ impl DownloadBars {
         let mut out = String::new();
         if file_drew {
             let file = self.files.get(filename).expect("file observed");
-            let line = draw_download_bar(
-                clean_pkg_filename(filename),
-                file.meter.sync_xfered,
-                file.meter.total,
-                file.meter.rate,
-                file.meter.eta,
-                cols,
-                color,
-            );
+            let line = meter_bar(clean_pkg_filename(filename), &file.meter, cols, color);
             if !color {
                 return Some(line);
             }
@@ -190,23 +194,14 @@ impl DownloadBars {
             out.push_str(&self.move_to(index, true));
             out.push_str(&line);
         }
-        if !color {
-            if out.is_empty() {
-                return None;
-            }
-            return Some(out);
+        if !color || !self.draw_total {
+            return (!out.is_empty()).then_some(out);
         }
-        if !self.total_active() {
-            if out.is_empty() { None } else { Some(out) }
-        } else {
-            let drew = self.totals.add_chunk(chunk, now);
-            if drew {
-                let index = self.total_line_index();
-                out.push_str(&self.move_to(index, true));
-                out.push_str(&self.draw_total(cols, color));
-            }
-            if out.is_empty() { None } else { Some(out) }
+        if self.totals.add_chunk(chunk, now) {
+            out.push_str(&self.move_to(self.order.len() as i64, true));
+            out.push_str(&self.draw_total(cols, color));
         }
+        (!out.is_empty()).then_some(out)
     }
 
     fn retry_file(&mut self, filename: &str, now: Instant, resume: bool) {
@@ -214,44 +209,21 @@ impl DownloadBars {
         if let Some(file) = self.files.get_mut(filename) {
             file.reset(now);
         }
-        if resume {
-            return;
+        if !resume {
+            self.totals.rollback(previous);
         }
-        self.totals.rollback(previous);
     }
 
-    fn count_completion(&mut self) {
+    fn status_line(&mut self, filename: &str, message: &str, color: bool) -> String {
+        self.files.remove(filename);
         self.totals.count_completion();
-    }
-
-    fn up_to_date_line(&mut self, filename: &str, color: bool) -> String {
-        self.files.remove(filename);
-        self.count_completion();
         let clear = if color { "\x1b[K" } else { "" };
         if !color {
-            return format!(" {} is up to date{clear}", clean_pkg_filename(filename));
+            return format!(" {message}{clear}");
         }
         let index = self.bar_index(filename);
         let mut out = self.move_to(index, true);
-        out.push_str(&format!(
-            " {} is up to date{clear}",
-            clean_pkg_filename(filename)
-        ));
-        self.finished.insert(filename.to_string());
-        self.release_head();
-        out
-    }
-
-    fn failed_line(&mut self, filename: &str, color: bool) -> String {
-        self.files.remove(filename);
-        self.count_completion();
-        let clear = if color { "\x1b[K" } else { "" };
-        if !color {
-            return format!(" {filename} failed to download{clear}");
-        }
-        let index = self.bar_index(filename);
-        let mut out = self.move_to(index, true);
-        out.push_str(&format!(" {filename} failed to download{clear}"));
+        out.push_str(&format!(" {message}{clear}"));
         self.finished.insert(filename.to_string());
         self.release_head();
         out
@@ -265,22 +237,14 @@ impl DownloadBars {
         cols: usize,
         color: bool,
     ) -> String {
-        self.count_completion();
+        self.totals.count_completion();
         let file = self
             .files
             .entry(filename.to_string())
             .or_insert_with(|| FileTransfer::fresh(now));
         file.complete(total);
         file.meter.finish(now, total);
-        let line = draw_download_bar(
-            clean_pkg_filename(filename),
-            file.meter.sync_xfered,
-            file.meter.total,
-            file.meter.rate,
-            file.meter.eta,
-            cols,
-            color,
-        );
+        let line = meter_bar(clean_pkg_filename(filename), &file.meter, cols, color);
         if !color {
             return line;
         }
@@ -302,26 +266,30 @@ impl DownloadBars {
         let mut out = self.move_to(index, true);
         out.push_str(&self.draw_total(cols, color));
         out.push('\n');
-        self.cursor = self.order.len() as i64;
+        self.cursor = index;
         self.draw_total = false;
         out
     }
 
-    #[cfg(test)]
-    fn complete_one(
+    fn complete_line(
         &mut self,
         filename: &str,
-        result: crate::events::DownloadResult,
+        total: i64,
+        result: DownloadResult,
         now: Instant,
         cols: usize,
         color: bool,
     ) -> String {
         match result {
-            crate::events::DownloadResult::UpToDate => self.up_to_date_line(filename, color),
-            crate::events::DownloadResult::Success => {
-                self.success_line(filename, 0, now, cols, color)
+            DownloadResult::UpToDate => self.status_line(
+                filename,
+                &format!("{} is up to date", clean_pkg_filename(filename)),
+                color,
+            ),
+            DownloadResult::Success => self.success_line(filename, total, now, cols, color),
+            DownloadResult::Failed => {
+                self.status_line(filename, &format!("{filename} failed to download"), color)
             }
-            crate::events::DownloadResult::Failed => self.failed_line(filename, color),
         }
     }
 }
@@ -334,6 +302,88 @@ fn is_download_event(event: &InstallEvent) -> bool {
             | InstallEvent::DownloadRetry { .. }
             | InstallEvent::DownloadCompleted { .. }
     )
+}
+
+fn move_below_event(
+    downloads: &mut DownloadBars,
+    event: &InstallEvent,
+    stream: Stream,
+    colored: bool,
+) {
+    let end = match event {
+        InstallEvent::PkgRetrieveDone { .. } | InstallEvent::PkgRetrieveFailed { .. } => {
+            downloads.move_end(colored)
+        }
+        _ => downloads.move_below_total(colored),
+    };
+    stream.print(&end);
+}
+
+fn download_event(
+    downloads: &mut DownloadBars,
+    event: &InstallEvent,
+    stream: Stream,
+    colored: bool,
+    mut cursor: Option<&mut Cursor>,
+) {
+    let now = Instant::now();
+    match event {
+        InstallEvent::RetrievingPackages { num, total_bytes } => {
+            downloads.init_total(*num, *total_bytes, now, colored);
+            stream.colon(colored, "Retrieving packages...");
+        }
+        InstallEvent::DownloadInit { filename, optional } => {
+            let claim = downloads.init_file(filename, now, terminal_cols(), colored);
+            if !claim.is_empty() {
+                if let Some(cursor) = cursor.as_deref_mut() {
+                    cursor.hide();
+                }
+                stream.print(&claim);
+            }
+            if *optional {
+                stream.println(&format!("  {filename} (optional)"));
+            }
+        }
+        InstallEvent::DownloadProgress {
+            filename,
+            downloaded,
+            total,
+        } => {
+            if let Some(line) = downloads.progress_line(
+                filename,
+                *downloaded,
+                *total,
+                now,
+                terminal_cols(),
+                colored,
+            ) {
+                if let Some(cursor) = cursor {
+                    cursor.hide();
+                }
+                stream.print(&line);
+            }
+        }
+        InstallEvent::DownloadRetry { filename, resume } => {
+            downloads.retry_file(filename, now, *resume);
+        }
+        InstallEvent::DownloadCompleted {
+            filename,
+            total,
+            result,
+        } => {
+            let line =
+                downloads.complete_line(filename, *total, *result, now, terminal_cols(), colored);
+            if colored {
+                stream.print(&line);
+            } else {
+                stream.println(&line);
+            }
+        }
+        InstallEvent::PkgRetrieveDone { .. } | InstallEvent::PkgRetrieveFailed { .. } => {
+            stream.print(&downloads.finish_total(now, terminal_cols(), colored));
+        }
+        _ => {}
+    }
 }
 
 fn total_label(downloaded: usize, howmany: usize) -> String {
@@ -357,6 +407,18 @@ fn pacman_humanize(value: f64) -> (f64, &'static str) {
         unit += 1;
     }
     (scaled, UNITS[unit])
+}
+
+fn meter_bar(cleaned: &str, meter: &Meter, cols: usize, colored: bool) -> String {
+    draw_download_bar(
+        cleaned,
+        meter.sync_xfered,
+        meter.total,
+        meter.rate,
+        meter.eta,
+        cols,
+        colored,
+    )
 }
 
 fn draw_download_bar(
@@ -415,102 +477,46 @@ impl ConsoleSink {
         }
     }
 
-    fn show_cursor(&mut self) {
-        let show = self.cursor.show();
-        if !show.is_empty() {
-            print!("{show}");
-            let _ = std::io::stdout().flush();
-        }
+    fn say(&self, msg: &str) {
+        println!("{}", color::colon(self.color, msg));
     }
 
-    fn hide_cursor(&mut self) {
-        let hide = self.cursor.hide();
-        if !hide.is_empty() {
-            print!("{hide}");
-            let _ = std::io::stdout().flush();
-        }
+    fn warn(&self, msg: &str) {
+        Stream::Err.warning(self.stderr_color, msg);
+    }
+
+    fn fail(&self, msg: &str) {
+        Stream::Err.error(self.stderr_color, msg);
     }
 
     fn print_event(&mut self, event: &InstallEvent) {
-        if !is_download_event(event) {
-            let end = match event {
-                InstallEvent::PkgRetrieveDone { .. } | InstallEvent::PkgRetrieveFailed { .. } => {
-                    self.downloads.move_end(self.color)
-                }
-                _ => self.downloads.move_below_total(self.color),
-            };
-            if !end.is_empty() {
-                print!("{end}");
-                let _ = std::io::stdout().flush();
-            }
+        let stream = Stream::Out;
+        if is_download_event(event) {
+            download_event(
+                &mut self.downloads,
+                event,
+                stream,
+                self.color,
+                Some(&mut self.cursor),
+            );
+            return;
         }
+        move_below_event(&mut self.downloads, event, stream, self.color);
         match event {
             InstallEvent::ResolvingDependencies => println!("resolving dependencies..."),
             InstallEvent::CheckingConflicts => println!("looking for conflicting packages..."),
             InstallEvent::CheckingDependencies => println!("checking dependencies..."),
-            InstallEvent::CheckingFileConflicts => {}
-            InstallEvent::CheckingIntegrity => {}
-            InstallEvent::CheckingDiskSpace => {}
             InstallEvent::LoadingPackages => println!("loading packages..."),
-            InstallEvent::SyncDatabases => println!(
-                "{}",
-                color::colon(self.color, "Synchronizing package databases...")
-            ),
-            InstallEvent::StartSysupgrade => println!(
-                "{}",
-                color::colon(self.color, "Starting full system upgrade...")
-            ),
-            InstallEvent::KeyringStart => {}
-            InstallEvent::RetrievingPackages { num, total_bytes } => {
-                self.downloads
-                    .init_total(*num, *total_bytes, Instant::now(), self.color);
-                println!("{}", color::colon(self.color, "Retrieving packages..."));
+            InstallEvent::SyncDatabases => self.say("Synchronizing package databases..."),
+            InstallEvent::StartSysupgrade => self.say("Starting full system upgrade..."),
+            InstallEvent::RetrievingPackages { .. }
+            | InstallEvent::PkgRetrieveDone { .. }
+            | InstallEvent::PkgRetrieveFailed { .. } => {
+                download_event(&mut self.downloads, event, stream, self.color, None);
             }
-            InstallEvent::ProcessingChanges => {
-                println!(
-                    "{}",
-                    color::colon(self.color, "Processing package changes...")
-                );
-            }
+            InstallEvent::ProcessingChanges => self.say("Processing package changes..."),
             InstallEvent::WaitingForDatabaseLock => {
-                println!(
-                    "{}",
-                    color::colon(self.color, "Pacman is currently in use, please wait...")
-                );
-            }
-            InstallEvent::PackageOperation { .. } => {}
-            InstallEvent::DownloadInit { filename, optional } => {
-                let claim = self.downloads.init_file(
-                    filename,
-                    Instant::now(),
-                    crate::utils::terminal_cols(),
-                    self.color,
-                );
-                if !claim.is_empty() {
-                    self.hide_cursor();
-                    print!("{claim}");
-                    let _ = std::io::stdout().flush();
-                }
-                if *optional {
-                    println!("  {filename} (optional)");
-                }
-            }
-            InstallEvent::DownloadProgress {
-                filename,
-                downloaded,
-                total,
-            } => {
-                self.download_progress(filename, *downloaded, *total);
-            }
-            InstallEvent::DownloadRetry { filename, resume } => {
-                self.downloads.retry_file(filename, Instant::now(), *resume);
-            }
-            InstallEvent::DownloadCompleted {
-                filename,
-                total,
-                result,
-            } => {
-                self.download_completed(filename, *total, *result);
+                self.say("Pacman is currently in use, please wait...")
             }
             InstallEvent::Progress {
                 phase,
@@ -524,12 +530,12 @@ impl ConsoleSink {
                     return;
                 }
                 self.last_progress = Some(key);
-                self.hide_cursor();
+                self.cursor.hide();
                 print_progress(*phase, package, *percent, *current, *total, self.color);
             }
             InstallEvent::HookStart { pre } => {
                 if let Some(label) = hook_header(&mut self.hook_phase, *pre) {
-                    println!("{}", color::colon(self.color, label));
+                    self.say(label);
                 }
             }
             InstallEvent::HookRun {
@@ -537,12 +543,10 @@ impl ConsoleSink {
                 total,
                 name,
                 desc,
-            } => {
-                println!(
-                    "{}",
-                    hook_run_line(*position, *total, name, desc.as_deref())
-                );
-            }
+            } => println!(
+                "{}",
+                hook_run_line(*position, *total, name, desc.as_deref())
+            ),
             InstallEvent::ScriptletInfo { line } => {
                 if line.ends_with('\n') {
                     print!("{line}");
@@ -551,33 +555,14 @@ impl ConsoleSink {
                 }
             }
             InstallEvent::Log { level, message } => match level {
-                LogLevel::Error => eprintln!(
-                    "{} {}",
-                    color::paint(self.stderr_color, color::RED, "error:"),
-                    message.trim_end()
-                ),
-                LogLevel::Warning => eprintln!(
-                    "{} {}",
-                    color::paint(self.stderr_color, color::YELLOW, "warning:"),
-                    message.trim_end()
-                ),
+                LogLevel::Error => self.fail(message.trim_end()),
+                LogLevel::Warning => self.warn(message.trim_end()),
                 LogLevel::Debug => {}
             },
-            InstallEvent::TransactionDone => {}
             InstallEvent::TransactionSummary(s) => print_summary(s),
             InstallEvent::ResolvingAurDependencies { target } => {
-                println!(
-                    "{}",
-                    color::colon(
-                        self.color,
-                        &format!("resolving dependencies for {}...", target)
-                    )
-                );
+                self.say(&format!("resolving dependencies for {target}..."));
             }
-            InstallEvent::AurDepResolved { .. } => {}
-            InstallEvent::ResolutionComplete { .. } => {}
-            InstallEvent::CloningRepo { .. } => {}
-            InstallEvent::BuildStarted { .. } => {}
             InstallEvent::BuildOutput { line, .. } => {
                 if self.color {
                     println!("{line}");
@@ -585,39 +570,19 @@ impl ConsoleSink {
                     println!("{}", color::ansi_strip(line));
                 }
             }
-            InstallEvent::BuildCompleted { .. } => {}
-            InstallEvent::PkgbuildReviewStarted { .. }
-            | InstallEvent::PkgbuildReviewAccepted { .. } => {}
             InstallEvent::PkgbuildAllUpToDate { packages } => {
-                if packages.len() == 1 {
-                    println!(
-                        "{}",
-                        color::colon(
-                            self.color,
-                            &format!("{}: already reviewed, no changes", packages[0])
-                        )
-                    );
+                let msg = if packages.len() == 1 {
+                    format!("{}: already reviewed, no changes", packages[0])
                 } else {
-                    println!(
-                        "{}",
-                        color::colon(
-                            self.color,
-                            &format!("{} packages already reviewed, no changes", packages.len())
-                        )
-                    );
-                }
+                    format!("{} packages already reviewed, no changes", packages.len())
+                };
+                self.say(&msg);
             }
             InstallEvent::SysupgradeAurCandidates { candidates } => {
                 if candidates.is_empty() {
                     return;
                 }
-                println!(
-                    "{}",
-                    color::colon(
-                        self.color,
-                        &format!("{} AUR package(s) to upgrade:", candidates.len())
-                    )
-                );
+                self.say(&format!("{} AUR package(s) to upgrade:", candidates.len()));
                 let name_width = candidates.iter().map(|c| c.name.len()).max().unwrap_or(0);
                 let ver_width = candidates
                     .iter()
@@ -635,112 +600,21 @@ impl ConsoleSink {
                     );
                 }
             }
-            InstallEvent::ResolveDepsDone
-            | InstallEvent::CheckDepsDone
-            | InstallEvent::InterConflictsDone
-            | InstallEvent::FileConflictsDone
-            | InstallEvent::IntegrityDone
-            | InstallEvent::LoadDone
-            | InstallEvent::DiskSpaceDone
-            | InstallEvent::KeyringDone
-            | InstallEvent::KeyDownloadDone
-            | InstallEvent::RetrieveStart
-            | InstallEvent::RetrieveDone
-            | InstallEvent::RetrieveFailed => {}
-            InstallEvent::PkgRetrieveDone { .. } | InstallEvent::PkgRetrieveFailed { .. } => {
-                let line = self.downloads.finish_total(
-                    Instant::now(),
-                    crate::utils::terminal_cols(),
-                    self.color,
-                );
-                if !line.is_empty() {
-                    print!("{line}");
-                    let _ = std::io::stdout().flush();
-                }
-            }
-            InstallEvent::PackageOperationEnd { .. }
-            | InstallEvent::HookDone { .. }
-            | InstallEvent::HookRunDone => {}
-            InstallEvent::KeyDownloadStart => {
-                println!(
-                    "{}",
-                    color::colon(self.color, "downloading required keys...")
-                );
-            }
+            InstallEvent::KeyDownloadStart => self.say("downloading required keys..."),
             InstallEvent::OptDepRemoval { package, optdep } => {
-                println!(
-                    "{}",
-                    color::colon(
-                        self.color,
-                        &format!("{package} optionally requires {optdep}")
-                    )
-                );
+                self.say(&format!("{package} optionally requires {optdep}"));
             }
-            InstallEvent::DatabaseMissing { dbname } => {
-                eprintln!(
-                    "{} database file for '{dbname}' does not exist (use '-Sy' to download)",
-                    color::paint(self.stderr_color, color::YELLOW, "warning:")
-                );
-            }
+            InstallEvent::DatabaseMissing { dbname } => self.warn(&format!(
+                "database file for '{dbname}' does not exist (use '-Sy' to download)"
+            )),
             InstallEvent::PacnewCreated { file, .. } => {
-                eprintln!(
-                    "{} {}",
-                    color::paint(self.stderr_color, color::YELLOW, "warning:"),
-                    crate::utils::pacnew_warning(file)
-                );
+                self.warn(&crate::utils::pacnew_warning(file))
             }
             InstallEvent::PacsaveCreated { file } => {
-                eprintln!(
-                    "{} {}",
-                    color::paint(self.stderr_color, color::YELLOW, "warning:"),
-                    crate::utils::pacsave_warning(file)
-                );
+                self.warn(&crate::utils::pacsave_warning(file))
             }
-            InstallEvent::RuntimePrompt { .. } => {}
-            InstallEvent::FailClosed { reason, .. } => {
-                eprintln!(
-                    "{} {}",
-                    color::paint(self.stderr_color, color::RED, "error:"),
-                    reason
-                );
-            }
-        }
-    }
-
-    fn download_progress(&mut self, filename: &str, downloaded: i64, total: i64) {
-        let drawn = self.downloads.progress_line(
-            filename,
-            downloaded,
-            total,
-            Instant::now(),
-            crate::utils::terminal_cols(),
-            self.color,
-        );
-        if let Some(line) = drawn {
-            self.hide_cursor();
-            print!("{line}");
-            let _ = std::io::stdout().flush();
-        }
-    }
-
-    fn download_completed(&mut self, filename: &str, total: i64, result: DownloadResult) {
-        let color = self.color;
-        let line = match result {
-            DownloadResult::UpToDate => self.downloads.up_to_date_line(filename, color),
-            DownloadResult::Success => self.downloads.success_line(
-                filename,
-                total,
-                Instant::now(),
-                crate::utils::terminal_cols(),
-                color,
-            ),
-            DownloadResult::Failed => self.downloads.failed_line(filename, color),
-        };
-        if color {
-            print!("{line}");
-            let _ = std::io::stdout().flush();
-        } else {
-            println!("{line}");
+            InstallEvent::FailClosed { reason, .. } => self.fail(reason),
+            _ => {}
         }
     }
 }
@@ -759,7 +633,7 @@ impl InstallSink for ConsoleSink {
 
 impl Drop for ConsoleSink {
     fn drop(&mut self) {
-        self.show_cursor();
+        self.cursor.show();
     }
 }
 
@@ -795,22 +669,17 @@ impl EscalatedSink {
 
 impl InstallSink for EscalatedSink {
     fn event(&mut self, event: InstallEvent) {
-        if !is_download_event(&event) {
-            let end = match event {
-                InstallEvent::PkgRetrieveDone { .. } | InstallEvent::PkgRetrieveFailed { .. } => {
-                    self.downloads.move_end(color::stderr_color())
-                }
-                _ => self.downloads.move_below_total(color::stderr_color()),
-            };
-            if !end.is_empty() {
-                eprint!("{end}");
-                let _ = std::io::stderr().flush();
-            }
+        let stream = Stream::Err;
+        let colored = color::stderr_color();
+        if is_download_event(&event) {
+            download_event(&mut self.downloads, &event, stream, colored, None);
+            return;
         }
+        move_below_event(&mut self.downloads, &event, stream, colored);
         match event {
             InstallEvent::HookStart { pre } => {
                 if let Some(label) = hook_header(&mut self.hook_phase, pre) {
-                    eprintln!("{}", color::colon(color::stderr_color(), label));
+                    stream.colon(colored, label);
                 }
             }
             InstallEvent::HookRun {
@@ -818,161 +687,46 @@ impl InstallSink for EscalatedSink {
                 total,
                 name,
                 desc,
-            } => {
-                eprintln!("{}", hook_run_line(position, total, &name, desc.as_deref()));
-            }
+            } => stream.println(&hook_run_line(position, total, &name, desc.as_deref())),
             InstallEvent::TransactionSummary(s) => {
                 if s.packages.is_empty() {
-                    eprintln!(" nothing to do");
+                    stream.println(" nothing to do");
                 } else {
-                    eprint!("{}", render_summary(&s, color::stderr_color()));
+                    stream.print(&render_summary(&s, colored));
                 }
             }
-            InstallEvent::CheckingDependencies => {
-                eprintln!("checking dependencies...");
-            }
-            InstallEvent::DownloadInit { filename, optional } => {
-                let claim = self.downloads.init_file(
-                    &filename,
-                    Instant::now(),
-                    crate::utils::terminal_cols(),
-                    color::stderr_color(),
-                );
-                if !claim.is_empty() {
-                    eprint!("{claim}");
-                    let _ = std::io::stderr().flush();
-                }
-                if optional {
-                    eprintln!("  {filename} (optional)");
-                }
-            }
-            InstallEvent::DownloadProgress {
-                filename,
-                downloaded,
-                total,
-            } => {
-                let drawn = self.downloads.progress_line(
-                    &filename,
-                    downloaded,
-                    total,
-                    Instant::now(),
-                    crate::utils::terminal_cols(),
-                    color::stderr_color(),
-                );
-                if let Some(line) = drawn {
-                    eprint!("{line}");
-                    let _ = std::io::stderr().flush();
-                }
-            }
-            InstallEvent::DownloadRetry { filename, resume } => {
-                self.downloads.retry_file(&filename, Instant::now(), resume);
-            }
-            InstallEvent::DownloadCompleted {
-                filename,
-                total,
-                result,
-            } => {
-                let color = color::stderr_color();
-                let line = match result {
-                    DownloadResult::UpToDate => self.downloads.up_to_date_line(&filename, color),
-                    DownloadResult::Success => self.downloads.success_line(
-                        &filename,
-                        total,
-                        Instant::now(),
-                        crate::utils::terminal_cols(),
-                        color,
-                    ),
-                    DownloadResult::Failed => self.downloads.failed_line(&filename, color),
-                };
-                if color {
-                    eprint!("{line}");
-                    let _ = std::io::stderr().flush();
-                } else {
-                    eprintln!("{line}");
-                }
-            }
-            InstallEvent::RetrievingPackages { num, total_bytes } => {
-                self.downloads
-                    .init_total(num, total_bytes, Instant::now(), color::stderr_color());
-                eprintln!(
-                    "{}",
-                    color::colon(color::stderr_color(), "Retrieving packages...")
-                );
-            }
-            InstallEvent::PkgRetrieveDone { .. } | InstallEvent::PkgRetrieveFailed { .. } => {
-                let line = self.downloads.finish_total(
-                    Instant::now(),
-                    crate::utils::terminal_cols(),
-                    color::stderr_color(),
-                );
-                if !line.is_empty() {
-                    eprint!("{line}");
-                    let _ = std::io::stderr().flush();
-                }
+            InstallEvent::CheckingDependencies => stream.println("checking dependencies..."),
+            InstallEvent::RetrievingPackages { .. }
+            | InstallEvent::PkgRetrieveDone { .. }
+            | InstallEvent::PkgRetrieveFailed { .. } => {
+                download_event(&mut self.downloads, &event, stream, colored, None);
             }
             InstallEvent::SyncDatabases => {
-                eprintln!(
-                    "{}",
-                    color::colon(color::stderr_color(), "Synchronizing package databases...")
-                );
+                stream.colon(colored, "Synchronizing package databases...")
             }
             InstallEvent::StartSysupgrade => {
-                eprintln!(
-                    "{}",
-                    color::colon(color::stderr_color(), "Starting full system upgrade...")
-                );
+                stream.colon(colored, "Starting full system upgrade...")
             }
             InstallEvent::WaitingForDatabaseLock => {
-                eprintln!(
-                    "{}",
-                    color::colon(
-                        color::stderr_color(),
-                        "Pacman is currently in use, please wait..."
-                    )
-                );
+                stream.colon(colored, "Pacman is currently in use, please wait...")
             }
-            InstallEvent::Log {
-                level: LogLevel::Warning,
-                message,
-            } => {
-                eprintln!(
-                    "{} {}",
-                    color::paint(color::stderr_color(), color::YELLOW, "warning:"),
-                    message.trim_end()
-                );
-            }
-            InstallEvent::Log {
-                level: LogLevel::Error,
-                message,
-            } => {
-                eprintln!(
-                    "{} {}",
-                    color::paint(color::stderr_color(), color::RED, "error:"),
-                    message.trim_end()
-                );
-            }
+            InstallEvent::Log { level, message } => match level {
+                LogLevel::Warning => stream.warning(colored, message.trim_end()),
+                LogLevel::Error => stream.error(colored, message.trim_end()),
+                LogLevel::Debug => {}
+            },
             InstallEvent::OptDepRemoval { package, optdep } => {
-                eprintln!("{package} optionally requires {optdep}");
+                stream.println(&format!("{package} optionally requires {optdep}"));
             }
-            InstallEvent::DatabaseMissing { dbname } => {
-                eprintln!(
-                    "{} database file for '{dbname}' does not exist (use '-Sy' to download)",
-                    color::paint(color::stderr_color(), color::YELLOW, "warning:")
-                );
-            }
+            InstallEvent::DatabaseMissing { dbname } => stream.warning(
+                colored,
+                &format!("database file for '{dbname}' does not exist (use '-Sy' to download)"),
+            ),
             InstallEvent::PacnewCreated { file, .. } => {
-                eprintln!(
-                    "{} {}",
-                    color::paint(color::stderr_color(), color::YELLOW, "warning:"),
-                    crate::utils::pacnew_warning(&file)
-                );
+                stream.warning(colored, &crate::utils::pacnew_warning(&file))
             }
             InstallEvent::PacsaveCreated { file } => {
-                eprintln!(
-                    "{} {}",
-                    color::paint(color::stderr_color(), color::YELLOW, "warning:"),
-                    crate::utils::pacsave_warning(&file)
-                );
+                stream.warning(colored, &crate::utils::pacsave_warning(&file))
             }
             other => {
                 if let Ok(line) = serde_json::to_string(&other) {
@@ -1017,21 +771,17 @@ impl Cursor {
         }
     }
 
-    fn hide(&mut self) -> &'static str {
-        if !self.color || self.hidden {
-            ""
-        } else {
+    fn hide(&mut self) {
+        if self.color && !self.hidden {
             self.hidden = true;
-            HIDE_CURSOR
+            Stream::Out.print(HIDE_CURSOR);
         }
     }
 
-    fn show(&mut self) -> &'static str {
+    fn show(&mut self) {
         if self.hidden {
             self.hidden = false;
-            SHOW_CURSOR
-        } else {
-            ""
+            Stream::Out.print(SHOW_CURSOR);
         }
     }
 }
@@ -1059,7 +809,7 @@ fn print_progress(
     } else {
         format!("{label} {package}")
     };
-    let cols = crate::utils::terminal_cols();
+    let cols = terminal_cols();
     let infolen = (cols * 6 / 10).max(50);
     let digits = count_digits(total);
     let textlen = infolen.saturating_sub(3 + 2 * digits + 1);
@@ -1118,6 +868,10 @@ mod tests {
     use std::time::Duration;
 
     use crate::download::ETA_UNKNOWN;
+
+    fn prog(bars: &mut DownloadBars, file: &str, dl: i64, t: i64, at: Instant) -> Option<String> {
+        bars.progress_line(file, dl, t, at, 80, true)
+    }
 
     #[test]
     fn hook_header_prints_pre_label_before_post() {
@@ -1203,28 +957,26 @@ mod tests {
         assert_eq!(bars.init_file("a.db", base, 80, true), " a\n");
         assert_eq!(bars.init_file("b.db", base, 80, true), " b\n");
         assert_eq!(
-            bars.progress_line("a.db", 0, 1000, base, 80, true),
+            prog(&mut bars, "a.db", 0, 1000, base).as_deref(),
             Some(
                 "\x1B[2F\r a                       0.0   B  0.00   B/s --:-- [\x1B[1;33mC\x1B[0m\x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  ]   0%"
-                    .to_string()
             )
         );
         assert_eq!(
-            bars.up_to_date_line("b.db", true),
-            "\x1B[1E b is up to date\x1B[K"
+            bars.status_line("b.db", "b is up to date", true),
+            "\x1B[1E b is up to date\x1b[K"
         );
         assert_eq!(
-            bars.progress_line(
+            prog(
+                &mut bars,
                 "a.db",
                 500,
                 1000,
-                base + Duration::from_millis(300),
-                80,
-                true
-            ),
+                base + Duration::from_millis(300)
+            )
+            .as_deref(),
             Some(
                 "\x1B[1F\r a                     500.0   B   555   B/s 00:00 [-----------\x1B[1;33mC\x1B[0m \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  ]  50%"
-                    .to_string()
             )
         );
         assert_eq!(
@@ -1240,10 +992,9 @@ mod tests {
         let mut bars = DownloadBars::new();
         assert_eq!(bars.init_file("a.db", base, 80, true), " a\n");
         assert_eq!(
-            bars.progress_line("a.db", 0, 1000, base, 80, true),
+            prog(&mut bars, "a.db", 0, 1000, base).as_deref(),
             Some(
                 "\x1B[1F\r a                       0.0   B  0.00   B/s --:-- [\x1B[1;33mC\x1B[0m\x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  ]   0%"
-                    .to_string()
             )
         );
         assert_eq!(
@@ -1263,7 +1014,10 @@ mod tests {
                 .expect("first sample draws")
                 .starts_with("\r a")
         );
-        assert_eq!(bars.up_to_date_line("b.db", false), " b is up to date");
+        assert_eq!(
+            bars.status_line("b.db", "b is up to date", false),
+            " b is up to date"
+        );
         assert_eq!(bars.move_end(false), "");
     }
 
@@ -1271,15 +1025,15 @@ mod tests {
     fn completed_lines_match_pacman_up_to_date_and_failed() {
         let mut bars = DownloadBars::new();
         assert_eq!(
-            bars.up_to_date_line("core.db", false),
+            bars.status_line("core.db", "core is up to date", false),
             " core is up to date"
         );
         assert_eq!(
-            bars.up_to_date_line("core.db", true),
+            bars.status_line("core.db", "core is up to date", true),
             " core is up to date\x1b[K"
         );
         assert_eq!(
-            bars.failed_line("core.db", false),
+            bars.status_line("core.db", "core.db failed to download", false),
             " core.db failed to download"
         );
     }
@@ -1289,15 +1043,14 @@ mod tests {
         let base = Instant::now();
         let mut bars = DownloadBars::new();
         bars.init_total(2, 2000, base, true);
-        let first = bars.init_file("a.pkg.tar.zst", base, 80, true);
+        let total = "\r Total (0/2)             0.0   B  0.00   B/s --:-- [\x1B[1;33mC\x1B[0m\x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  ]   0%\n";
         assert_eq!(
-            first,
-            " a\n\r Total (0/2)             0.0   B  0.00   B/s --:-- [\x1B[1;33mC\x1B[0m\x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  ]   0%\n"
+            bars.init_file("a.pkg.tar.zst", base, 80, true),
+            format!(" a\n{total}")
         );
-        let second = bars.init_file("b.pkg.tar.zst", base, 80, true);
         assert_eq!(
-            second,
-            "\x1B[1F b\n\r Total (0/2)             0.0   B  0.00   B/s --:-- [\x1B[1;33mC\x1B[0m\x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  \x1B[0;37mo\x1B[0m  ]   0%\n"
+            bars.init_file("b.pkg.tar.zst", base, 80, true),
+            format!("\x1B[1F b\n{total}")
         );
     }
 
@@ -1318,23 +1071,21 @@ mod tests {
             .progress_line("a.pkg.tar.zst", 500, 1000, base, 80, true)
             .expect("total first sample draws");
         assert!(first.contains("Total (0/2)"));
-        let quiet = bars.progress_line(
+        let quiet = prog(
+            &mut bars,
             "a.pkg.tar.zst",
             700,
             1000,
             base + Duration::from_millis(100),
-            80,
-            true,
         );
         assert!(quiet.is_none());
-        assert_eq!(bars.total_xfered(), 700);
-        let later = bars.progress_line(
+        assert_eq!(bars.totals.xfered, 700);
+        let later = prog(
+            &mut bars,
             "a.pkg.tar.zst",
             800,
             1000,
             base + Duration::from_millis(300),
-            80,
-            true,
         );
         assert!(later.is_some());
     }
@@ -1345,12 +1096,12 @@ mod tests {
         let mut bars = DownloadBars::new();
         bars.init_total(2, 2000, base, true);
         bars.init_file("a.pkg.tar.zst", base, 80, true);
-        bars.progress_line("a.pkg.tar.zst", 500, 1000, base, 80, true);
+        prog(&mut bars, "a.pkg.tar.zst", 500, 1000, base);
         bars.retry_file("a.pkg.tar.zst", base + Duration::from_millis(50), false);
-        assert_eq!(bars.total_xfered(), 0);
-        bars.progress_line("a.pkg.tar.zst", 500, 1000, base, 80, true);
+        assert_eq!(bars.totals.xfered, 0);
+        prog(&mut bars, "a.pkg.tar.zst", 500, 1000, base);
         bars.retry_file("a.pkg.tar.zst", base + Duration::from_millis(60), true);
-        assert_eq!(bars.total_xfered(), 500);
+        assert_eq!(bars.totals.xfered, 500);
     }
 
     #[test]
@@ -1361,12 +1112,12 @@ mod tests {
         bars.init_file("a.pkg.tar.zst", base, 80, true);
         bars.init_file("b.pkg.tar.zst", base, 80, true);
         bars.init_file("c.pkg.tar.zst", base, 80, true);
-        bars.complete_one("a.pkg.tar.zst", DownloadResult::Success, base, 80, true);
-        assert_eq!(bars.total_downloaded(), 1);
-        bars.complete_one("b.pkg.tar.zst", DownloadResult::UpToDate, base, 80, true);
-        assert_eq!(bars.total_downloaded(), 2);
-        bars.complete_one("c.pkg.tar.zst", DownloadResult::Failed, base, 80, true);
-        assert_eq!(bars.total_downloaded(), 3);
+        bars.complete_line("a.pkg.tar.zst", 0, DownloadResult::Success, base, 80, true);
+        assert_eq!(bars.totals.downloaded, 1);
+        bars.complete_line("b.pkg.tar.zst", 0, DownloadResult::UpToDate, base, 80, true);
+        assert_eq!(bars.totals.downloaded, 2);
+        bars.complete_line("c.pkg.tar.zst", 0, DownloadResult::Failed, base, 80, true);
+        assert_eq!(bars.totals.downloaded, 3);
     }
 
     #[test]
@@ -1380,7 +1131,7 @@ mod tests {
         assert!(done.ends_with("\n"));
         assert!(done.contains("Total (0/2)"));
         assert!(done.contains("100%"));
-        assert!(!bars.total_active());
+        assert!(!bars.draw_total);
         let again = bars.finish_total(base + Duration::from_millis(2000), 80, true);
         assert_eq!(again, "");
     }
@@ -1390,9 +1141,9 @@ mod tests {
         let base = Instant::now();
         let mut bars = DownloadBars::new();
         bars.init_total(1, 2000, base, true);
-        assert!(!bars.total_active());
+        assert!(!bars.draw_total);
         bars.init_total(2, 0, base, true);
-        assert!(!bars.total_active());
+        assert!(!bars.draw_total);
         let claim = bars.init_file("a.pkg.tar.zst", base, 80, true);
         assert_eq!(claim, " a\n");
     }
@@ -1402,7 +1153,7 @@ mod tests {
         let base = Instant::now();
         let mut bars = DownloadBars::new();
         bars.init_total(2, 2000, base, false);
-        assert!(!bars.total_active());
+        assert!(!bars.draw_total);
         let claim = bars.init_file("a.pkg.tar.zst", base, 80, false);
         assert_eq!(claim, "");
     }
@@ -1414,15 +1165,14 @@ mod tests {
         bars.init_total(2, 2000, base, true);
         bars.init_file("a.pkg.tar.zst", base, 80, true);
         bars.init_file("b.pkg.tar.zst", base, 80, true);
-        bars.complete_one("a.pkg.tar.zst", DownloadResult::Success, base, 80, true);
-        assert_eq!(bars.total_line_index(), 1);
-        let drawn = bars.progress_line(
+        bars.complete_line("a.pkg.tar.zst", 0, DownloadResult::Success, base, 80, true);
+        assert_eq!(bars.order.len(), 1);
+        let drawn = prog(
+            &mut bars,
             "b.pkg.tar.zst",
             400,
             1000,
             base + Duration::from_millis(500),
-            80,
-            true,
         );
         assert!(drawn.is_some());
     }

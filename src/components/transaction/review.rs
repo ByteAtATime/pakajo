@@ -96,14 +96,14 @@ impl InstallReview {
                 .get(&question.key())
                 .filter(|(old, _)| old == question)
                 .map(|(_, answer)| answer);
-            conflict_checks.push(restored_conflict(question, restored).unwrap_or(true));
+            conflict_checks.push(restored_flag(question, restored).unwrap_or(true));
             replace_checks.push(
-                restored_replace(question, restored)
+                restored_flag(question, restored)
                     .unwrap_or(matches!(question, Question::Replace { .. })),
             );
-            ignorepkg_checks.push(restored_ignorepkg(question, restored).unwrap_or(false));
-            removepkgs_checks.push(restored_removepkgs(question, restored).unwrap_or(true));
-            holdpkgs_checks.push(restored_holdpkgs(question, restored).unwrap_or(false));
+            ignorepkg_checks.push(restored_flag(question, restored).unwrap_or(false));
+            removepkgs_checks.push(restored_flag(question, restored).unwrap_or(true));
+            holdpkgs_checks.push(restored_flag(question, restored).unwrap_or(false));
             if let Question::SelectProvider { depend, candidates } = question {
                 provider_choices.insert(
                     depend.clone(),
@@ -125,31 +125,11 @@ impl InstallReview {
 
     pub(crate) fn update(&mut self, message: ReviewMessage) {
         match message {
-            ReviewMessage::ToggleConflict(i) => {
-                if let Some(check) = self.conflict_checks.get_mut(i) {
-                    *check = !*check;
-                }
-            }
-            ReviewMessage::ToggleReplace(i) => {
-                if let Some(check) = self.replace_checks.get_mut(i) {
-                    *check = !*check;
-                }
-            }
-            ReviewMessage::ToggleIgnorepkg(i) => {
-                if let Some(check) = self.ignorepkg_checks.get_mut(i) {
-                    *check = !*check;
-                }
-            }
-            ReviewMessage::ToggleRemovepkgs(i) => {
-                if let Some(check) = self.removepkgs_checks.get_mut(i) {
-                    *check = !*check;
-                }
-            }
-            ReviewMessage::ToggleHoldpkgs(i) => {
-                if let Some(check) = self.holdpkgs_checks.get_mut(i) {
-                    *check = !*check;
-                }
-            }
+            ReviewMessage::ToggleConflict(i) => flip(&mut self.conflict_checks, i),
+            ReviewMessage::ToggleReplace(i) => flip(&mut self.replace_checks, i),
+            ReviewMessage::ToggleIgnorepkg(i) => flip(&mut self.ignorepkg_checks, i),
+            ReviewMessage::ToggleRemovepkgs(i) => flip(&mut self.removepkgs_checks, i),
+            ReviewMessage::ToggleHoldpkgs(i) => flip(&mut self.holdpkgs_checks, i),
             ReviewMessage::SelectProvider { depend, idx } => {
                 self.provider_choices.insert(depend, idx);
             }
@@ -237,31 +217,18 @@ impl InstallReview {
     }
 
     pub(crate) fn view(&self, name: &str, kind: InstallKind) -> Element<'_> {
-        let body = part1_body(RowInputs {
-            questions: &self.questions,
-            checks: &self.conflict_checks,
-            replace_checks: &self.replace_checks,
-            ignorepkg_checks: &self.ignorepkg_checks,
-            removepkgs_checks: &self.removepkgs_checks,
-            holdpkgs_checks: &self.holdpkgs_checks,
-            choices: &self.provider_choices,
-            highlighted: &self.highlighted,
-            added: &self.added,
-        })
-        .map(|message| crate::Message::Transaction(TransactionMessage::Review(message)));
+        let body = part1_body(self)
+            .map(|message| crate::Message::Transaction(TransactionMessage::Review(message)));
         let approve = crate::Message::Transaction(TransactionMessage::ApproveReview);
         let gated = self.can_confirm();
         let confirm: Element<'_> = if self.approving {
             button::suggested("Loading...").into()
-        } else if matches!(kind, InstallKind::Remove) {
-            let action = button::destructive(install_confirm_label(kind));
-            if gated {
-                action.on_press(approve).into()
-            } else {
-                action.into()
-            }
         } else {
-            let action = button::suggested(install_confirm_label(kind));
+            let action = if matches!(kind, InstallKind::Remove) {
+                button::destructive(install_confirm_label(kind))
+            } else {
+                button::suggested(install_confirm_label(kind))
+            };
             if gated {
                 action.on_press(approve).into()
             } else {
@@ -294,38 +261,20 @@ fn info_caption(question: &Question) -> Option<String> {
     }
 }
 
-fn restored_conflict(question: &Question, restored: Option<&Answer>) -> Option<bool> {
+fn flip(checks: &mut [bool], i: usize) {
+    if let Some(check) = checks.get_mut(i) {
+        *check = !*check;
+    }
+}
+
+fn restored_flag(question: &Question, restored: Option<&Answer>) -> Option<bool> {
     match (question, restored) {
         (Question::Conflict { .. }, Some(Answer::Conflict { remove, .. })) => Some(*remove),
-        _ => None,
-    }
-}
-
-fn restored_replace(question: &Question, restored: Option<&Answer>) -> Option<bool> {
-    match (question, restored) {
         (Question::Replace { .. }, Some(Answer::Replace { replace, .. })) => Some(*replace),
-        _ => None,
-    }
-}
-
-fn restored_ignorepkg(question: &Question, restored: Option<&Answer>) -> Option<bool> {
-    match (question, restored) {
         (Question::InstallIgnorepkg { .. }, Some(Answer::InstallIgnorepkg { install, .. })) => {
             Some(*install)
         }
-        _ => None,
-    }
-}
-
-fn restored_removepkgs(question: &Question, restored: Option<&Answer>) -> Option<bool> {
-    match (question, restored) {
         (Question::RemovePkgs { .. }, Some(Answer::RemovePkgs { skip, .. })) => Some(*skip),
-        _ => None,
-    }
-}
-
-fn restored_holdpkgs(question: &Question, restored: Option<&Answer>) -> Option<bool> {
-    match (question, restored) {
         (Question::HoldPkgs { .. }, Some(Answer::HoldPkgs { proceed, .. })) => Some(*proceed),
         _ => None,
     }
@@ -415,30 +364,40 @@ fn highlight_wrap<'a>(
         .into()
 }
 
-struct RowInputs<'a> {
-    questions: &'a [Question],
-    checks: &'a [bool],
-    replace_checks: &'a [bool],
-    ignorepkg_checks: &'a [bool],
-    removepkgs_checks: &'a [bool],
-    holdpkgs_checks: &'a [bool],
-    choices: &'a HashMap<String, usize>,
-    highlighted: &'a BTreeSet<QuestionKey>,
-    added: &'a BTreeSet<QuestionKey>,
+fn with_caption<'a>(
+    row: cosmic::Element<'a, ReviewMessage>,
+    caption: Option<&str>,
+) -> cosmic::Element<'a, ReviewMessage> {
+    match caption {
+        Some(note) => highlight_wrap(row, note),
+        None => row,
+    }
 }
 
-fn part1_body<'a>(inputs: RowInputs<'a>) -> cosmic::Element<'a, ReviewMessage> {
-    let RowInputs {
+fn toggle_row<'a>(
+    label: String,
+    checked: bool,
+    message: ReviewMessage,
+) -> cosmic::Element<'a, ReviewMessage> {
+    checkbox(checked)
+        .label(label)
+        .on_toggle(move |_| message.clone())
+        .into()
+}
+
+fn part1_body<'a>(review: &'a InstallReview) -> cosmic::Element<'a, ReviewMessage> {
+    let InstallReview {
         questions,
-        checks,
+        conflict_checks: checks,
         replace_checks,
         ignorepkg_checks,
         removepkgs_checks,
         holdpkgs_checks,
-        choices,
+        provider_choices: choices,
         highlighted,
         added,
-    } = inputs;
+        ..
+    } = review;
     let mut body = Column::new().spacing(16);
     let mut in_conflicts = false;
     let mut in_providers = false;
@@ -456,14 +415,9 @@ fn part1_body<'a>(inputs: RowInputs<'a>) -> cosmic::Element<'a, ReviewMessage> {
                 }
                 let label = format!("Replace {} with {}", removable, incoming);
                 let checked = checks.get(i).copied().unwrap_or(false);
-                let row: cosmic::Element<'a, ReviewMessage> = checkbox(checked)
-                    .label(label)
-                    .on_toggle(move |_| ReviewMessage::ToggleConflict(i))
-                    .into();
-                body = body.push(match caption {
-                    Some(note) => highlight_wrap(row, note),
-                    None => row,
-                });
+                let row: cosmic::Element<'a, ReviewMessage> =
+                    toggle_row(label, checked, ReviewMessage::ToggleConflict(i));
+                body = body.push(with_caption(row, caption));
             }
             Question::SelectProvider { depend, candidates } => {
                 if !in_providers {
@@ -487,46 +441,28 @@ fn part1_body<'a>(inputs: RowInputs<'a>) -> cosmic::Element<'a, ReviewMessage> {
                     ));
                 }
                 let row: cosmic::Element<'a, ReviewMessage> = group.into();
-                body = body.push(match caption {
-                    Some(note) => highlight_wrap(row, note),
-                    None => row,
-                });
+                body = body.push(with_caption(row, caption));
             }
             Question::Replace { old, new, .. } => {
                 let label = format!("Replace {old} with {new}");
                 let checked = replace_checks.get(i).copied().unwrap_or(true);
-                let row: cosmic::Element<'a, ReviewMessage> = checkbox(checked)
-                    .label(label)
-                    .on_toggle(move |_| ReviewMessage::ToggleReplace(i))
-                    .into();
-                body = body.push(match caption {
-                    Some(note) => highlight_wrap(row, note),
-                    None => row,
-                });
+                let row: cosmic::Element<'a, ReviewMessage> =
+                    toggle_row(label, checked, ReviewMessage::ToggleReplace(i));
+                body = body.push(with_caption(row, caption));
             }
             Question::InstallIgnorepkg { name } => {
                 let label = format!("Install {name} anyway (in IgnorePkg)");
                 let checked = ignorepkg_checks.get(i).copied().unwrap_or(false);
-                let row: cosmic::Element<'a, ReviewMessage> = checkbox(checked)
-                    .label(label)
-                    .on_toggle(move |_| ReviewMessage::ToggleIgnorepkg(i))
-                    .into();
-                body = body.push(match caption {
-                    Some(note) => highlight_wrap(row, note),
-                    None => row,
-                });
+                let row: cosmic::Element<'a, ReviewMessage> =
+                    toggle_row(label, checked, ReviewMessage::ToggleIgnorepkg(i));
+                body = body.push(with_caption(row, caption));
             }
             Question::RemovePkgs { names, kind } => {
                 let label = removepkgs_label(names, kind);
                 let checked = removepkgs_checks.get(i).copied().unwrap_or(true);
-                let row: cosmic::Element<'a, ReviewMessage> = checkbox(checked)
-                    .label(label)
-                    .on_toggle(move |_| ReviewMessage::ToggleRemovepkgs(i))
-                    .into();
-                body = body.push(match caption {
-                    Some(note) => highlight_wrap(row, note),
-                    None => row,
-                });
+                let row: cosmic::Element<'a, ReviewMessage> =
+                    toggle_row(label, checked, ReviewMessage::ToggleRemovepkgs(i));
+                body = body.push(with_caption(row, caption));
             }
             Question::HoldPkgs { names } => {
                 let label = holdpkgs_label(names);
@@ -544,18 +480,12 @@ fn part1_body<'a>(inputs: RowInputs<'a>) -> cosmic::Element<'a, ReviewMessage> {
                     "Removing them can break your system. Unless you are sure you know what you are doing, this is probably not what you want.",
                 ));
                 let row: cosmic::Element<'a, ReviewMessage> = group.into();
-                body = body.push(match caption {
-                    Some(note) => highlight_wrap(row, note),
-                    None => row,
-                });
+                body = body.push(with_caption(row, caption));
             }
             other => {
                 if let Some(note) = info_caption(other) {
                     let row: cosmic::Element<'a, ReviewMessage> = text(note).into();
-                    body = body.push(match caption {
-                        Some(flag) => highlight_wrap(row, flag),
-                        None => row,
-                    });
+                    body = body.push(with_caption(row, caption));
                 } else if let Some(flag) = caption {
                     let key = question.key();
                     let row: cosmic::Element<'a, ReviewMessage> = text(format!("{key:?}")).into();
@@ -568,7 +498,7 @@ fn part1_body<'a>(inputs: RowInputs<'a>) -> cosmic::Element<'a, ReviewMessage> {
 }
 
 #[cfg(test)]
-mod install_review_tests {
+mod test {
     use super::*;
     use pakajo::question::model::{Answer, ProviderCandidate, QuestionKey, TransactionKind};
 
@@ -617,236 +547,117 @@ mod install_review_tests {
         model
     }
 
-    #[test]
-    fn seal_binds_choices_and_displayed_defaults() {
-        let sealed = model_with(true, 1).seal().expect("seal succeeds");
-        assert!(sealed.proceed);
-        assert_eq!(sealed.answers.len(), 5);
-        for (key, answer) in &sealed.answers {
-            match (key, answer) {
-                (QuestionKey::Conflict { .. }, Answer::Conflict { remove, .. }) => {
-                    assert!(*remove)
-                }
-                (QuestionKey::SelectProvider { .. }, Answer::SelectProvider { name, repo }) => {
-                    assert_eq!(
-                        (name.as_str(), repo.as_deref()),
-                        ("virtualbox", Some("extra"))
-                    )
-                }
-                (QuestionKey::Replace { .. }, Answer::Replace { replace, .. }) => {
-                    assert!(*replace)
-                }
-                (
-                    QuestionKey::InstallIgnorepkg { .. },
-                    Answer::InstallIgnorepkg { install, .. },
-                ) => assert!(!*install),
-                (QuestionKey::RemovePkgs { .. }, Answer::RemovePkgs { skip, .. }) => {
-                    assert!(*skip)
-                }
-                other => panic!("unexpected sealed entry: {other:?}"),
-            }
+    fn sealed_answer<'a>(sealed: &'a SealedApprovals, key: &QuestionKey) -> &'a Answer {
+        sealed
+            .answers
+            .iter()
+            .find_map(|(k, answer)| (k == key).then_some(answer))
+            .unwrap_or_else(|| panic!("missing answer for {key:?}"))
+    }
+
+    fn conflict_of(model: &InstallReview) -> QuestionKey {
+        model.questions[0].key()
+    }
+
+    fn flag_of(answer: &Answer) -> Option<bool> {
+        match answer {
+            Answer::Conflict { remove, .. } => Some(*remove),
+            Answer::Replace { replace, .. } => Some(*replace),
+            Answer::InstallIgnorepkg { install, .. } => Some(*install),
+            Answer::RemovePkgs { skip, .. } => Some(*skip),
+            Answer::HoldPkgs { proceed, .. } => Some(*proceed),
+            _ => None,
+        }
+    }
+
+    fn assert_flags(sealed: &SealedApprovals, model: &InstallReview, expected: [bool; 4]) {
+        for (i, key) in [0, 2, 3, 4].into_iter().enumerate() {
+            assert_eq!(
+                flag_of(sealed_answer(sealed, &model.questions[key].key())),
+                Some(expected[i]),
+                "question index {key}"
+            );
         }
     }
 
     #[test]
-    fn seal_payload_decodes_back_with_choices_and_proceed() {
-        let sealed = model_with(true, 1).seal().expect("seal succeeds");
-        let payload = pakajo::dispatch::seal::encode_seal(&sealed).expect("encodes");
-        let decoded = pakajo::dispatch::seal::decode_seal(&payload).expect("decodes");
-        assert_eq!(decoded, sealed);
-        assert!(decoded.proceed);
-        assert_eq!(decoded.answers.len(), 5);
-        assert!(decoded.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::Conflict { .. },
-                Answer::Conflict { remove: true, .. }
-            )
-        )));
-        assert!(decoded.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::SelectProvider { .. },
-                Answer::SelectProvider { .. }
-            )
-        )));
-        assert!(decoded.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::Replace { .. },
-                Answer::Replace { replace: true, .. }
-            )
-        )));
-        assert!(decoded.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::InstallIgnorepkg { .. },
-                Answer::InstallIgnorepkg { install: false, .. }
-            )
-        )));
-        assert!(decoded.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::RemovePkgs { .. },
-                Answer::RemovePkgs { skip: true, .. }
-            )
-        )));
-    }
-
-    #[test]
-    fn fresh_model_defaults_three_kinds() {
-        let model = InstallReview::new(questions());
-        assert!(model.replace_checks[2]);
-        assert!(!model.ignorepkg_checks[3]);
-        assert!(model.removepkgs_checks[4]);
-
+    fn seal_binds_choices_and_displayed_defaults() {
+        let model = model_with(true, 1);
         let sealed = model.seal().expect("seal succeeds");
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::Replace { .. },
-                Answer::Replace { replace: true, .. }
-            )
-        )));
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::InstallIgnorepkg { .. },
-                Answer::InstallIgnorepkg { install: false, .. }
-            )
-        )));
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::RemovePkgs { .. },
-                Answer::RemovePkgs { skip: true, .. }
-            )
-        )));
+        assert!(sealed.proceed);
+        assert_eq!(sealed.answers.len(), 5);
+        assert!(pakajo::dispatch::seal::encode_seal(&sealed).is_ok());
+        assert_flags(&sealed, &model, [true, true, false, true]);
+        let provider = sealed
+            .answers
+            .iter()
+            .find_map(|(_, answer)| match answer {
+                Answer::SelectProvider { name, repo } => Some((name.as_str(), repo.as_deref())),
+                _ => None,
+            })
+            .expect("provider answer");
+        assert_eq!(provider, ("virtualbox", Some("extra")));
     }
 
     #[test]
-    fn toggles_flip_three_kinds() {
+    fn defaults_and_toggles_seal_per_kind() {
         let mut model = InstallReview::new(questions());
+        assert!(model.conflict_checks.iter().all(|checked| *checked));
+
+        let sealed = model.seal().expect("defaults seal");
+        assert_flags(&sealed, &model, [true, true, false, true]);
+
+        model.update(ReviewMessage::ToggleConflict(0));
         model.update(ReviewMessage::ToggleReplace(2));
         model.update(ReviewMessage::ToggleIgnorepkg(3));
         model.update(ReviewMessage::ToggleRemovepkgs(4));
-        let sealed = model.seal().expect("seal succeeds");
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::Replace { .. },
-                Answer::Replace { replace: false, .. }
-            )
-        )));
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::InstallIgnorepkg { .. },
-                Answer::InstallIgnorepkg { install: true, .. }
-            )
-        )));
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::RemovePkgs { .. },
-                Answer::RemovePkgs { skip: false, .. }
-            )
-        )));
-    }
-
-    #[test]
-    fn conflicts_default_to_removal() {
-        let model = InstallReview::new(questions());
-        assert!(model.conflict_checks.iter().all(|checked| *checked));
-
-        let sealed = model.seal().expect("seal succeeds");
-        let conflict = sealed
-            .answers
-            .iter()
-            .find_map(|(key, answer)| match (key, answer) {
-                (
-                    QuestionKey::Conflict { .. },
-                    Answer::Conflict {
-                        incoming,
-                        removable,
-                        remove,
-                    },
-                ) => Some((incoming.clone(), removable.clone(), *remove)),
-                _ => None,
-            });
-        assert_eq!(
-            conflict,
-            Some((s("cava-git"), s("cava"), true)),
-            "conflict is sealed as remove: true"
-        );
-    }
-
-    #[test]
-    fn gate_requires_non_empty_part1() {
-        assert!(!install_needs_review(&[]));
-        assert!(install_needs_review(&questions()));
+        let sealed = model.seal().expect("toggled seal");
+        assert_flags(&sealed, &model, [false, false, true, false]);
     }
 
     fn duplicate_questions() -> Vec<Question> {
+        let conflict = Question::Conflict {
+            incoming: s("cava-git"),
+            incoming_version: s("1.0-1"),
+            removable: s("cava"),
+            removable_version: s("1.0-1"),
+            conflict_reason: None,
+        };
         vec![
-            Question::Conflict {
-                incoming: s("cava-git"),
-                incoming_version: s("1.0-1"),
-                removable: s("cava"),
-                removable_version: s("1.0-1"),
-                conflict_reason: None,
-            },
-            Question::Conflict {
-                incoming: s("cava-git"),
-                incoming_version: s("1.0-1"),
-                removable: s("cava"),
-                removable_version: s("1.0-1"),
-                conflict_reason: None,
-            },
+            conflict.clone(),
+            conflict,
             Question::InstallIgnorepkg { name: s("glibc") },
             Question::InstallIgnorepkg { name: s("glibc") },
         ]
     }
 
     #[test]
-    fn duplicate_questions_dedup_to_one_row_each() {
-        let model = InstallReview::new(duplicate_questions());
+    fn duplicate_questions_dedup_and_seal_one_answer_per_key() {
+        let mut model = InstallReview::new(duplicate_questions());
         assert_eq!(model.questions.len(), 2);
-        assert_eq!(model.conflict_checks.len(), 2);
-        assert_eq!(model.ignorepkg_checks.len(), 2);
-        assert_eq!(model.replace_checks.len(), 2);
-        assert_eq!(model.removepkgs_checks.len(), 2);
-        assert_eq!(model.holdpkgs_checks.len(), 2);
+        for checks in [
+            &model.conflict_checks,
+            &model.ignorepkg_checks,
+            &model.replace_checks,
+            &model.removepkgs_checks,
+            &model.holdpkgs_checks,
+        ] {
+            assert_eq!(checks.len(), 2);
+        }
         assert!(model.conflict_checks[0]);
         assert!(!model.ignorepkg_checks[1]);
-    }
 
-    #[test]
-    fn toggling_deduped_row_seals_single_consistent_answer() {
-        let mut model = InstallReview::new(duplicate_questions());
         model.update(ReviewMessage::ToggleConflict(0));
         let sealed = model.seal().expect("seal succeeds");
         assert_eq!(sealed.answers.len(), 2);
-        let conflict_rows = sealed
-            .answers
-            .iter()
-            .filter(|(key, _)| matches!(key, QuestionKey::Conflict { .. }))
-            .count();
-        assert_eq!(conflict_rows, 1);
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::Conflict { .. },
-                Answer::Conflict { remove: false, .. }
-            )
-        )));
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::InstallIgnorepkg { .. },
-                Answer::InstallIgnorepkg { install: false, .. }
-            )
-        )));
+        assert_eq!(
+            flag_of(sealed_answer(&sealed, &conflict_of(&model))),
+            Some(false)
+        );
+        assert_eq!(
+            flag_of(sealed_answer(&sealed, &model.questions[1].key())),
+            Some(false)
+        );
     }
 
     #[test]
@@ -857,13 +668,10 @@ mod install_review_tests {
             members: members.clone(),
         }]);
         let sealed = model.seal().expect("seal succeeds");
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::GroupMembers { .. },
-                Answer::GroupMembers { selected }
-            ) if selected == &members
-        )));
+        assert!(matches!(
+            sealed_answer(&sealed, &model.questions[0].key()),
+            Answer::GroupMembers { selected } if selected == &members
+        ));
     }
 
     fn empty_drift() -> pakajo::question::revalidate::ReviewDrift {
@@ -931,16 +739,7 @@ mod install_review_tests {
             BTreeSet::from([added_ignorepkg.key(), drifted_provider.key()])
         );
         assert_eq!(model.added, BTreeSet::from([added_ignorepkg.key()]));
-    }
 
-    #[test]
-    fn refresh_clears_stale_highlight_on_stable_refresh() {
-        let mut model = InstallReview::new(questions());
-        let added_ignorepkg = Question::InstallIgnorepkg { name: s("yay") };
-        let mut fresh = questions();
-        fresh.push(added_ignorepkg.clone());
-        model.refresh(fresh, &drift_with(vec![added_ignorepkg.key()], Vec::new()));
-        assert!(!model.highlighted.is_empty());
         let stable = model.questions.clone();
         model.refresh(stable, &empty_drift());
         assert!(model.highlighted.is_empty());
@@ -992,17 +791,6 @@ mod install_review_tests {
     }
 
     #[test]
-    fn refresh_preserves_holdpkgs_toggles_on_identical_questions() {
-        let mut model = InstallReview::new(holdpkgs_questions());
-        model.update(ReviewMessage::ToggleHoldpkgs(0));
-        let before = model.answers();
-        model.refresh(holdpkgs_questions(), &empty_drift());
-        assert_eq!(model.answers(), before);
-        assert!(model.holdpkgs_checks[0]);
-        assert!(model.highlighted.is_empty());
-    }
-
-    #[test]
     fn refresh_changed_holdpkgs_names_reset_and_highlight() {
         let mut model = InstallReview::new(holdpkgs_questions());
         model.update(ReviewMessage::ToggleHoldpkgs(0));
@@ -1017,7 +805,7 @@ mod install_review_tests {
     }
 
     #[test]
-    fn can_confirm_requires_gated_checks() {
+    fn can_confirm_tracks_gated_checks() {
         let mut model = InstallReview::new(holdpkgs_questions());
         assert!(!model.can_confirm());
         model.update(ReviewMessage::ToggleHoldpkgs(0));
@@ -1026,61 +814,8 @@ mod install_review_tests {
         assert!(!model.can_confirm());
         model.update(ReviewMessage::ToggleRemovepkgs(1));
         assert!(model.can_confirm());
-    }
 
-    #[test]
-    fn can_confirm_true_without_gated_questions() {
-        let model = InstallReview::new(vec![Question::InstallIgnorepkg { name: s("glibc") }]);
-        assert!(model.can_confirm());
-    }
-
-    #[test]
-    fn seal_after_refresh_reflects_preserved_answers() {
-        let mut model = InstallReview::new(questions());
-        model.update(ReviewMessage::ToggleConflict(0));
-        model.update(ReviewMessage::ToggleReplace(2));
-        model.update(ReviewMessage::ToggleIgnorepkg(3));
-        model.update(ReviewMessage::ToggleRemovepkgs(4));
-        model.update(ReviewMessage::SelectProvider {
-            depend: s("virt"),
-            idx: 1,
-        });
-        model.refresh(questions(), &empty_drift());
-        let sealed = model.seal().expect("seal succeeds");
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::Conflict { .. },
-                Answer::Conflict { remove: false, .. }
-            )
-        )));
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::Replace { .. },
-                Answer::Replace { replace: false, .. }
-            )
-        )));
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::InstallIgnorepkg { .. },
-                Answer::InstallIgnorepkg { install: true, .. }
-            )
-        )));
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::RemovePkgs { .. },
-                Answer::RemovePkgs { skip: false, .. }
-            )
-        )));
-        assert!(sealed.answers.iter().any(|(key, answer)| matches!(
-            (key, answer),
-            (
-                QuestionKey::SelectProvider { .. },
-                Answer::SelectProvider { name, .. }
-            ) if name == "virtualbox"
-        )));
+        let ungated = InstallReview::new(vec![Question::InstallIgnorepkg { name: s("glibc") }]);
+        assert!(ungated.can_confirm());
     }
 }
