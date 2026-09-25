@@ -61,6 +61,8 @@ pub enum TransactionRequest {
     Remove {
         name: String,
         source: PackageSource,
+        description: Option<String>,
+        repo: Option<String>,
     },
 }
 
@@ -231,8 +233,13 @@ impl TxPane {
                 }
                 self.start_optdep_batch(with_deps, ctx)
             }
-            TransactionRequest::Remove { name, source } => {
-                let (txn, task) = Transaction::start_remove(name, source);
+            TransactionRequest::Remove {
+                name,
+                source,
+                description,
+                repo,
+            } => {
+                let (txn, task) = Transaction::start_remove(name, source, description, repo);
                 self.transaction = Some(txn);
                 self.show = false;
                 task
@@ -372,9 +379,13 @@ impl Transaction {
     pub(crate) fn start_remove(
         name: String,
         source: PackageSource,
+        description: Option<String>,
+        repo: Option<String>,
     ) -> (Self, Task<crate::Message>) {
         let targets = vec![name.clone()];
-        let model = TransactionModel::new(name, source, InstallKind::Remove);
+        let mut model = TransactionModel::new(name, source, InstallKind::Remove);
+        model.remove_description = description;
+        model.remove_repo = repo;
         let holds = pakajo::pacman::config()
             .map(|config| config.hold_pkg)
             .unwrap_or_default();
@@ -696,8 +707,18 @@ impl Transaction {
     fn finalize_transaction(&mut self) -> Action {
         if self.model.kind == InstallKind::Remove {
             let summary = self.model.summary.clone().unwrap_or_default();
-            self.model.removal_confirm = Some(RemovalConfirmModel::new(summary));
-            return Action::None;
+            return match RemovalConfirmModel::new(
+                summary,
+                self.model.remove_description.take(),
+                self.model.remove_repo.take(),
+            ) {
+                Some(confirm) => {
+                    self.model.removal_confirm = Some(confirm);
+                    Action::None
+                }
+                None => self
+                    .fail_launch("removal confirmation requires exactly one package".to_string()),
+            };
         }
         eprintln!("[pakajo] no confirmation needed, starting transaction");
         let payload = self
@@ -798,7 +819,7 @@ impl Transaction {
         let content = if let Some(r) = self.model.install_review.as_ref() {
             r.view(&self.model.name, self.model.kind)
         } else if let Some(c) = self.model.removal_confirm.as_ref() {
-            c.view(&self.model.name)
+            c.view()
         } else {
             self.model.pkgbuild_review.as_ref().map(|p| p.view())?
         };
@@ -1309,7 +1330,8 @@ mod tests {
             .removal_confirm
             .as_ref()
             .expect("removal confirmation shown");
-        assert_eq!(confirmation.summary, removal_summary());
+        assert_eq!(confirmation.package.name, "firefox");
+        assert_eq!(confirmation.freed_size, 2);
 
         let mut transaction = new_transaction(InstallKind::Remove);
         transaction.update(TransactionMessage::Explored(Ok(run(

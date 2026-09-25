@@ -805,6 +805,8 @@ impl DetailPane {
                 self.begin(TransactionRequest::Remove {
                     name: pkg.name.clone(),
                     source: pkg.source(),
+                    description: pkg.description.clone(),
+                    repo: pkg.repo().map(str::to_string),
                 })
             }
             DetailMessage::StartInstall
