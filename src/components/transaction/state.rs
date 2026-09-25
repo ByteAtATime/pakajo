@@ -305,24 +305,60 @@ impl TransactionModel {
     }
 
     fn aur_overall(&self) -> f32 {
-        let aur = &self.aur;
-        if !aur.resolve_complete {
+        if let Some(frozen) = self.aur_failure_waypoint() {
+            return frozen;
+        }
+        self.aur_running_waypoint()
+    }
+
+    fn aur_failure_waypoint(&self) -> Option<f32> {
+        if !matches!(self.status, TransactionStatus::Done(_))
+            || matches!(self.status, TransactionStatus::Done(ChildOutcome::Success))
+        {
+            return None;
+        }
+        match self.aur.last_aur_stage {
+            Some(AurStage::Resolve) => Some(5.0),
+            Some(AurStage::Deps) => Some(5.0 + 25.0 * self.aur_deps_fraction()),
+            Some(AurStage::Build) => Some(30.0),
+            Some(AurStage::Install) | Some(AurStage::Finalize) => {
+                Some(65.0 + 35.0 * self.aur_install_fraction())
+            }
+            None => None,
+        }
+    }
+
+    fn aur_running_waypoint(&self) -> f32 {
+        if !self.aur.resolve_complete {
             return 0.0;
         }
+        if self.aur.phase == AurPhase::Deps {
+            return 5.0 + 25.0 * self.aur_deps_fraction();
+        }
         if !self.aur_builds_done() {
-            return 5.0;
+            return 30.0;
         }
-        if !aur.finalize.lines.is_empty() {
-            return 95.0;
+        65.0 + 35.0 * self.aur_install_fraction()
+    }
+
+    fn aur_deps_fraction(&self) -> f32 {
+        if !self.aur.repo_deps.install.order.is_empty() {
+            return install_fraction(&self.aur.repo_deps.install, self.aur.repo_dep_count);
         }
-        let frac = if !aur.install.order.is_empty() {
-            install_fraction(&aur.install, aur.build_order.len() + aur.download.total)
-        } else if aur.download.total > 0 {
-            download_fraction(&aur.download)
-        } else {
-            0.0
-        };
-        (60.0 + 35.0 * frac).clamp(0.0, 100.0)
+        download_fraction(&self.aur.repo_deps.download)
+    }
+
+    fn aur_install_fraction(&self) -> f32 {
+        if !self.aur.install.order.is_empty() {
+            return install_fraction(
+                &self.aur.install,
+                self.aur.build_order.len() + self.aur.download.total,
+            );
+        }
+        if self.aur.download.total > 0 {
+            return download_fraction(&self.aur.download);
+        }
+        0.0
     }
 
     pub(crate) fn is_aur(&self) -> bool {
@@ -1049,6 +1085,220 @@ mod tests {
             package: "pkg-a".to_string(),
         });
         assert!(built.artifact_sections_visible());
+    }
+
+    fn drive_resolve_open(model: &mut TransactionModel) {
+        model.apply_event(&InstallEvent::ResolvingAurDependencies {
+            target: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::AurDepResolved {
+            package: "dep1".to_string(),
+            repo: Some("extra".to_string()),
+            version: Some("1.0-1".to_string()),
+        });
+        model.apply_event(&InstallEvent::AurDepResolved {
+            package: "pkg-a".to_string(),
+            repo: None,
+            version: Some("1.0-1".to_string()),
+        });
+        model.apply_event(&InstallEvent::ResolutionComplete {
+            aur_packages: 1,
+            repo_deps: 1,
+        });
+        model.apply_event(&InstallEvent::RetrievingPackages {
+            num: 1,
+            total_bytes: 100,
+        });
+        model.apply_event(&InstallEvent::DownloadInit {
+            filename: "dep1".to_string(),
+            optional: false,
+        });
+    }
+
+    fn drive_dep_downloaded(model: &mut TransactionModel) {
+        model.apply_event(&InstallEvent::DownloadProgress {
+            filename: "dep1".to_string(),
+            downloaded: 100,
+            total: 100,
+        });
+        model.apply_event(&InstallEvent::DownloadCompleted {
+            filename: "dep1".to_string(),
+            total: 100,
+            result: pakajo::events::DownloadResult::Success,
+        });
+    }
+
+    fn drive_dep_registered(model: &mut TransactionModel) {
+        model.apply_event(&InstallEvent::PackageOperation {
+            operation: PackageOp::Install,
+            package: "dep1".to_string(),
+            new_version: Some("1.0-1".to_string()),
+            old_version: None,
+        });
+    }
+
+    fn drive_resolve_with_dep(model: &mut TransactionModel) {
+        drive_resolve_open(model);
+        drive_dep_downloaded(model);
+        drive_dep_registered(model);
+    }
+
+    fn drive_dep_progress(model: &mut TransactionModel, percent: i32) {
+        model.apply_event(&InstallEvent::Progress {
+            phase: ProgressPhase::Add,
+            package: "dep1".to_string(),
+            percent,
+            current: 1,
+            total: 1,
+        });
+    }
+
+    fn drive_build_done(model: &mut TransactionModel) {
+        model.apply_event(&InstallEvent::CloningRepo {
+            package: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildStarted {
+            package: "pkg-a".to_string(),
+        });
+        model.apply_event(&InstallEvent::BuildCompleted {
+            package: "pkg-a".to_string(),
+            artifacts: Vec::new(),
+            version: None,
+        });
+    }
+
+    fn drive_artifact_installed(model: &mut TransactionModel) {
+        model.apply_event(&InstallEvent::PackageOperation {
+            operation: PackageOp::Install,
+            package: "pkg-a".to_string(),
+            new_version: Some("1.0-1".to_string()),
+            old_version: None,
+        });
+        model.apply_event(&InstallEvent::Progress {
+            phase: ProgressPhase::Add,
+            package: "pkg-a".to_string(),
+            percent: 100,
+            current: 1,
+            total: 1,
+        });
+    }
+
+    #[test]
+    fn aur_overall_waypoint_ladder() {
+        let mut model = aur_model();
+        assert_eq!(model.overall_progress(), 0.0);
+        drive_resolve_open(&mut model);
+        assert_eq!(model.overall_progress(), 5.0);
+        model.apply_event(&InstallEvent::DownloadProgress {
+            filename: "dep1".to_string(),
+            downloaded: 50,
+            total: 100,
+        });
+        let partial = model.overall_progress();
+        assert!(partial > 5.0 && partial < 30.0);
+        drive_dep_downloaded(&mut model);
+        drive_dep_registered(&mut model);
+        drive_dep_progress(&mut model, 100);
+        assert_eq!(model.overall_progress(), 30.0);
+        assert_eq!(model.aur.phase, AurPhase::Deps);
+        model.apply_event(&InstallEvent::CloningRepo {
+            package: "pkg-a".to_string(),
+        });
+        assert_eq!(model.overall_progress(), 30.0);
+        model.apply_event(&InstallEvent::BuildStarted {
+            package: "pkg-a".to_string(),
+        });
+        assert_eq!(model.aur.phase, AurPhase::Artifacts);
+        assert_eq!(model.overall_progress(), 30.0);
+        model.apply_event(&InstallEvent::BuildCompleted {
+            package: "pkg-a".to_string(),
+            artifacts: Vec::new(),
+            version: None,
+        });
+        assert_eq!(model.overall_progress(), 65.0);
+        drive_artifact_installed(&mut model);
+        assert_eq!(model.overall_progress(), 100.0);
+    }
+
+    #[test]
+    fn aur_overall_failure_freezes_per_stage() {
+        let mut resolve = aur_model();
+        resolve.apply_event(&InstallEvent::ResolvingAurDependencies {
+            target: "yay".to_string(),
+        });
+        resolve.apply_event(&InstallEvent::AurDepResolved {
+            package: "yay".to_string(),
+            repo: None,
+            version: Some("1.0-1".to_string()),
+        });
+        resolve.finish(ChildOutcome::Failed("resolve failed".to_string()));
+        assert_eq!(resolve.overall_progress(), 5.0);
+
+        let mut deps = aur_model();
+        drive_resolve_open(&mut deps);
+        deps.apply_event(&InstallEvent::DownloadProgress {
+            filename: "dep1".to_string(),
+            downloaded: 50,
+            total: 100,
+        });
+        let before = deps.overall_progress();
+        assert!(before > 5.0 && before < 30.0);
+        deps.finish(ChildOutcome::Failed("deps failed".to_string()));
+        assert_eq!(deps.overall_progress(), before);
+
+        let mut build = aur_model();
+        drive_resolve_with_dep(&mut build);
+        drive_dep_progress(&mut build, 100);
+        build.apply_event(&InstallEvent::BuildStarted {
+            package: "pkg-a".to_string(),
+        });
+        build.finish(ChildOutcome::Failed("makepkg failed".to_string()));
+        assert_eq!(build.overall_progress(), 30.0);
+
+        let mut install = aur_model();
+        drive_resolve_with_dep(&mut install);
+        drive_dep_progress(&mut install, 100);
+        drive_build_done(&mut install);
+        install.apply_event(&InstallEvent::RetrievingPackages {
+            num: 1,
+            total_bytes: 100,
+        });
+        install.apply_event(&InstallEvent::DownloadProgress {
+            filename: "pkg-a".to_string(),
+            downloaded: 50,
+            total: 100,
+        });
+        let pre = install.overall_progress();
+        assert!((65.0..100.0).contains(&pre));
+        install.finish(ChildOutcome::Failed("install failed".to_string()));
+        assert_eq!(install.overall_progress(), pre);
+    }
+
+    #[test]
+    fn aur_overall_zero_denominators_stay_finite() {
+        let model = aur_model();
+        assert_eq!(model.overall_progress(), 0.0);
+        let mut failed = aur_model();
+        failed.apply_event(&InstallEvent::FailClosed {
+            key: pakajo::question::model::QuestionKey::Proceed,
+            reason: "denied in test".to_string(),
+        });
+        assert_eq!(failed.aur.last_aur_stage, None);
+        failed.finish(ChildOutcome::Failed("denied".to_string()));
+        let value = failed.overall_progress();
+        assert!(value.is_finite());
+        assert!((0.0..=100.0).contains(&value));
+    }
+
+    #[test]
+    fn aur_overall_success_stays_full() {
+        let mut model = aur_model();
+        drive_resolve_with_dep(&mut model);
+        drive_dep_progress(&mut model, 100);
+        drive_build_done(&mut model);
+        drive_artifact_installed(&mut model);
+        model.finish(ChildOutcome::Success);
+        assert_eq!(model.overall_progress(), 100.0);
     }
 
     #[test]
