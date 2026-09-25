@@ -11,8 +11,8 @@ use pakajo::progress::{
 };
 use pakajo::question::model::Question;
 
-use super::checkout::CheckoutModel;
 use super::pkgbuild::PkgbuildModel;
+use super::removal::RemovalConfirmModel;
 use super::review::InstallReview;
 
 #[derive(Clone, Debug)]
@@ -38,7 +38,7 @@ pub(crate) struct TransactionModel {
     pub(crate) now: std::time::Instant,
     pub(super) install_review: Option<InstallReview>,
     pub(super) summary: Option<TransactionSummary>,
-    pub(super) checkout: Option<CheckoutModel>,
+    pub(super) removal_confirm: Option<RemovalConfirmModel>,
     pub(super) pending_approvals: Option<String>,
     pub(super) pkgbuild_review: Option<PkgbuildModel>,
     pub(super) failure_message: Option<String>,
@@ -85,7 +85,7 @@ impl TransactionModel {
             now: std::time::Instant::now(),
             install_review: None,
             summary: None,
-            checkout: None,
+            removal_confirm: None,
             pending_approvals: None,
             pkgbuild_review: None,
             failure_message: None,

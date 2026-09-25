@@ -42,8 +42,8 @@ pub(crate) mod diff;
 mod pkgbuild;
 use pkgbuild::{PkgbuildMessage, PkgbuildModel};
 
-pub(crate) mod checkout;
-use checkout::CheckoutModel;
+pub(crate) mod removal;
+use removal::RemovalConfirmModel;
 
 pub(crate) mod review;
 use review::{InstallReview, ReviewMessage};
@@ -80,8 +80,8 @@ pub enum TransactionMessage {
     ApprovePkgbuild,
     CancelPkgbuild,
     Pkgbuild(PkgbuildMessage),
-    ApproveCheckout,
-    CancelCheckout,
+    ApproveRemoval,
+    CancelRemoval,
     AnswerChannel(AnswerWriter),
     AnswerImportKey(bool),
     Close,
@@ -493,9 +493,9 @@ impl Transaction {
                 match result {
                     Err(e) => {
                         eprintln!("[pakajo] pkgbuild fetch failed, starting transaction: {e}");
-                        self.show_checkout()
+                        self.finalize_transaction()
                     }
-                    Ok(diffs) if diffs.is_empty() => self.show_checkout(),
+                    Ok(diffs) if diffs.is_empty() => self.finalize_transaction(),
                     Ok(diffs) => {
                         self.model.pkgbuild_review = Some(PkgbuildModel::new(diffs));
                         Action::None
@@ -518,15 +518,15 @@ impl Transaction {
                 self.launch_subprocess(approvals.unwrap_or_else(proceed_only_seal))
             }
             TransactionMessage::CancelPkgbuild => Action::Finished,
-            TransactionMessage::ApproveCheckout => {
-                if self.model.checkout.take().is_none() {
+            TransactionMessage::ApproveRemoval => {
+                if self.model.removal_confirm.take().is_none() {
                     return Action::None;
                 }
                 let approvals = self.model.pending_approvals.take();
                 let payload = approvals.unwrap_or_else(proceed_only_seal);
                 self.launch_remove_subprocess(payload)
             }
-            TransactionMessage::CancelCheckout => Action::Finished,
+            TransactionMessage::CancelRemoval => Action::Finished,
             TransactionMessage::AnswerChannel(writer) => {
                 self.model.set_answer_channel(writer);
                 Action::None
@@ -586,7 +586,7 @@ impl Transaction {
         }
         if !review::install_needs_review(&run.questions) {
             eprintln!("[pakajo] no questions, starting transaction");
-            return self.show_checkout();
+            return self.finalize_transaction();
         }
         eprintln!(
             "[pakajo] review required ({} questions)",
@@ -689,17 +689,17 @@ impl Transaction {
             );
             Action::Run(task)
         } else {
-            self.show_checkout()
+            self.finalize_transaction()
         }
     }
 
-    fn show_checkout(&mut self) -> Action {
+    fn finalize_transaction(&mut self) -> Action {
         if self.model.kind == InstallKind::Remove {
             let summary = self.model.summary.clone().unwrap_or_default();
-            self.model.checkout = Some(CheckoutModel::new(summary));
+            self.model.removal_confirm = Some(RemovalConfirmModel::new(summary));
             return Action::None;
         }
-        eprintln!("[pakajo] no checkout needed, starting transaction");
+        eprintln!("[pakajo] no confirmation needed, starting transaction");
         let payload = self
             .model
             .pending_approvals
@@ -797,7 +797,7 @@ impl Transaction {
         }
         let content = if let Some(r) = self.model.install_review.as_ref() {
             r.view(&self.model.name, self.model.kind)
-        } else if let Some(c) = self.model.checkout.as_ref() {
+        } else if let Some(c) = self.model.removal_confirm.as_ref() {
             c.view(&self.model.name)
         } else {
             self.model.pkgbuild_review.as_ref().map(|p| p.view())?
@@ -1029,19 +1029,19 @@ mod tests {
     }
 
     #[test]
-    fn explored_routes_review_checkout_or_failure() {
+    fn explored_routes_review_or_failure() {
         let mut transaction = new_transaction(InstallKind::Install);
         transaction.update(TransactionMessage::Explored(Ok(initial_run(vec![
             ignore_question("glibc"),
         ]))));
         assert!(transaction.model.install_review.is_some());
-        assert!(transaction.model.checkout.is_none());
+        assert!(transaction.model.removal_confirm.is_none());
         assert_eq!(transaction.model.summary, Some(summary()));
 
         let mut transaction = new_transaction(InstallKind::Install);
         transaction.update(TransactionMessage::Explored(Ok(initial_run(Vec::new()))));
         assert!(transaction.model.install_review.is_none());
-        assert!(transaction.model.checkout.is_none());
+        assert!(transaction.model.removal_confirm.is_none());
         assert!(matches!(
             transaction.model.status,
             TransactionStatus::Running
@@ -1061,7 +1061,7 @@ mod tests {
             .expect("review kept in place");
         assert!(review.approving);
         assert!(transaction.model.pending_approvals.is_some());
-        assert!(transaction.model.checkout.is_none());
+        assert!(transaction.model.removal_confirm.is_none());
     }
 
     #[test]
@@ -1093,7 +1093,7 @@ mod tests {
             vec![ignore_answer("glibc")],
         ))));
         assert!(transaction.model.install_review.is_none());
-        assert!(transaction.model.checkout.is_none());
+        assert!(transaction.model.removal_confirm.is_none());
         assert!(matches!(
             transaction.model.status,
             TransactionStatus::Done(ChildOutcome::Failed(_))
@@ -1188,7 +1188,7 @@ mod tests {
             Vec::new(),
         ))));
         assert!(transaction.model.install_review.is_none());
-        assert!(transaction.model.checkout.is_none());
+        assert!(transaction.model.removal_confirm.is_none());
         assert!(matches!(
             transaction.model.status,
             TransactionStatus::Done(ChildOutcome::Success)
@@ -1208,7 +1208,7 @@ mod tests {
         ))));
         assert_eq!(transaction.model.aur_names, vec![s("yay")]);
         assert!(transaction.model.install_review.is_none());
-        assert!(transaction.model.checkout.is_none());
+        assert!(transaction.model.removal_confirm.is_none());
         assert!(matches!(
             transaction.model.status,
             TransactionStatus::Running
@@ -1223,7 +1223,7 @@ mod tests {
             vec![aur_candidate("yay")],
         ))));
         assert_eq!(transaction.model.summary, Some(summary()));
-        assert!(transaction.model.checkout.is_none());
+        assert!(transaction.model.removal_confirm.is_none());
         assert!(matches!(
             transaction.model.status,
             TransactionStatus::Running
@@ -1239,7 +1239,7 @@ mod tests {
         ))));
         assert_eq!(transaction.model.aur_names, vec![s("yay")]);
         assert!(transaction.model.install_review.is_some());
-        assert!(transaction.model.checkout.is_none());
+        assert!(transaction.model.removal_confirm.is_none());
     }
 
     #[test]
@@ -1264,7 +1264,7 @@ mod tests {
         ))));
         assert!(transaction.model.aur_names.is_empty());
         assert!(transaction.model.install_review.is_none());
-        assert!(transaction.model.checkout.is_none());
+        assert!(transaction.model.removal_confirm.is_none());
         assert!(matches!(
             transaction.model.status,
             TransactionStatus::Running
@@ -1304,8 +1304,12 @@ mod tests {
             Vec::new(),
         ))));
         assert!(transaction.model.install_review.is_none());
-        let checkout = transaction.model.checkout.as_ref().expect("checkout shown");
-        assert_eq!(checkout.summary, removal_summary());
+        let confirmation = transaction
+            .model
+            .removal_confirm
+            .as_ref()
+            .expect("removal confirmation shown");
+        assert_eq!(confirmation.summary, removal_summary());
 
         let mut transaction = new_transaction(InstallKind::Remove);
         transaction.update(TransactionMessage::Explored(Ok(run(
@@ -1316,15 +1320,15 @@ mod tests {
             Vec::new(),
         ))));
         assert!(transaction.model.install_review.is_some());
-        assert!(transaction.model.checkout.is_none());
+        assert!(transaction.model.removal_confirm.is_none());
         transaction.update(TransactionMessage::ApproveReview);
         assert!(transaction.model.install_review.is_some());
         assert!(transaction.model.pending_approvals.is_none());
-        assert!(transaction.model.checkout.is_none());
+        assert!(transaction.model.removal_confirm.is_none());
     }
 
     #[test]
-    fn remove_sealed_revalidation_converges_to_checkout_and_launches() {
+    fn remove_sealed_revalidation_converges_to_confirmation_and_launches() {
         let mut transaction = new_transaction(InstallKind::Remove);
         transaction.update(TransactionMessage::Explored(Ok(run(
             ReviewOrigin::Initial,
@@ -1362,7 +1366,7 @@ mod tests {
         };
         transaction.update(TransactionMessage::Explored(Ok(settled)));
         assert!(transaction.model.install_review.is_none());
-        assert!(transaction.model.checkout.is_some());
+        assert!(transaction.model.removal_confirm.is_some());
         let carried = transaction
             .model
             .pending_approvals
@@ -1373,7 +1377,7 @@ mod tests {
                 .expect("decodes")
                 .proceed
         );
-        transaction.update(TransactionMessage::ApproveCheckout);
+        transaction.update(TransactionMessage::ApproveRemoval);
         assert!(matches!(
             transaction.model.status,
             TransactionStatus::Running

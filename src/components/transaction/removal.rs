@@ -11,11 +11,11 @@ use super::shared::{
 };
 use crate::Element;
 
-pub(crate) struct CheckoutModel {
+pub(crate) struct RemovalConfirmModel {
     pub(crate) summary: TransactionSummary,
 }
 
-impl CheckoutModel {
+impl RemovalConfirmModel {
     pub(crate) fn new(summary: TransactionSummary) -> Self {
         Self { summary }
     }
@@ -43,12 +43,12 @@ impl CheckoutModel {
             .control(scrollable(body).height(Length::Fixed(400.0)))
             .primary_action(
                 button::destructive("Remove").on_press(crate::Message::Transaction(
-                    TransactionMessage::ApproveCheckout,
+                    TransactionMessage::ApproveRemoval,
                 )),
             )
             .secondary_action(
                 button::standard("Cancel").on_press(crate::Message::Transaction(
-                    TransactionMessage::CancelCheckout,
+                    TransactionMessage::CancelRemoval,
                 )),
             )
             .into()
@@ -83,7 +83,7 @@ fn package_row(pkg: &pakajo::events::SummaryPackage) -> Element<'_> {
 }
 
 #[cfg(test)]
-mod checkout_tests {
+mod removal_tests {
     use super::*;
     use crate::components::transaction::review::InstallReview;
     use crate::components::transaction::state::{TransactionModel, TransactionStatus};
@@ -167,7 +167,7 @@ mod checkout_tests {
             },
         )));
         assert!(tx.model.install_review.is_none());
-        assert!(tx.model.checkout.is_none());
+        assert!(tx.model.removal_confirm.is_none());
         assert!(matches!(tx.model.status, TransactionStatus::Running));
     }
 
@@ -177,7 +177,7 @@ mod checkout_tests {
         tx.model.install_review = Some(InstallReview::new(vec![conflict()]));
         tx.model.summary = Some(summary());
         tx.update(TransactionMessage::ApproveReview);
-        assert!(tx.model.checkout.is_none());
+        assert!(tx.model.removal_confirm.is_none());
         assert!(
             tx.model
                 .install_review
@@ -202,15 +202,15 @@ mod checkout_tests {
             )
         ));
         tx.update(TransactionMessage::Explored(Ok(revalidated())));
-        assert!(tx.model.checkout.is_none());
+        assert!(tx.model.removal_confirm.is_none());
         assert!(matches!(tx.model.status, TransactionStatus::Running));
     }
 
     #[test]
-    fn checkout_cancel_does_not_launch() {
+    fn removal_cancel_does_not_launch() {
         let mut tx = install_model();
-        tx.model.checkout = Some(CheckoutModel::new(summary()));
-        let action = tx.update(TransactionMessage::CancelCheckout);
+        tx.model.removal_confirm = Some(RemovalConfirmModel::new(summary()));
+        let action = tx.update(TransactionMessage::CancelRemoval);
         assert!(matches!(action, Action::Finished));
         assert!(!matches!(tx.model.status, TransactionStatus::Running));
     }
