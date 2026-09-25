@@ -171,6 +171,7 @@ pub(super) fn build_section(model: &TransactionModel, state: StageState) -> Sect
                     None::<(String, fn(&cosmic::Theme) -> cosmic::iced::Color)>,
                     elapsed,
                 ));
+                section.content = Some(build_list_view(&ordered, &model.expanded_cards, model.now));
                 return section;
             }
             let elapsed = match (ordered.first(), model.aur.build_ended) {
