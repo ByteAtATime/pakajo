@@ -36,8 +36,7 @@ pub fn install_aur<S: InstallSink + ?Sized>(
     let pkgbuilds = crate::pkgbuild::collect_for_review(&plan, sink)?;
     review_if_requested(decision, &pkgbuilds, sink, decider)?;
     let arch = alpm.architectures().first();
-    let stale = stale_repo_deps(&alpm, &plan, arch);
-    install_repo_packages(&plan, &params, sink, &stale)?;
+    install_repo_packages(&plan, &params, sink)?;
     reject_pkgbuild_bases(&plan)?;
     for (pkgbase, members) in plan.aur_builds() {
         install_aur_base(pkgbase, members, &params, arch, sink)?;
@@ -173,76 +172,6 @@ fn split_dep_names(artifacts: &[String], members: &[Member]) -> Vec<String> {
         .collect()
 }
 
-fn base_runtime_deps(srcinfo: &srcinfo::Srcinfo, arch: &str) -> Vec<String> {
-    srcinfo
-        .pkg
-        .depends
-        .arch(arch)
-        .chain(srcinfo.pkgs().iter().flat_map(|pkg| pkg.depends.arch(arch)))
-        .map(str::to_string)
-        .collect()
-}
-
-fn sync_newer(sync_version: &str, local_version: &str) -> bool {
-    alpm::vercmp(sync_version.to_string(), local_version.to_string()) == std::cmp::Ordering::Greater
-}
-
-fn stale_repo_deps(handle: &alpm::Alpm, plan: &Plan, arch: Option<&str>) -> Vec<RepoInstall> {
-    let Some(arch) = arch else {
-        eprintln!("warning: skipping stale dep check: unknown architectures");
-        return Vec::new();
-    };
-    let planned: HashSet<&str> = plan
-        .repo_installs
-        .iter()
-        .map(|row| row.name.as_str())
-        .chain(plan.all_members().map(|member| member.name.as_str()))
-        .collect();
-    let mut stale = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    for (pkgbase, _) in plan.aur_builds() {
-        let dir = match crate::build::clone_dir(pkgbase) {
-            Ok(dir) => dir,
-            Err(_) => continue,
-        };
-        let srcinfo = match crate::srcinfo_io::read_from_dir(&dir)
-            .or_else(|_| crate::srcinfo_io::generate(&dir))
-        {
-            Ok(srcinfo) => srcinfo,
-            Err(error) => {
-                eprintln!("warning: skipping stale dep check for {pkgbase}: {error:#}");
-                continue;
-            }
-        };
-        for dep in base_runtime_deps(&srcinfo, arch) {
-            let Some(sync) = handle.syncdbs().find_satisfier(dep.as_str()) else {
-                continue;
-            };
-            let name = sync.name().to_string();
-            if planned.contains(name.as_str()) || !seen.insert(name.clone()) {
-                continue;
-            }
-            let Some(local) = handle.localdb().pkgs().find_satisfier(dep.as_str()) else {
-                continue;
-            };
-            if !sync_newer(sync.version(), local.version()) {
-                continue;
-            }
-            stale.push(RepoInstall {
-                name,
-                version: sync.version().to_string(),
-                db: sync
-                    .db()
-                    .map(|db| db.name().to_string())
-                    .unwrap_or_default(),
-                make: false,
-                target: false,
-            });
-        }
-    }
-    stale
-}
-
 fn repo_target(row: &RepoInstall) -> String {
     if row.db.is_empty() {
         row.name.clone()
@@ -267,15 +196,8 @@ fn install_repo_packages<S: InstallSink + ?Sized>(
     plan: &Plan,
     params: &BuildParams<'_>,
     sink: &mut S,
-    stale: &[RepoInstall],
 ) -> anyhow::Result<()> {
-    let (mut targets, mut deps) = repo_child_inputs(plan, params.files);
-    for row in stale {
-        targets.push(repo_target(row));
-        if !row.target {
-            deps.push(row.name.clone());
-        }
-    }
+    let (targets, deps) = repo_child_inputs(plan, params.files);
     if targets.is_empty() {
         return Ok(());
     }
@@ -494,35 +416,5 @@ mod tests {
                 .expect("seal writes");
             assert_eq!(sealed_proceed(&sealed), proceed);
         }
-    }
-
-    #[test]
-    fn sync_newer_compares_versions_with_epoch() {
-        assert!(sync_newer("2.3.2-1", "2.3.1-1"));
-        assert!(sync_newer("1:84.0.0-1", "84.0.0-1"));
-        assert!(!sync_newer("2.3.1-1", "2.3.1-1"));
-        assert!(!sync_newer("2.3.1-1", "2.3.2-1"));
-    }
-
-    #[test]
-    fn base_runtime_deps_collects_shared_and_split_depends() {
-        let srcinfo: srcinfo::Srcinfo = [
-            "pkgbase = pw",
-            "pkgver = 1.3",
-            "pkgrel = 1",
-            "depends = bash",
-            "",
-            "pkgname = pw",
-            "depends = tree",
-            "depends = gnupg",
-            "",
-        ]
-        .join("\n")
-        .parse()
-        .expect("fixture srcinfo parses");
-        assert_eq!(
-            base_runtime_deps(&srcinfo, "x86_64"),
-            vec!["bash".to_string(), "tree".to_string(), "gnupg".to_string()]
-        );
     }
 }
