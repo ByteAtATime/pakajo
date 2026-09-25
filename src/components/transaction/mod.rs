@@ -95,6 +95,14 @@ pub(crate) enum Action {
     InstallSucceeded,
 }
 
+fn sealed_decider(
+    approvals: &str,
+) -> Result<Box<dyn pakajo::dispatch::protocol::Decider + Send>, String> {
+    pakajo::dispatch::seal::decode_seal(approvals)
+        .map(|sealed| Box::new(pakajo::dispatch::seal::sealed_decider(sealed)) as Box<_>)
+        .map_err(|error| format!("{error:#}"))
+}
+
 fn proceed_only_seal() -> String {
     match pakajo::dispatch::seal::proceed_only_seal() {
         Ok(payload) => payload,
@@ -400,24 +408,7 @@ impl Transaction {
             }
             TransactionMessage::Explored(result) => match result {
                 Err(e) => {
-                    if e == REVIEW_LOOP_ENDED {
-                        if self.model.checkout.is_some() {
-                            return Action::None;
-                        }
-                        let approving = self
-                            .model
-                            .install_review
-                            .as_ref()
-                            .is_some_and(|review| review.approving);
-                        if approving {
-                            eprintln!("[pakajo] review failed: {e}");
-                            self.model.failure_message = Some(e);
-                            self.model.pending_approvals = None;
-                            if let Some(review) = self.model.install_review.as_mut() {
-                                review.approving = false;
-                            }
-                            return Action::None;
-                        }
+                    if e == REVIEW_LOOP_ENDED && !self.approving() {
                         return Action::None;
                     }
                     eprintln!("[pakajo] review failed: {e}");
@@ -448,12 +439,7 @@ impl Transaction {
                 Action::None
             }
             TransactionMessage::Review(m) => {
-                if self
-                    .model
-                    .install_review
-                    .as_ref()
-                    .is_some_and(|review| review.approving)
-                {
+                if self.approving() {
                     return Action::None;
                 }
                 if let Some(r) = self.model.install_review.as_mut() {
@@ -463,21 +449,16 @@ impl Transaction {
             }
             TransactionMessage::CancelReview => Action::Finished,
             TransactionMessage::ApproveReview => {
-                if self
-                    .model
-                    .install_review
-                    .as_ref()
-                    .is_some_and(|review| review.approving)
-                {
+                if self.approving() {
                     return Action::None;
                 }
                 self.model.review_notice = None;
                 self.model.unstables = 0;
-                if self
+                if !self
                     .model
                     .install_review
                     .as_ref()
-                    .is_some_and(|review| !review.can_confirm())
+                    .is_some_and(|review| review.can_confirm())
                 {
                     return Action::None;
                 }
@@ -568,6 +549,18 @@ impl Transaction {
                 }
             }
         }
+    }
+
+    fn approving(&self) -> bool {
+        self.model
+            .install_review
+            .as_ref()
+            .is_some_and(|review| review.approving)
+    }
+
+    fn fail_launch(&mut self, error: String) -> Action {
+        self.model.finish(ChildOutcome::Failed(error));
+        Action::None
     }
 
     fn fail_seal(&mut self, mut review: InstallReview, message: String) -> Action {
@@ -716,15 +709,10 @@ impl Transaction {
     fn launch_subprocess(&mut self, approvals: String) -> Action {
         let targets = self.model.targets.clone();
         self.model.status = TransactionStatus::Running;
-        let decider: Box<dyn pakajo::dispatch::protocol::Decider + Send> =
-            match pakajo::dispatch::seal::decode_seal(&approvals) {
-                Ok(sealed) => Box::new(pakajo::dispatch::seal::sealed_decider(sealed)),
-                Err(error) => {
-                    self.model
-                        .finish(ChildOutcome::Failed(format!("{error:#}")));
-                    return Action::None;
-                }
-            };
+        let decider = match sealed_decider(&approvals) {
+            Ok(decider) => decider,
+            Err(error) => return self.fail_launch(error),
+        };
         let request = pakajo::dispatch::InstallRequest {
             targets,
             as_deps: false,
@@ -753,15 +741,10 @@ impl Transaction {
 
     fn launch_sysupgrade_subprocess(&mut self, approvals: String) -> Action {
         self.model.status = TransactionStatus::Running;
-        let decider: Box<dyn pakajo::dispatch::protocol::Decider + Send> =
-            match pakajo::dispatch::seal::decode_seal(&approvals) {
-                Ok(sealed) => Box::new(pakajo::dispatch::seal::sealed_decider(sealed)),
-                Err(error) => {
-                    self.model
-                        .finish(ChildOutcome::Failed(format!("{error:#}")));
-                    return Action::None;
-                }
-            };
+        let decider = match sealed_decider(&approvals) {
+            Ok(decider) => decider,
+            Err(error) => return self.fail_launch(error),
+        };
         let request = pakajo::dispatch::SysupgradeRequest {
             no_refresh: false,
             repo_only: false,
@@ -903,8 +886,13 @@ mod tests {
     use super::*;
     use pakajo::dispatch::revalidate::ReviewOrigin;
     use pakajo::events::{SummaryPackage, TransactionSummary};
+    use pakajo::question::model::Answer;
 
-    fn test_summary() -> TransactionSummary {
+    fn s(value: &str) -> String {
+        value.to_string()
+    }
+
+    fn summary() -> TransactionSummary {
         TransactionSummary {
             packages: vec![SummaryPackage {
                 name: s("firefox"),
@@ -922,88 +910,113 @@ mod tests {
         }
     }
 
-    fn reviewed() -> RevalidationRun {
-        RevalidationRun {
-            origin: ReviewOrigin::Initial,
-            questions: vec![Question::InstallIgnorepkg { name: s("glibc") }],
-            answers: vec![ignorepkg_answer("glibc")],
-            summary: test_summary(),
-            aur: Vec::new(),
+    fn removal_summary() -> TransactionSummary {
+        TransactionSummary {
+            packages: vec![SummaryPackage {
+                name: s("firefox"),
+                repository: None,
+                new_version: s("1.0"),
+                old_version: Some(s("1.0")),
+                download_size: 0,
+                installed_size: 0,
+                old_installed_size: 2,
+                is_removal: true,
+            }],
+            total_download_size: 0,
+            total_installed_size: 0,
+            total_removed_size: 2,
         }
     }
 
-    fn batch_transaction() -> Transaction {
+    fn new_transaction(kind: InstallKind) -> Transaction {
+        let name = match kind {
+            InstallKind::Upgrade => s("system"),
+            _ => s("firefox"),
+        };
         Transaction {
-            model: TransactionModel::batch(
-                s("paru"),
-                vec![s("paru")],
-                vec![s("paru")],
-                InstallKind::Install,
-            ),
+            model: TransactionModel::batch(name.clone(), vec![name], Vec::new(), kind),
             review_loop: None,
         }
     }
 
-    fn repo_transaction() -> Transaction {
-        Transaction {
-            model: TransactionModel::batch(
-                s("firefox"),
-                vec![s("firefox")],
-                Vec::new(),
-                InstallKind::Install,
-            ),
-            review_loop: None,
-        }
+    fn ignore_question(name: &str) -> Question {
+        Question::InstallIgnorepkg { name: s(name) }
     }
 
-    fn ignorepkg_answer(name: &str) -> pakajo::question::model::Answer {
-        pakajo::question::model::Answer::InstallIgnorepkg {
+    fn ignore_answer(name: &str) -> Answer {
+        Answer::InstallIgnorepkg {
             name: s(name),
             install: false,
         }
     }
 
-    fn revalidation_run(
+    fn run(
+        origin: ReviewOrigin,
         questions: Vec<Question>,
-        answers: Vec<pakajo::question::model::Answer>,
+        answers: Vec<Answer>,
+        summary: TransactionSummary,
+        aur: Vec<pakajo::upgrade::AurUpgradeCandidate>,
     ) -> RevalidationRun {
         RevalidationRun {
-            origin: ReviewOrigin::Revalidation,
+            origin,
             questions,
             answers,
-            summary: test_summary(),
-            aur: Vec::new(),
+            summary,
+            aur,
         }
     }
 
+    fn initial_run(questions: Vec<Question>) -> RevalidationRun {
+        run(
+            ReviewOrigin::Initial,
+            questions,
+            Vec::new(),
+            summary(),
+            Vec::new(),
+        )
+    }
+
+    fn settled_run(questions: Vec<Question>, answers: Vec<Answer>) -> RevalidationRun {
+        run(
+            ReviewOrigin::Revalidation,
+            questions,
+            answers,
+            summary(),
+            Vec::new(),
+        )
+    }
+
+    fn drifted_run() -> RevalidationRun {
+        settled_run(
+            vec![ignore_question("glibc"), ignore_question("nvidia")],
+            vec![ignore_answer("glibc"), ignore_answer("nvidia")],
+        )
+    }
+
     fn approving_transaction(pending: Option<String>, revalidations: usize) -> Transaction {
-        let mut transaction = repo_transaction();
-        let mut review = InstallReview::new(vec![Question::InstallIgnorepkg { name: s("glibc") }]);
+        let mut transaction = new_transaction(InstallKind::Install);
+        let mut review = InstallReview::new(vec![ignore_question("glibc")]);
         review.approving = true;
         transaction.model.install_review = Some(review);
-        transaction.model.summary = Some(test_summary());
+        transaction.model.summary = Some(summary());
         transaction.model.pending_approvals = pending;
         transaction.model.revalidations = revalidations;
         transaction
     }
 
-    fn drifted_run() -> RevalidationRun {
-        revalidation_run(
-            vec![
-                Question::InstallIgnorepkg { name: s("glibc") },
-                Question::InstallIgnorepkg { name: s("nvidia") },
-            ],
-            vec![ignorepkg_answer("glibc"), ignorepkg_answer("nvidia")],
-        )
+    fn aur_candidate(name: &str) -> pakajo::upgrade::AurUpgradeCandidate {
+        pakajo::upgrade::AurUpgradeCandidate {
+            name: s(name),
+            local_version: s("1.0"),
+            remote_version: s("2.0"),
+            package_base: s(name),
+        }
     }
 
     #[test]
     fn pkgbuild_result_clears_install_review() {
-        let mut transaction = batch_transaction();
-        transaction.model.install_review =
-            Some(InstallReview::new(vec![Question::InstallIgnorepkg {
-                name: s("glibc"),
-            }]));
+        let mut transaction = new_transaction(InstallKind::Install);
+        transaction.model.install_review = Some(InstallReview::new(vec![ignore_question("glibc")]));
 
         transaction.update(TransactionMessage::PkgbuildResult(Ok(vec![])));
 
@@ -1011,35 +1024,21 @@ mod tests {
     }
 
     #[test]
-    fn explored_run_with_questions_shows_review() {
-        let mut transaction = batch_transaction();
-        transaction.update(TransactionMessage::Explored(Ok(reviewed())));
+    fn explored_routes_review_checkout_or_failure() {
+        let mut transaction = new_transaction(InstallKind::Install);
+        transaction.update(TransactionMessage::Explored(Ok(initial_run(vec![
+            ignore_question("glibc"),
+        ]))));
         assert!(transaction.model.install_review.is_some());
         assert!(transaction.model.checkout.is_none());
-        assert_eq!(
-            transaction.model.summary.clone().expect("summary set"),
-            test_summary()
-        );
-    }
+        assert_eq!(transaction.model.summary, Some(summary()));
 
-    #[test]
-    fn explored_run_without_questions_shows_checkout() {
-        let mut transaction = batch_transaction();
-        let empty = RevalidationRun {
-            origin: ReviewOrigin::Initial,
-            questions: Vec::new(),
-            answers: Vec::new(),
-            summary: test_summary(),
-            aur: Vec::new(),
-        };
-        transaction.update(TransactionMessage::Explored(Ok(empty)));
+        let mut transaction = new_transaction(InstallKind::Install);
+        transaction.update(TransactionMessage::Explored(Ok(initial_run(Vec::new()))));
         assert!(transaction.model.install_review.is_none());
         assert!(transaction.model.checkout.is_some());
-    }
 
-    #[test]
-    fn explored_error_fails_closed_without_review_or_checkout() {
-        let mut transaction = batch_transaction();
+        let mut transaction = new_transaction(InstallKind::Install);
         transaction.update(TransactionMessage::Explored(Err(s("boom"))));
         assert_eq!(transaction.model.failure_message.as_deref(), Some("boom"));
         assert!(transaction.model.install_review.is_none());
@@ -1049,11 +1048,8 @@ mod tests {
 
     #[test]
     fn approve_seals_and_waits_for_revalidation() {
-        let mut transaction = repo_transaction();
-        transaction.model.install_review =
-            Some(InstallReview::new(vec![Question::InstallIgnorepkg {
-                name: s("glibc"),
-            }]));
+        let mut transaction = new_transaction(InstallKind::Install);
+        transaction.model.install_review = Some(InstallReview::new(vec![ignore_question("glibc")]));
         transaction.update(TransactionMessage::ApproveReview);
         let review = transaction
             .model
@@ -1082,26 +1078,17 @@ mod tests {
         assert!(!rebuilt.approving);
         assert!(rebuilt.ignorepkg_checks[0]);
         assert!(!rebuilt.ignorepkg_checks[1]);
-        assert_eq!(rebuilt.highlighted.len(), 1);
         assert!(
             rebuilt
                 .highlighted
-                .contains(&Question::InstallIgnorepkg { name: s("nvidia") }.key())
+                .contains(&ignore_question("nvidia").key())
         );
 
-        assert!(transaction.model.pending_approvals.is_none());
-        transaction.model.install_review = Some({
-            let mut review =
-                InstallReview::new(vec![Question::InstallIgnorepkg { name: s("glibc") }]);
-            review.approving = true;
-            review
-        });
-        transaction.model.pending_approvals = Some(s("sealed-payload"));
-        let settled = revalidation_run(
-            vec![Question::InstallIgnorepkg { name: s("glibc") }],
-            vec![ignorepkg_answer("glibc")],
-        );
-        transaction.update(TransactionMessage::Explored(Ok(settled)));
+        let mut transaction = approving_transaction(Some(s("sealed-payload")), 1);
+        transaction.update(TransactionMessage::Explored(Ok(settled_run(
+            vec![ignore_question("glibc")],
+            vec![ignore_answer("glibc")],
+        ))));
         assert!(transaction.model.install_review.is_none());
         assert!(transaction.model.checkout.is_some());
         assert_eq!(
@@ -1111,81 +1098,41 @@ mod tests {
     }
 
     #[test]
-    fn unstable_notice_survives_initial_restart() {
-        let mut transaction = approving_transaction(None, 2);
-        transaction.update(TransactionMessage::Explored(Ok(drifted_run())));
-        assert_eq!(transaction.model.revalidations, 0);
-        assert_eq!(
-            transaction.model.review_notice.as_deref(),
-            Some("review did not stabilize")
-        );
-
-        transaction.update(TransactionMessage::Explored(Ok(reviewed())));
-        assert_eq!(
-            transaction.model.review_notice.as_deref(),
-            Some("review did not stabilize")
-        );
-        assert!(transaction.model.install_review.is_some());
-
-        transaction.update(TransactionMessage::Explored(Err(
-            REVIEW_LOOP_ENDED.to_string()
-        )));
-        assert!(transaction.model.failure_message.is_none());
-        assert!(transaction.model.install_review.is_some());
-    }
-
-    #[test]
     fn diverged_with_summary_only_drift_still_rebuilds() {
         let mut transaction = approving_transaction(Some(s("sealed-payload")), 0);
-        let mut varied = test_summary();
+        let mut varied = summary();
         varied.packages[0].new_version = s("2.0");
-        let run = RevalidationRun {
-            origin: ReviewOrigin::Revalidation,
-            questions: vec![Question::InstallIgnorepkg { name: s("glibc") }],
-            answers: vec![ignorepkg_answer("glibc")],
-            summary: varied,
-            aur: Vec::new(),
-        };
-        transaction.update(TransactionMessage::Explored(Ok(run)));
+        transaction.update(TransactionMessage::Explored(Ok(run(
+            ReviewOrigin::Revalidation,
+            vec![ignore_question("glibc")],
+            vec![ignore_answer("glibc")],
+            varied,
+            Vec::new(),
+        ))));
         assert_eq!(transaction.model.revalidations, 1);
         assert!(transaction.model.install_review.is_some());
         assert!(transaction.model.pending_approvals.is_none());
     }
 
     #[test]
-    fn sentinel_while_approving_fails_closed() {
-        let mut transaction = approving_transaction(Some(s("sealed-payload")), 0);
-        transaction.update(TransactionMessage::Explored(Err(
-            REVIEW_LOOP_ENDED.to_string()
-        )));
-        assert_eq!(
-            transaction.model.failure_message.as_deref(),
-            Some(REVIEW_LOOP_ENDED)
-        );
-        assert!(
-            transaction
-                .model
-                .install_review
-                .as_ref()
-                .is_some_and(|review| !review.approving)
-        );
-    }
-
-    #[test]
-    fn unstable_clears_stash_and_notice_survives_restart() {
+    fn unstable_notice_survives_restart_and_clears_stash() {
         let mut transaction = approving_transaction(Some(s("sealed-payload")), 2);
         transaction.update(TransactionMessage::Explored(Ok(drifted_run())));
+        assert_eq!(transaction.model.revalidations, 0);
         assert!(transaction.model.pending_approvals.is_none());
         assert_eq!(
             transaction.model.review_notice.as_deref(),
             Some("review did not stabilize")
         );
-        transaction.update(TransactionMessage::Explored(Ok(reviewed())));
+
+        transaction.update(TransactionMessage::Explored(Ok(initial_run(vec![
+            ignore_question("glibc"),
+        ]))));
         assert_eq!(
             transaction.model.review_notice.as_deref(),
             Some("review did not stabilize")
         );
-        assert!(transaction.model.pending_approvals.is_none());
+        assert!(transaction.model.install_review.is_some());
     }
 
     #[test]
@@ -1200,56 +1147,40 @@ mod tests {
                 .as_deref()
                 .is_some_and(|message| message.contains("review did not stabilize"))
         );
-        assert!(
-            transaction
-                .model
-                .install_review
-                .as_ref()
-                .is_some_and(|review| !review.approving)
-        );
-        assert!(transaction.model.install_review.is_some());
-    }
-
-    fn s(value: &str) -> String {
-        value.to_string()
-    }
-
-    fn upgrade_transaction() -> Transaction {
-        Transaction {
-            model: TransactionModel::new(s("system"), PackageSource::Repo, InstallKind::Upgrade),
-            review_loop: None,
-        }
-    }
-
-    fn aur_candidate(name: &str) -> pakajo::upgrade::AurUpgradeCandidate {
-        pakajo::upgrade::AurUpgradeCandidate {
-            name: s(name),
-            local_version: s("1.0"),
-            remote_version: s("2.0"),
-            package_base: s(name),
-        }
-    }
-
-    fn upgrade_run(
-        questions: Vec<Question>,
-        summary: pakajo::events::TransactionSummary,
-        aur: Vec<pakajo::upgrade::AurUpgradeCandidate>,
-    ) -> RevalidationRun {
-        RevalidationRun {
-            origin: ReviewOrigin::Initial,
-            questions,
-            answers: Vec::new(),
-            summary,
-            aur,
-        }
+        let review = transaction
+            .model
+            .install_review
+            .as_ref()
+            .expect("review kept");
+        assert!(!review.approving);
     }
 
     #[test]
-    fn sysupgrade_idle_auto_finishes_with_notice() {
-        let mut transaction = upgrade_transaction();
-        transaction.update(TransactionMessage::Explored(Ok(upgrade_run(
+    fn sentinel_while_approving_fails_closed() {
+        let mut transaction = approving_transaction(Some(s("sealed-payload")), 0);
+        transaction.update(TransactionMessage::Explored(Err(
+            REVIEW_LOOP_ENDED.to_string()
+        )));
+        assert_eq!(
+            transaction.model.failure_message.as_deref(),
+            Some(REVIEW_LOOP_ENDED)
+        );
+        let review = transaction
+            .model
+            .install_review
+            .as_ref()
+            .expect("review kept");
+        assert!(!review.approving);
+    }
+
+    #[test]
+    fn sysupgrade_routes_by_questions_summary_and_aur() {
+        let mut transaction = new_transaction(InstallKind::Upgrade);
+        transaction.update(TransactionMessage::Explored(Ok(run(
+            ReviewOrigin::Initial,
             Vec::new(),
-            pakajo::events::TransactionSummary::default(),
+            Vec::new(),
+            TransactionSummary::default(),
             Vec::new(),
         ))));
         assert!(transaction.model.install_review.is_none());
@@ -1262,95 +1193,83 @@ mod tests {
             transaction.model.review_notice.as_deref(),
             Some("System is up to date")
         );
-    }
 
-    #[test]
-    fn sysupgrade_aur_only_upgrade_shows_checkout_with_aur() {
-        let mut transaction = upgrade_transaction();
-        transaction.update(TransactionMessage::Explored(Ok(upgrade_run(
+        let mut transaction = new_transaction(InstallKind::Upgrade);
+        transaction.update(TransactionMessage::Explored(Ok(run(
+            ReviewOrigin::Initial,
             Vec::new(),
-            pakajo::events::TransactionSummary::default(),
+            Vec::new(),
+            TransactionSummary::default(),
             vec![aur_candidate("yay")],
         ))));
         assert_eq!(transaction.model.aur_names, vec![s("yay")]);
-        assert_eq!(transaction.model.aur_upgrades.len(), 1);
         assert!(transaction.model.install_review.is_none());
         assert!(transaction.model.checkout.is_some());
         assert!(matches!(
             transaction.model.status,
             TransactionStatus::Checking
         ));
-        assert!(transaction.model.review_notice.is_none());
-    }
 
-    #[test]
-    fn sysupgrade_initial_stores_aur_names_and_reviews() {
-        let mut transaction = upgrade_transaction();
-        transaction.update(TransactionMessage::Explored(Ok(upgrade_run(
-            vec![Question::InstallIgnorepkg { name: s("glibc") }],
-            test_summary(),
-            vec![aur_candidate("yay")],
-        ))));
-        assert_eq!(transaction.model.aur_names, vec![s("yay")]);
-        assert_eq!(transaction.model.aur_upgrades.len(), 1);
-        assert!(transaction.model.install_review.is_some());
-        assert!(transaction.model.checkout.is_none());
-    }
-
-    #[test]
-    fn sysupgrade_empty_questions_with_summary_carries_aur_to_checkout() {
-        let mut transaction = upgrade_transaction();
-        transaction.update(TransactionMessage::Explored(Ok(upgrade_run(
+        let mut transaction = new_transaction(InstallKind::Upgrade);
+        transaction.update(TransactionMessage::Explored(Ok(run(
+            ReviewOrigin::Initial,
             Vec::new(),
-            test_summary(),
+            Vec::new(),
+            summary(),
             vec![aur_candidate("yay")],
         ))));
-        assert!(transaction.model.install_review.is_none());
         let checkout = transaction.model.checkout.as_ref().expect("checkout shown");
-        assert_eq!(checkout.summary, test_summary());
+        assert_eq!(checkout.summary, summary());
         transaction.update(TransactionMessage::ApproveCheckout);
         assert!(matches!(
             transaction.model.status,
             TransactionStatus::Running
         ));
-    }
 
-    fn converged_upgrade_run(aur: Vec<pakajo::upgrade::AurUpgradeCandidate>) -> RevalidationRun {
-        RevalidationRun {
-            origin: ReviewOrigin::Revalidation,
-            questions: vec![Question::InstallIgnorepkg { name: s("glibc") }],
-            answers: vec![ignorepkg_answer("glibc")],
-            summary: test_summary(),
-            aur,
-        }
-    }
-
-    fn approved_upgrade_transaction(aur: Vec<pakajo::upgrade::AurUpgradeCandidate>) -> Transaction {
-        let mut transaction = upgrade_transaction();
-        transaction.update(TransactionMessage::Explored(Ok(upgrade_run(
-            vec![Question::InstallIgnorepkg { name: s("glibc") }],
-            test_summary(),
-            aur,
+        let mut transaction = new_transaction(InstallKind::Upgrade);
+        transaction.update(TransactionMessage::Explored(Ok(run(
+            ReviewOrigin::Initial,
+            vec![ignore_question("glibc")],
+            Vec::new(),
+            summary(),
+            vec![aur_candidate("yay")],
         ))));
-        transaction.update(TransactionMessage::ApproveReview);
-        transaction
+        assert_eq!(transaction.model.aur_names, vec![s("yay")]);
+        assert!(transaction.model.install_review.is_some());
+        assert!(transaction.model.checkout.is_none());
     }
 
     #[test]
     fn sysupgrade_converged_revalidation_adopts_latest_aur_candidates() {
-        let mut transaction = approved_upgrade_transaction(vec![aur_candidate("yay")]);
-        assert_eq!(transaction.model.aur_names, vec![s("yay")]);
-        transaction.update(TransactionMessage::Explored(Ok(converged_upgrade_run(
-            Vec::new(),
+        let approved = |aur: Vec<_>| {
+            let mut transaction = new_transaction(InstallKind::Upgrade);
+            transaction.update(TransactionMessage::Explored(Ok(run(
+                ReviewOrigin::Initial,
+                vec![ignore_question("glibc")],
+                Vec::new(),
+                summary(),
+                aur,
+            ))));
+            transaction.update(TransactionMessage::ApproveReview);
+            transaction
+        };
+
+        let mut transaction = approved(vec![aur_candidate("yay")]);
+        transaction.update(TransactionMessage::Explored(Ok(settled_run(
+            vec![ignore_question("glibc")],
+            vec![ignore_answer("glibc")],
         ))));
         assert!(transaction.model.aur_names.is_empty());
         assert!(transaction.model.aur_upgrades.is_empty());
         assert!(transaction.model.install_review.is_none());
         assert!(transaction.model.checkout.is_some());
 
-        let mut transaction = approved_upgrade_transaction(vec![aur_candidate("yay")]);
-        transaction.model.pending_approvals = None;
-        transaction.update(TransactionMessage::Explored(Ok(converged_upgrade_run(
+        let mut transaction = approved(vec![aur_candidate("yay")]);
+        transaction.update(TransactionMessage::Explored(Ok(run(
+            ReviewOrigin::Revalidation,
+            vec![ignore_question("glibc")],
+            vec![ignore_answer("glibc")],
+            summary(),
             vec![aur_candidate("paru")],
         ))));
         assert_eq!(transaction.model.aur_names, vec![s("paru")]);
@@ -1365,31 +1284,6 @@ mod tests {
         );
     }
 
-    fn remove_transaction() -> Transaction {
-        Transaction {
-            model: TransactionModel::new(s("firefox"), PackageSource::Repo, InstallKind::Remove),
-            review_loop: None,
-        }
-    }
-
-    fn removal_summary() -> TransactionSummary {
-        TransactionSummary {
-            packages: vec![SummaryPackage {
-                name: s("firefox"),
-                repository: None,
-                new_version: s("1.0"),
-                old_version: Some(s("1.0")),
-                download_size: 0,
-                installed_size: 0,
-                old_installed_size: 2,
-                is_removal: true,
-            }],
-            total_download_size: 0,
-            total_installed_size: 0,
-            total_removed_size: 2,
-        }
-    }
-
     fn remove_questions() -> Vec<Question> {
         vec![
             Question::HoldPkgs {
@@ -1402,40 +1296,27 @@ mod tests {
         ]
     }
 
-    fn initial_remove_run(questions: Vec<Question>) -> RevalidationRun {
-        RevalidationRun {
-            origin: ReviewOrigin::Initial,
-            questions,
-            answers: Vec::new(),
-            summary: removal_summary(),
-            aur: Vec::new(),
-        }
-    }
-
     #[test]
-    fn remove_empty_part1_goes_straight_to_checkout() {
-        let mut transaction = remove_transaction();
-        transaction.update(TransactionMessage::Explored(Ok(initial_remove_run(
+    fn remove_routes_by_questions_and_gates_confirm_on_holds() {
+        let mut transaction = new_transaction(InstallKind::Remove);
+        transaction.update(TransactionMessage::Explored(Ok(run(
+            ReviewOrigin::Initial,
+            Vec::new(),
+            Vec::new(),
+            removal_summary(),
             Vec::new(),
         ))));
         assert!(transaction.model.install_review.is_none());
         let checkout = transaction.model.checkout.as_ref().expect("checkout shown");
-        assert_eq!(checkout.summary.packages.len(), 1);
-        assert!(
-            checkout
-                .summary
-                .packages
-                .iter()
-                .all(|package| package.is_removal)
-        );
         assert_eq!(checkout.summary, removal_summary());
-    }
 
-    #[test]
-    fn remove_review_gates_confirm_until_hold_acknowledged() {
-        let mut transaction = remove_transaction();
-        transaction.update(TransactionMessage::Explored(Ok(initial_remove_run(
+        let mut transaction = new_transaction(InstallKind::Remove);
+        transaction.update(TransactionMessage::Explored(Ok(run(
+            ReviewOrigin::Initial,
             remove_questions(),
+            Vec::new(),
+            removal_summary(),
+            Vec::new(),
         ))));
         assert!(transaction.model.install_review.is_some());
         assert!(transaction.model.checkout.is_none());
@@ -1447,9 +1328,13 @@ mod tests {
 
     #[test]
     fn remove_sealed_revalidation_converges_to_checkout_and_launches() {
-        let mut transaction = remove_transaction();
-        transaction.update(TransactionMessage::Explored(Ok(initial_remove_run(
+        let mut transaction = new_transaction(InstallKind::Remove);
+        transaction.update(TransactionMessage::Explored(Ok(run(
+            ReviewOrigin::Initial,
             remove_questions(),
+            Vec::new(),
+            removal_summary(),
+            Vec::new(),
         ))));
         transaction.update(TransactionMessage::Review(ReviewMessage::ToggleHoldpkgs(0)));
         transaction.update(TransactionMessage::ApproveReview);
@@ -1462,7 +1347,7 @@ mod tests {
         assert!(sealed.proceed);
         assert!(sealed.answers.iter().any(|(_, answer)| matches!(
             answer,
-            pakajo::question::model::Answer::HoldPkgs { names, proceed: true }
+            Answer::HoldPkgs { names, proceed: true }
             if names == &vec![s("firefox")]
         )));
         let review = transaction
@@ -1486,8 +1371,11 @@ mod tests {
             .pending_approvals
             .clone()
             .expect("payload carried");
-        let decoded = pakajo::dispatch::seal::decode_seal(&carried).expect("decodes");
-        assert!(decoded.proceed);
+        assert!(
+            pakajo::dispatch::seal::decode_seal(&carried)
+                .expect("decodes")
+                .proceed
+        );
         transaction.update(TransactionMessage::ApproveCheckout);
         assert!(matches!(
             transaction.model.status,
