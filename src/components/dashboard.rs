@@ -2,11 +2,67 @@ use cosmic::iced::core::text::EllipsizeHeightLimit;
 use cosmic::iced::{Alignment, Color, Length};
 use cosmic::widget::{Column, Row, button, container, divider, scrollable, text, tooltip};
 
-use pakajo::dashboard::{DashboardSnapshot, OptdepEntry, RecentPkg};
+use pakajo::dashboard::{DashboardMessage, DashboardSnapshot, OptdepEntry, RecentPkg};
 use pakajo::utils::{format_bytes, group_thousands};
 
+use cosmic::app::Task;
+
 use crate::Element;
+use crate::PakajoCtx;
 use crate::components::search::SearchMessage;
+use crate::components::task::blocking_task;
+
+#[derive(Default)]
+pub struct DashboardState {
+    pub(crate) snapshot: Option<DashboardSnapshot>,
+    pub(crate) seq: u64,
+}
+
+impl DashboardState {
+    pub fn refresh(&mut self) -> Task<crate::Message> {
+        self.seq = self.seq.wrapping_add(1);
+        let seq = self.seq;
+        blocking_task(
+            pakajo::dashboard::gather_dashboard,
+            "dashboard refresh cancelled",
+            move |result| match result {
+                Ok((foreign, snapshot)) => {
+                    crate::Message::Dashboard(DashboardMessage::SnapshotReady {
+                        seq,
+                        foreign,
+                        snapshot,
+                    })
+                    .into()
+                }
+                Err(error) => {
+                    crate::Message::Dashboard(DashboardMessage::LoadFailed { seq, error }).into()
+                }
+            },
+        )
+    }
+
+    pub fn update(
+        &mut self,
+        message: DashboardMessage,
+        ctx: &mut PakajoCtx,
+    ) -> Task<crate::Message> {
+        match message {
+            DashboardMessage::SnapshotReady {
+                seq,
+                foreign,
+                snapshot,
+            } => {
+                if seq != self.seq {
+                    return Task::none();
+                }
+                ctx.foreign_names = std::sync::Arc::new(foreign);
+                self.snapshot = Some(snapshot);
+                Task::none()
+            }
+            DashboardMessage::LoadFailed { .. } => Task::none(),
+        }
+    }
+}
 use crate::components::theme::{card_style, muted};
 
 const MAX_CONTENT_WIDTH: f32 = 840.0;

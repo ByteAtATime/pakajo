@@ -188,6 +188,146 @@ pub(crate) fn partition_batch_targets(
     (merged, aur)
 }
 
+pub struct TxPane {
+    pub(crate) transaction: Option<Transaction>,
+    pub(crate) show: bool,
+}
+
+impl TxPane {
+    pub fn begin(
+        &mut self,
+        request: TransactionRequest,
+        ctx: &crate::PakajoCtx,
+    ) -> Task<crate::Message> {
+        if self
+            .transaction
+            .as_ref()
+            .is_some_and(Transaction::is_active)
+        {
+            return Task::none();
+        }
+        match request {
+            TransactionRequest::Install {
+                name,
+                source,
+                with_deps,
+            } => {
+                if with_deps.is_empty() {
+                    let (txn, task) = Transaction::start(name, source);
+                    self.transaction = Some(txn);
+                    self.show = false;
+                    return task;
+                }
+                let wanted = std::iter::once((name, String::new()))
+                    .chain(with_deps)
+                    .collect();
+                self.start_optdep_batch(wanted, ctx)
+            }
+            TransactionRequest::BatchInstall { with_deps } => {
+                if with_deps.is_empty() {
+                    return Task::none();
+                }
+                self.start_optdep_batch(with_deps, ctx)
+            }
+            TransactionRequest::Remove { name, source } => {
+                let (txn, task) = Transaction::start_remove(name, source);
+                self.transaction = Some(txn);
+                self.show = false;
+                task
+            }
+        }
+    }
+
+    fn start_optdep_batch(
+        &mut self,
+        wanted: Vec<(String, String)>,
+        ctx: &crate::PakajoCtx,
+    ) -> Task<crate::Message> {
+        let resolve = |dep: &str, constraint: &str| {
+            ctx.alpm
+                .as_ref()
+                .and_then(|h| h.syncdbs().find_satisfier(format!("{dep}{constraint}")))
+                .map(|p| p.name().to_string())
+        };
+        let (targets, aur_bucket) = partition_batch_targets(&wanted, resolve);
+        let (txn, task) = Transaction::start_batch(targets, aur_bucket);
+        self.transaction = Some(txn);
+        self.show = false;
+        task
+    }
+
+    pub fn start_sysupgrade(&mut self) -> Task<crate::Message> {
+        if self
+            .transaction
+            .as_ref()
+            .is_some_and(Transaction::is_active)
+        {
+            return Task::none();
+        }
+        let (transaction, task) = Transaction::start_sysupgrade();
+        self.transaction = Some(transaction);
+        task
+    }
+
+    pub fn forward(&mut self, message: TransactionMessage) -> Action {
+        match self.transaction.as_mut() {
+            Some(t) => t.update(message),
+            None => Action::None,
+        }
+    }
+
+    pub fn finish(&mut self) {
+        self.transaction = None;
+    }
+
+    pub fn close(&mut self) {
+        self.show = false;
+    }
+
+    pub fn open(&mut self) {
+        self.show = true;
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.transaction
+            .as_ref()
+            .is_some_and(Transaction::is_active)
+    }
+
+    pub fn active_name(&self) -> Option<&str> {
+        self.transaction
+            .as_ref()
+            .filter(|t| t.is_active())
+            .map(Transaction::name)
+    }
+
+    pub fn sysupgrade_checking(&self) -> bool {
+        self.transaction
+            .as_ref()
+            .is_some_and(|t| t.is_sysupgrade() && t.is_checking())
+    }
+
+    pub fn sysupgrade_running(&self) -> bool {
+        self.transaction.as_ref().is_some_and(|t| t.is_sysupgrade())
+    }
+
+    pub fn building(&self) -> bool {
+        self.transaction
+            .as_ref()
+            .is_some_and(|t| t.is_active() && t.building())
+    }
+
+    pub fn overlay(&self) -> Option<&Transaction> {
+        self.transaction.as_ref().filter(|t| {
+            (t.is_sysupgrade() && !t.is_checking()) || (self.show && !t.is_sysupgrade())
+        })
+    }
+
+    pub fn dialog(&self) -> Option<Element<'_>> {
+        self.transaction.as_ref().and_then(Transaction::dialog)
+    }
+}
+
 pub(crate) struct Transaction {
     model: TransactionModel,
     review_loop: Option<ReviewLoop>,

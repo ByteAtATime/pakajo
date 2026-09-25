@@ -14,17 +14,18 @@ use cosmic::{
 };
 use pakajo::aur::AurClient;
 use pakajo::cli;
-use pakajo::dashboard::{DashboardMessage, DashboardSnapshot};
+use pakajo::dashboard::DashboardMessage;
 use pakajo::db::PackageDb;
 use pakajo::pacman::handle;
 use pakajo::search::engine::SearchEngine;
 
 use background::begin_aur_sync_in_background;
+use components::dashboard::DashboardState;
 use components::detail::{DetailMessage, DetailPane, detail_view};
 use components::footer;
 use components::search::{ListRect, SearchMessage, SearchPane, search_input_id};
 use components::sysupgrade::SysupgradeMessage;
-use components::transaction::{Action, Transaction, TransactionMessage, TransactionRequest};
+use components::transaction::{Action, TransactionMessage, TxPane};
 use components::updates::{RefreshKind, UpdatesMessage, UpdatesPane};
 
 use cosmic::widget::divider;
@@ -56,12 +57,10 @@ pub struct PakajoCtx {
 pub struct PakajoApp {
     core: Core,
     pub(crate) ctx: PakajoCtx,
-    pub(crate) dashboard: Option<DashboardSnapshot>,
-    pub(crate) dashboard_seq: u64,
+    pub(crate) dashboard: DashboardState,
     pub(crate) search: SearchPane,
     pub(crate) detail: DetailPane,
-    pub(crate) transaction: Option<Transaction>,
-    pub(crate) show_transaction: bool,
+    pub(crate) tx: TxPane,
     pub(crate) updates: UpdatesPane,
     pub(crate) page: Page,
     search_focus_pending: bool,
@@ -131,12 +130,13 @@ impl Application for PakajoApp {
         let mut app = PakajoApp {
             core,
             ctx,
-            dashboard: None,
-            dashboard_seq: 0,
+            dashboard: DashboardState::default(),
             search: SearchPane::default(),
             detail: DetailPane::default(),
-            transaction: None,
-            show_transaction: false,
+            tx: TxPane {
+                transaction: None,
+                show: false,
+            },
             updates: UpdatesPane::default(),
             page: Page::Search,
             search_focus_pending: true,
@@ -153,7 +153,7 @@ impl Application for PakajoApp {
             },
             |index| Message::Search(SearchMessage::GroupsLoaded(index)).into(),
         );
-        let dashboard_task = app.start_dashboard_refresh();
+        let dashboard_task = app.dashboard.refresh();
         (app, Task::batch([task, groups_task, dashboard_task]))
     }
 
@@ -161,27 +161,24 @@ impl Application for PakajoApp {
         let focus = self.ensure_search_focus();
         let task = match message {
             Message::Search(m) => {
-                let active = self.page == Page::Search && self.overlay_transaction().is_none();
+                let active = self.page == Page::Search && self.tx.overlay().is_none();
                 self.search.update(m, &mut self.ctx, active)
             }
-            Message::Dashboard(m) => self.handle_dashboard(m),
+            Message::Dashboard(m) => self.dashboard.update(m, &mut self.ctx),
             Message::Detail(m) => {
-                let tx_active = self
-                    .transaction
-                    .as_ref()
-                    .is_some_and(Transaction::is_active);
+                let tx_active = self.tx.is_active();
                 self.detail.update(m, &self.ctx, tx_active)
             }
             Message::Transaction(m) => self.handle_transaction(m),
             Message::Updates(m) => self.updates.update(m),
-            Message::Sysupgrade(m) => self.handle_sysupgrade(m),
+            Message::Sysupgrade(_) => self.tx.start_sysupgrade(),
             Message::Navigate(page) => self.goto_page(page),
             Message::SearchFocus(focused) => {
                 self.search_focus_pending &= !focused;
                 Task::none()
             }
             Message::OpenTransaction => {
-                self.show_transaction = true;
+                self.tx.open();
                 Task::none()
             }
             Message::OpenUrl(url) => {
@@ -195,8 +192,8 @@ impl Application for PakajoApp {
             Message::DbLockReleased => {
                 eprintln!("[pakajo] db.lck released, refreshing installed state");
                 self.refresh_installed_state();
-                let dashboard = self.start_dashboard_refresh();
-                let updates = if self.transaction.as_ref().is_none_or(|t| !t.is_active()) {
+                let dashboard = self.dashboard.refresh();
+                let updates = if !self.tx.is_active() {
                     eprintln!("[pakajo] db.lck released, forcing updates recheck");
                     self.updates.start_check(RefreshKind::ExternalChange)
                 } else {
@@ -209,10 +206,7 @@ impl Application for PakajoApp {
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
-        let ticking = self
-            .transaction
-            .as_ref()
-            .is_some_and(|t| t.is_active() && t.building());
+        let ticking = self.tx.building();
         let tick = if ticking {
             cosmic::iced::time::every(std::time::Duration::from_secs(1))
                 .map(|t| Message::Transaction(TransactionMessage::Tick(t)))
@@ -240,7 +234,7 @@ impl Application for PakajoApp {
     }
 
     fn view(&self) -> Element<'_> {
-        let content: Element<'_> = if let Some(t) = self.overlay_transaction() {
+        let content: Element<'_> = if let Some(t) = self.tx.overlay() {
             container(t.view())
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -248,19 +242,13 @@ impl Application for PakajoApp {
         } else {
             let page = match self.page {
                 Page::Search => self.search_page(),
-                Page::Updates => {
-                    let sysupgrade_checking = self
-                        .transaction
-                        .as_ref()
-                        .is_some_and(|t| t.is_sysupgrade() && t.is_checking());
-                    self.updates.page(sysupgrade_checking)
-                }
+                Page::Updates => self.updates.page(self.tx.sysupgrade_checking()),
             };
             Column::new()
                 .push(container(page).width(Length::Fill).height(Length::Fill))
                 .push(divider::horizontal::default())
                 .push(footer::footer(
-                    self.transaction.as_ref(),
+                    self.tx.transaction.as_ref(),
                     self.updates.badge(),
                 ))
                 .width(Length::Fill)
@@ -268,14 +256,10 @@ impl Application for PakajoApp {
                 .into()
         };
         let mut pop = popover(content).modal(true);
-        if let Some(dialog) = self.dialog() {
+        if let Some(dialog) = self.tx.dialog() {
             pop = pop.popup(dialog);
         }
         pop.into()
-    }
-
-    fn dialog(&self) -> Option<Element<'_>> {
-        self.transaction.as_ref().and_then(|t| t.dialog())
     }
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
@@ -287,83 +271,35 @@ impl Application for PakajoApp {
 
 impl PakajoApp {
     fn search_page(&self) -> Element<'_> {
-        let active_target = self
-            .transaction
-            .as_ref()
-            .filter(|t| t.is_active())
-            .map(|t| t.name());
+        let active_target = self.tx.active_name();
         let detail = detail_view(
             &self.detail.data,
             active_target,
             self.detail.pending.is_some(),
             &self.detail.selected_optdeps,
-            self.transaction.as_ref().is_some_and(|t| t.is_active()),
+            self.tx.is_active(),
             self.detail.optdep_hover.as_deref(),
         );
-        self.search.view(self.dashboard.as_ref(), detail)
+        self.search.view(self.dashboard.snapshot.as_ref(), detail)
     }
 
     fn handle_transaction(&mut self, message: TransactionMessage) -> Task<Message> {
         match message {
-            TransactionMessage::Begin(request) => {
-                if self
-                    .transaction
-                    .as_ref()
-                    .is_some_and(Transaction::is_active)
-                {
-                    return Task::none();
-                }
-                match request {
-                    TransactionRequest::Install {
-                        name,
-                        source,
-                        with_deps,
-                    } => {
-                        if with_deps.is_empty() {
-                            let (txn, task) = Transaction::start(name, source);
-                            self.transaction = Some(txn);
-                            self.show_transaction = false;
-                            return task;
-                        }
-                        let wanted = std::iter::once((name, String::new()))
-                            .chain(with_deps)
-                            .collect();
-                        self.start_optdep_batch(wanted)
-                    }
-                    TransactionRequest::BatchInstall { with_deps } => {
-                        if with_deps.is_empty() {
-                            return Task::none();
-                        }
-                        self.start_optdep_batch(with_deps)
-                    }
-                    TransactionRequest::Remove { name, source } => {
-                        let (txn, task) = Transaction::start_remove(name, source);
-                        self.transaction = Some(txn);
-                        self.show_transaction = false;
-                        task
-                    }
-                }
-            }
+            TransactionMessage::Begin(request) => self.tx.begin(request, &self.ctx),
             other => {
-                let action = match self.transaction.as_mut() {
-                    Some(t) => t.update(other),
-                    None => Action::None,
-                };
+                let action = self.tx.forward(other);
                 match action {
                     Action::None => Task::none(),
                     Action::Run(task) => task,
                     Action::ViewClosed => {
-                        self.show_transaction = false;
+                        self.tx.close();
                         Task::none()
                     }
                     Action::Finished => {
-                        let was_sysupgrade = self
-                            .transaction
-                            .as_ref()
-                            .is_some_and(Transaction::is_sysupgrade);
-                        self.transaction = None;
+                        let was_sysupgrade = self.tx.sysupgrade_running();
+                        self.tx.finish();
                         if was_sysupgrade {
-                            return Task::batch([self.goto_page(crate::Page::Updates)]);
+                            return self.goto_page(Page::Updates);
                         }
                         Task::none()
                     }
@@ -372,37 +308,16 @@ impl PakajoApp {
                         let refresh = Task::done(
                             crate::Message::Updates(UpdatesMessage::RefreshUpdates).into(),
                         );
-                        if self
-                            .transaction
-                            .as_ref()
-                            .is_some_and(Transaction::is_sysupgrade)
-                        {
-                            self.transaction = None;
-                            return Task::batch([refresh, self.goto_page(crate::Page::Updates)]);
+                        if self.tx.sysupgrade_running() {
+                            self.tx.finish();
+                            return Task::batch([refresh, self.goto_page(Page::Updates)]);
                         }
-                        let dashboard = self.start_dashboard_refresh();
+                        let dashboard = self.dashboard.refresh();
                         Task::batch([dashboard, refresh])
                     }
                 }
             }
         }
-    }
-
-    fn start_optdep_batch(&mut self, wanted: Vec<(String, String)>) -> Task<Message> {
-        let resolve = |dep: &str, constraint: &str| {
-            self.ctx
-                .alpm
-                .as_ref()
-                .and_then(|h| h.syncdbs().find_satisfier(format!("{dep}{constraint}")))
-                .map(|p| p.name().to_string())
-        };
-        let (targets, aur_bucket) =
-            components::transaction::partition_batch_targets(&wanted, resolve);
-        let (txn, task) = Transaction::start_batch(targets, aur_bucket);
-        self.detail.selected_optdeps.clear();
-        self.transaction = Some(txn);
-        self.show_transaction = false;
-        task
     }
 
     fn refresh_installed_state(&mut self) {
@@ -419,46 +334,6 @@ impl PakajoApp {
         self.detail.refresh_installed(&self.ctx);
     }
 
-    fn start_dashboard_refresh(&mut self) -> Task<Message> {
-        self.dashboard_seq = self.dashboard_seq.wrapping_add(1);
-        let seq = self.dashboard_seq;
-        crate::components::task::blocking_task(
-            pakajo::dashboard::gather_dashboard,
-            "dashboard refresh cancelled",
-            move |result| match result {
-                Ok((foreign, snapshot)) => {
-                    crate::Message::Dashboard(DashboardMessage::SnapshotReady {
-                        seq,
-                        foreign,
-                        snapshot,
-                    })
-                    .into()
-                }
-                Err(error) => {
-                    crate::Message::Dashboard(DashboardMessage::LoadFailed { seq, error }).into()
-                }
-            },
-        )
-    }
-
-    fn handle_dashboard(&mut self, message: DashboardMessage) -> Task<Message> {
-        match message {
-            DashboardMessage::SnapshotReady {
-                seq,
-                foreign,
-                snapshot,
-            } => {
-                if seq != self.dashboard_seq {
-                    return Task::none();
-                }
-                self.ctx.foreign_names = Arc::new(foreign);
-                self.dashboard = Some(snapshot);
-                Task::none()
-            }
-            DashboardMessage::LoadFailed { .. } => Task::none(),
-        }
-    }
-
     pub(crate) fn goto_page(&mut self, page: Page) -> Task<Message> {
         self.page = page;
         self.search_focus_pending = matches!(page, Page::Search);
@@ -469,7 +344,7 @@ impl PakajoApp {
     fn ensure_search_focus(&self) -> Task<Message> {
         if !self.search_focus_pending
             || !matches!(self.page, Page::Search)
-            || self.overlay_transaction().is_some()
+            || self.tx.overlay().is_some()
         {
             return Task::none();
         }
@@ -479,12 +354,6 @@ impl PakajoApp {
                 false => text_input::focus(search_input_id()).map(|_: ()| false),
             })
             .map(|focused| cosmic::Action::App(Message::SearchFocus(focused)))
-    }
-
-    fn overlay_transaction(&self) -> Option<&Transaction> {
-        self.transaction.as_ref().filter(|t| {
-            (t.is_sysupgrade() && !t.is_checking()) || (self.show_transaction && !t.is_sysupgrade())
-        })
     }
 }
 

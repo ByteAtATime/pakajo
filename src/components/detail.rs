@@ -811,6 +811,7 @@ impl DetailPane {
                 if with_deps.is_empty() {
                     return Task::none();
                 }
+                self.selected_optdeps.clear();
                 self.begin(TransactionRequest::BatchInstall { with_deps })
             }
             DetailMessage::StartRemove => {
