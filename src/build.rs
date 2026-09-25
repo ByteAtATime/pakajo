@@ -24,7 +24,7 @@ pub fn build_base(
     on_line: impl FnMut(String),
 ) -> anyhow::Result<BuiltBase> {
     run_makepkg_streaming(dir, no_check, package, on_line)?;
-    let expected = expected_artifacts(dir)
+    let expected = expected_artifacts(dir, package)
         .with_context(|| format!("failed to enumerate artifacts for {package}"))?;
     let artifacts = collect_artifacts(dir, &expected)?;
     let version = resolved_version(&expected, package);
@@ -90,7 +90,7 @@ pub fn git_clone_or_pull(dir: &Path, pkgbase: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn expected_artifacts(dir: &Path) -> anyhow::Result<Vec<String>> {
+fn expected_artifacts(dir: &Path, package: &str) -> anyhow::Result<Vec<String>> {
     let output = std::process::Command::new("makepkg")
         .arg("--packagelist")
         .current_dir(dir)
@@ -99,7 +99,7 @@ fn expected_artifacts(dir: &Path) -> anyhow::Result<Vec<String>> {
     if !output.status.success() {
         anyhow::bail!("makepkg --packagelist exited {}", output.status);
     }
-    Ok(String::from_utf8_lossy(&output.stdout)
+    let basenames: Vec<String> = String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| {
             let basename = Path::new(line.trim())
@@ -108,7 +108,15 @@ fn expected_artifacts(dir: &Path) -> anyhow::Result<Vec<String>> {
                 .into_owned();
             (!basename.is_empty()).then_some(basename)
         })
-        .collect())
+        .collect();
+    let exact: Vec<String> = basenames
+        .iter()
+        .filter(|basename| {
+            parse_package_filename(basename).is_some_and(|(pkgname, _)| pkgname == package)
+        })
+        .cloned()
+        .collect();
+    Ok(if exact.is_empty() { basenames } else { exact })
 }
 
 pub(crate) fn parse_package_filename(basename: &str) -> Option<(String, String)> {
