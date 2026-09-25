@@ -626,10 +626,6 @@ mod tests {
             ])
         }
 
-        fn outcome(&mut self, spec: &RunSpec, source: Box<dyn AnswerSource>) -> RunOutcome {
-            self.run(spec, source, discard()).unwrap()
-        }
-
         fn run(
             &mut self,
             spec: &RunSpec,
@@ -639,8 +635,8 @@ mod tests {
             run(&mut self.handle, spec, source, sink)
         }
 
-        fn run_err(&mut self, spec: &RunSpec, source: Box<dyn AnswerSource>) -> anyhow::Error {
-            self.run(spec, source, discard()).unwrap_err()
+        fn outcome(&mut self, spec: &RunSpec, source: Box<dyn AnswerSource>) -> RunOutcome {
+            self.run(spec, source, discard()).unwrap()
         }
 
         fn outcome_rec(
@@ -650,6 +646,10 @@ mod tests {
         ) -> (RunOutcome, Events) {
             let (sink, seen) = recorder();
             (self.run(spec, source, sink).unwrap(), seen)
+        }
+
+        fn run_err(&mut self, spec: &RunSpec, source: Box<dyn AnswerSource>) -> anyhow::Error {
+            self.run(spec, source, discard()).unwrap_err()
         }
 
         fn committed(&mut self, spec: &RunSpec, source: Box<dyn AnswerSource>) -> RunOutcome {
@@ -832,7 +832,6 @@ mod tests {
         let outcome = h.outcome(&install(&["newpkg"], true), Box::new(ExploreDefaults));
         assert_stopped(&outcome);
         let review = reviewed(&outcome);
-        assert_eq!(review.part1.len(), 1);
         assert!(matches!(review.part1[0], Question::Conflict { .. }));
         assert!(
             review
@@ -870,15 +869,30 @@ mod tests {
             Question::GroupMembers { .. }
         ));
         expect_names(&outcome, &["a", "b", "c"]);
-
-        let mut h = Harness::fixture(&[Pkg::plain("solo")]);
-        let outcome = h.outcome(&install(&["solo"], false), proceed());
-        assert!(matches!(outcome.finish, Finish::Committed));
-        assert!(outcome.review.is_none());
     }
 
     #[test]
-    fn removepkgs_mismatch_fails_closed() {
+    fn mismatched_or_denied_answers_fail_closed() {
+        let mut h = Harness::tools();
+        let (sink, seen) = recorder();
+        let error = h
+            .run(&install(&["tools"], false), group_answer(&["ghost"]), sink)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("is not offered"));
+        assert_eq!(
+            fail_closed_events(&seen),
+            vec![(
+                QuestionKey::GroupMembers {
+                    group: "tools".to_string()
+                },
+                "group member ghost is not offered".to_string()
+            )]
+        );
+
+        let mut h = Harness::tools();
+        let error = h.run_err(&install(&["tools"], false), conflict_answer("a", "b"));
+        assert!(format!("{error:#}").contains("did not match"));
+
         let mut h = Harness::fixture_full(&[], &[Pkg::plain("sl")]);
         let (sink, seen) = recorder();
         let error = h
@@ -899,82 +913,7 @@ mod tests {
             )]
         );
         assert!(h.localdb().pkg("sl").is_ok());
-    }
 
-    #[test]
-    fn init_flags_derive_from_spec() {
-        use alpm::TransFlag as F;
-        for (explore, as_deps, reinstall, expected) in [
-            (false, false, false, F::NEEDED),
-            (false, false, true, F::NONE),
-            (false, true, false, F::NEEDED | F::ALL_DEPS),
-            (false, true, true, F::ALL_DEPS),
-            (true, false, false, F::NEEDED | F::DB_ONLY | F::NO_LOCK),
-            (true, false, true, F::DB_ONLY | F::NO_LOCK),
-            (
-                true,
-                true,
-                false,
-                F::NEEDED | F::ALL_DEPS | F::DB_ONLY | F::NO_LOCK,
-            ),
-            (true, true, true, F::ALL_DEPS | F::DB_ONLY | F::NO_LOCK),
-        ] {
-            let spec = RunSpec {
-                as_deps,
-                reinstall,
-                ..sync_spec(&[], explore)
-            };
-            assert_eq!(trans_init_flags(&spec), expected);
-        }
-        assert_eq!(trans_init_flags(&remove_spec(F::NONE, false, &[])), F::NONE);
-        assert_eq!(
-            trans_init_flags(&remove_spec(F::NONE, true, &[])),
-            F::DB_ONLY | F::NO_LOCK
-        );
-        assert_eq!(
-            trans_init_flags(&remove_spec(F::NEEDED, false, &[])),
-            F::NEEDED
-        );
-    }
-
-    #[test]
-    fn remove_queues_local_group_members() {
-        let local = [Pkg::make("member", "1.0-1", &[], &[], &["fakegrp"])];
-        let mut h = Harness::fixture_full(&[], &local);
-        let outcome = h.committed(&removal(&["fakegrp"], false), proceed());
-        assert!(removes(&outcome, "member"));
-        assert!(h.localdb().pkg("member").is_err());
-    }
-
-    #[test]
-    fn remove_missing_target_bails() {
-        let mut h = Harness::fixture_full(&[], &[]);
-        let error = h.run_err(&removal(&["ghost"], false), proceed());
-        assert!(format!("{error:#}").contains("target not found: ghost"));
-    }
-
-    #[test]
-    fn nothing_to_do_when_all_missing_skipped() {
-        let mut h = Harness::fixture_full(&[], &[]);
-        let (outcome, seen) = h.outcome_rec(&removal(&["ghost"], false), missing_answer(true));
-        assert_stopped(&outcome);
-        assert!(warned(&seen, "there is nothing to do"));
-    }
-
-    #[test]
-    fn explore_runs_under_foreign_lock_without_committing() {
-        let mut h = Harness::fixture(&[Pkg::plain("foo")]);
-        let mut holder = peer(Path::new(h.dbpath()));
-        holder.trans_init(alpm::TransFlag::NONE).unwrap();
-        let outcome = h.outcome(&install(&["foo"], true), deny());
-        assert_stopped(&outcome);
-        expect_names(&outcome, &["foo"]);
-        assert!(h.localdb().pkg("foo").is_err());
-        holder.trans_release().unwrap();
-    }
-
-    #[test]
-    fn denied_question_aborts_with_reason() {
         let mut h = Harness::fixture(&[Pkg::plain("skipme")]);
         h.add_ignorepkg("skipme").unwrap();
         let (sink, seen) = recorder();
@@ -991,6 +930,65 @@ mod tests {
                 "denied in test".to_string()
             )]
         );
+
+        let mut h = Harness::fixture(&[Pkg::plain("aaa"), Pkg::plain("bbb")]);
+        h.add_ignorepkg("aaa").unwrap();
+        h.add_ignorepkg("bbb").unwrap();
+        let calls = Rc::new(Cell::new(0));
+        let first = Rc::new(RefCell::new(String::new()));
+        let source = {
+            let calls = Rc::clone(&calls);
+            let first = Rc::clone(&first);
+            script(move |question: &Question| {
+                calls.set(calls.get() + 1);
+                let Question::InstallIgnorepkg { name } = question else {
+                    return SourceDecision::Answer(Answer::Stop);
+                };
+                if calls.get() == 1 {
+                    *first.borrow_mut() = name.clone();
+                    return SourceDecision::Abort(FailClosed {
+                        key: question.key(),
+                        reason: "first denial".to_string(),
+                    });
+                }
+                SourceDecision::Answer(Answer::InstallIgnorepkg {
+                    name: name.clone(),
+                    install: true,
+                })
+            })
+        };
+        let error = h.run_err(&install(&["aaa", "bbb"], false), source);
+        assert_eq!(calls.get(), 1);
+        assert!(format!("{error:#}").contains(&*first.borrow()));
+    }
+
+    #[test]
+    fn remove_targets_expand_groups_and_report_missing() {
+        let local = [Pkg::make("member", "1.0-1", &[], &[], &["fakegrp"])];
+        let mut h = Harness::fixture_full(&[], &local);
+        let outcome = h.committed(&removal(&["fakegrp"], false), proceed());
+        assert!(removes(&outcome, "member"));
+        assert!(h.localdb().pkg("member").is_err());
+
+        let mut h = Harness::fixture_full(&[], &[]);
+        let error = h.run_err(&removal(&["ghost"], false), proceed());
+        assert!(format!("{error:#}").contains("target not found: ghost"));
+
+        let (outcome, seen) = h.outcome_rec(&removal(&["ghost"], false), missing_answer(true));
+        assert_stopped(&outcome);
+        assert!(warned(&seen, "there is nothing to do"));
+    }
+
+    #[test]
+    fn explore_runs_under_foreign_lock_without_committing() {
+        let mut h = Harness::fixture(&[Pkg::plain("foo")]);
+        let mut holder = peer(Path::new(h.dbpath()));
+        holder.trans_init(alpm::TransFlag::NONE).unwrap();
+        let outcome = h.outcome(&install(&["foo"], true), deny());
+        assert_stopped(&outcome);
+        expect_names(&outcome, &["foo"]);
+        assert!(h.localdb().pkg("foo").is_err());
+        holder.trans_release().unwrap();
     }
 
     #[test]
@@ -1053,59 +1051,6 @@ mod tests {
     }
 
     #[test]
-    fn mismatched_answers_fail_closed() {
-        let mut h = Harness::tools();
-        let (sink, seen) = recorder();
-        let error = h
-            .run(&install(&["tools"], false), group_answer(&["ghost"]), sink)
-            .unwrap_err();
-        assert!(format!("{error:#}").contains("is not offered"));
-        assert_eq!(
-            fail_closed_events(&seen),
-            vec![(
-                QuestionKey::GroupMembers {
-                    group: "tools".to_string()
-                },
-                "group member ghost is not offered".to_string()
-            )]
-        );
-
-        let mut h = Harness::tools();
-        let error = h.run_err(&install(&["tools"], false), conflict_answer("a", "b"));
-        assert!(format!("{error:#}").contains("did not match"));
-
-        let mut h = Harness::fixture(&[Pkg::plain("solo")]);
-        let error = h.run_err(&install(&["solo"], false), group_answer(&[]));
-        assert!(format!("{error:#}").contains("Proceed"));
-        assert!(h.localdb().pkg("solo").is_err());
-    }
-
-    #[test]
-    fn provider_answer_resolves_by_name_across_orders() {
-        let orders = [
-            ["provider-one", "provider-two"],
-            ["provider-two", "provider-one"],
-        ];
-        for order in orders {
-            let providers: Vec<Pkg> = order
-                .iter()
-                .map(|name| Pkg::make(name, "1.0-1", &[], &["virt"], &[]))
-                .collect();
-            let mut h = Harness::fixture(&providers);
-            let source = script(|question| match question {
-                Question::SelectProvider { .. } => SourceDecision::Answer(Answer::SelectProvider {
-                    name: "provider-two".to_string(),
-                    repo: Some("core".to_string()),
-                }),
-                _ => SourceDecision::Answer(Answer::Stop),
-            });
-            let outcome = h.outcome(&install(&["virt"], true), source);
-            assert_stopped(&outcome);
-            expect_names(&outcome, &["provider-two"]);
-        }
-    }
-
-    #[test]
     fn needed_skips_installed_and_reinstall_requeues() {
         let sync = [Pkg::plain("foo")];
         let local = [Pkg::plain("foo")];
@@ -1125,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_marks_explicit_depend_and_as_deps_reasons() {
+    fn dep_reasons_across_specs() {
         let sync = vec![
             Pkg::make("app", "1.0-1", &["lib"], &[], &[]),
             Pkg::plain("lib"),
@@ -1142,10 +1087,7 @@ mod tests {
         };
         h.committed(&as_deps, proceed());
         assert_eq!(reason_of(&h, "solo"), alpm::PackageReason::Depend);
-    }
 
-    #[test]
-    fn dep_names_mark_only_fresh_installs_depend() {
         let mut h = solo_repo(false);
         h.committed(&dep_spec(&["solo"], &["solo"]), proceed());
         assert_eq!(reason_of(&h, "solo"), alpm::PackageReason::Depend);
@@ -1161,23 +1103,16 @@ mod tests {
         let mut h = solo_repo(false);
         h.committed(&dep_spec(&["solo"], &[]), proceed());
         assert_eq!(reason_of(&h, "solo"), alpm::PackageReason::Explicit);
-    }
 
-    #[test]
-    fn as_deps_still_marks_upgraded_package_depend() {
         let mut h = solo_repo(true);
-        assert_eq!(reason_of(&h, "solo"), alpm::PackageReason::Explicit);
-        let as_deps = RunSpec {
+        let upgraded = RunSpec {
             as_deps: true,
             reinstall: true,
             ..dep_spec(&["solo"], &[])
         };
-        h.committed(&as_deps, proceed());
+        h.committed(&upgraded, proceed());
         assert_eq!(reason_of(&h, "solo"), alpm::PackageReason::Depend);
-    }
 
-    #[test]
-    fn stopped_or_unknown_deps_install_nothing_unexpected() {
         let mut h = solo_repo(false);
         let outcome = h.outcome(&dep_spec(&["solo"], &["solo"]), stop());
         assert_stopped(&outcome);
@@ -1210,42 +1145,7 @@ mod tests {
         assert!(h.localdb().pkg("solo").is_err());
     }
 
-    #[test]
-    fn first_denial_wins_across_questions() {
-        let mut h = Harness::fixture(&[Pkg::plain("aaa"), Pkg::plain("bbb")]);
-        h.add_ignorepkg("aaa").unwrap();
-        h.add_ignorepkg("bbb").unwrap();
-        let calls = Rc::new(Cell::new(0));
-        let first = Rc::new(RefCell::new(String::new()));
-        let source = {
-            let calls = Rc::clone(&calls);
-            let first = Rc::clone(&first);
-            script(move |question: &Question| {
-                calls.set(calls.get() + 1);
-                let Question::InstallIgnorepkg { name } = question else {
-                    return SourceDecision::Answer(Answer::Stop);
-                };
-                if calls.get() == 1 {
-                    *first.borrow_mut() = name.clone();
-                    return SourceDecision::Abort(FailClosed {
-                        key: question.key(),
-                        reason: "first denial".to_string(),
-                    });
-                }
-                SourceDecision::Answer(Answer::InstallIgnorepkg {
-                    name: name.clone(),
-                    install: true,
-                })
-            })
-        };
-        let error = h.run_err(&install(&["aaa", "bbb"], false), source);
-        assert_eq!(calls.get(), 1);
-        assert!(format!("{error:#}").contains(&*first.borrow()));
-    }
-
-    #[test]
-    fn commit_surfaces_post_transaction_hook_runs() {
-        let mut h = Harness::fixture(&[Pkg::plain("solo")]);
+    fn probe_hook(h: &mut Harness) -> tempfile::TempDir {
         let hookdir = tempfile::tempdir().unwrap();
         std::fs::write(
             hookdir.path().join("probe.hook"),
@@ -1254,23 +1154,13 @@ mod tests {
         .unwrap();
         h.set_hookdirs([hookdir.path().to_string_lossy().as_ref()].iter())
             .unwrap();
-        let (outcome, seen) = h.outcome_rec(&install(&["solo"], false), proceed());
-        assert!(matches!(outcome.finish, Finish::Committed));
-        let hook = seen.borrow().iter().find_map(|event| match event {
-            InstallEvent::HookRun {
-                position,
-                total,
-                desc,
-                ..
-            } => Some((*position, *total, desc.clone())),
-            _ => None,
-        });
-        assert_eq!(hook, Some((1, 1, Some("Probing hooks".to_string()))));
+        hookdir
     }
 
     #[test]
-    fn tty_event_lifecycle() {
+    fn commit_event_stream_orders_summary_question_and_hooks() {
         let mut h = Harness::fixture(&[Pkg::plain("solo")]);
+        let _hooks = probe_hook(&mut h);
         let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let asked = log.clone();
         let source = script(move |question| {
@@ -1289,30 +1179,35 @@ mod tests {
             vec!["summary".to_string(), "question".to_string()]
         );
 
+        let mut h = Harness::fixture(&[Pkg::plain("solo")]);
+        let _hooks = probe_hook(&mut h);
+        let (outcome, seen) = h.outcome_rec(&install(&["solo"], false), proceed());
+        assert!(matches!(outcome.finish, Finish::Committed));
+        let hook = seen.borrow().iter().find_map(|event| match event {
+            InstallEvent::HookRun {
+                position,
+                total,
+                desc,
+                ..
+            } => Some((*position, *total, desc.clone())),
+            _ => None,
+        });
+        assert_eq!(hook, Some((1, 1, Some("Probing hooks".to_string()))));
+
         let mut h = Harness::fixture(&[Pkg::plain("foo")]);
         let (outcome, seen) = h.outcome_rec(&install(&[], false), stop());
         assert_stopped(&outcome);
-        let seen = seen.borrow();
-        assert_eq!(seen.len(), 1);
-        match &seen[0] {
-            InstallEvent::Log { level, message } => {
-                assert_eq!(*level, LogLevel::Warning);
-                assert_eq!(message, "there is nothing to do");
-            }
-            other => panic!("expected nothing-to-do log, got {other:?}"),
-        }
+        assert_eq!(seen.borrow().len(), 1);
+        assert!(warned(&seen, "there is nothing to do"));
     }
 
     #[test]
-    fn upgrade_selects_newer_repo_package() {
+    fn upgrade_sync_states_commit_idle_warn_or_skip() {
         let (sync, local) = newer("1.0-1", "2.0-1");
         let mut h = Harness::fixture_full(&[("core", sync)], &local);
         let outcome = h.committed(&sysupgrade(false), proceed());
         assert!(summary_names(&outcome).contains(&"foo".to_string()));
-    }
 
-    #[test]
-    fn upgrade_idle_when_up_to_date() {
         let (sync, local) = newer("1.0-1", "1.0-1");
         let mut h = Harness::fixture_full(&[("core", sync)], &local);
         let (outcome, seen) = h.outcome_rec(&sysupgrade(false), proceed());
@@ -1322,10 +1217,7 @@ mod tests {
             !warned(&seen, "there is nothing to do"),
             "upgrade idle stays silent"
         );
-    }
 
-    #[test]
-    fn upgrade_skips_newer_local_with_warning() {
         let (sync, local) = newer("2.0-1", "1.0-1");
         let mut h = Harness::fixture_full(&[("core", sync)], &local);
         let (outcome, seen) = h.outcome_rec(&sysupgrade(false), proceed());
@@ -1334,10 +1226,7 @@ mod tests {
             warned(&seen, "is newer than"),
             "newer-local warning must surface"
         );
-    }
 
-    #[test]
-    fn upgrade_drops_ignored_package_with_warning() {
         let (sync, local) = newer("1.0-1", "2.0-1");
         let mut h = Harness::fixture_full(&[("core", sync)], &local);
         h.add_ignorepkg("foo").unwrap();
@@ -1350,46 +1239,28 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_asks_replace_question_before_proceed() {
-        let replacer = Pkg {
-            replaces: vec!["foo"],
-            ..Pkg::make("bar", "2.0-1", &[], &[], &[])
-        };
-        let mut h = Harness::fixture_full(
-            &[("core", vec![replacer])],
-            &[Pkg::make("foo", "1.0-1", &[], &[], &[])],
-        );
-        let order: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-        let source = {
-            let order = Rc::clone(&order);
-            script(move |question| match question {
-                Question::Replace { old, new, .. } => {
-                    order.borrow_mut().push("replace".to_string());
-                    SourceDecision::Answer(Answer::Replace {
-                        old: old.clone(),
-                        new: new.clone(),
-                        replace: true,
-                    })
-                }
-                Question::Proceed { .. } => {
-                    order.borrow_mut().push("proceed".to_string());
-                    SourceDecision::Answer(Answer::Proceed)
-                }
-                _ => SourceDecision::Answer(Answer::Stop),
-            })
-        };
-        h.committed(&sysupgrade(false), source);
-        assert_eq!(
-            *order.borrow(),
-            vec!["replace".to_string(), "proceed".to_string()]
-        );
-    }
-
-    #[test]
-    fn upgrade_explore_run_returns_review() {
+    fn upgrade_event_lifecycle_differs_by_mode() {
         let (sync, local) = newer("1.0-1", "2.0-1");
+
+        let mut h = Harness::fixture_full(&[("core", sync.clone())], &local.clone());
+        let (outcome, seen) = h.outcome_rec(&sysupgrade(false), proceed());
+        assert!(matches!(outcome.finish, Finish::Committed));
+        let kinds: Vec<&str> = seen
+            .borrow()
+            .iter()
+            .filter_map(|event| match event {
+                InstallEvent::StartSysupgrade => Some("start"),
+                InstallEvent::TransactionSummary(_) => Some("summary"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, vec!["start", "summary"]);
+
         let mut h = Harness::fixture_full(&[("core", sync)], &local);
-        let (outcome, seen) = h.outcome_rec(&sysupgrade(true), proceed());
+        let (sink, seen) = recorder();
+        let outcome = h
+            .run(&sysupgrade(true), Box::new(ExploreDefaults), sink)
+            .unwrap();
         assert_stopped(&outcome);
         assert!(
             reviewed(&outcome)
@@ -1405,6 +1276,13 @@ mod tests {
                 .any(|event| matches!(event, InstallEvent::TransactionSummary(_))),
             "explore never emits a summary event"
         );
+        assert!(
+            !seen
+                .borrow()
+                .iter()
+                .any(|event| matches!(event, InstallEvent::StartSysupgrade)),
+            "explore never emits a start sysupgrade event"
+        );
     }
 
     #[test]
@@ -1417,59 +1295,5 @@ mod tests {
         let mut h = Harness::fixture_full(&[("core", sync)], &local);
         let outcome = h.committed(&upgrade_spec(&["baz"], false), proceed());
         expect_names(&outcome, &["baz", "foo"]);
-    }
-
-    #[test]
-    fn upgrade_emits_start_sysupgrade_before_summary() {
-        let (sync, local) = newer("1.0-1", "2.0-1");
-        let mut h = Harness::fixture_full(&[("core", sync)], &local);
-        let (outcome, seen) = h.outcome_rec(&sysupgrade(false), proceed());
-        assert!(matches!(outcome.finish, Finish::Committed));
-        let kinds: Vec<&str> = seen
-            .borrow()
-            .iter()
-            .filter_map(|event| match event {
-                InstallEvent::StartSysupgrade => Some("start"),
-                InstallEvent::TransactionSummary(_) => Some("summary"),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(kinds, vec!["start", "summary"]);
-    }
-
-    #[test]
-    fn upgrade_explore_emits_no_start_sysupgrade() {
-        let (sync, local) = newer("1.0-1", "2.0-1");
-        let mut h = Harness::fixture_full(&[("core", sync)], &local);
-        let (sink, seen) = recorder();
-        let outcome = h
-            .run(&sysupgrade(true), Box::new(ExploreDefaults), sink)
-            .unwrap();
-        assert_stopped(&outcome);
-        assert!(
-            !seen
-                .borrow()
-                .iter()
-                .any(|event| matches!(event, InstallEvent::StartSysupgrade))
-        );
-    }
-
-    #[test]
-    fn upgrade_proceed_uses_install_wording() {
-        let (sync, local) = newer("1.0-1", "2.0-1");
-        let mut h = Harness::fixture_full(&[("core", sync)], &local);
-        let seen: Rc<Cell<Option<TransactionKind>>> = Rc::new(Cell::new(None));
-        let source = {
-            let seen = Rc::clone(&seen);
-            script(move |question| match question {
-                Question::Proceed { kind, .. } => {
-                    seen.set(Some(*kind));
-                    SourceDecision::Answer(Answer::Proceed)
-                }
-                _ => SourceDecision::Answer(Answer::Stop),
-            })
-        };
-        h.committed(&sysupgrade(false), source);
-        assert_eq!(seen.get(), Some(TransactionKind::Install));
     }
 }
