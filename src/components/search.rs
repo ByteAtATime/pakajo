@@ -11,7 +11,6 @@ use cosmic::iced::{Alignment, Background, Border, Color, Length, Rectangle};
 use cosmic::widget::rectangle_tracker::{RectangleTracker, RectangleUpdate};
 use cosmic::widget::{Column, Row, button, container, scrollable, search_input, space, text};
 use pakajo::dashboard::DashboardSnapshot;
-use pakajo::package::PackageSource;
 
 use pakajo::db::PackageDb;
 use pakajo::search::SearchFilter;
@@ -24,6 +23,7 @@ use crate::components::dashboard::dashboard_view;
 use crate::components::detail::DetailMessage;
 use cosmic::widget::divider;
 
+#[derive(Default)]
 pub struct SearchPane {
     pub(crate) query: String,
     pub(crate) results: Vec<SearchResult>,
@@ -32,20 +32,6 @@ pub struct SearchPane {
     pub(crate) filter: SearchFilter,
     pub(crate) selected_index: Option<usize>,
     pub(crate) scroller: SelectionScroller,
-}
-
-impl Default for SearchPane {
-    fn default() -> Self {
-        Self {
-            query: String::new(),
-            results: Vec::new(),
-            state: SearchState::Idle,
-            seq: 0,
-            filter: SearchFilter::All,
-            selected_index: None,
-            scroller: SelectionScroller::new(),
-        }
-    }
 }
 
 impl SearchPane {
@@ -100,8 +86,8 @@ impl SearchPane {
                     self.state = SearchState::Done;
                     self.scroller.reset_offset();
                     let mut tasks: Vec<Task<crate::Message>> = Vec::new();
-                    if let Some(first) = self.results.first() {
-                        tasks.push(self.load_detail_message(first.name.clone(), first.source));
+                    if self.selected_index.is_some() {
+                        tasks.push(self.select(0, None));
                     }
                     tasks.push(crate::scroll_to_top());
                     return Task::batch(tasks);
@@ -116,23 +102,9 @@ impl SearchPane {
                 else {
                     return Task::none();
                 };
-                self.selected_index = Some(i);
-                let detail = match self.results.get(i) {
-                    Some(result) => self.load_detail_message(result.name.clone(), result.source),
-                    None => Task::none(),
-                };
-                let scroll = self.scroller.scroll_to_visible(i, Some(delta));
-                Task::batch([detail, scroll])
+                self.select(i, Some(delta))
             }
-            SearchMessage::SelectIndex(i) => {
-                let Some(result) = self.results.get(i) else {
-                    return Task::none();
-                };
-                self.selected_index = Some(i);
-                let detail = self.load_detail_message(result.name.clone(), result.source);
-                let scroll = self.scroller.scroll_to_visible(i, None);
-                Task::batch([detail, scroll])
-            }
+            SearchMessage::SelectIndex(i) => self.select(i, None),
             SearchMessage::Rects(update) => {
                 self.scroller.track(update);
                 Task::none()
@@ -144,10 +116,20 @@ impl SearchPane {
         }
     }
 
-    fn load_detail_message(&self, name: String, source: PackageSource) -> Task<crate::Message> {
-        Task::done(cosmic::Action::App(crate::Message::Detail(
-            DetailMessage::Load { name, source },
-        )))
+    fn select(&mut self, i: usize, delta: Option<i32>) -> Task<crate::Message> {
+        self.selected_index = Some(i);
+        let detail = match self.results.get(i) {
+            Some(result) => {
+                let load = DetailMessage::Load {
+                    name: result.name.clone(),
+                    source: result.source,
+                };
+                Task::done(cosmic::Action::App(crate::Message::Detail(load)))
+            }
+            None => Task::none(),
+        };
+        let scroll = self.scroller.scroll_to_visible(i, delta);
+        Task::batch([detail, scroll])
     }
 
     fn begin_search(&mut self, ctx: &PakajoCtx) -> Task<crate::Message> {
@@ -219,6 +201,7 @@ pub enum ListRect {
     Row(usize),
 }
 
+#[derive(Default)]
 pub struct SelectionScroller {
     tracker: Option<RectangleTracker<ListRect>>,
     rects: HashMap<ListRect, Rectangle>,
@@ -226,14 +209,6 @@ pub struct SelectionScroller {
 }
 
 impl SelectionScroller {
-    pub fn new() -> Self {
-        SelectionScroller {
-            tracker: None,
-            rects: HashMap::new(),
-            offset: 0.0,
-        }
-    }
-
     pub fn track(&mut self, update: RectangleUpdate<ListRect>) {
         match update {
             RectangleUpdate::Init(tracker) => {
@@ -315,8 +290,9 @@ impl SelectionScroller {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub enum SearchState {
+    #[default]
     Idle,
     Searching,
     Done,

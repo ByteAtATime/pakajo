@@ -16,8 +16,9 @@ pub enum UpdatesMessage {
     Fetched(Result<pakajo::updates::UpdatesFetch, String>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum UpdatesState {
+    #[default]
     Idle,
     Loading,
     Error(String),
@@ -150,6 +151,7 @@ pub fn updates_section_header(title: &str) -> Element<'static> {
         .into()
 }
 
+#[derive(Default)]
 pub struct UpdatesPane {
     pub(crate) state: UpdatesState,
     pub(crate) pending: pakajo::updates::PendingUpdates,
@@ -159,24 +161,6 @@ pub struct UpdatesPane {
     pub(crate) refreshing: bool,
     pub(crate) refresh_error: Option<String>,
     pub(crate) force_refresh: Option<RefreshKind>,
-}
-
-impl Default for UpdatesPane {
-    fn default() -> Self {
-        Self {
-            state: UpdatesState::Idle,
-            pending: pakajo::updates::PendingUpdates {
-                repo: Vec::new(),
-                aur: Vec::new(),
-            },
-            count: 0,
-            aur_error: None,
-            last_cache: None,
-            refreshing: false,
-            refresh_error: None,
-            force_refresh: None,
-        }
-    }
 }
 
 impl UpdatesPane {

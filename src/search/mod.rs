@@ -28,8 +28,9 @@ pub struct SearchResult {
     pub last_update: Option<i64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SearchFilter {
+    #[default]
     All,
     Official,
     Aur,

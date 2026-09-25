@@ -16,6 +16,7 @@ use pakajo::question::model::Question;
 use pakajo::question::revalidate::{Verdict, converge, revalidate};
 
 use crate::Element;
+use crate::PakajoCtx;
 
 const REVIEW_LOOP_ENDED: &str = "review loop ended";
 
@@ -47,6 +48,8 @@ use checkout::CheckoutModel;
 pub(crate) mod review;
 use review::{InstallReview, ReviewMessage};
 
+pub type OptDepSelection = Vec<(String, String)>;
+
 #[derive(Clone, Debug)]
 pub enum TransactionRequest {
     Install {
@@ -54,9 +57,7 @@ pub enum TransactionRequest {
         source: PackageSource,
         with_deps: Vec<(String, String)>,
     },
-    BatchInstall {
-        with_deps: Vec<(String, String)>,
-    },
+    BatchInstall(OptDepSelection),
     Remove {
         name: String,
         source: PackageSource,
@@ -188,22 +189,15 @@ pub(crate) fn partition_batch_targets(
     (merged, aur)
 }
 
+#[derive(Default)]
 pub struct TxPane {
     pub(crate) transaction: Option<Transaction>,
     pub(crate) show: bool,
 }
 
 impl TxPane {
-    pub fn begin(
-        &mut self,
-        request: TransactionRequest,
-        ctx: &crate::PakajoCtx,
-    ) -> Task<crate::Message> {
-        if self
-            .transaction
-            .as_ref()
-            .is_some_and(Transaction::is_active)
-        {
+    pub fn begin(&mut self, request: TransactionRequest, ctx: &PakajoCtx) -> Task<crate::Message> {
+        if self.is_active() {
             return Task::none();
         }
         match request {
@@ -223,7 +217,7 @@ impl TxPane {
                     .collect();
                 self.start_optdep_batch(wanted, ctx)
             }
-            TransactionRequest::BatchInstall { with_deps } => {
+            TransactionRequest::BatchInstall(with_deps) => {
                 if with_deps.is_empty() {
                     return Task::none();
                 }
@@ -240,8 +234,8 @@ impl TxPane {
 
     fn start_optdep_batch(
         &mut self,
-        wanted: Vec<(String, String)>,
-        ctx: &crate::PakajoCtx,
+        wanted: OptDepSelection,
+        ctx: &PakajoCtx,
     ) -> Task<crate::Message> {
         let resolve = |dep: &str, constraint: &str| {
             ctx.alpm
@@ -257,11 +251,7 @@ impl TxPane {
     }
 
     pub fn start_sysupgrade(&mut self) -> Task<crate::Message> {
-        if self
-            .transaction
-            .as_ref()
-            .is_some_and(Transaction::is_active)
-        {
+        if self.is_active() {
             return Task::none();
         }
         let (transaction, task) = Transaction::start_sysupgrade();

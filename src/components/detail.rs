@@ -13,8 +13,6 @@ use std::time::Duration;
 
 use crate::Element;
 
-pub type OptDepSelection = Vec<(String, String)>;
-
 pub(crate) fn selectable_optdeps(pkg: &Package, selection: &[String]) -> OptDepSelection {
     selection
         .iter()
@@ -30,13 +28,14 @@ use crate::PakajoCtx;
 use crate::components::icons;
 use crate::components::search::SearchMessage;
 use crate::components::theme::{accent_color, destructive_color, muted_mono, muted_text as muted};
-use crate::components::transaction::{TransactionMessage, TransactionRequest};
+use crate::components::transaction::{OptDepSelection, TransactionMessage, TransactionRequest};
 use cosmic::widget::divider;
 
 pub const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub enum DetailData {
+    #[default]
     None,
     Pending,
     Loading,
@@ -757,6 +756,7 @@ pub(crate) fn revalidate_selection(
         .collect()
 }
 
+#[derive(Default)]
 pub struct DetailPane {
     pub(crate) data: DetailData,
     pub(crate) seq: u64,
@@ -766,45 +766,29 @@ pub struct DetailPane {
     pub(crate) optdep_hover: Option<String>,
 }
 
-impl Default for DetailPane {
-    fn default() -> Self {
-        Self {
-            data: DetailData::None,
-            seq: 0,
-            pending: None,
-            selected_optdeps: Vec::new(),
-            pkg_name: None,
-            optdep_hover: None,
-        }
-    }
-}
-
 impl DetailPane {
     pub fn update(
         &mut self,
         message: DetailMessage,
         ctx: &PakajoCtx,
-        tx_active: bool,
+        busy: bool,
     ) -> Task<crate::Message> {
         match message {
             DetailMessage::Load { name, source } => self.load_detail(name, source, ctx),
-            DetailMessage::StartInstall => {
-                if tx_active || self.pending.is_some() {
-                    return Task::none();
-                }
+            DetailMessage::StartInstall if self.blocked(busy) => {
                 let Some((name, source, with_deps)) = self.install_target() else {
                     return Task::none();
                 };
+                if !with_deps.is_empty() {
+                    self.selected_optdeps.clear();
+                }
                 self.begin(TransactionRequest::Install {
                     name,
                     source,
                     with_deps,
                 })
             }
-            DetailMessage::StartBatchInstall => {
-                if tx_active || self.pending.is_some() {
-                    return Task::none();
-                }
+            DetailMessage::StartBatchInstall if self.blocked(busy) => {
                 let Some((_, _, with_deps)) = self.install_target() else {
                     return Task::none();
                 };
@@ -812,12 +796,9 @@ impl DetailPane {
                     return Task::none();
                 }
                 self.selected_optdeps.clear();
-                self.begin(TransactionRequest::BatchInstall { with_deps })
+                self.begin(TransactionRequest::BatchInstall(with_deps))
             }
-            DetailMessage::StartRemove => {
-                if tx_active || self.pending.is_some() {
-                    return Task::none();
-                }
+            DetailMessage::StartRemove if self.blocked(busy) => {
                 let DetailData::Ready { pkg, .. } = &self.data else {
                     return Task::none();
                 };
@@ -826,6 +807,9 @@ impl DetailPane {
                     source: pkg.source(),
                 })
             }
+            DetailMessage::StartInstall
+            | DetailMessage::StartBatchInstall
+            | DetailMessage::StartRemove => Task::none(),
             DetailMessage::DetailReady { seq, pkg } => self.ready(seq, *pkg, ctx),
             DetailMessage::DetailFailed { seq, message } => {
                 if seq == self.seq {
@@ -845,7 +829,7 @@ impl DetailPane {
                 Task::none()
             }
             DetailMessage::ToggleOptDep(name) => {
-                if tx_active {
+                if busy {
                     return Task::none();
                 }
                 let DetailData::Ready { pkg, .. } = &self.data else {
@@ -876,7 +860,17 @@ impl DetailPane {
         Task::none()
     }
 
-    fn install_target(&self) -> Option<(String, PackageSource, OptDepSelection)> {
+    fn blocked(&self, busy: bool) -> bool {
+        busy || self.pending.is_some()
+    }
+
+    fn install_target(
+        &self,
+    ) -> Option<(
+        String,
+        PackageSource,
+        crate::components::transaction::OptDepSelection,
+    )> {
         let DetailData::Ready { pkg, .. } = &self.data else {
             return None;
         };

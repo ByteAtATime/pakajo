@@ -119,7 +119,7 @@ pub struct RepoUpgrade {
     pub repo: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PendingUpdates {
     pub repo: Vec<RepoUpgrade>,
     pub aur: Vec<AurUpgradeCandidate>,
