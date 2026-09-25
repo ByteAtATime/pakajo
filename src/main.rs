@@ -49,17 +49,21 @@ fn main() -> iced::Result {
     app::run::<PakajoApp>(settings, flags)
 }
 
-pub struct PakajoApp {
-    core: Core,
+pub struct PakajoCtx {
     pub(crate) search_engine: Option<Arc<SearchEngine>>,
     pub(crate) db: Option<Arc<PackageDb>>,
     pub(crate) alpm: Option<alpm::Alpm>,
     pub(crate) aur_client: Option<Arc<AurClient>>,
     pub(crate) installed_names: Arc<HashSet<String>>,
     pub(crate) foreign_names: Arc<HashSet<String>>,
+    pub(crate) group_index: Arc<Vec<(String, String)>>,
+}
+
+pub struct PakajoApp {
+    core: Core,
+    pub(crate) ctx: PakajoCtx,
     pub(crate) dashboard: Option<DashboardSnapshot>,
     pub(crate) dashboard_seq: u64,
-    pub(crate) group_index: Arc<Vec<(String, String)>>,
     pub(crate) query: String,
     pub(crate) results: Vec<SearchResult>,
     pub(crate) search_state: SearchState,
@@ -135,21 +139,24 @@ impl Application for PakajoApp {
 
         let aur_client = Some(Arc::new(AurClient::new()));
 
-        if let Some(index) = &db {
-            begin_aur_sync_in_background(index.clone(), search_engine.clone());
-        }
-
-        let mut app = PakajoApp {
-            core,
+        let ctx = PakajoCtx {
             search_engine,
             db,
             alpm,
             aur_client,
             installed_names,
             foreign_names: Arc::new(HashSet::new()),
+            group_index,
+        };
+        if let Some(index) = &ctx.db {
+            begin_aur_sync_in_background(index.clone(), ctx.search_engine.clone());
+        }
+
+        let mut app = PakajoApp {
+            core,
+            ctx,
             dashboard: None,
             dashboard_seq: 0,
-            group_index,
             query: String::new(),
             results: Vec::new(),
             search_state: SearchState::Idle,
@@ -508,7 +515,8 @@ impl PakajoApp {
 
     fn start_optdep_batch(&mut self, wanted: Vec<(String, String)>) -> Task<Message> {
         let resolve = |dep: &str, constraint: &str| {
-            self.alpm
+            self.ctx
+                .alpm
                 .as_ref()
                 .and_then(|h| h.syncdbs().find_satisfier(format!("{dep}{constraint}")))
                 .map(|p| p.name().to_string())
@@ -524,12 +532,12 @@ impl PakajoApp {
 
     fn refresh_installed_state(&mut self) {
         if let Ok(handle) = handle() {
-            self.alpm = Some(handle);
+            self.ctx.alpm = Some(handle);
         }
-        if let Some(alpm) = &self.alpm {
-            self.installed_names = Arc::new(pakajo::package::installed_names(alpm));
+        if let Some(alpm) = &self.ctx.alpm {
+            self.ctx.installed_names = Arc::new(pakajo::package::installed_names(alpm));
         }
-        pakajo::search::apply_installed_to_results(&mut self.results, &self.installed_names);
+        pakajo::search::apply_installed_to_results(&mut self.results, &self.ctx.installed_names);
         self.refresh_detail_installed();
     }
 
@@ -573,7 +581,7 @@ impl PakajoApp {
                 if seq != self.dashboard_seq {
                     return Task::none();
                 }
-                self.foreign_names = Arc::new(foreign);
+                self.ctx.foreign_names = Arc::new(foreign);
                 self.dashboard = Some(snapshot);
                 Task::none()
             }

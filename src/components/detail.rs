@@ -749,6 +749,7 @@ impl crate::PakajoApp {
         match source {
             PackageSource::Repo => {
                 let resolved = self
+                    .ctx
                     .alpm
                     .as_ref()
                     .and_then(|alpm| package::find(alpm, &name));
@@ -759,8 +760,8 @@ impl crate::PakajoApp {
                 Task::none()
             }
             PackageSource::Group => {
-                let installed_names = self.installed_names.clone();
-                let resolved = self.alpm.as_ref().and_then(|alpm| {
+                let installed_names = self.ctx.installed_names.clone();
+                let resolved = self.ctx.alpm.as_ref().and_then(|alpm| {
                     package::find_groups(alpm, &name)
                         .into_iter()
                         .next()
@@ -783,11 +784,11 @@ impl crate::PakajoApp {
                 Task::none()
             }
             PackageSource::Aur => {
-                let Some(aur_client) = self.aur_client.clone() else {
+                let Some(aur_client) = self.ctx.aur_client.clone() else {
                     self.detail = DetailData::Error("aur unavailable".to_string());
                     return Task::none();
                 };
-                let db = self.db.clone();
+                let db = self.ctx.db.clone();
                 self.detail_pending = Some(seq);
                 Task::batch([
                     Task::stream(channel(
@@ -885,11 +886,12 @@ impl crate::PakajoApp {
     pub(crate) fn set_detail_pkg(&mut self, mut pkg: Package) {
         let name = pkg.name.clone();
         let installed = self
+            .ctx
             .alpm
             .as_ref()
             .map(|a| pakajo::package::is_installed(a, &name))
             .unwrap_or(false);
-        match self.alpm.as_ref() {
+        match self.ctx.alpm.as_ref() {
             Some(alpm) => {
                 for dep in &mut pkg.opt_dependencies {
                     dep.installed = package::opt_dep_installed(alpm, dep);

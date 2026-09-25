@@ -406,7 +406,7 @@ impl crate::PakajoApp {
     pub(crate) fn handle_search(&mut self, message: SearchMessage) -> Task<crate::Message> {
         match message {
             SearchMessage::GroupsLoaded(index) => {
-                self.group_index = index;
+                self.ctx.group_index = index;
                 if self.query.trim().is_empty() {
                     Task::none()
                 } else {
@@ -496,10 +496,10 @@ impl crate::PakajoApp {
 
     fn begin_search(&mut self) -> Task<crate::Message> {
         self.search_state = SearchState::Searching;
-        let engine = self.search_engine.clone();
-        let db = self.db.clone();
-        let installed = self.installed_names.clone();
-        let group_index = self.group_index.clone();
+        let engine = self.ctx.search_engine.clone();
+        let db = self.ctx.db.clone();
+        let installed = self.ctx.installed_names.clone();
+        let group_index = self.ctx.group_index.clone();
         let text = self.query.clone();
         let filter = self.search_filter;
         let seq = self.search_seq;
