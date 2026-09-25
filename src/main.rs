@@ -31,7 +31,7 @@ use components::search::{
 };
 use components::sysupgrade::SysupgradeMessage;
 use components::transaction::{Action, Transaction, TransactionMessage};
-use components::updates::{RefreshKind, UpdatesMessage, UpdatesState};
+use components::updates::{RefreshKind, UpdatesMessage, UpdatesPane};
 
 use cosmic::widget::divider;
 
@@ -79,14 +79,7 @@ pub struct PakajoApp {
     pub(crate) optdep_hover: Option<String>,
     pub(crate) transaction: Option<Transaction>,
     pub(crate) show_transaction: bool,
-    pub(crate) updates_state: UpdatesState,
-    pub(crate) pending_updates: pakajo::updates::PendingUpdates,
-    pub(crate) pending_count: u32,
-    pub(crate) updates_aur_error: Option<String>,
-    pub(crate) last_cache: Option<pakajo::updates::UpdatesCache>,
-    pub(crate) updates_refreshing: bool,
-    pub(crate) updates_refresh_error: Option<String>,
-    pub(crate) pending_force_refresh: Option<RefreshKind>,
+    pub(crate) updates: UpdatesPane,
     pub(crate) page: Page,
     search_focus_pending: bool,
 }
@@ -172,53 +165,11 @@ impl Application for PakajoApp {
             optdep_hover: None,
             transaction: None,
             show_transaction: false,
-            updates_state: UpdatesState::Idle,
-            pending_updates: pakajo::updates::PendingUpdates {
-                repo: Vec::new(),
-                aur: Vec::new(),
-            },
-            pending_count: 0,
-            updates_aur_error: None,
-            last_cache: None,
-            updates_refreshing: false,
-            updates_refresh_error: None,
-            pending_force_refresh: None,
+            updates: UpdatesPane::default(),
             page: Page::Search,
             search_focus_pending: true,
         };
-        let task = match pakajo::updates::load_cached() {
-            Some(cache) => {
-                app.last_cache = Some(cache);
-                let cache = app.last_cache.as_ref().expect("cache stored above");
-                let now = pakajo::updates::now_unix_seconds();
-                app.pending_updates = pakajo::updates::PendingUpdates {
-                    repo: cache.repo.clone(),
-                    aur: cache.aur.clone(),
-                };
-                app.pending_count = (cache.repo.len() + cache.aur.len()) as u32;
-                app.updates_state = UpdatesState::Idle;
-                app.updates_aur_error = None;
-                let skip = !cache.repo_stale(now)
-                    && !cache.devel_stale(now)
-                    && pakajo::updates::localdb_unchanged_since(cache.checked_at);
-                if skip {
-                    eprintln!(
-                        "[pakajo] updates cache fresh (repo age {}s, devel age {}s), skipping revalidation",
-                        now.saturating_sub(cache.checked_at),
-                        now.saturating_sub(cache.devel_checked_at)
-                    );
-                    Task::none()
-                } else {
-                    eprintln!(
-                        "[pakajo] serving cached updates (repo={} aur={})",
-                        cache.repo.len(),
-                        cache.aur.len()
-                    );
-                    app.start_updates_check(RefreshKind::Launch)
-                }
-            }
-            None => app.start_updates_check(RefreshKind::Launch),
-        };
+        let task = app.updates.restore_cache();
         let groups_task = Task::perform(
             async {
                 handle()
@@ -241,7 +192,7 @@ impl Application for PakajoApp {
             Message::Dashboard(m) => self.handle_dashboard(m),
             Message::Detail(m) => self.handle_detail(m),
             Message::Transaction(m) => self.handle_transaction(m),
-            Message::Updates(m) => self.handle_updates(m),
+            Message::Updates(m) => self.updates.update(m),
             Message::Sysupgrade(m) => self.handle_sysupgrade(m),
             Message::Navigate(page) => self.goto_page(page),
             Message::SearchFocus(focused) => {
@@ -266,7 +217,7 @@ impl Application for PakajoApp {
                 let dashboard = self.start_dashboard_refresh();
                 let updates = if self.transaction.as_ref().is_none_or(|t| !t.is_active()) {
                     eprintln!("[pakajo] db.lck released, forcing updates recheck");
-                    self.start_updates_check(RefreshKind::ExternalChange)
+                    self.updates.start_check(RefreshKind::ExternalChange)
                 } else {
                     Task::none()
                 };
@@ -316,14 +267,20 @@ impl Application for PakajoApp {
         } else {
             let page = match self.page {
                 Page::Search => self.search_page(),
-                Page::Updates => self.updates_page(),
+                Page::Updates => {
+                    let sysupgrade_checking = self
+                        .transaction
+                        .as_ref()
+                        .is_some_and(|t| t.is_sysupgrade() && t.is_checking());
+                    self.updates.page(sysupgrade_checking)
+                }
             };
             Column::new()
                 .push(container(page).width(Length::Fill).height(Length::Fill))
                 .push(divider::horizontal::default())
                 .push(footer::footer(
                     self.transaction.as_ref(),
-                    self.updates_badge(),
+                    self.updates.badge(),
                 ))
                 .width(Length::Fill)
                 .height(Length::Fill)
