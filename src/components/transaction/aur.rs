@@ -258,15 +258,12 @@ fn build_card(name: &str, entry: &BuildPackage, expanded: bool, now: Instant) ->
     }
     let header: Element<'static> =
         toggle_button(row, TransactionMessage::ToggleBuildCard(name.to_string()));
-    if expanded || matches!(entry.status, BuildStatus::Fetching | BuildStatus::Building) {
-        let lines = if expanded { usize::MAX } else { 5 };
-        return Column::new()
-            .spacing(4)
-            .push(header)
-            .push(tail_view(tail, lines))
-            .into();
-    }
-    header
+    let lines = if expanded { usize::MAX } else { 5 };
+    Column::new()
+        .spacing(4)
+        .push(header)
+        .push(tail_view(tail, lines))
+        .into()
 }
 
 fn build_list_view(
