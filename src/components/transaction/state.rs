@@ -26,7 +26,6 @@ pub(crate) struct TransactionModel {
     pub(crate) name: String,
     pub(crate) targets: Vec<String>,
     pub(crate) aur_names: Vec<String>,
-    pub(crate) aur_upgrades: Vec<pakajo::upgrade::AurUpgradeCandidate>,
     pub(crate) stages: &'static [RepoStage],
     pub(crate) current_idx: usize,
     pub(crate) repo_state: RepoState,
@@ -74,7 +73,6 @@ impl TransactionModel {
             name,
             targets,
             aur_names,
-            aur_upgrades: Vec::new(),
             stages: ordered_stages(kind),
             current_idx: 0,
             repo_state: RepoState::default(),
@@ -176,7 +174,6 @@ impl TransactionModel {
             .iter()
             .map(|candidate| candidate.name.clone())
             .collect();
-        self.aur_upgrades = candidates;
     }
 
     pub(crate) fn set_answer_channel(&mut self, writer: AnswerWriter) {

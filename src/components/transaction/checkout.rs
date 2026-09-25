@@ -2,8 +2,6 @@ use cosmic::iced::{Length, alignment::Vertical};
 use cosmic::widget::{Column, Row, button, dialog, scrollable, space, text};
 
 use pakajo::events::{SummaryAction, TransactionSummary, classify_action, target_version};
-use pakajo::progress::InstallKind;
-use pakajo::upgrade::AurUpgradeCandidate;
 use pakajo::utils::format_bytes;
 
 use super::TransactionMessage;
@@ -12,35 +10,20 @@ use super::shared::{
     version_change,
 };
 use crate::Element;
-use crate::components::updates::aur_upgrade_row;
 
 pub(crate) struct CheckoutModel {
     pub(crate) summary: TransactionSummary,
-    kind: InstallKind,
-    aur: Vec<AurUpgradeCandidate>,
 }
 
 impl CheckoutModel {
-    pub(crate) fn new(
-        summary: TransactionSummary,
-        kind: InstallKind,
-        aur: Vec<AurUpgradeCandidate>,
-    ) -> Self {
-        Self { summary, kind, aur }
+    pub(crate) fn new(summary: TransactionSummary) -> Self {
+        Self { summary }
     }
 
     pub(crate) fn view(&self, name: &str) -> Element<'_> {
         let mut body = Column::new().spacing(8);
         for pkg in &self.summary.packages {
             body = body.push(package_row(pkg));
-        }
-        if self.kind == InstallKind::Upgrade && !self.aur.is_empty() {
-            let mut aur_col = Column::new().spacing(8);
-            aur_col = aur_col.push(text(format!("AUR packages to build ({})", self.aur.len())));
-            for candidate in &self.aur {
-                aur_col = aur_col.push(aur_upgrade_row(candidate));
-            }
-            body = body.push(aur_col);
         }
         body = body.push(text("Totals"));
         body = body.push(muted(text(format!(
@@ -56,45 +39,19 @@ impl CheckoutModel {
             format_bytes(self.summary.total_removed_size)
         ))));
         dialog()
-            .title(checkout_title(name, self.kind))
+            .title(format!("Confirm removal of {name}"))
             .control(scrollable(body).height(Length::Fixed(400.0)))
-            .primary_action(checkout_confirm(self.kind))
+            .primary_action(
+                button::destructive("Remove").on_press(crate::Message::Transaction(
+                    TransactionMessage::ApproveCheckout,
+                )),
+            )
             .secondary_action(
                 button::standard("Cancel").on_press(crate::Message::Transaction(
                     TransactionMessage::CancelCheckout,
                 )),
             )
             .into()
-    }
-}
-
-fn checkout_title(name: &str, kind: InstallKind) -> String {
-    match kind {
-        InstallKind::Remove => format!("Confirm removal of {name}"),
-        InstallKind::Install | InstallKind::Upgrade => {
-            format!("Confirm installation of {name}")
-        }
-    }
-}
-
-fn checkout_confirm_label(kind: InstallKind) -> &'static str {
-    match kind {
-        InstallKind::Remove => "Remove",
-        InstallKind::Install | InstallKind::Upgrade => "Proceed",
-    }
-}
-
-fn checkout_confirm(kind: InstallKind) -> Element<'static> {
-    let pressed = crate::Message::Transaction(TransactionMessage::ApproveCheckout);
-    match kind {
-        InstallKind::Remove => button::destructive(checkout_confirm_label(kind))
-            .on_press(pressed)
-            .into(),
-        InstallKind::Install | InstallKind::Upgrade => {
-            button::suggested(checkout_confirm_label(kind))
-                .on_press(pressed)
-                .into()
-        }
     }
 }
 
@@ -134,7 +91,6 @@ mod checkout_tests {
     use pakajo::events::SummaryPackage;
     use pakajo::progress::InstallKind;
     use pakajo::question::model::Question;
-
     fn s(value: &str) -> String {
         value.to_string()
     }
@@ -199,7 +155,7 @@ mod checkout_tests {
     }
 
     #[test]
-    fn empty_part1_goes_straight_to_checkout() {
+    fn empty_part1_starts_transaction() {
         let mut tx = install_model();
         tx.update(TransactionMessage::Explored(Ok(
             pakajo::dispatch::RevalidationRun {
@@ -211,14 +167,12 @@ mod checkout_tests {
             },
         )));
         assert!(tx.model.install_review.is_none());
-        assert_eq!(
-            tx.model.checkout.as_ref().expect("checkout shown").summary,
-            summary()
-        );
+        assert!(tx.model.checkout.is_none());
+        assert!(matches!(tx.model.status, TransactionStatus::Running));
     }
 
     #[test]
-    fn checkout_proceed_launches_with_sealed_payload() {
+    fn converged_install_launches_with_sealed_payload() {
         let mut tx = install_model();
         tx.model.install_review = Some(InstallReview::new(vec![conflict()]));
         tx.model.summary = Some(summary());
@@ -248,19 +202,14 @@ mod checkout_tests {
             )
         ));
         tx.update(TransactionMessage::Explored(Ok(revalidated())));
-        assert!(tx.model.checkout.is_some());
-        tx.update(TransactionMessage::ApproveCheckout);
+        assert!(tx.model.checkout.is_none());
         assert!(matches!(tx.model.status, TransactionStatus::Running));
     }
 
     #[test]
     fn checkout_cancel_does_not_launch() {
         let mut tx = install_model();
-        tx.model.checkout = Some(CheckoutModel::new(
-            summary(),
-            InstallKind::Install,
-            Vec::new(),
-        ));
+        tx.model.checkout = Some(CheckoutModel::new(summary()));
         let action = tx.update(TransactionMessage::CancelCheckout);
         assert!(matches!(action, Action::Finished));
         assert!(!matches!(tx.model.status, TransactionStatus::Running));
