@@ -67,8 +67,7 @@ use crate::components::theme::{card_style, muted};
 
 const MAX_CONTENT_WIDTH: f32 = 840.0;
 const BAND_CELL_WIDTH: f32 = 200.0;
-const OPTDEP_COUNT_WIDTH: f32 = 90.0;
-const AGE_COLUMN_WIDTH: f32 = 90.0;
+const TRAILING_COLUMN_WIDTH: f32 = 90.0;
 const OPTDEP_TOOLTIP_ROWS: usize = 8;
 const CARD_ROWS: usize = 5;
 
@@ -95,14 +94,63 @@ fn band_stat(label: String, value: String, sub: String) -> Element<'static> {
     .into()
 }
 
-fn clipped_body(label: String) -> Element<'static> {
+fn ellipsized_body(label: String, width: Length) -> Element<'static> {
     text::body(label)
-        .width(Length::Fill)
+        .width(width)
         .wrapping(cosmic::iced::widget::text::Wrapping::None)
         .ellipsize(cosmic::iced::widget::text::Ellipsize::End(
             EllipsizeHeightLimit::Lines(1),
         ))
         .into()
+}
+
+fn clipped_body(label: String) -> Element<'static> {
+    ellipsized_body(label, Length::Fill)
+}
+
+fn searchable_row(name: String, leading: Element<'static>, trailing: String) -> Element<'static> {
+    let inner = Row::new()
+        .align_y(Alignment::Center)
+        .spacing(12.0)
+        .push(container(leading).width(Length::Fill))
+        .push(
+            container(muted(text::caption(trailing)))
+                .width(Length::Fixed(TRAILING_COLUMN_WIDTH))
+                .align_x(Alignment::End),
+        );
+    button::custom(inner)
+        .on_press(crate::Message::Search(SearchMessage::QueryChanged(name)))
+        .class(cosmic::theme::Button::ListItem([0.0; 4]))
+        .padding(0)
+        .width(Length::Fill)
+        .into()
+}
+
+fn list_card(
+    title: String,
+    empty_label: String,
+    rows: Vec<Element<'static>>,
+    pad: f32,
+) -> Element<'static> {
+    let content: Element<'static> = if rows.is_empty() {
+        muted(text::caption(empty_label))
+    } else {
+        let mut list = Column::new();
+        for row in rows {
+            list = list.push(container(row).padding([4.0, 0.0]));
+        }
+        list.into()
+    };
+    container(
+        Column::new()
+            .spacing(8.0)
+            .push(text::heading(title))
+            .push(content),
+    )
+    .style(card_style)
+    .padding(pad)
+    .width(Length::Fill)
+    .into()
 }
 
 fn live_band(snapshot: &DashboardSnapshot) -> Element<'static> {
@@ -173,54 +221,41 @@ fn optdep_row(entry: &OptdepEntry) -> Element<'static> {
     } else {
         format!("{count} packages")
     };
-    let row = Row::new()
-        .align_y(Alignment::Center)
-        .spacing(12.0)
-        .push(container(clipped_body(entry.name.clone())).width(Length::Fill))
-        .push(
-            container(muted(text::caption(count_label)))
-                .width(Length::Fixed(OPTDEP_COUNT_WIDTH))
-                .align_x(Alignment::End),
+    let pressed = searchable_row(
+        entry.name.clone(),
+        clipped_body(entry.name.clone()),
+        count_label,
+    );
+    tooltip(
+        pressed,
+        optdep_popup(entry),
+        tooltip::Position::FollowCursor,
+    )
+    .snap_within_viewport(true)
+    .class(cosmic::theme::Container::custom(|theme| {
+        let mut style = <cosmic::Theme as cosmic::iced::widget::container::Catalog>::style(
+            theme,
+            &cosmic::theme::Container::Card,
         );
-    tooltip(row, optdep_popup(entry), tooltip::Position::FollowCursor)
-        .snap_within_viewport(true)
-        .class(cosmic::theme::Container::custom(|theme| {
-            let mut style = <cosmic::Theme as cosmic::iced::widget::container::Catalog>::style(
-                theme,
-                &cosmic::theme::Container::Card,
-            );
-            style.border.width = 1.0;
-            style.border.color = theme.cosmic().bg_component_divider().into();
-            style.shadow = cosmic::iced::Shadow {
-                color: theme.cosmic().shade.into(),
-                offset: cosmic::iced::Vector::new(0.0, 4.0),
-                blur_radius: 16.0,
-            };
-            style
-        }))
-        .into()
+        style.border.width = 1.0;
+        style.border.color = theme.cosmic().bg_component_divider().into();
+        style.shadow = cosmic::iced::Shadow {
+            color: theme.cosmic().shade.into(),
+            offset: cosmic::iced::Vector::new(0.0, 4.0),
+            blur_radius: 16.0,
+        };
+        style
+    }))
+    .into()
 }
 
 fn optdep_card(top: &[OptdepEntry], pad: f32) -> Element<'static> {
-    let content: Element<'static> = if top.is_empty() {
-        muted(text::caption(String::from("No suggestions")))
-    } else {
-        let mut list = Column::new();
-        for entry in top {
-            list = list.push(container(optdep_row(entry)).padding([4.0, 0.0]));
-        }
-        list.into()
-    };
-    container(
-        Column::new()
-            .spacing(8.0)
-            .push(text::heading(String::from("Optional dependencies")))
-            .push(content),
+    list_card(
+        String::from("Optional dependencies"),
+        String::from("No suggestions"),
+        top.iter().map(optdep_row).collect(),
+        pad,
     )
-    .style(card_style)
-    .padding(pad)
-    .width(Length::Fill)
-    .into()
 }
 
 fn recent_row(pkg: &RecentPkg) -> Element<'static> {
@@ -228,54 +263,18 @@ fn recent_row(pkg: &RecentPkg) -> Element<'static> {
         .align_y(Alignment::Center)
         .spacing(8.0)
         .width(Length::Shrink)
-        .push(
-            text::body(pkg.name.clone())
-                .width(Length::Shrink)
-                .wrapping(cosmic::iced::widget::text::Wrapping::None)
-                .ellipsize(cosmic::iced::widget::text::Ellipsize::End(
-                    EllipsizeHeightLimit::Lines(1),
-                )),
-        )
+        .push(ellipsized_body(pkg.name.clone(), Length::Shrink))
         .push(muted(text::caption(format!("({})", pkg.version))));
-    let inner = Row::new()
-        .align_y(Alignment::Center)
-        .spacing(12.0)
-        .push(container(label).width(Length::Fill))
-        .push(
-            container(muted(text::caption(pkg.age.clone())))
-                .width(Length::Fixed(AGE_COLUMN_WIDTH))
-                .align_x(Alignment::End),
-        );
-    button::custom(inner)
-        .on_press(crate::Message::Search(SearchMessage::QueryChanged(
-            pkg.name.clone(),
-        )))
-        .class(cosmic::theme::Button::ListItem([0.0; 4]))
-        .padding(0)
-        .width(Length::Fill)
-        .into()
+    searchable_row(pkg.name.clone(), label.into(), pkg.age.clone())
 }
 
 fn recent_card(recent: &[RecentPkg], pad: f32) -> Element<'static> {
-    let content: Element<'static> = if recent.is_empty() {
-        muted(text::caption(String::from("No recent activity")))
-    } else {
-        let mut list = Column::new();
-        for pkg in recent {
-            list = list.push(container(recent_row(pkg)).padding([4.0, 0.0]));
-        }
-        list.into()
-    };
-    container(
-        Column::new()
-            .spacing(8.0)
-            .push(text::heading(String::from("Recently updated")))
-            .push(content),
+    list_card(
+        String::from("Recently updated"),
+        String::from("No recent activity"),
+        recent.iter().map(recent_row).collect(),
+        pad,
     )
-    .style(card_style)
-    .padding(pad)
-    .width(Length::Fill)
-    .into()
 }
 
 fn skeleton_card(pad: f32) -> Element<'static> {
