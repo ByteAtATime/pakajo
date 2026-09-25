@@ -775,7 +775,7 @@ impl DetailPane {
     ) -> Task<crate::Message> {
         match message {
             DetailMessage::Load { name, source } => self.load_detail(name, source, ctx),
-            DetailMessage::StartInstall if self.blocked(busy) => {
+            DetailMessage::StartInstall if !self.blocked(busy) => {
                 let Some((name, source, with_deps)) = self.install_target() else {
                     return Task::none();
                 };
@@ -788,7 +788,7 @@ impl DetailPane {
                     with_deps,
                 })
             }
-            DetailMessage::StartBatchInstall if self.blocked(busy) => {
+            DetailMessage::StartBatchInstall if !self.blocked(busy) => {
                 let Some((_, _, with_deps)) = self.install_target() else {
                     return Task::none();
                 };
@@ -798,7 +798,7 @@ impl DetailPane {
                 self.selected_optdeps.clear();
                 self.begin(TransactionRequest::BatchInstall(with_deps))
             }
-            DetailMessage::StartRemove if self.blocked(busy) => {
+            DetailMessage::StartRemove if !self.blocked(busy) => {
                 let DetailData::Ready { pkg, .. } = &self.data else {
                     return Task::none();
                 };
