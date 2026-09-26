@@ -46,6 +46,13 @@ debug = ["libcosmic/debug"]
 name = "search"
 harness = false
 
+[profile.bench]
+opt-level = 3
+codegen-units = 16
+lto = "thin"
+debug = 2
+strip = false
+
 [profile.release]
 opt-level = 3
 lto = "fat"
