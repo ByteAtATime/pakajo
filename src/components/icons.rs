@@ -18,6 +18,10 @@ macro_rules! icon {
 icon!(history, "history.svg");
 icon!(scale, "scale.svg");
 icon!(user, "user.svg");
+icon!(triangle_alert, "triangle-alert.svg");
+icon!(shuffle, "shuffle.svg");
+icon!(shield_alert, "shield-alert.svg");
+icon!(git_merge, "git-merge.svg");
 icon!(cpu, "cpu.svg");
 icon!(hard_drive, "hard-drive.svg");
 icon!(star, "star.svg");

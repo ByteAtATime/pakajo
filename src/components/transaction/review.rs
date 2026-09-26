@@ -1,7 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use cosmic::iced::alignment::Vertical;
 use cosmic::iced::{Background, Border, Color, Length};
-use cosmic::widget::{Column, button, checkbox, container, dialog, radio, scrollable, text};
+use cosmic::widget::icon;
+use cosmic::widget::{
+    Column, Row, button, checkbox, container, dialog, radio, scrollable, space, text,
+};
+
+use crate::components::icons::{git_merge, shuffle, triangle_alert};
+use crate::components::theme::{card_style, destructive_color, muted_color, warning_color};
 
 use pakajo::progress::InstallKind;
 use pakajo::question::approvals::{SealedApprovals, seal as seal_answers};
@@ -19,17 +26,182 @@ pub enum ReviewMessage {
     ToggleRemovepkgs(usize),
     ToggleHoldpkgs(usize),
     SelectProvider { depend: String, idx: usize },
+    ApproveHolds,
+    ToggleConsentHolds,
+    Noop,
 }
 
-fn candidate_label(candidate: &pakajo::question::model::ProviderCandidate) -> String {
+fn status_pill(caption: &str) -> cosmic::Element<'static, ReviewMessage> {
+    let colored = |theme: &cosmic::Theme| Color::from(theme.cosmic().warning.base);
+    container(text(caption.to_uppercase()))
+        .padding([2.0, 8.0])
+        .style(move |theme: &cosmic::Theme| {
+            let colored = colored(theme);
+            container::Style {
+                text_color: Some(colored),
+                background: Some(Background::Color(Color { a: 0.10, ..colored })),
+                border: Border {
+                    radius: theme.cosmic().corner_radii.radius_s.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        })
+        .into()
+}
+
+fn tinted_elem<'a>(
+    content: impl Into<cosmic::Element<'a, ReviewMessage>>,
+    tint: fn(&cosmic::Theme) -> Color,
+) -> cosmic::Element<'a, ReviewMessage> {
+    container(content.into())
+        .style(move |theme: &cosmic::Theme| container::Style {
+            text_color: Some(tint(theme)),
+            ..Default::default()
+        })
+        .into()
+}
+
+fn muted_elem<'a>(
+    content: impl Into<cosmic::Element<'a, ReviewMessage>>,
+) -> cosmic::Element<'a, ReviewMessage> {
+    tinted_elem(content, muted_color)
+}
+
+fn tinted_icon(
+    handle: icon::Handle,
+    tint: fn(&cosmic::Theme) -> Color,
+) -> cosmic::Element<'static, ReviewMessage> {
+    tinted_elem(icon(handle).size(16), tint)
+}
+
+fn question_card<'a>(
+    line: Vec<cosmic::Element<'a, ReviewMessage>>,
+    caption: Option<&str>,
+    extra: Vec<cosmic::Element<'a, ReviewMessage>>,
+) -> cosmic::Element<'a, ReviewMessage> {
+    let mut line = Row::with_children(line).spacing(10);
+    line = line.push(space::horizontal());
+    if let Some(caption) = caption {
+        line = line.push(status_pill(caption));
+    }
+    let mut card = Column::new()
+        .spacing(6)
+        .push(line.align_y(Vertical::Center));
+    for element in extra {
+        card = card.push(element);
+    }
+    container(card)
+        .padding([10.0, 14.0])
+        .width(Length::Fill)
+        .style(card_style)
+        .into()
+}
+
+fn card_button_style(theme: &cosmic::Theme) -> button::Style {
+    let cosmic = theme.cosmic();
+    button::Style {
+        text_color: Some(Color::from(cosmic.background(false).on)),
+        background: Some(Background::Color(Color::from(
+            cosmic.background(false).component.base,
+        ))),
+        border_radius: cosmic.corner_radii.radius_s.into(),
+        border_width: 1.0,
+        border_color: Color::from(cosmic.background(false).divider),
+        ..Default::default()
+    }
+}
+
+fn card_button_hover_style(theme: &cosmic::Theme) -> button::Style {
+    let mut style = card_button_style(theme);
+    let mut background = Color::from(theme.cosmic().background(false).component.base);
+    background = Color {
+        a: (background.a * 1.6).min(1.0),
+        ..background
+    };
+    style.background = Some(Background::Color(background));
+    style
+}
+
+fn clickable_card<'a>(
+    content: cosmic::Element<'a, ReviewMessage>,
+    message: ReviewMessage,
+) -> cosmic::Element<'a, ReviewMessage> {
+    button::custom(content)
+        .on_press(message)
+        .padding([10.0, 14.0])
+        .width(Length::Fill)
+        .class(cosmic::theme::Button::Custom {
+            active: Box::new(|_, theme| card_button_style(theme)),
+            disabled: Box::new(card_button_style),
+            hovered: Box::new(|_, theme| card_button_hover_style(theme)),
+            pressed: Box::new(|_, theme| card_button_hover_style(theme)),
+        })
+        .into()
+}
+
+fn toggle_card<'a>(
+    label: cosmic::Element<'a, ReviewMessage>,
+    detail: Option<String>,
+    checked: bool,
+    message: ReviewMessage,
+    caption: Option<&str>,
+) -> cosmic::Element<'a, ReviewMessage> {
+    let mut text_column = Column::new().push(label);
+    if let Some(detail) = detail {
+        text_column = text_column.push(muted_elem(text::monotext(detail)));
+    }
+    let mut line = Row::new()
+        .align_y(Vertical::Center)
+        .spacing(10)
+        .push(checkbox(checked).on_toggle(|_| ReviewMessage::Noop))
+        .push(text_column)
+        .push(space::horizontal());
+    if let Some(caption) = caption {
+        line = line.push(status_pill(caption));
+    }
+    clickable_card(line.into(), message)
+}
+
+fn provider_candidate_row<'a>(
+    candidate: &pakajo::question::model::ProviderCandidate,
+) -> cosmic::Element<'a, ReviewMessage> {
     let qualified = match &candidate.repo {
         Some(repo) => format!("{repo}/{}", candidate.name),
         None => candidate.name.clone(),
     };
-    match &candidate.version {
-        Some(version) => format!("{qualified}  {version}"),
-        None => qualified,
+    let mut row = Row::new()
+        .align_y(Vertical::Center)
+        .spacing(8)
+        .push(text::monotext(qualified));
+    if let Some(version) = &candidate.version {
+        row = row.push(muted_elem(text(version.clone())));
     }
+    row.into()
+}
+
+fn section<'a>(
+    lead: cosmic::Element<'static, ReviewMessage>,
+    title: &str,
+    items: Vec<cosmic::Element<'a, ReviewMessage>>,
+) -> cosmic::Element<'a, ReviewMessage> {
+    let count = items.len();
+    let label = if count == 1 {
+        title.to_string()
+    } else {
+        format!("{title} · {count}")
+    };
+    Column::new()
+        .spacing(8)
+        .push(
+            Row::new()
+                .align_y(Vertical::Center)
+                .spacing(8)
+                .push(lead)
+                .push(text(label)),
+        )
+        .push(Column::with_children(items).spacing(8))
+        .into()
 }
 
 pub(crate) struct InstallReview {
@@ -43,6 +215,7 @@ pub(crate) struct InstallReview {
     pub(crate) highlighted: BTreeSet<QuestionKey>,
     pub(crate) added: BTreeSet<QuestionKey>,
     pub(super) approving: bool,
+    holds_confirmed: bool,
 }
 
 impl InstallReview {
@@ -72,6 +245,7 @@ impl InstallReview {
             highlighted: BTreeSet::new(),
             added: BTreeSet::new(),
             approving: false,
+            holds_confirmed: false,
         }
     }
 
@@ -121,6 +295,7 @@ impl InstallReview {
         self.highlighted = drift.added.union(&drift.changed).cloned().collect();
         self.added = drift.added.clone();
         self.approving = false;
+        self.holds_confirmed = false;
     }
 
     pub(crate) fn update(&mut self, message: ReviewMessage) {
@@ -130,10 +305,40 @@ impl InstallReview {
             ReviewMessage::ToggleIgnorepkg(i) => flip(&mut self.ignorepkg_checks, i),
             ReviewMessage::ToggleRemovepkgs(i) => flip(&mut self.removepkgs_checks, i),
             ReviewMessage::ToggleHoldpkgs(i) => flip(&mut self.holdpkgs_checks, i),
+            ReviewMessage::Noop => {}
             ReviewMessage::SelectProvider { depend, idx } => {
                 self.provider_choices.insert(depend, idx);
             }
+            ReviewMessage::ApproveHolds => {
+                if self.can_confirm() {
+                    self.holds_confirmed = true;
+                }
+            }
+            ReviewMessage::ToggleConsentHolds => {
+                let consent = self.all_holds_checked();
+                for (i, question) in self.questions.iter().enumerate() {
+                    if matches!(question, Question::HoldPkgs { .. })
+                        && let Some(check) = self.holdpkgs_checks.get_mut(i)
+                    {
+                        *check = !consent;
+                    }
+                }
+            }
         }
+    }
+
+    fn all_holds_checked(&self) -> bool {
+        self.questions.iter().enumerate().all(|(i, question)| {
+            !matches!(question, Question::HoldPkgs { .. })
+                || self.holdpkgs_checks.get(i).copied().unwrap_or(false)
+        })
+    }
+
+    fn in_holds_stage(&self) -> bool {
+        self.questions
+            .iter()
+            .any(|question| matches!(question, Question::HoldPkgs { .. }))
+            && !self.holds_confirmed
     }
 
     fn answer_for(&self, i: usize, question: &Question) -> Answer {
@@ -217,29 +422,56 @@ impl InstallReview {
     }
 
     pub(crate) fn view(&self, name: &str, kind: InstallKind) -> Element<'_> {
-        let body = part1_body(self)
-            .map(|message| crate::Message::Transaction(TransactionMessage::Review(message)));
-        let approve = crate::Message::Transaction(TransactionMessage::ApproveReview);
-        let gated = self.can_confirm();
-        let confirm: Element<'_> = if self.approving {
-            button::suggested("Loading...").into()
+        let holds_stage = self.in_holds_stage();
+        let body = if holds_stage {
+            holds_body(self)
         } else {
+            part1_body(self, holds_stage)
+        }
+        .map(|message| crate::Message::Transaction(TransactionMessage::Review(message)));
+        let gated = self.can_confirm();
+        let (confirm, title): (Element<'_>, String) = if self.approving {
+            (
+                button::suggested("Loading...").into(),
+                install_review_title(name, kind),
+            )
+        } else if holds_stage {
+            let names = hold_names(self);
+            let stage_title = if names.len() == 1 {
+                format!("Remove held package {}", names[0])
+            } else {
+                "Held packages would be removed".to_string()
+            };
+            let action = button::destructive("Remove anyway");
+            let action = if gated {
+                action
+                    .on_press(crate::Message::Transaction(TransactionMessage::Review(
+                        ReviewMessage::ApproveHolds,
+                    )))
+                    .into()
+            } else {
+                action.into()
+            };
+            (action, stage_title)
+        } else {
+            let approve = crate::Message::Transaction(TransactionMessage::ApproveReview);
             let action = if matches!(kind, InstallKind::Remove) {
                 button::destructive(install_confirm_label(kind))
             } else {
                 button::suggested(install_confirm_label(kind))
             };
-            if gated {
+            let action: Element<'_> = if gated {
                 action.on_press(approve).into()
             } else {
                 action.into()
-            }
+            };
+            (action, install_review_title(name, kind))
         };
         let cancel = button::standard("Cancel").on_press(crate::Message::Transaction(
             TransactionMessage::CancelReview,
         ));
         dialog()
-            .title(install_review_title(name, kind))
+            .title(title)
             .control(scrollable(body).height(Length::Fixed(400.0)))
             .primary_action(confirm)
             .secondary_action(cancel)
@@ -294,21 +526,11 @@ fn install_confirm_label(kind: InstallKind) -> &'static str {
     }
 }
 
-fn removepkgs_label(names: &[String], kind: &TransactionKind) -> String {
+fn removepkgs_label_short(kind: &TransactionKind) -> &'static str {
     match kind {
-        TransactionKind::Remove => format!(
-            "Skip missing packages and continue without them: {}",
-            names.join(", ")
-        ),
-        TransactionKind::Install => format!(
-            "Skip unresolvable packages and continue without them: {}",
-            names.join(", ")
-        ),
+        TransactionKind::Remove => "Skip missing packages and continue",
+        TransactionKind::Install => "Skip unresolvable packages and continue",
     }
-}
-
-fn holdpkgs_label(names: &[String]) -> String {
-    format!("Remove held packages anyway: {}", names.join(", "))
 }
 
 fn restored_provider(
@@ -340,98 +562,118 @@ fn highlight_caption<'a>(
     Some("Changed")
 }
 
-fn highlight_wrap<'a>(
-    row: cosmic::Element<'a, ReviewMessage>,
-    caption: &str,
-) -> cosmic::Element<'a, ReviewMessage> {
-    let content = Column::new()
-        .spacing(4)
-        .push(text(caption.to_string()))
-        .push(row);
-    container(content)
-        .padding([12.0, 16.0])
-        .width(Length::Fill)
-        .style(|theme: &cosmic::Theme| container::Style {
-            text_color: Some(Color::from(theme.cosmic().warning.on)),
-            background: Some(Background::Color(Color::from(theme.cosmic().warning.base))),
-            border: Border {
-                radius: theme.cosmic().corner_radii.radius_s.into(),
-                width: 1.0,
-                color: Color::from(theme.cosmic().warning.base),
-            },
-            ..Default::default()
+fn hold_names(review: &InstallReview) -> Vec<String> {
+    review
+        .questions
+        .iter()
+        .filter_map(|question| match question {
+            Question::HoldPkgs { names } => Some(names.clone()),
+            _ => None,
         })
+        .flatten()
+        .collect()
+}
+
+fn holds_body<'a>(review: &'a InstallReview) -> cosmic::Element<'a, ReviewMessage> {
+    let names = hold_names(review);
+    let single = names.len() == 1;
+    let lead = if single {
+        "This package is protected by HoldPkg:"
+    } else {
+        "You are about to remove packages protected by HoldPkg:"
+    };
+    let warning: cosmic::Element<'a, ReviewMessage> = Row::new()
+        .spacing(8)
+        .push(tinted_icon(triangle_alert(), destructive_color))
+        .push(
+            container(text(
+                "Removing them can break your system. Unless you are sure you know what you are doing, this is probably not what you want.",
+            ))
+            .style(|theme: &cosmic::Theme| container::Style {
+                text_color: Some(destructive_color(theme)),
+                ..Default::default()
+            }),
+        )
+        .into();
+    let consent_label = if single {
+        "I understand, remove it anyway"
+    } else {
+        "I understand, remove them anyway"
+    };
+    Column::new()
+        .spacing(14)
+        .width(Length::Fill)
+        .push(text::body(lead))
+        .push(
+            container(text::monotext(names.join("\n")))
+                .width(Length::Fill)
+                .padding([10.0, 14.0])
+                .style(card_style),
+        )
+        .push(warning)
+        .push(
+            checkbox(review.all_holds_checked())
+                .label(consent_label)
+                .on_toggle(|_| ReviewMessage::ToggleConsentHolds),
+        )
         .into()
 }
 
-fn with_caption<'a>(
-    row: cosmic::Element<'a, ReviewMessage>,
-    caption: Option<&str>,
+fn part1_body<'a>(
+    review: &'a InstallReview,
+    holds_stage: bool,
 ) -> cosmic::Element<'a, ReviewMessage> {
-    match caption {
-        Some(note) => highlight_wrap(row, note),
-        None => row,
-    }
-}
-
-fn toggle_row<'a>(
-    label: String,
-    checked: bool,
-    message: ReviewMessage,
-) -> cosmic::Element<'a, ReviewMessage> {
-    checkbox(checked)
-        .label(label)
-        .on_toggle(move |_| message.clone())
-        .into()
-}
-
-fn part1_body<'a>(review: &'a InstallReview) -> cosmic::Element<'a, ReviewMessage> {
     let InstallReview {
         questions,
         conflict_checks: checks,
         replace_checks,
         ignorepkg_checks,
         removepkgs_checks,
-        holdpkgs_checks,
         provider_choices: choices,
         highlighted,
         added,
         ..
     } = review;
-    let mut body = Column::new().spacing(16);
-    let mut in_conflicts = false;
-    let mut in_providers = false;
+    let mut conflicts: Vec<cosmic::Element<'a, ReviewMessage>> = Vec::new();
+    let mut providers: Vec<cosmic::Element<'a, ReviewMessage>> = Vec::new();
+    let mut decisions: Vec<cosmic::Element<'a, ReviewMessage>> = Vec::new();
     for (i, question) in questions.iter().enumerate() {
         let caption = highlight_caption(&question.key(), highlighted, added);
+        if matches!(question, Question::HoldPkgs { .. }) != holds_stage {
+            continue;
+        }
         match question {
             Question::Conflict {
                 incoming,
+                incoming_version,
                 removable,
-                ..
+                removable_version,
+                conflict_reason,
             } => {
-                if !in_conflicts {
-                    body = body.push(text("Conflicts"));
-                    in_conflicts = true;
-                }
-                let label = format!("Replace {} with {}", removable, incoming);
                 let checked = checks.get(i).copied().unwrap_or(false);
-                let row: cosmic::Element<'a, ReviewMessage> =
-                    toggle_row(label, checked, ReviewMessage::ToggleConflict(i));
-                body = body.push(with_caption(row, caption));
+                let label: cosmic::Element<'a, ReviewMessage> = Row::new()
+                    .align_y(Vertical::Center)
+                    .push(muted_elem(text("Replace ".to_string())))
+                    .push(text(removable.clone()))
+                    .push(muted_elem(text(format!("-{removable_version} with "))))
+                    .push(text(incoming.clone()))
+                    .push(muted_elem(text(format!("-{incoming_version}"))))
+                    .into();
+                conflicts.push(toggle_card(
+                    label,
+                    conflict_reason.clone(),
+                    checked,
+                    ReviewMessage::ToggleConflict(i),
+                    caption,
+                ));
             }
             Question::SelectProvider { depend, candidates } => {
-                if !in_providers {
-                    body = body.push(text("Providers"));
-                    in_providers = true;
-                }
-                let mut group = Column::new().spacing(8);
-                group = group.push(text(depend.clone()));
                 let selected = choices.get(depend).copied().unwrap_or(0);
+                let mut group = Column::new().spacing(8);
                 for (idx, candidate) in candidates.iter().enumerate() {
-                    let label = candidate_label(candidate);
                     let depend = depend.clone();
                     group = group.push(radio(
-                        text(label),
+                        provider_candidate_row(candidate),
                         idx,
                         Some(selected),
                         move |chosen: usize| ReviewMessage::SelectProvider {
@@ -440,59 +682,79 @@ fn part1_body<'a>(review: &'a InstallReview) -> cosmic::Element<'a, ReviewMessag
                         },
                     ));
                 }
-                let row: cosmic::Element<'a, ReviewMessage> = group.into();
-                body = body.push(with_caption(row, caption));
+                let line = vec![
+                    muted_elem(text("Provider for")),
+                    text::monotext(depend.clone()).into(),
+                ];
+                providers.push(question_card(line, caption, vec![group.into()]));
             }
-            Question::Replace { old, new, .. } => {
-                let label = format!("Replace {old} with {new}");
+            Question::Replace { old, new, repo } => {
                 let checked = replace_checks.get(i).copied().unwrap_or(true);
-                let row: cosmic::Element<'a, ReviewMessage> =
-                    toggle_row(label, checked, ReviewMessage::ToggleReplace(i));
-                body = body.push(with_caption(row, caption));
+                let old_name = match repo {
+                    Some(repo) => format!("{repo}/{old}"),
+                    None => old.clone(),
+                };
+                decisions.push(toggle_card(
+                    text(format!("{old_name} is replaced by {new}")).into(),
+                    None,
+                    checked,
+                    ReviewMessage::ToggleReplace(i),
+                    caption,
+                ));
             }
             Question::InstallIgnorepkg { name } => {
-                let label = format!("Install {name} anyway (in IgnorePkg)");
                 let checked = ignorepkg_checks.get(i).copied().unwrap_or(false);
-                let row: cosmic::Element<'a, ReviewMessage> =
-                    toggle_row(label, checked, ReviewMessage::ToggleIgnorepkg(i));
-                body = body.push(with_caption(row, caption));
+                decisions.push(toggle_card(
+                    text(format!("Install {name} anyway (in IgnorePkg)")).into(),
+                    None,
+                    checked,
+                    ReviewMessage::ToggleIgnorepkg(i),
+                    caption,
+                ));
             }
             Question::RemovePkgs { names, kind } => {
-                let label = removepkgs_label(names, kind);
                 let checked = removepkgs_checks.get(i).copied().unwrap_or(true);
-                let row: cosmic::Element<'a, ReviewMessage> =
-                    toggle_row(label, checked, ReviewMessage::ToggleRemovepkgs(i));
-                body = body.push(with_caption(row, caption));
-            }
-            Question::HoldPkgs { names } => {
-                let label = holdpkgs_label(names);
-                let checked = holdpkgs_checks.get(i).copied().unwrap_or(false);
-                let mut group = Column::new().spacing(8);
-                group = group.push(
-                    checkbox(checked)
-                        .label(label)
-                        .on_toggle(move |_| ReviewMessage::ToggleHoldpkgs(i)),
-                );
-                group = group.push(text::body(
-                    "These packages are protected by HoldPkg config on purpose because they are critical to your system.",
+                decisions.push(toggle_card(
+                    text(removepkgs_label_short(kind)).into(),
+                    Some(names.join(", ")),
+                    checked,
+                    ReviewMessage::ToggleRemovepkgs(i),
+                    caption,
                 ));
-                group = group.push(text::body(
-                    "Removing them can break your system. Unless you are sure you know what you are doing, this is probably not what you want.",
-                ));
-                let row: cosmic::Element<'a, ReviewMessage> = group.into();
-                body = body.push(with_caption(row, caption));
             }
             other => {
                 if let Some(note) = info_caption(other) {
-                    let row: cosmic::Element<'a, ReviewMessage> = text(note).into();
-                    body = body.push(with_caption(row, caption));
+                    let line = vec![muted_elem(text(note))];
+                    decisions.push(question_card(line, caption, Vec::new()));
                 } else if let Some(flag) = caption {
                     let key = question.key();
-                    let row: cosmic::Element<'a, ReviewMessage> = text(format!("{key:?}")).into();
-                    body = body.push(highlight_wrap(row, flag));
+                    let line = vec![muted_elem(text(format!("{key:?}")))];
+                    decisions.push(question_card(line, Some(flag), Vec::new()));
                 }
             }
         }
+    }
+    let mut body = Column::new().spacing(20);
+    if !conflicts.is_empty() {
+        body = body.push(section(
+            tinted_icon(git_merge(), destructive_color),
+            "Conflicts",
+            conflicts,
+        ));
+    }
+    if !providers.is_empty() {
+        body = body.push(section(
+            tinted_icon(shuffle(), muted_color),
+            "Providers",
+            providers,
+        ));
+    }
+    if !decisions.is_empty() {
+        body = body.push(section(
+            tinted_icon(triangle_alert(), warning_color),
+            "Decisions",
+            decisions,
+        ));
     }
     body.into()
 }
