@@ -52,6 +52,7 @@ pub fn tier_at(
     q: &str,
     allowed: &[Tier],
     qmask: u64,
+    qbig: u64,
 ) -> Option<Tier> {
     for &tier in allowed {
         match tier {
@@ -76,12 +77,18 @@ pub fn tier_at(
                 }
             }
             Tier::Substring => {
-                if (qmask & !index.row(pi).name_mask) == 0 && index.name(pi).contains(q) {
+                let r = index.row(pi);
+                if (qmask & !r.name_mask) == 0
+                    && (qbig & !r.name_bigrams) == 0
+                    && index.name(pi).contains(q)
+                {
                     return Some(tier);
                 }
             }
             Tier::Keyword => {
-                if (qmask & !index.row(pi).kw_mask) == 0
+                let r = index.row(pi);
+                if (qmask & !r.kw_mask) == 0
+                    && (qbig & !r.kw_bigrams) == 0
                     && (0..index.kws_len(pi)).any(|k| index.keyword(pi, k).contains(q))
                 {
                     return Some(tier);
@@ -96,7 +103,7 @@ pub fn tier_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::index::{RawPkg, assemble, byte_mask};
+    use crate::search::index::{RawPkg, assemble, bigram_mask, byte_mask};
 
     const ALL_CONCRETE: &[Tier] = &[
         Tier::ExactName,
@@ -146,24 +153,53 @@ mod tests {
                 0,
                 "google-chrome",
                 ALL_CONCRETE,
-                byte_mask(b"google-chrome")
+                byte_mask(b"google-chrome"),
+                bigram_mask(b"google-chrome")
             ),
             Some(Tier::ExactName)
         );
         assert_eq!(
-            tier_at(&index, 0, "chrome", ALL_CONCRETE, byte_mask(b"chrome")),
+            tier_at(
+                &index,
+                0,
+                "chrome",
+                ALL_CONCRETE,
+                byte_mask(b"chrome"),
+                bigram_mask(b"chrome")
+            ),
             Some(Tier::ExactToken)
         );
         assert_eq!(
-            tier_at(&index, 0, "chrom", ALL_CONCRETE, byte_mask(b"chrom")),
+            tier_at(
+                &index,
+                0,
+                "chrom",
+                ALL_CONCRETE,
+                byte_mask(b"chrom"),
+                bigram_mask(b"chrom")
+            ),
             Some(Tier::PrefixToken)
         );
         assert_eq!(
-            tier_at(&index, 0, "xyz", ALL_CONCRETE, byte_mask(b"xyz")),
+            tier_at(
+                &index,
+                0,
+                "xyz",
+                ALL_CONCRETE,
+                byte_mask(b"xyz"),
+                bigram_mask(b"xyz")
+            ),
             None
         );
         assert_eq!(
-            tier_at(&index, 0, "hrome", ALL_CONCRETE, byte_mask(b"hrome")),
+            tier_at(
+                &index,
+                0,
+                "hrome",
+                ALL_CONCRETE,
+                byte_mask(b"hrome"),
+                bigram_mask(b"hrome")
+            ),
             Some(Tier::Substring)
         );
     }
@@ -172,11 +208,25 @@ mod tests {
     fn tier_at_keyword_respects_qmask() {
         let index = sample_index();
         assert_eq!(
-            tier_at(&index, 0, "brows", ALL_CONCRETE, byte_mask(b"brows")),
+            tier_at(
+                &index,
+                0,
+                "brows",
+                ALL_CONCRETE,
+                byte_mask(b"brows"),
+                bigram_mask(b"brows")
+            ),
             Some(Tier::Keyword)
         );
         assert_eq!(
-            tier_at(&index, 0, "brows", ALL_CONCRETE, byte_mask(b"browsz")),
+            tier_at(
+                &index,
+                0,
+                "brows",
+                ALL_CONCRETE,
+                byte_mask(b"browsz"),
+                bigram_mask(b"browsz")
+            ),
             None
         );
     }

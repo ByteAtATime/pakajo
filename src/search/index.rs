@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const POP_NORM_MAX: f64 = 100.0;
-const INDEX_MAGIC: [u8; 4] = *b"v001";
+const INDEX_MAGIC: [u8; 4] = *b"v002";
 
 fn next_prefix_bound(q: &[u8]) -> Option<Vec<u8>> {
     let last = q.len() - 1;
@@ -29,6 +29,8 @@ pub(crate) struct PkgRow {
     pub(crate) is_repo: bool,
     pub(crate) name_mask: u64,
     pub(crate) kw_mask: u64,
+    pub(crate) name_bigrams: u64,
+    pub(crate) kw_bigrams: u64,
 }
 
 pub(crate) struct RawPkg {
@@ -59,6 +61,15 @@ pub fn byte_mask(bytes: &[u8]) -> u64 {
     let mut m: u64 = 0;
     for &b in bytes {
         m |= char_bit(b);
+    }
+    m
+}
+
+pub fn bigram_mask(bytes: &[u8]) -> u64 {
+    let mut m: u64 = 0;
+    for pair in bytes.windows(2) {
+        let bit = (u64::from(pair[0]) * 33 + u64::from(pair[1])) & 63;
+        m |= 1 << bit;
     }
     m
 }
@@ -187,6 +198,12 @@ fn build_rows(raws: &[RawPkg], arena: &mut String) -> Vec<PkgRow> {
             .map(|k| byte_mask(k.as_bytes()))
             .fold(0u64, |acc, m| acc | m);
         let name_mask = byte_mask(raw.name.as_bytes());
+        let name_bigrams = bigram_mask(raw.name.as_bytes());
+        let kw_bigrams = raw
+            .keywords
+            .iter()
+            .map(|k| bigram_mask(k.as_bytes()))
+            .fold(0u64, |acc, m| acc | m);
         let tokens_len: u16 = raw
             .tokens
             .len()
@@ -209,6 +226,8 @@ fn build_rows(raws: &[RawPkg], arena: &mut String) -> Vec<PkgRow> {
             is_repo: raw.is_repo,
             name_mask,
             kw_mask,
+            name_bigrams,
+            kw_bigrams,
         });
     }
     rows

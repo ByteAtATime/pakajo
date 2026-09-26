@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::search::SearchFilter;
 use crate::search::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE};
-use crate::search::index::{PackageIndex, byte_mask, needs_rebuild};
+use crate::search::index::{PackageIndex, bigram_mask, byte_mask, needs_rebuild};
 use crate::search::query::{ParsedQuery, parse_query};
 use crate::search::tiers::{Candidate, Tier, candidate_ordering, tier_at};
 
@@ -121,6 +121,7 @@ fn gather_cheap_candidates<'a>(
     installed: &HashSet<String>,
 ) -> Vec<Candidate<'a>> {
     let qmask = byte_mask(q.as_bytes());
+    let qbig = bigram_mask(q.as_bytes());
     let q_bytes = q.as_bytes();
     let mut idxs: Vec<u32> = Vec::new();
     if allowed.contains(&Tier::ExactName) {
@@ -148,7 +149,7 @@ fn gather_cheap_candidates<'a>(
     let mut cands: Vec<Candidate<'a>> = Vec::with_capacity(idxs.len());
     for i in idxs {
         if filter.matches(index.view(i as usize), installed)
-            && let Some(tier) = tier_at(index, i as usize, q, allowed, qmask)
+            && let Some(tier) = tier_at(index, i as usize, q, allowed, qmask, qbig)
         {
             cands.push(Candidate {
                 view: index.view(i as usize),
@@ -170,13 +171,14 @@ fn expensive_only_pass<'a>(
     installed: &HashSet<String>,
 ) -> Vec<Candidate<'a>> {
     let qmask = byte_mask(q.as_bytes());
+    let qbig = bigram_mask(q.as_bytes());
     for i in 0..index.len() {
         let r = index.row(i);
         if seen.contains(&r.id) {
             continue;
         }
         if filter.matches(index.view(i), installed)
-            && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask)
+            && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask, qbig)
         {
             cands.push(Candidate {
                 view: index.view(i),
@@ -203,23 +205,26 @@ fn term_tier_at(
     pkg: usize,
     term: &str,
     qmask: u64,
+    qbig: u64,
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> Option<Tier> {
     if !filter.matches(index.view(pkg), installed) {
         return None;
     }
-    tier_at(index, pkg, term, TERM_TIERS, qmask)
+    tier_at(index, pkg, term, TERM_TIERS, qmask, qbig)
 }
 
 fn term_matches_any(
     index: &PackageIndex,
     term: &str,
     qmask: u64,
+    qbig: u64,
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> bool {
-    (0..index.len()).any(|pkg| term_tier_at(index, pkg, term, qmask, filter, installed).is_some())
+    (0..index.len())
+        .any(|pkg| term_tier_at(index, pkg, term, qmask, qbig, filter, installed).is_some())
 }
 
 fn normalized_name_tiers(
@@ -267,6 +272,7 @@ fn multi_term_candidates<'a>(
     let mut survivors: Vec<(usize, Tier)> = Vec::new();
     for term in q.split_whitespace() {
         let qmask = byte_mask(term.as_bytes());
+        let qbig = bigram_mask(term.as_bytes());
         if survivors.is_empty() {
             survivors = (0..index.len())
                 .filter_map(|pkg| {
@@ -274,19 +280,20 @@ fn multi_term_candidates<'a>(
                     if (qmask & !r.name_mask) != 0 && (qmask & !r.kw_mask) != 0 {
                         return None;
                     }
-                    term_tier_at(index, pkg, term, qmask, filter, installed).map(|tier| (pkg, tier))
+                    term_tier_at(index, pkg, term, qmask, qbig, filter, installed)
+                        .map(|tier| (pkg, tier))
                 })
                 .collect();
             continue;
         }
         let mut kept: Vec<(usize, Tier)> = Vec::new();
         for (pkg, tier) in survivors.iter().copied() {
-            if let Some(other) = term_tier_at(index, pkg, term, qmask, filter, installed) {
+            if let Some(other) = term_tier_at(index, pkg, term, qmask, qbig, filter, installed) {
                 kept.push((pkg, tier.max(other)));
             }
         }
         if kept.is_empty() {
-            if term_matches_any(index, term, qmask, filter, installed) {
+            if term_matches_any(index, term, qmask, qbig, filter, installed) {
                 survivors.clear();
             }
             continue;
@@ -345,6 +352,7 @@ fn fused_expensive_fuzzy_pass<'a>(
     installed: &HashSet<String>,
 ) -> Vec<Candidate<'a>> {
     let qmask = byte_mask(q.as_bytes());
+    let qbig = bigram_mask(q.as_bytes());
     let q_ascii = q.is_ascii();
     let q_first = q.chars().next();
     let mut matcher = FuzzyMatcher::new(q.as_bytes());
@@ -359,7 +367,7 @@ fn fused_expensive_fuzzy_pass<'a>(
         }
         let name_missing = qmask & !r.name_mask;
         if (name_missing == 0 || (qmask & !r.kw_mask) == 0)
-            && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask)
+            && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask, qbig)
         {
             if filter.matches(index.view(i), installed) {
                 cands.push(Candidate {
