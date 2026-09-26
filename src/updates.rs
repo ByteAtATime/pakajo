@@ -149,6 +149,8 @@ pub fn pending_updates(devel: DevelSource) -> anyhow::Result<UpdatesFetch> {
     let mut handle = pacman::handle_rootless_with_config(&config)?;
     pacman::refresh_sync_dbs_rootless(&mut handle)?;
     let repo = repo_dry_run_summary(&mut handle, &config)?;
+    let mut repo = repo;
+    sort_by_repo_order(&mut repo, handle.syncdbs().iter().map(|db| db.name()));
     let aur_client = crate::aur::AurClient::new();
     let (aur, devel_names, aur_error) =
         match crate::upgrade::compute_aur_upgrades(&handle, &aur_client, devel) {
@@ -166,6 +168,28 @@ pub fn pending_updates(devel: DevelSource) -> anyhow::Result<UpdatesFetch> {
         aur_error,
         devel_live,
     })
+}
+
+fn repo_rank<'a, I: IntoIterator<Item = &'a str>>(order: I) -> impl Fn(&str) -> usize + Clone {
+    let ranks: std::collections::HashMap<&str, usize> = order
+        .into_iter()
+        .enumerate()
+        .map(|(i, name)| (name, i))
+        .collect();
+    move |repo: &str| ranks.get(repo).copied().unwrap_or(usize::MAX)
+}
+
+pub fn sort_by_repo_order<'a, I: IntoIterator<Item = &'a str>>(
+    summary: &mut TransactionSummary,
+    order: I,
+) {
+    let rank = repo_rank(order);
+    summary.packages.sort_by_key(|p| {
+        (
+            p.repository.as_deref().map(&rank).unwrap_or(usize::MAX),
+            p.name.clone(),
+        )
+    });
 }
 
 #[cfg(test)]
