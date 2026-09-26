@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -48,6 +48,12 @@ pub fn search_index_tiered(
             installed,
         )),
         ParsedQuery::Normal(_) => {
+            if q.split_whitespace().count() > 1 {
+                let cands = multi_term_candidates(index, q, filter, installed);
+                if !cands.is_empty() {
+                    return to_sorted_pairs(cands);
+                }
+            }
             let cheap = gather_cheap_candidates(index, q, CHEAP_TIERS_ALL, filter, installed);
             if cheap.len() >= RESULT_LIMIT {
                 return to_sorted_pairs(cheap);
@@ -181,6 +187,104 @@ fn expensive_only_pass<'a>(
         }
     }
     cands
+}
+
+fn term_tiers(
+    index: &PackageIndex,
+    term: &str,
+    filter: SearchFilter,
+    installed: &HashSet<String>,
+) -> HashMap<u32, Tier> {
+    let mut out: HashMap<u32, Tier> = HashMap::new();
+    for c in gather_cheap_candidates(index, term, CHEAP_TIERS_ALL, filter, installed) {
+        out.insert(c.view.id, c.tier);
+    }
+    let qmask = byte_mask(term.as_bytes());
+    for i in 0..index.len() {
+        if filter.matches(index.view(i), installed)
+            && let Some(tier) = tier_at(index, i, term, EXPENSIVE_TIERS, qmask)
+        {
+            out.entry(index.row(i).id).or_insert(tier);
+        }
+    }
+    out
+}
+
+fn normalized_name_tiers(
+    index: &PackageIndex,
+    q: &str,
+    filter: SearchFilter,
+    installed: &HashSet<String>,
+) -> HashMap<u32, Tier> {
+    let nq: String = q.chars().filter(|c| c.is_alphanumeric()).collect();
+    let mut out: HashMap<u32, Tier> = HashMap::new();
+    if nq.is_empty() {
+        return out;
+    }
+    let nqmask = byte_mask(nq.as_bytes());
+    for i in 0..index.len() {
+        let r = index.row(i);
+        if (nqmask & !r.name_mask) != 0 || !filter.matches(index.view(i), installed) {
+            continue;
+        }
+        let nn: String = index
+            .name(i)
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect();
+        let tier = if nn == nq {
+            Tier::ExactName
+        } else if nn.starts_with(&nq) {
+            Tier::PrefixName
+        } else if nn.contains(&nq) {
+            Tier::Substring
+        } else {
+            continue;
+        };
+        out.insert(r.id, tier);
+    }
+    out
+}
+
+fn multi_term_candidates<'a>(
+    index: &'a PackageIndex,
+    q: &str,
+    filter: SearchFilter,
+    installed: &HashSet<String>,
+) -> Vec<Candidate<'a>> {
+    let mut acc: HashMap<u32, Tier> = HashMap::new();
+    for term in q.split_whitespace() {
+        let next = term_tiers(index, term, filter, installed);
+        if next.is_empty() {
+            continue;
+        }
+        acc = if acc.is_empty() {
+            next
+        } else {
+            acc.into_iter()
+                .filter_map(|(id, tier)| next.get(&id).map(|other| (id, tier.max(*other))))
+                .collect()
+        };
+    }
+    if acc.is_empty() {
+        return Vec::new();
+    }
+    for (id, tier) in normalized_name_tiers(index, q, filter, installed) {
+        acc.entry(id)
+            .and_modify(|e| *e = (*e).min(tier))
+            .or_insert(tier);
+    }
+    (0..index.len())
+        .filter_map(|pi| {
+            let id = index.row(pi).id;
+            acc.get(&id).map(|tier| Candidate {
+                view: index.view(pi),
+                tier: *tier,
+                distance: 0,
+                first_letter_match: false,
+            })
+        })
+        .collect()
 }
 
 fn fuzzy_score_from_seed(
@@ -760,5 +864,89 @@ mod search_engine_tests {
             .and_then(|id| names.get(id))
             .expect("top id maps to a seeded package");
         assert_eq!(top, "firefox");
+    }
+}
+
+#[cfg(test)]
+mod multi_term_tests {
+    use super::*;
+    use crate::search::index::{RawPkg, assemble, tokenize};
+
+    fn pkg(id: u32, name: &str, popularity: u16) -> RawPkg {
+        RawPkg {
+            id,
+            name: name.to_string(),
+            tokens: tokenize(name),
+            keywords: Vec::new(),
+            popularity,
+            is_repo: false,
+        }
+    }
+
+    fn cosmic_index() -> PackageIndex {
+        assemble(vec![
+            pkg(1, "cosmic-files", 900),
+            pkg(2, "cosmic-files-git", 10),
+            pkg(3, "cosmic-edit", 500),
+            pkg(4, "cosmic-edit-git", 5),
+            pkg(5, "cosmic-term", 400),
+            pkg(6, "cosign", 800),
+            pkg(7, "files", 700),
+            pkg(8, "file-roller", 600),
+        ])
+    }
+
+    fn search(index: &PackageIndex, q: &str) -> Vec<(u32, Tier)> {
+        search_index_tiered(index, q, SearchFilter::All, &HashSet::new())
+    }
+
+    #[test]
+    fn space_separated_query_finds_hyphenated_name() {
+        let index = cosmic_index();
+        let pairs = search(&index, "cosmic files");
+        assert_eq!(pairs.first().map(|(id, _)| *id), Some(1));
+        assert!(pairs.iter().any(|(id, _)| *id == 2));
+        assert!(!pairs.iter().any(|(id, _)| *id == 6));
+        assert!(!pairs.iter().any(|(id, _)| *id == 8));
+    }
+
+    #[test]
+    fn reordered_terms_still_match() {
+        let index = cosmic_index();
+        let pairs = search(&index, "files cosmic");
+        assert_eq!(pairs.first().map(|(id, _)| *id), Some(1));
+    }
+
+    #[test]
+    fn every_term_must_match() {
+        let index = cosmic_index();
+        let ids: Vec<u32> = search(&index, "cosmic edit")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids.first(), Some(&3));
+        assert!(!ids.contains(&1));
+        assert!(!ids.contains(&7));
+    }
+
+    #[test]
+    fn normalized_match_outranks_token_match() {
+        let index = cosmic_index();
+        let pairs = search(&index, "cosmic files");
+        assert_eq!(pairs[0], (1, Tier::ExactName));
+        assert_eq!(pairs[1], (2, Tier::ExactToken));
+    }
+
+    #[test]
+    fn unmatched_terms_are_dropped_not_fatal() {
+        let index = cosmic_index();
+        let ids: Vec<u32> = search(&index, "cosmic filez qqq")
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(!ids.is_empty());
+        assert!(ids.contains(&1));
+        assert!(!ids.contains(&7));
+        assert!(!ids.contains(&8));
     }
 }

@@ -45,6 +45,11 @@ fn criterion_benchmark(c: &mut Criterion) {
         "chroe",
         "chroem",
         "\"google chrome\"",
+        "cosmic files",
+        "google chrome",
+        "gnome shell",
+        "node js",
+        "text editor",
     ];
 
     for q in queries {
