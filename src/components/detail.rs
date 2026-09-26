@@ -143,18 +143,17 @@ fn render_group<'a>(name: &'a str, members: &'a [GroupMember]) -> Element<'a> {
         .push(divider::horizontal::default());
 
     for member in members {
-        let mut row = Row::new()
+        let row = Row::new()
             .spacing(8)
             .align_y(Alignment::Center)
             .push(crate::components::row_title(member.name.clone()))
-            .push_maybe(member.description.as_ref().map(|d| muted(d.clone())));
-
-        if member.installed {
-            row = row
-                .push(Space::new().width(Length::Fill))
-                .push(muted("installed"));
-        }
-
+            .push_maybe(member.description.as_ref().map(|d| muted(d.clone())))
+            .push_maybe(
+                member
+                    .installed
+                    .then(|| Element::from(Space::new().width(Length::Fill))),
+            )
+            .push_maybe(member.installed.then(|| muted("installed")));
         let item = container(row)
             .padding([8.0, 12.0])
             .width(Length::Fill)
@@ -198,15 +197,12 @@ fn render_package<'a>(
     let dependencies = render_dependencies(pkg);
     let opt_dependencies = render_opt_dependencies(pkg, selection, disabled, hovered, installed);
 
-    let mut col = Column::new()
+    let col = Column::new()
         .spacing(20)
         .push(header)
         .push(details)
-        .push(dependencies);
-
-    if !pkg.opt_dependencies.is_empty() {
-        col = col.push(opt_dependencies);
-    }
+        .push(dependencies)
+        .push_maybe((!pkg.opt_dependencies.is_empty()).then_some(opt_dependencies));
 
     container(col)
         .padding([
@@ -260,17 +256,15 @@ fn render_header<'a>(
         button::suggested(label).on_press(intent).into()
     };
 
-    let mut actions = Row::new().spacing(8).align_y(Alignment::Center);
-
-    if let Some(url) = &pkg.upstream_url {
-        actions = actions.push(
+    let actions = Row::new()
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .push_maybe(pkg.upstream_url.as_ref().map(|url| {
             button::standard("Upstream")
                 .trailing_icon(icons::external_link())
-                .on_press(crate::Message::OpenUrl(url.clone())),
-        );
-    }
-
-    actions = actions.push(action);
+                .on_press(crate::Message::OpenUrl(url.clone()))
+        }))
+        .push(action);
 
     let mut children: Vec<Element<'a>> = vec![
         row![
@@ -290,29 +284,28 @@ fn render_header<'a>(
         .align_items(Alignment::Center)
         .width(Length::Fill);
 
-    let mut col = Column::new().spacing(12).push(title_row);
-
-    if let Some(desc) = &pkg.description {
-        col = col.push(muted(desc.clone()));
-    }
-
-    col = col.push(render_info_bar(pkg));
+    let col = Column::new()
+        .spacing(12)
+        .push(title_row)
+        .push_maybe(pkg.description.as_ref().map(|desc| muted(desc.clone())))
+        .push(render_info_bar(pkg));
     col.into()
 }
 
 fn render_info_bar<'a>(pkg: &'a Package) -> Element<'a> {
-    let mut info_row = Row::new().spacing(16).align_y(Alignment::Center);
-
-    if !pkg.licenses.is_empty() {
-        info_row = info_row.push(info_item(
-            icon(icons::scale()).size(16).into(),
-            pkg.licenses.join(", "),
-        ));
-    }
-
-    if let Some(maintainer) = pkg.maintainer_name() {
-        info_row = info_row.push(info_item(icon(icons::user()).size(16).into(), maintainer));
-    }
+    let mut info_row = Row::new()
+        .spacing(16)
+        .align_y(Alignment::Center)
+        .push_maybe((!pkg.licenses.is_empty()).then(|| {
+            info_item(
+                icon(icons::scale()).size(16).into(),
+                pkg.licenses.join(", "),
+            )
+        }))
+        .push_maybe(
+            pkg.maintainer_name()
+                .map(|maintainer| info_item(icon(icons::user()).size(16).into(), maintainer)),
+        );
 
     match &pkg.kind {
         pakajo::package::PackageKind::Repo(data) => {

@@ -422,10 +422,9 @@ fn results_list<'a>(
         let is_selected = selected_index == Some(index);
         let row = search_result_row(result, index, is_selected);
         let row = scroller.wrap_row(index, row);
-        if index > 0 {
-            list = list.push(divider::horizontal::default());
-        }
-        list = list.push(row);
+        list = list
+            .push_maybe((index > 0).then(|| Element::from(divider::horizontal::default())))
+            .push(row);
     }
     list.into()
 }

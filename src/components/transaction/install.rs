@@ -61,9 +61,9 @@ pub(super) fn install_view(state: &InstallState, done: bool) -> Element<'_> {
     for (name, pkg) in finished {
         col = col.push(completed_row(name, pkg));
     }
-    if show_gap {
-        col = col.push(space::vertical().height(Length::Fixed(GROUP_GAP)));
-    }
+    col = col.push_maybe(
+        show_gap.then(|| Element::from(space::vertical().height(Length::Fixed(GROUP_GAP)))),
+    );
     for (name, pkg) in active {
         col = col.push(package_row(name, pkg));
     }

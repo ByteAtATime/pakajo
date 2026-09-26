@@ -499,34 +499,32 @@ impl UpdatesPane {
                 );
             }
             UpdatesState::Idle => {
-                if let Some(msg) = &self.refresh_error {
-                    content = content.push(
-                        container(destructive(format!("Update check failed: {msg}")))
-                            .padding([0.0, 16.0]),
-                    );
-                }
+                content = content.push_maybe(self.refresh_error.as_ref().map(|msg| {
+                    container(destructive(format!("Update check failed: {msg}")))
+                        .padding([0.0, 16.0])
+                }));
                 if self.count == 0 {
                     content = content
                         .push(container(text("Your system is up to date")).padding([0.0, 16.0]));
                 } else {
-                    let mut list = Column::new();
-                    if let Some(msg) = &self.aur_error {
-                        list = list.push(
+                    let mut list = Column::new()
+                        .push_maybe(self.aur_error.as_ref().map(|msg| {
                             container(destructive(format!("AUR check failed: {msg}")))
-                                .padding([0.0, 16.0]),
+                                .padding([0.0, 16.0])
+                        }))
+                        .push_maybe(
+                            (!self.pending.repo.packages.is_empty())
+                                .then(|| band_header("Repo", self.pending.repo.packages.len())),
                         );
+                    for (i, pkg) in self.pending.repo.packages.iter().enumerate() {
+                        list = list.push(table_row(pkg, i));
                     }
-                    if !self.pending.repo.packages.is_empty() {
-                        list = list.push(band_header("Repo", self.pending.repo.packages.len()));
-                        for (i, pkg) in self.pending.repo.packages.iter().enumerate() {
-                            list = list.push(table_row(pkg, i));
-                        }
-                    }
-                    if !self.pending.aur.is_empty() {
-                        list = list.push(band_header("AUR", self.pending.aur.len()));
-                        for (i, c) in self.pending.aur.iter().enumerate() {
-                            list = list.push(aur_table_row(c, i));
-                        }
+                    list = list.push_maybe(
+                        (!self.pending.aur.is_empty())
+                            .then(|| band_header("AUR", self.pending.aur.len())),
+                    );
+                    for (i, c) in self.pending.aur.iter().enumerate() {
+                        list = list.push(aur_table_row(c, i));
                     }
                     content =
                         content.push(container(stat_cards(&self.pending)).padding([0.0, 16.0]));

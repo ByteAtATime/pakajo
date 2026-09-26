@@ -43,28 +43,32 @@ impl RemovalConfirmModel {
 
     pub(crate) fn view(&self) -> Element<'_> {
         let pkg = &self.package;
-        let mut header = Row::new()
+        let header = Row::new()
             .align_y(Vertical::Center)
             .spacing(8)
-            .push(mono_text(&pkg.name));
-        if let Some(version) = pkg.old_version.as_deref() {
-            header = header.push(muted(text::monotext(version.to_string())));
-        }
-        if let Some(repo) = &self.repo {
-            header = header.push(pill(repo.clone(), accent_color));
-        }
-        if self.freed_size > 0 {
-            header = header
-                .push(space::horizontal())
-                .push(muted(text::monotext(format!(
+            .push(mono_text(&pkg.name))
+            .push_maybe(
+                pkg.old_version
+                    .as_deref()
+                    .map(|v| muted(text::monotext(v.to_string()))),
+            )
+            .push_maybe(
+                self.repo
+                    .as_ref()
+                    .map(|repo| pill(repo.clone(), accent_color)),
+            )
+            .push(space::horizontal())
+            .push_maybe((self.freed_size > 0).then(|| {
+                muted(text::monotext(format!(
                     "-{}",
                     format_bytes(self.freed_size)
-                ))));
-        }
-        let mut body = Column::new().spacing(8).push(header);
-        if let Some(description) = &self.description {
-            body = body.push(muted(text(description.clone()).size(13)));
-        }
+                )))
+            }));
+        let body = Column::new().spacing(8).push(header).push_maybe(
+            self.description
+                .as_ref()
+                .map(|description| muted(text(description.clone()).size(13))),
+        );
         dialog()
             .title(format!("Remove {}?", pkg.name))
             .control(body)

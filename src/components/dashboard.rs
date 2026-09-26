@@ -208,9 +208,8 @@ fn optdep_popup(entry: &OptdepEntry) -> Element<'static> {
         column = column.push(text::caption(label));
     }
     let hidden = entry.requesters.len().saturating_sub(OPTDEP_TOOLTIP_ROWS);
-    if hidden > 0 {
-        column = column.push(muted(text::caption(format!("...and {hidden} more"))));
-    }
+    let column = column
+        .push_maybe((hidden > 0).then(|| muted(text::caption(format!("...and {hidden} more")))));
     container(column).into()
 }
 

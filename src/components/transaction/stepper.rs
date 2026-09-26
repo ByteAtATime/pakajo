@@ -93,14 +93,12 @@ pub(super) fn sections_view(
             i + 1 < count,
         ));
     }
-    let mut header = Row::new()
+    let header = Row::new()
         .align_y(Vertical::Center)
         .padding([16.0, 20.0])
         .push(text::title3(title))
         .push(space::horizontal());
-    if finished || !is_sysupgrade {
-        header = header.push(close_button());
-    }
+    let header = header.push_maybe((finished || !is_sysupgrade).then(close_button));
     let body = scrollable(container(panels).padding([16.0, 20.0, 24.0, 20.0]))
         .width(Length::Fill)
         .height(Length::Fill);
@@ -146,13 +144,11 @@ pub(super) fn stage_row(
             None => header,
         },
         StageState::Failed => {
-            let mut col = Column::new()
+            let col = Column::new()
                 .spacing(6)
                 .push(header)
-                .push(muted(text("failed")));
-            if let Some(detail) = content {
-                col = col.push(detail);
-            }
+                .push(muted(text("failed")))
+                .push_maybe(content);
             col.into()
         }
         StageState::Done => match content {
@@ -335,20 +331,12 @@ fn header_row<'a>(
         .push(space::horizontal());
     match state {
         StageState::Active => {
-            if let Some(suffix) = suffix {
-                row = row.push(suffix);
-            }
-            if let Some(pct) = progress {
-                row = row.push(header_progress(pct));
-            }
+            row = row
+                .push_maybe(suffix)
+                .push_maybe(progress.map(header_progress));
         }
         StageState::Done => {
-            if let Some(summary) = summary {
-                row = row.push(summary);
-            }
-            if let Some(chevron) = chevron {
-                row = row.push(chevron);
-            }
+            row = row.push_maybe(summary).push_maybe(chevron);
         }
         StageState::Pending | StageState::Failed => {}
     }

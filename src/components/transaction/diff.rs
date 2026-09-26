@@ -112,13 +112,11 @@ fn file_header_element(name: String, added: usize, removed: usize) -> Element<'s
             },
             ..Default::default()
         });
-    let mut header = Row::new().spacing(8).push(chip);
-    if added > 0 {
-        header = header.push(count_chip(format!("+{added}"), success_color));
-    }
-    if removed > 0 {
-        header = header.push(count_chip(format!("-{removed}"), destructive_color));
-    }
+    let header = Row::new()
+        .spacing(8)
+        .push(chip)
+        .push_maybe((added > 0).then(|| count_chip(format!("+{added}"), success_color)))
+        .push_maybe((removed > 0).then(|| count_chip(format!("-{removed}"), destructive_color)));
     container(header)
         .padding([10.0, 0.0, 4.0, 0.0])
         .width(Length::Fill)

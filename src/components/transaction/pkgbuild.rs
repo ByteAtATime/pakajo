@@ -66,13 +66,11 @@ impl PkgbuildModel {
     pub(crate) fn view(&self) -> Element<'_> {
         let mut tabs = Row::new().spacing(4).align_y(Vertical::Center);
         for (i, entry) in self.entries.iter().enumerate() {
-            let mut tab_label = Row::new()
+            let tab_label = Row::new()
                 .align_y(Vertical::Center)
                 .spacing(8)
                 .push(text(entry.name.clone()));
-            if entry.is_new {
-                tab_label = tab_label.push(pill("new", success_color));
-            }
+            let tab_label = tab_label.push_maybe(entry.is_new.then(|| pill("new", success_color)));
             let item = button::custom(tab_label)
                 .class(cosmic::theme::Button::Standard)
                 .on_press(crate::Message::Transaction(TransactionMessage::Pkgbuild(

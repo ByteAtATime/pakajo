@@ -80,11 +80,10 @@ fn question_card<'a>(
     caption: Option<&str>,
     extra: Vec<cosmic::Element<'a, ReviewMessage>>,
 ) -> cosmic::Element<'a, ReviewMessage> {
-    let mut line = Row::with_children(line).spacing(10);
-    line = line.push(space::horizontal());
-    if let Some(caption) = caption {
-        line = line.push(status_pill(caption));
-    }
+    let line = Row::with_children(line)
+        .spacing(10)
+        .push(space::horizontal())
+        .push_maybe(caption.map(status_pill));
     let mut card = Column::new()
         .spacing(6)
         .push(line.align_y(Vertical::Center));
@@ -147,19 +146,16 @@ fn toggle_card<'a>(
     message: ReviewMessage,
     caption: Option<&str>,
 ) -> cosmic::Element<'a, ReviewMessage> {
-    let mut text_column = Column::new().push(label);
-    if let Some(detail) = detail {
-        text_column = text_column.push(muted_elem(text::monotext(detail)));
-    }
-    let mut line = Row::new()
+    let text_column = Column::new()
+        .push(label)
+        .push_maybe(detail.map(|d| muted_elem(text::monotext(d))));
+    let line = Row::new()
         .align_y(Vertical::Center)
         .spacing(10)
         .push(checkbox(checked).on_toggle(|_| ReviewMessage::Noop))
         .push(text_column)
-        .push(space::horizontal());
-    if let Some(caption) = caption {
-        line = line.push(status_pill(caption));
-    }
+        .push(space::horizontal())
+        .push_maybe(caption.map(status_pill));
     clickable_card(line.into(), message)
 }
 
@@ -170,13 +166,16 @@ fn provider_candidate_row<'a>(
         Some(repo) => format!("{repo}/{}", candidate.name),
         None => candidate.name.clone(),
     };
-    let mut row = Row::new()
+    let row = Row::new()
         .align_y(Vertical::Center)
         .spacing(8)
-        .push(text::monotext(qualified));
-    if let Some(version) = &candidate.version {
-        row = row.push(muted_elem(text(version.clone())));
-    }
+        .push(text::monotext(qualified))
+        .push_maybe(
+            candidate
+                .version
+                .as_ref()
+                .map(|version| muted_elem(text(version.clone()))),
+        );
     row.into()
 }
 
@@ -734,28 +733,26 @@ fn part1_body<'a>(
             }
         }
     }
-    let mut body = Column::new().spacing(20);
-    if !conflicts.is_empty() {
-        body = body.push(section(
-            tinted_icon(git_merge(), destructive_color),
-            "Conflicts",
-            conflicts,
-        ));
-    }
-    if !providers.is_empty() {
-        body = body.push(section(
-            tinted_icon(shuffle(), muted_color),
-            "Providers",
-            providers,
-        ));
-    }
-    if !decisions.is_empty() {
-        body = body.push(section(
-            tinted_icon(triangle_alert(), warning_color),
-            "Decisions",
-            decisions,
-        ));
-    }
+    let body = Column::new()
+        .spacing(20)
+        .push_maybe((!conflicts.is_empty()).then(|| {
+            section(
+                tinted_icon(git_merge(), destructive_color),
+                "Conflicts",
+                conflicts,
+            )
+        }))
+        .push_maybe(
+            (!providers.is_empty())
+                .then(|| section(tinted_icon(shuffle(), muted_color), "Providers", providers)),
+        )
+        .push_maybe((!decisions.is_empty()).then(|| {
+            section(
+                tinted_icon(triangle_alert(), warning_color),
+                "Decisions",
+                decisions,
+            )
+        }));
     body.into()
 }
 

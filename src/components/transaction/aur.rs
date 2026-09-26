@@ -207,12 +207,10 @@ fn build_progress_suffix(
     done: usize,
     elapsed: Option<std::time::Duration>,
 ) -> Element<'static> {
-    let mut suffix = Row::new()
+    let suffix = Row::new()
         .spacing(6)
-        .push(counter_suffix(done, ordered.len(), "packages"));
-    if let Some(duration) = elapsed {
-        suffix = suffix.push(elapsed_label(duration));
-    }
+        .push(counter_suffix(done, ordered.len(), "packages"))
+        .push_maybe(elapsed.map(elapsed_label));
     suffix.into()
 }
 
@@ -326,13 +324,10 @@ fn deps_section(model: &TransactionModel, state: StageState) -> Section<'_> {
         if !has_install && !has_finalize {
             section.content = None;
         } else {
-            let mut col = Column::new().spacing(8);
-            if has_install {
-                col = col.push(install_view(&model.aur.repo_deps.install, true));
-            }
-            if has_finalize {
-                col = col.push(finalize_log(&model.aur.repo_deps.finalize));
-            }
+            let col = Column::new()
+                .spacing(8)
+                .push_maybe(has_install.then(|| install_view(&model.aur.repo_deps.install, true)))
+                .push_maybe(has_finalize.then(|| finalize_log(&model.aur.repo_deps.finalize)));
             section.content = Some(col.into());
         }
     }

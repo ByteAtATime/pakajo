@@ -225,19 +225,17 @@ pub(super) fn single_summary<'a>(
     badge: Option<(impl Into<String>, BadgeColor)>,
     trailing: Option<Element<'a>>,
 ) -> Element<'a> {
-    let mut row = Row::new()
+    let row = Row::new()
         .align_y(Vertical::Center)
         .spacing(8)
-        .push(mono_text(name));
-    if let Some(version) = version.filter(|v| !v.is_empty()) {
-        row = row.push(muted(text::monotext(version.to_string())));
-    }
-    if let Some((label, color)) = badge {
-        row = row.push(pill(label, color));
-    }
-    if let Some(trailing) = trailing {
-        row = row.push(trailing);
-    }
+        .push(mono_text(name))
+        .push_maybe(
+            version
+                .filter(|v| !v.is_empty())
+                .map(|v| muted(text::monotext(v.to_string()))),
+        )
+        .push_maybe(badge.map(|(label, color)| pill(label, color)))
+        .push_maybe(trailing);
     row.into()
 }
 
@@ -250,16 +248,14 @@ pub(crate) struct ResolvedEntry<'a> {
 
 pub(crate) fn resolve_package_row(entry: &ResolvedEntry<'_>) -> Element<'static> {
     let left = mono_text(&entry.qualified);
-    let mut right = Row::new()
+    let right = Row::new()
         .align_y(Vertical::Center)
         .spacing(8)
         .push(muted(text::monotext(version_change(
             entry.old_version,
             entry.new_version,
-        ))));
-    if let Some(net) = entry.net_size {
-        right = right.push(text(format_signed_bytes(net)));
-    }
+        ))))
+        .push_maybe(entry.net_size.map(|net| text(format_signed_bytes(net))));
     Row::new()
         .align_y(Vertical::Center)
         .spacing(8)

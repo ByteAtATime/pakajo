@@ -873,12 +873,10 @@ fn import_key_dialog(prompt: &Question) -> Element<'_> {
     let Question::ImportKey { fingerprint, uid } = prompt else {
         return dialog_backdrop(text("Unknown prompt").into(), 32.0);
     };
-    let mut body = Column::new()
+    let body = Column::new()
         .spacing(8)
-        .push(text(format!("Import PGP key {fingerprint}?")));
-    if !uid.is_empty() {
-        body = body.push(text(uid.clone()));
-    }
+        .push(text(format!("Import PGP key {fingerprint}?")))
+        .push_maybe((!uid.is_empty()).then(|| text(uid.clone())));
     dialog()
         .title("Import PGP key")
         .control(body)
