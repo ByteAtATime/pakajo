@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -189,25 +189,37 @@ fn expensive_only_pass<'a>(
     cands
 }
 
-fn term_tiers(
+const TERM_TIERS: &[Tier] = &[
+    Tier::ExactName,
+    Tier::ExactToken,
+    Tier::PrefixName,
+    Tier::PrefixToken,
+    Tier::Substring,
+    Tier::Keyword,
+];
+
+fn term_tier_at(
     index: &PackageIndex,
+    pkg: usize,
     term: &str,
+    qmask: u64,
     filter: SearchFilter,
     installed: &HashSet<String>,
-) -> HashMap<u32, Tier> {
-    let mut out: HashMap<u32, Tier> = HashMap::new();
-    for c in gather_cheap_candidates(index, term, CHEAP_TIERS_ALL, filter, installed) {
-        out.insert(c.view.id, c.tier);
+) -> Option<Tier> {
+    if !filter.matches(index.view(pkg), installed) {
+        return None;
     }
-    let qmask = byte_mask(term.as_bytes());
-    for i in 0..index.len() {
-        if filter.matches(index.view(i), installed)
-            && let Some(tier) = tier_at(index, i, term, EXPENSIVE_TIERS, qmask)
-        {
-            out.entry(index.row(i).id).or_insert(tier);
-        }
-    }
-    out
+    tier_at(index, pkg, term, TERM_TIERS, qmask)
+}
+
+fn term_matches_any(
+    index: &PackageIndex,
+    term: &str,
+    qmask: u64,
+    filter: SearchFilter,
+    installed: &HashSet<String>,
+) -> bool {
+    (0..index.len()).any(|pkg| term_tier_at(index, pkg, term, qmask, filter, installed).is_some())
 }
 
 fn normalized_name_tiers(
@@ -215,20 +227,20 @@ fn normalized_name_tiers(
     q: &str,
     filter: SearchFilter,
     installed: &HashSet<String>,
-) -> HashMap<u32, Tier> {
+) -> Vec<(usize, Tier)> {
     let nq: String = q.chars().filter(|c| c.is_alphanumeric()).collect();
-    let mut out: HashMap<u32, Tier> = HashMap::new();
+    let mut out: Vec<(usize, Tier)> = Vec::new();
     if nq.is_empty() {
         return out;
     }
     let nqmask = byte_mask(nq.as_bytes());
-    for i in 0..index.len() {
-        let r = index.row(i);
-        if (nqmask & !r.name_mask) != 0 || !filter.matches(index.view(i), installed) {
+    for pkg in 0..index.len() {
+        let r = index.row(pkg);
+        if (nqmask & !r.name_mask) != 0 || !filter.matches(index.view(pkg), installed) {
             continue;
         }
         let nn: String = index
-            .name(i)
+            .name(pkg)
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect();
@@ -241,7 +253,7 @@ fn normalized_name_tiers(
         } else {
             continue;
         };
-        out.insert(r.id, tier);
+        out.push((pkg, tier));
     }
     out
 }
@@ -252,37 +264,51 @@ fn multi_term_candidates<'a>(
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> Vec<Candidate<'a>> {
-    let mut acc: HashMap<u32, Tier> = HashMap::new();
+    let mut survivors: Vec<(usize, Tier)> = Vec::new();
     for term in q.split_whitespace() {
-        let next = term_tiers(index, term, filter, installed);
-        if next.is_empty() {
+        let qmask = byte_mask(term.as_bytes());
+        if survivors.is_empty() {
+            survivors = (0..index.len())
+                .filter_map(|pkg| {
+                    let r = index.row(pkg);
+                    if (qmask & !r.name_mask) != 0 && (qmask & !r.kw_mask) != 0 {
+                        return None;
+                    }
+                    term_tier_at(index, pkg, term, qmask, filter, installed).map(|tier| (pkg, tier))
+                })
+                .collect();
             continue;
         }
-        acc = if acc.is_empty() {
-            next
-        } else {
-            acc.into_iter()
-                .filter_map(|(id, tier)| next.get(&id).map(|other| (id, tier.max(*other))))
-                .collect()
-        };
+        let mut kept: Vec<(usize, Tier)> = Vec::new();
+        for (pkg, tier) in survivors.iter().copied() {
+            if let Some(other) = term_tier_at(index, pkg, term, qmask, filter, installed) {
+                kept.push((pkg, tier.max(other)));
+            }
+        }
+        if kept.is_empty() {
+            if term_matches_any(index, term, qmask, filter, installed) {
+                survivors.clear();
+            }
+            continue;
+        }
+        survivors = kept;
     }
-    if acc.is_empty() {
+    if survivors.is_empty() {
         return Vec::new();
     }
-    for (id, tier) in normalized_name_tiers(index, q, filter, installed) {
-        acc.entry(id)
-            .and_modify(|e| *e = (*e).min(tier))
-            .or_insert(tier);
+    for (pkg, tier) in normalized_name_tiers(index, q, filter, installed) {
+        match survivors.binary_search_by_key(&pkg, |&(p, _)| p) {
+            Ok(pos) => survivors[pos].1 = survivors[pos].1.min(tier),
+            Err(pos) => survivors.insert(pos, (pkg, tier)),
+        }
     }
-    (0..index.len())
-        .filter_map(|pi| {
-            let id = index.row(pi).id;
-            acc.get(&id).map(|tier| Candidate {
-                view: index.view(pi),
-                tier: *tier,
-                distance: 0,
-                first_letter_match: false,
-            })
+    survivors
+        .into_iter()
+        .map(|(pkg, tier)| Candidate {
+            view: index.view(pkg),
+            tier,
+            distance: 0,
+            first_letter_match: false,
         })
         .collect()
 }
