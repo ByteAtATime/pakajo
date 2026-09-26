@@ -563,7 +563,7 @@ pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool)
     let inner = Row::new().push(accent_bar).push(content);
 
     button::custom(inner)
-        .on_press(crate::Message::Search(SearchMessage::SelectIndex(index)))
+        .on_press_down(crate::Message::Search(SearchMessage::SelectIndex(index)))
         .selected(is_selected)
         .class(cosmic::theme::Button::ListItem([0.0; 4]))
         .padding(0)
