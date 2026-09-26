@@ -39,13 +39,7 @@ pub fn candidate_ordering(a: &Candidate<'_>, b: &Candidate<'_>) -> Ordering {
             (Tier::Fuzzy, Tier::Fuzzy) => b.first_letter_match.cmp(&a.first_letter_match),
             _ => std::cmp::Ordering::Equal,
         })
-        .then_with(|| {
-            a.view
-                .name
-                .chars()
-                .count()
-                .cmp(&b.view.name.chars().count())
-        })
+        .then_with(|| a.view.name.len().cmp(&b.view.name.len()))
         .then_with(|| b.view.is_repo.cmp(&a.view.is_repo))
         .then_with(|| b.view.popularity.cmp(&a.view.popularity))
         .then_with(|| a.view.name.cmp(b.view.name))
