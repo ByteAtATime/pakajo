@@ -1,8 +1,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use alpm_utils::DbListExt;
 use anyhow::Context as _;
 
+use crate::events::TransactionSummary;
 use crate::pacman;
 use crate::upgrade::{AurUpgradeCandidate, DevelSource};
 
@@ -13,7 +13,7 @@ pub const DEVEL_RECHECK_AFTER: Duration = Duration::from_secs(6 * 60 * 60);
 pub struct UpdatesCache {
     pub checked_at: u64,
     pub devel_checked_at: u64,
-    pub repo: Vec<RepoUpgrade>,
+    pub repo: TransactionSummary,
     pub aur: Vec<AurUpgradeCandidate>,
     pub devel: Vec<String>,
 }
@@ -47,7 +47,7 @@ pub fn store(cache: &UpdatesCache) {
         Ok(path) => eprintln!(
             "[pakajo] updates cache written to {} (repo={} aur={} devel={})",
             path.display(),
-            cache.repo.len(),
+            cache.repo.packages.len(),
             cache.aur.len(),
             cache.devel.len()
         ),
@@ -110,61 +110,37 @@ pub fn localdb_unchanged_since(checked_at: u64) -> bool {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct RepoUpgrade {
-    pub name: String,
-    pub old: String,
-    pub new: String,
-    pub download_size: i64,
-    pub repo: String,
-}
-
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PendingUpdates {
-    pub repo: Vec<RepoUpgrade>,
+    pub repo: TransactionSummary,
     pub aur: Vec<AurUpgradeCandidate>,
 }
 
 #[derive(Debug, Clone)]
 pub struct UpdatesFetch {
-    pub repo: Vec<RepoUpgrade>,
+    pub repo: TransactionSummary,
     pub aur: Vec<AurUpgradeCandidate>,
     pub devel_names: Vec<String>,
     pub aur_error: Option<String>,
     pub devel_live: bool,
 }
 
-pub fn compute_repo_upgrades(
-    handle: &alpm::Alpm,
+pub fn repo_dry_run_summary(
+    handle: &mut alpm::Alpm,
     config: &pacmanconf::Config,
-) -> anyhow::Result<Vec<RepoUpgrade>> {
-    let ignore_pkgs: std::collections::HashSet<&str> =
-        config.ignore_pkg.iter().map(String::as_str).collect();
-    let ignore_groups: std::collections::HashSet<&str> =
-        config.ignore_group.iter().map(String::as_str).collect();
-    let mut repo: Vec<RepoUpgrade> = Vec::new();
-    for pkg in handle.localdb().pkgs().iter() {
-        if ignore_pkgs.contains(pkg.name()) {
-            continue;
-        }
-        if pkg.groups().iter().any(|g| ignore_groups.contains(g)) {
-            continue;
-        }
-        if let Some(sync) = handle.syncdbs().pkg(pkg.name()).ok()
-            && alpm::vercmp(sync.version().to_string(), pkg.version().to_string())
-                == std::cmp::Ordering::Greater
-        {
-            repo.push(RepoUpgrade {
-                name: pkg.name().to_string(),
-                old: pkg.version().to_string(),
-                new: sync.version().to_string(),
-                download_size: sync.download_size(),
-                repo: sync.db().map(|d| d.name().to_string()).unwrap_or_default(),
-            });
-        }
-    }
-    repo.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(repo)
+) -> anyhow::Result<TransactionSummary> {
+    crate::upgrade::apply_ignores(handle, config, &[]);
+    handle
+        .trans_init(alpm::TransFlag::NEEDED | alpm::TransFlag::DB_ONLY | alpm::TransFlag::NO_LOCK)
+        .context("failed to init upgrade transaction")?;
+    handle
+        .sync_sysupgrade(false)
+        .context("failed to compute sysupgrade")?;
+    let summary = crate::tx::convert::build_summary(handle);
+    handle
+        .trans_release()
+        .context("failed to release upgrade transaction")?;
+    Ok(summary)
 }
 
 pub fn pending_updates(devel: DevelSource) -> anyhow::Result<UpdatesFetch> {
@@ -172,7 +148,7 @@ pub fn pending_updates(devel: DevelSource) -> anyhow::Result<UpdatesFetch> {
     let config = pacman::config()?;
     let mut handle = pacman::handle_rootless_with_config(&config)?;
     pacman::refresh_sync_dbs_rootless(&mut handle)?;
-    let repo = compute_repo_upgrades(&handle, &config)?;
+    let repo = repo_dry_run_summary(&mut handle, &config)?;
     let aur_client = crate::aur::AurClient::new();
     let (aur, devel_names, aur_error) =
         match crate::upgrade::compute_aur_upgrades(&handle, &aur_client, devel) {
@@ -204,7 +180,7 @@ mod tests {
         UpdatesCache {
             checked_at,
             devel_checked_at: checked_at,
-            repo: Vec::new(),
+            repo: TransactionSummary::default(),
             aur: Vec::new(),
             devel: Vec::new(),
         }
