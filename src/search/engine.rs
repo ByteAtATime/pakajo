@@ -483,12 +483,14 @@ fn fused_expensive_fuzzy_pass(
             placed.insert(i);
             continue;
         }
-        let row_fuzzy_gated = if q_ascii {
-            !at_most_two_missing(name_missing)
-        } else {
-            name_missing.count_ones() as usize > MAX_EDIT_DISTANCE
-        };
-        if row_fuzzy_gated {
+        let name_extra = r.name_mask & !qmask;
+        if q_ascii {
+            if !at_most_two_missing(name_missing) || !at_most_two_missing(name_extra) {
+                continue;
+            }
+        } else if name_missing.count_ones() as usize + name_extra.count_ones() as usize
+            > MAX_EDIT_DISTANCE
+        {
             continue;
         }
         let name_len_ok = !(q_ascii && r.ascii_name)
@@ -522,19 +524,22 @@ fn fused_expensive_fuzzy_pass(
         }
     }
 
-    for tid in 0..index.unique_tokens.len() {
-        let token_mask = index.unique_token_masks[tid];
+    for slot in 0..index.token_scan_ids.len() {
+        let token_mask = index.token_scan_masks[slot];
         let token_missing = qmask & !token_mask;
-        let token_fuzzy_gated = if q_ascii {
-            !at_most_two_missing(token_missing)
-        } else {
-            token_missing.count_ones() as usize > MAX_EDIT_DISTANCE
-        };
-        if token_fuzzy_gated {
+        let token_extra = token_mask & !qmask;
+        if q_ascii {
+            if !at_most_two_missing(token_missing) || !at_most_two_missing(token_extra) {
+                continue;
+            }
+        } else if token_missing.count_ones() as usize + token_extra.count_ones() as usize
+            > MAX_EDIT_DISTANCE
+        {
             continue;
         }
+        let tid = index.token_scan_ids[slot] as usize;
         let token = index.token_str(tid);
-        if q_ascii && token.is_ascii() && token.len().abs_diff(q.len()) > MAX_EDIT_DISTANCE {
+        if q_ascii && token.len().abs_diff(q.len()) > MAX_EDIT_DISTANCE {
             continue;
         }
         let Some(tok_d) = matcher.within_distance(token.as_bytes(), token_mask, MAX_EDIT_DISTANCE)

@@ -53,6 +53,8 @@ pub struct PackageIndex {
     pub(crate) kw_ids: Box<[u32]>,
     pub(crate) unique_tokens: Box<[(u32, u16)]>,
     pub(crate) unique_token_masks: Box<[u64]>,
+    pub(crate) token_scan_ids: Box<[u32]>,
+    pub(crate) token_scan_masks: Box<[u64]>,
     pub(crate) unique_kws: Box<[(u32, u16)]>,
     pub(crate) names_sorted: Vec<u32>,
     pub(crate) tokens_sorted: Vec<(u32, u32)>,
@@ -343,6 +345,13 @@ fn build_keyword_ids(
     (kw_ids, unique_kws)
 }
 
+fn build_token_scan(unique_tokens: &[(u32, u16)], masks: &[u64]) -> (Vec<u32>, Vec<u64>) {
+    let mut order: Vec<u32> = (0..unique_tokens.len() as u32).collect();
+    order.sort_unstable_by_key(|&id| (unique_tokens[id as usize].1, id));
+    let scan_masks: Vec<u64> = order.iter().map(|&id| masks[id as usize]).collect();
+    (order, scan_masks)
+}
+
 pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
     let n = raws.len();
     let mut arena: String = String::new();
@@ -356,6 +365,7 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
         inversion.tokens_sorted,
     );
     let (kw_ids, unique_kws) = build_keyword_ids(&raws, &mut arena, &mut rows);
+    let (scan_ids, scan_masks) = build_token_scan(&unique_tokens, &unique_token_masks);
 
     let mut index = PackageIndex {
         rows,
@@ -364,6 +374,8 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
         kw_ids: kw_ids.into_boxed_slice(),
         unique_tokens: unique_tokens.into_boxed_slice(),
         unique_token_masks: unique_token_masks.into_boxed_slice(),
+        token_scan_ids: scan_ids.into_boxed_slice(),
+        token_scan_masks: scan_masks.into_boxed_slice(),
         unique_kws: unique_kws.into_boxed_slice(),
         names_sorted: Vec::new(),
         tokens_sorted,
@@ -568,6 +580,20 @@ impl PackageIndex {
         };
         if self.unique_token_masks.len() != self.unique_tokens.len() {
             return false;
+        }
+        if self.token_scan_ids.len() != self.unique_tokens.len()
+            || self.token_scan_masks.len() != self.unique_tokens.len()
+        {
+            return false;
+        }
+        for slot in 0..self.token_scan_ids.len() {
+            let id = self.token_scan_ids[slot] as usize;
+            if id >= self.unique_tokens.len() {
+                return false;
+            }
+            if self.token_scan_masks[slot] != self.unique_token_masks[id] {
+                return false;
+            }
         }
         for &(off, len) in &self.unique_tokens {
             if !ok_span(off, len) {
