@@ -29,7 +29,6 @@ pub(crate) struct PkgRow {
     tokens_len: u16,
     kws_start: u32,
     kws_len: u16,
-    pub(crate) max_kw_len: u16,
     pub(crate) popularity: u16,
     pub(crate) is_repo: bool,
     pub(crate) ascii_name: bool,
@@ -52,6 +51,7 @@ pub(crate) struct RawPkg {
 pub struct PackageIndex {
     pub(crate) rows: Vec<PkgRow>,
     pub(crate) rank_bits: Box<[u64]>,
+    pub(crate) max_kw_lens: Box<[u16]>,
     pub(crate) arena: Box<str>,
     pub(crate) token_ids: Box<[u32]>,
     pub(crate) kw_ids: Box<[u32]>,
@@ -228,14 +228,6 @@ fn build_rows(raws: &[RawPkg], arena: &mut String) -> Vec<PkgRow> {
             .len()
             .try_into()
             .expect("keyword count exceeds u16");
-        let max_kw_len: u16 = raw
-            .keywords
-            .iter()
-            .map(|k| k.len())
-            .max()
-            .unwrap_or(0)
-            .try_into()
-            .expect("keyword length exceeds u16");
         rows.push(PkgRow {
             id: raw.id,
             name_off,
@@ -246,7 +238,6 @@ fn build_rows(raws: &[RawPkg], arena: &mut String) -> Vec<PkgRow> {
             tokens_len,
             kws_start: 0,
             kws_len,
-            max_kw_len,
             popularity: raw.popularity,
             is_repo: raw.is_repo,
             ascii_name: raw.name.is_ascii(),
@@ -344,6 +335,20 @@ fn name_of<'a>(arena: &'a str, rows: &[PkgRow], pi: usize) -> &'a str {
     &arena[r.name_off as usize..r.name_off as usize + r.name_len as usize]
 }
 
+fn build_max_kw_lens(raws: &[RawPkg]) -> Vec<u16> {
+    raws.iter()
+        .map(|raw| {
+            raw.keywords
+                .iter()
+                .map(|k| k.len())
+                .max()
+                .unwrap_or(0)
+                .try_into()
+                .expect("keyword length exceeds u16")
+        })
+        .collect()
+}
+
 fn build_rank_bits(rows: &[PkgRow]) -> Vec<u64> {
     rows.iter()
         .map(|r| rank_bits(r.name_len, r.is_repo, r.popularity))
@@ -431,6 +436,7 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
 
     let mut index = PackageIndex {
         rank_bits: build_rank_bits(&rows).into_boxed_slice(),
+        max_kw_lens: build_max_kw_lens(&raws).into_boxed_slice(),
         rows,
         arena: arena.into_boxed_str(),
         token_ids: token_ids.into_boxed_slice(),
@@ -476,6 +482,10 @@ impl PackageIndex {
 
     pub(crate) fn rank_word(&self, pi: usize) -> u64 {
         self.rank_bits[pi]
+    }
+
+    pub(crate) fn max_kw_len(&self, pi: usize) -> u16 {
+        self.max_kw_lens[pi]
     }
 
     pub(crate) fn row_words(&self) -> usize {
@@ -664,7 +674,7 @@ impl PackageIndex {
             let end = start + len as usize;
             end <= arena.len() && arena.is_char_boundary(start) && arena.is_char_boundary(end)
         };
-        if self.rank_bits.len() != self.rows.len() {
+        if self.rank_bits.len() != self.rows.len() || self.max_kw_lens.len() != self.rows.len() {
             return false;
         }
         if self.unique_token_masks.len() != self.unique_tokens.len() {
@@ -752,6 +762,13 @@ impl PackageIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // this is somehow a 5-10%ish performance penalty
+    // fucking crazy
+    #[test]
+    fn row_stays_within_one_cache_line() {
+        assert_eq!(std::mem::size_of::<PkgRow>(), 64);
+    }
 
     #[test]
     fn tokenize_splits_on_non_alphanumeric_runs() {
