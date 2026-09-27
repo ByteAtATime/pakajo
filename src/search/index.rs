@@ -59,6 +59,8 @@ pub struct PackageIndex {
     pub(crate) unique_token_masks: Box<[u64]>,
     pub(crate) token_scan_ids: Box<[u32]>,
     pub(crate) token_scan_masks: Box<[u64]>,
+    pub(crate) token_scan_starts: Box<[u32]>,
+    pub(crate) token_scan_nonascii: Box<[u32]>,
     pub(crate) name_char_words: Box<[u64]>,
     pub(crate) kw_char_words: Box<[u64]>,
     pub(crate) name_bigram_words: Box<[u64]>,
@@ -407,11 +409,39 @@ fn word_of(row: usize) -> usize {
     row / 64
 }
 
-fn build_token_scan(unique_tokens: &[(u32, u16)], masks: &[u64]) -> (Vec<u32>, Vec<u64>) {
-    let mut order: Vec<u32> = (0..unique_tokens.len() as u32).collect();
-    order.sort_unstable_by_key(|&id| (unique_tokens[id as usize].1, id));
-    let scan_masks: Vec<u64> = order.iter().map(|&id| masks[id as usize]).collect();
-    (order, scan_masks)
+struct TokenScan {
+    ascii_ids: Vec<u32>,
+    ascii_masks: Vec<u64>,
+    ascii_starts: Vec<u32>,
+    nonascii_ids: Vec<u32>,
+}
+
+fn token_is_ascii(arena: &str, unique_tokens: &[(u32, u16)], id: usize) -> bool {
+    let (off, len) = unique_tokens[id];
+    arena[off as usize..off as usize + len as usize].is_ascii()
+}
+
+fn build_token_scan(arena: &str, unique_tokens: &[(u32, u16)], masks: &[u64]) -> TokenScan {
+    let (mut ascii_ids, nonascii_ids): (Vec<u32>, Vec<u32>) = (0..unique_tokens.len() as u32)
+        .partition(|&id| token_is_ascii(arena, unique_tokens, id as usize));
+    ascii_ids.sort_unstable_by_key(|&id| (unique_tokens[id as usize].1, id));
+    let ascii_masks: Vec<u64> = ascii_ids.iter().map(|&id| masks[id as usize]).collect();
+    let longest = ascii_ids
+        .last()
+        .map_or(0, |&id| unique_tokens[id as usize].1 as usize);
+    let mut ascii_starts = vec![0u32; longest + 2];
+    for &id in &ascii_ids {
+        ascii_starts[unique_tokens[id as usize].1 as usize + 1] += 1;
+    }
+    for len in 1..ascii_starts.len() {
+        ascii_starts[len] += ascii_starts[len - 1];
+    }
+    TokenScan {
+        ascii_ids,
+        ascii_masks,
+        ascii_starts,
+        nonascii_ids,
+    }
 }
 
 pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
@@ -427,7 +457,7 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
         inversion.tokens_sorted,
     );
     let (kw_ids, unique_kws) = build_keyword_ids(&raws, &mut arena, &mut rows);
-    let (scan_ids, scan_masks) = build_token_scan(&unique_tokens, &unique_token_masks);
+    let scan = build_token_scan(&arena, &unique_tokens, &unique_token_masks);
     let words = row_words(n);
     let name_char_words = build_word_table(rows.iter().map(|r| r.name_mask), words, CHAR_BITS);
     let kw_char_words = build_word_table(rows.iter().map(|r| r.kw_mask), words, CHAR_BITS);
@@ -443,8 +473,10 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
         kw_ids: kw_ids.into_boxed_slice(),
         unique_tokens: unique_tokens.into_boxed_slice(),
         unique_token_masks: unique_token_masks.into_boxed_slice(),
-        token_scan_ids: scan_ids.into_boxed_slice(),
-        token_scan_masks: scan_masks.into_boxed_slice(),
+        token_scan_ids: scan.ascii_ids.into_boxed_slice(),
+        token_scan_masks: scan.ascii_masks.into_boxed_slice(),
+        token_scan_starts: scan.ascii_starts.into_boxed_slice(),
+        token_scan_nonascii: scan.nonascii_ids.into_boxed_slice(),
         name_char_words: name_char_words.into_boxed_slice(),
         name_bigram_words: name_bigram_words.into_boxed_slice(),
         kw_char_words: kw_char_words.into_boxed_slice(),
@@ -530,6 +562,17 @@ impl PackageIndex {
     pub(crate) fn token_str(&self, id: usize) -> &str {
         let (off, len) = self.unique_tokens[id];
         self.slice(off, len)
+    }
+
+    pub(crate) fn token_len(&self, id: usize) -> usize {
+        self.unique_tokens[id].1 as usize
+    }
+
+    pub(crate) fn token_bucket(&self, len: usize) -> Range<usize> {
+        if len + 1 >= self.token_scan_starts.len() {
+            return self.token_scan_ids.len()..self.token_scan_ids.len();
+        }
+        self.token_scan_starts[len] as usize..self.token_scan_starts[len + 1] as usize
     }
 
     pub(crate) fn view(&self, pi: usize) -> crate::search::tiers::PkgView<'_> {
@@ -680,10 +723,18 @@ impl PackageIndex {
         if self.unique_token_masks.len() != self.unique_tokens.len() {
             return false;
         }
-        if self.token_scan_ids.len() != self.unique_tokens.len()
-            || self.token_scan_masks.len() != self.unique_tokens.len()
+        if self.token_scan_ids.len() + self.token_scan_nonascii.len() != self.unique_tokens.len()
+            || self.token_scan_masks.len() != self.token_scan_ids.len()
         {
             return false;
+        }
+        if self.token_scan_starts.last().copied() != Some(self.token_scan_ids.len() as u32) {
+            return false;
+        }
+        for &id in &self.token_scan_nonascii {
+            if id as usize >= self.unique_tokens.len() {
+                return false;
+            }
         }
         if self.name_char_words.len() != row_words(self.rows.len()) * CHAR_BITS
             || self.kw_char_words.len() != row_words(self.rows.len()) * CHAR_BITS

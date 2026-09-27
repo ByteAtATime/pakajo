@@ -356,10 +356,15 @@ fn term_tier_at(
         return Some(Tier::PrefixToken);
     }
     let r = index.row(pkg);
-    if (qmask & !r.name_mask) == 0 && (qbig & !r.name_bigrams) == 0 && name.contains(term) {
+    if r.name_len as usize >= term.len()
+        && (qmask & !r.name_mask) == 0
+        && (qbig & !r.name_bigrams) == 0
+        && name.contains(term)
+    {
         return Some(Tier::Substring);
     }
-    if (qmask & !r.kw_mask) == 0
+    if index.max_kw_len(pkg) as usize >= term.len()
+        && (qmask & !r.kw_mask) == 0
         && (qbig & !r.kw_bigrams) == 0
         && (0..index.kws_len(pkg)).any(|k| index.keyword(pkg, k).contains(term))
     {
@@ -484,12 +489,48 @@ fn fuzzy_score_from_seed(
 }
 
 #[derive(Clone, Copy)]
+struct QueryChars {
+    mask: u64,
+    non_ascii: usize,
+    count: usize,
+}
+
+impl QueryChars {
+    fn new(q: &str) -> Self {
+        Self {
+            mask: byte_mask(q.as_bytes()),
+            non_ascii: q.chars().filter(|c| !c.is_ascii()).count(),
+            count: q.chars().count(),
+        }
+    }
+}
+
+fn char_gate_passes(
+    qc: &QueryChars,
+    cand_mask: u64,
+    cand_is_ascii: bool,
+    cand_chars: usize,
+) -> bool {
+    let missing = qc.mask & !cand_mask;
+    let extra = cand_mask & !qc.mask;
+    if !cand_is_ascii {
+        return missing.count_ones() as usize + extra.count_ones() as usize <= MAX_EDIT_DISTANCE;
+    }
+    if cand_chars.abs_diff(qc.count) > MAX_EDIT_DISTANCE {
+        return false;
+    }
+    if qc.non_ascii == 0 {
+        return at_most_two_missing(missing) && at_most_two_missing(extra);
+    }
+    missing.count_ones() as usize + qc.non_ascii <= MAX_EDIT_DISTANCE && at_most_two_missing(extra)
+}
+
+#[derive(Clone, Copy)]
 struct FusedCtx<'a> {
     index: &'a PackageIndex,
     q: &'a str,
-    qmask: u64,
+    chars: QueryChars,
     qbig: u64,
-    q_ascii: bool,
     q_first: Option<char>,
     filter: SearchFilter,
     installed: &'a HashSet<String>,
@@ -581,19 +622,17 @@ fn fused_expensive_row(
     let FusedCtx {
         index,
         q,
-        qmask,
+        chars,
         qbig,
-        q_ascii,
         q_first,
         filter,
         installed,
     } = *ctx;
     let r = index.row(i);
-    let name_missing = qmask & !r.name_mask;
     let name_tier_arm = r.name_len as usize >= q.len() && (qbig & !r.name_bigrams) == 0;
     let kw_tier_arm = index.max_kw_len(i) as usize >= q.len() && (qbig & !r.kw_bigrams) == 0;
     if (name_tier_arm || kw_tier_arm)
-        && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask, qbig)
+        && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, chars.mask, qbig)
     {
         if filter.matches(index.view(i), installed) {
             scored_push(cands, index, i, tier, 0, false);
@@ -601,19 +640,7 @@ fn fused_expensive_row(
         placed.insert(i);
         return;
     }
-    let name_extra = r.name_mask & !qmask;
-    if q_ascii {
-        if !at_most_two_missing(name_missing) || !at_most_two_missing(name_extra) {
-            return;
-        }
-    } else if name_missing.count_ones() as usize + name_extra.count_ones() as usize
-        > MAX_EDIT_DISTANCE
-    {
-        return;
-    }
-    let name_len_ok =
-        !(q_ascii && r.ascii_name) || (r.name_len as usize).abs_diff(q.len()) <= MAX_EDIT_DISTANCE;
-    if !name_len_ok {
+    if !char_gate_passes(&chars, r.name_mask, r.ascii_name, r.name_len as usize) {
         return;
     }
     let Some(name_d) =
@@ -639,6 +666,62 @@ fn fused_expensive_row(
     placed.insert(i);
 }
 
+fn seed_fuzzy_token(
+    ctx: &FusedCtx,
+    tid: usize,
+    token_mask: u64,
+    ascii_token: bool,
+    matcher: &mut FuzzyMatcher,
+    fuzzy_buf: &mut Vec<Scored>,
+    placed: &mut EpochSet,
+) {
+    let FusedCtx {
+        index,
+        chars,
+        q_first,
+        filter,
+        installed,
+        ..
+    } = *ctx;
+    if !char_gate_passes(&chars, token_mask, ascii_token, index.token_len(tid)) {
+        return;
+    }
+    let token = index.token_str(tid);
+    let Some(seed_distance) =
+        matcher.within_distance(token.as_bytes(), token_mask, MAX_EDIT_DISTANCE)
+    else {
+        return;
+    };
+    for j in index.exact_token_range(token.as_bytes()) {
+        let pkg = index.tokens_sorted[j].1 as usize;
+        if placed.contains(pkg) {
+            continue;
+        }
+        if !filter.matches(index.view(pkg), installed) {
+            placed.insert(pkg);
+            continue;
+        }
+        let seed_first_letter = token.chars().next() == q_first;
+        let (distance, first_letter_match) = fuzzy_score_from_seed(
+            matcher,
+            index,
+            pkg,
+            seed_distance as u8,
+            seed_first_letter,
+            q_first,
+        );
+        scored_push(
+            fuzzy_buf,
+            index,
+            pkg,
+            Tier::Fuzzy,
+            distance,
+            first_letter_match,
+        );
+        placed.insert(pkg);
+    }
+}
+
 fn fused_expensive_fuzzy_pass(
     index: &PackageIndex,
     q: &str,
@@ -648,14 +731,12 @@ fn fused_expensive_fuzzy_pass(
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> Vec<Scored> {
-    let qmask = byte_mask(q.as_bytes());
-    let q_ascii = q.is_ascii();
+    let chars = QueryChars::new(q);
     let ctx = FusedCtx {
         index,
         q,
-        qmask,
+        chars,
         qbig: bigram_mask(q.as_bytes()),
-        q_ascii,
         q_first: q.chars().next(),
         filter,
         installed,
@@ -671,9 +752,9 @@ fn fused_expensive_fuzzy_pass(
 
     PREFILTER.with(|cell| {
         let mut words = cell.borrow_mut();
-        let query_chars = qmask.count_ones() as usize;
+        let query_chars = ctx.chars.mask.count_ones() as usize;
         if (MIN_BITMAP_QUERY_CHARS..=MAX_BITMAP_QUERY_CHARS).contains(&query_chars) {
-            prefilter_words(index, qmask, &mut words);
+            prefilter_words(index, ctx.chars.mask, &mut words);
         } else {
             full_words(index, &mut words);
         }
@@ -685,56 +766,31 @@ fn fused_expensive_fuzzy_pass(
         });
     });
 
-    for slot in 0..index.token_scan_ids.len() {
-        let token_mask = index.token_scan_masks[slot];
-        let token_missing = qmask & !token_mask;
-        let token_extra = token_mask & !qmask;
-        if q_ascii {
-            if !at_most_two_missing(token_missing) || !at_most_two_missing(token_extra) {
-                continue;
-            }
-        } else if token_missing.count_ones() as usize + token_extra.count_ones() as usize
-            > MAX_EDIT_DISTANCE
-        {
-            continue;
-        }
-        let tid = index.token_scan_ids[slot] as usize;
-        let token = index.token_str(tid);
-        if q_ascii && token.len().abs_diff(q.len()) > MAX_EDIT_DISTANCE {
-            continue;
-        }
-        let Some(tok_d) = matcher.within_distance(token.as_bytes(), token_mask, MAX_EDIT_DISTANCE)
-        else {
-            continue;
-        };
-        for j in index.exact_token_range(token.as_bytes()) {
-            let pkg_idx = index.tokens_sorted[j].1 as usize;
-            if placed.contains(pkg_idx) {
-                continue;
-            }
-            if !filter.matches(index.view(pkg_idx), installed) {
-                placed.insert(pkg_idx);
-                continue;
-            }
-            let seed_first_letter = token.chars().next() == ctx.q_first;
-            let (distance, first_letter_match) = fuzzy_score_from_seed(
+    let shortest = ctx.chars.count.saturating_sub(MAX_EDIT_DISTANCE);
+    let longest = ctx.chars.count + MAX_EDIT_DISTANCE;
+    for len in shortest..=longest {
+        for slot in index.token_bucket(len) {
+            seed_fuzzy_token(
+                &ctx,
+                index.token_scan_ids[slot] as usize,
+                index.token_scan_masks[slot],
+                true,
                 &mut matcher,
-                index,
-                pkg_idx,
-                tok_d as u8,
-                seed_first_letter,
-                ctx.q_first,
-            );
-            scored_push(
                 &mut fuzzy_buf,
-                index,
-                pkg_idx,
-                Tier::Fuzzy,
-                distance,
-                first_letter_match,
+                placed,
             );
-            placed.insert(pkg_idx);
         }
+    }
+    for &tid in &index.token_scan_nonascii {
+        seed_fuzzy_token(
+            &ctx,
+            tid as usize,
+            index.unique_token_masks[tid as usize],
+            false,
+            &mut matcher,
+            &mut fuzzy_buf,
+            placed,
+        );
     }
 
     if cands.len() < FUZZY_GATE {
@@ -958,6 +1014,27 @@ mod tests {
         ]);
         let ids = search_index(&index, "bin");
         assert_eq!(ids.first().copied(), Some(10));
+    }
+
+    #[test]
+    fn non_ascii_name_matches_fuzzy_query() {
+        let index = index_with(vec![pkg(1, "über", false, 0), pkg(2, "zunder", false, 0)]);
+        let ids = search_index(&index, "yber");
+        assert!(ids.contains(&1));
+    }
+
+    #[test]
+    fn non_ascii_token_matches_beyond_the_length_window() {
+        let index = index_with(vec![RawPkg {
+            id: 7,
+            name: "zzz-tool".to_string(),
+            tokens: vec!["üüber".to_string()],
+            keywords: Vec::new(),
+            popularity: 0,
+            is_repo: false,
+        }]);
+        let ids = search_index(&index, "über");
+        assert_eq!(ids.first().copied(), Some(7));
     }
 
     #[test]

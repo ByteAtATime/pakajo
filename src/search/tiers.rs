@@ -112,7 +112,8 @@ pub fn tier_at(
             }
             Tier::Substring => {
                 let r = index.row(pi);
-                if (qmask & !r.name_mask) == 0
+                if r.name_len as usize >= q.len()
+                    && (qmask & !r.name_mask) == 0
                     && (qbig & !r.name_bigrams) == 0
                     && index.name(pi).contains(q)
                 {
@@ -121,7 +122,8 @@ pub fn tier_at(
             }
             Tier::Keyword => {
                 let r = index.row(pi);
-                if (qmask & !r.kw_mask) == 0
+                if index.max_kw_len(pi) as usize >= q.len()
+                    && (qmask & !r.kw_mask) == 0
                     && (qbig & !r.kw_bigrams) == 0
                     && (0..index.kws_len(pi)).any(|k| index.keyword(pi, k).contains(q))
                 {
