@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use crate::search::SearchFilter;
-use crate::search::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE};
+use crate::search::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE, at_most_two_missing};
 use crate::search::index::{PackageIndex, bigram_mask, byte_mask, needs_rebuild};
 use crate::search::query::{ParsedQuery, parse_query};
 use crate::search::tiers::{Scored, Tier, pack_sort_key, tier_at, tier_of_key};
@@ -483,7 +483,12 @@ fn fused_expensive_fuzzy_pass(
             placed.insert(i);
             continue;
         }
-        if name_missing.count_ones() as usize > MAX_EDIT_DISTANCE {
+        let row_fuzzy_gated = if q_ascii {
+            !at_most_two_missing(name_missing)
+        } else {
+            name_missing.count_ones() as usize > MAX_EDIT_DISTANCE
+        };
+        if row_fuzzy_gated {
             continue;
         }
         let name_len_ok = !(q_ascii && r.ascii_name)
@@ -519,7 +524,13 @@ fn fused_expensive_fuzzy_pass(
 
     for tid in 0..index.unique_tokens.len() {
         let token_mask = index.unique_token_masks[tid];
-        if (qmask & !token_mask).count_ones() as usize > MAX_EDIT_DISTANCE {
+        let token_missing = qmask & !token_mask;
+        let token_fuzzy_gated = if q_ascii {
+            !at_most_two_missing(token_missing)
+        } else {
+            token_missing.count_ones() as usize > MAX_EDIT_DISTANCE
+        };
+        if token_fuzzy_gated {
             continue;
         }
         let token = index.token_str(tid);

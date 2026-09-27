@@ -2,6 +2,11 @@ use crate::search::index::byte_mask;
 
 pub const MAX_EDIT_DISTANCE: usize = 2;
 
+pub(crate) fn at_most_two_missing(miss: u64) -> bool {
+    let m1 = miss & miss.wrapping_sub(1);
+    m1 & m1.wrapping_sub(1) == 0
+}
+
 pub struct FuzzyMatcher<'q> {
     q: &'q [u8],
     qmask: u64,
@@ -33,7 +38,12 @@ impl<'q> FuzzyMatcher<'q> {
         if both_ascii && cand.len().abs_diff(self.q.len()) > max {
             return None;
         }
-        if (self.qmask & !cmask).count_ones() as usize > max {
+        let miss = self.qmask & !cmask;
+        if max == MAX_EDIT_DISTANCE {
+            if !at_most_two_missing(miss) {
+                return None;
+            }
+        } else if miss.count_ones() as usize > max {
             return None;
         }
         if both_ascii {
