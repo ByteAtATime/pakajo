@@ -216,6 +216,7 @@ fn gather_cheap_candidates(
                 Tier::PrefixToken => (true, index.prefix_token_range(q_bytes)),
                 _ => continue,
             };
+            let stop_in_range = only_all && matches!(tier, Tier::ExactToken);
             let postings = range.map(|i| {
                 if from_tokens {
                     index.tokens_sorted[i].1 as usize
@@ -230,6 +231,9 @@ fn gather_cheap_candidates(
                 marks.insert(pkg);
                 if filter.matches(index.view(pkg), installed) {
                     scored_push(&mut out, index, pkg, tier, 0, false);
+                }
+                if stop_in_range && out.len() >= RESULT_LIMIT {
+                    break;
                 }
             }
             if only_all && out.len() >= RESULT_LIMIT {

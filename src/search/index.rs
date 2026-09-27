@@ -281,10 +281,15 @@ fn build_token_inversion(
             occ.push((pi as u32, ti as u32));
         }
     }
+    let ranks = build_rank_bits(rows);
     occ.sort_by(|&(pa, ta), &(pb, tb)| {
         let sa = raws[pa as usize].tokens[ta as usize].as_bytes();
         let sb = raws[pb as usize].tokens[tb as usize].as_bytes();
-        sa.cmp(sb).then((pa, ta).cmp(&(pb, tb)))
+        sa.cmp(sb)
+            .then_with(|| ranks[pa as usize].cmp(&ranks[pb as usize]))
+            .then_with(|| name_of(arena, rows, pa as usize).cmp(name_of(arena, rows, pb as usize)))
+            .then_with(|| rows[pa as usize].id.cmp(&rows[pb as usize].id))
+            .then((pa, ta).cmp(&(pb, tb)))
     });
 
     let mut unique_tokens: Vec<(u32, u16)> = Vec::new();
@@ -332,6 +337,11 @@ fn build_token_inversion(
         unique_token_masks,
         tokens_sorted,
     }
+}
+
+fn name_of<'a>(arena: &'a str, rows: &[PkgRow], pi: usize) -> &'a str {
+    let r = &rows[pi];
+    &arena[r.name_off as usize..r.name_off as usize + r.name_len as usize]
 }
 
 fn build_rank_bits(rows: &[PkgRow]) -> Vec<u64> {
@@ -726,6 +736,12 @@ impl PackageIndex {
                 return false;
             }
             if pi as usize >= self.rows.len() {
+                return false;
+            }
+        }
+        for w in self.tokens_sorted.windows(2) {
+            if w[0].0 == w[1].0 && self.rank_bits[w[0].1 as usize] > self.rank_bits[w[1].1 as usize]
+            {
                 return false;
             }
         }
