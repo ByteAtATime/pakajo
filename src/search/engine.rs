@@ -282,11 +282,7 @@ fn normalized_name_tiers(
         if (nqmask & !r.name_mask) != 0 || !filter.matches(index.view(pkg), installed) {
             continue;
         }
-        let nn: String = index
-            .name(pkg)
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .collect();
+        let nn = index.norm_name(pkg);
         let tier = if nn == nq {
             Tier::ExactName
         } else if nn.starts_with(&nq) {

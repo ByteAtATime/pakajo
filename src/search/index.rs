@@ -21,6 +21,8 @@ pub(crate) struct PkgRow {
     pub(crate) id: u32,
     name_off: u32,
     name_len: u16,
+    norm_off: u32,
+    norm_len: u16,
     tokens_start: u32,
     tokens_len: u16,
     kws_start: u32,
@@ -192,6 +194,8 @@ fn build_rows(raws: &[RawPkg], arena: &mut String) -> Vec<PkgRow> {
     let mut rows: Vec<PkgRow> = Vec::with_capacity(n);
     for raw in raws {
         let (name_off, name_len) = push_span(arena, &raw.name);
+        let normalized: String = raw.name.chars().filter(|c| c.is_alphanumeric()).collect();
+        let (norm_off, norm_len) = push_span(arena, &normalized);
         let kw_mask = raw
             .keywords
             .iter()
@@ -218,6 +222,8 @@ fn build_rows(raws: &[RawPkg], arena: &mut String) -> Vec<PkgRow> {
             id: raw.id,
             name_off,
             name_len,
+            norm_off,
+            norm_len,
             tokens_start: 0,
             tokens_len,
             kws_start: 0,
@@ -397,6 +403,11 @@ impl PackageIndex {
         self.slice(r.name_off, r.name_len)
     }
 
+    pub(crate) fn norm_name(&self, pi: usize) -> &str {
+        let r = &self.rows[pi];
+        self.slice(r.norm_off, r.norm_len)
+    }
+
     pub(crate) fn tokens_len(&self, pi: usize) -> usize {
         self.rows[pi].tokens_len as usize
     }
@@ -568,6 +579,9 @@ impl PackageIndex {
         }
         for r in &self.rows {
             if !ok_span(r.name_off, r.name_len) {
+                return false;
+            }
+            if !ok_span(r.norm_off, r.norm_len) {
                 return false;
             }
             if (r.tokens_start as usize + r.tokens_len as usize) > self.token_ids.len() {
