@@ -7,7 +7,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::search::SearchFilter;
 use crate::search::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE, at_most_two_missing};
-use crate::search::index::{PackageIndex, bigram_mask, byte_mask, needs_rebuild};
+use crate::search::index::{PackageIndex, bigram_mask, byte_mask, needs_rebuild, trigram_mask};
 use crate::search::query::{ParsedQuery, parse_query};
 use crate::search::tiers::{Scored, Tier, pack_sort_key, tier_at, tier_of_key};
 
@@ -272,20 +272,42 @@ fn expensive_only_pass(
     cands
 }
 
-fn seed_words(index: &PackageIndex, qmask: u64, out: &mut Vec<u64>) {
+struct TermMasks {
+    chars: u64,
+    bigrams: u64,
+    trigrams: u64,
+}
+
+impl TermMasks {
+    fn of(term: &str) -> Self {
+        Self {
+            chars: byte_mask(term.as_bytes()),
+            bigrams: bigram_mask(term.as_bytes()),
+            trigrams: trigram_mask(term.as_bytes()),
+        }
+    }
+}
+
+fn and_bits(mut rest: u64, mut word: impl FnMut(usize) -> u64) -> u64 {
+    let mut acc = u64::MAX;
+    while rest != 0 {
+        acc &= word(rest.trailing_zeros() as usize);
+        rest &= rest - 1;
+    }
+    acc
+}
+
+fn seed_words(index: &PackageIndex, masks: &TermMasks, out: &mut Vec<u64>) {
     out.clear();
     out.resize(index.row_words(), 0);
     for (w, slot) in out.iter_mut().enumerate() {
-        let mut rest = qmask;
-        let mut name_all = u64::MAX;
-        let mut kw_all = u64::MAX;
-        while rest != 0 {
-            let b = rest.trailing_zeros() as usize;
-            name_all &= index.name_char_word(w, b);
-            kw_all &= index.kw_char_word(w, b);
-            rest &= rest - 1;
-        }
-        *slot = name_all | kw_all;
+        let name = and_bits(masks.chars, |b| index.name_char_word(w, b))
+            & and_bits(masks.bigrams, |b| index.name_bigram_word(w, b))
+            & and_bits(masks.trigrams, |b| index.name_trigram_word(w, b));
+        let kw = and_bits(masks.chars, |b| index.kw_char_word(w, b))
+            & and_bits(masks.bigrams, |b| index.kw_bigram_word(w, b))
+            & and_bits(masks.trigrams, |b| index.kw_trigram_word(w, b));
+        *slot = name | kw;
     }
     mask_tail(index, out);
 }
@@ -293,17 +315,16 @@ fn seed_words(index: &PackageIndex, qmask: u64, out: &mut Vec<u64>) {
 fn for_each_seed_row(
     index: &PackageIndex,
     term: &str,
-    qmask: u64,
-    qbig: u64,
+    masks: &TermMasks,
     filter: SearchFilter,
     installed: &HashSet<String>,
     mut visit: impl FnMut(usize, Tier) -> ControlFlow<()>,
 ) {
     PREFILTER.with(|cell| {
         let mut words = cell.borrow_mut();
-        seed_words(index, qmask, &mut words);
+        seed_words(index, masks, &mut words);
         for_each_row(&words, |pkg| {
-            term_tier_at(index, pkg, term, qmask, qbig, filter, installed)
+            term_tier_at(index, pkg, term, masks, filter, installed)
                 .map_or(ControlFlow::Continue(()), |tier| visit(pkg, tier))
         });
     });
@@ -312,13 +333,12 @@ fn for_each_seed_row(
 fn seed_rows(
     index: &PackageIndex,
     term: &str,
-    qmask: u64,
-    qbig: u64,
+    masks: &TermMasks,
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> Vec<(usize, Tier)> {
     let mut out: Vec<(usize, Tier)> = Vec::new();
-    for_each_seed_row(index, term, qmask, qbig, filter, installed, |pkg, tier| {
+    for_each_seed_row(index, term, masks, filter, installed, |pkg, tier| {
         out.push((pkg, tier));
         ControlFlow::Continue(())
     });
@@ -329,8 +349,7 @@ fn term_tier_at(
     index: &PackageIndex,
     pkg: usize,
     term: &str,
-    qmask: u64,
-    qbig: u64,
+    masks: &TermMasks,
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> Option<Tier> {
@@ -357,15 +376,15 @@ fn term_tier_at(
     }
     let r = index.row(pkg);
     if r.name_len as usize >= term.len()
-        && (qmask & !r.name_mask) == 0
-        && (qbig & !r.name_bigrams) == 0
+        && (masks.chars & !r.name_mask) == 0
+        && (masks.bigrams & !r.name_bigrams) == 0
         && name.contains(term)
     {
         return Some(Tier::Substring);
     }
     if index.max_kw_len(pkg) as usize >= term.len()
-        && (qmask & !r.kw_mask) == 0
-        && (qbig & !r.kw_bigrams) == 0
+        && (masks.chars & !r.kw_mask) == 0
+        && (masks.bigrams & !r.kw_bigrams) == 0
         && (0..index.kws_len(pkg)).any(|k| index.keyword(pkg, k).contains(term))
     {
         return Some(Tier::Keyword);
@@ -376,13 +395,12 @@ fn term_tier_at(
 fn term_matches_any(
     index: &PackageIndex,
     term: &str,
-    qmask: u64,
-    qbig: u64,
+    masks: &TermMasks,
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> bool {
     let mut matched = false;
-    for_each_seed_row(index, term, qmask, qbig, filter, installed, |_, _| {
+    for_each_seed_row(index, term, masks, filter, installed, |_, _| {
         matched = true;
         ControlFlow::Break(())
     });
@@ -429,20 +447,19 @@ fn multi_term_candidates(
 ) -> Vec<Scored> {
     let mut survivors: Vec<(usize, Tier)> = Vec::new();
     for term in q.split_whitespace() {
-        let qmask = byte_mask(term.as_bytes());
-        let qbig = bigram_mask(term.as_bytes());
+        let masks = TermMasks::of(term);
         if survivors.is_empty() {
-            survivors = seed_rows(index, term, qmask, qbig, filter, installed);
+            survivors = seed_rows(index, term, &masks, filter, installed);
             continue;
         }
         let mut kept: Vec<(usize, Tier)> = Vec::new();
         for (pkg, tier) in survivors.iter().copied() {
-            if let Some(other) = term_tier_at(index, pkg, term, qmask, qbig, filter, installed) {
+            if let Some(other) = term_tier_at(index, pkg, term, &masks, filter, installed) {
                 kept.push((pkg, tier.max(other)));
             }
         }
         if kept.is_empty() {
-            if term_matches_any(index, term, qmask, qbig, filter, installed) {
+            if term_matches_any(index, term, &masks, filter, installed) {
                 survivors.clear();
             }
             continue;
@@ -1511,6 +1528,20 @@ mod multi_term_tests {
         let pairs = search(&index, "cosmic files");
         assert_eq!(pairs[0], (1, Tier::ExactName));
         assert_eq!(pairs[1], (2, Tier::ExactToken));
+    }
+
+    #[test]
+    fn keyword_tier_matches_survive_the_seed_gate() {
+        let index = assemble(vec![RawPkg {
+            id: 1,
+            name: "zzz-tool".to_string(),
+            tokens: tokenize("zzz-tool"),
+            keywords: vec!["node runtime".to_string()],
+            popularity: 0,
+            is_repo: false,
+        }]);
+        let pairs = search(&index, "node runtime");
+        assert_eq!(pairs.first().map(|(id, _)| *id), Some(1));
     }
 
     #[test]

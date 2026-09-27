@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::search::tiers::rank_bits;
 
 const POP_NORM_MAX: f64 = 100.0;
-const INDEX_MAGIC: [u8; 4] = *b"v002";
+const INDEX_MAGIC: [u8; 4] = *b"v003";
 
 fn next_prefix_bound(q: &[u8]) -> Option<Vec<u8>> {
     let last = q.len() - 1;
@@ -64,6 +64,9 @@ pub struct PackageIndex {
     pub(crate) name_char_words: Box<[u64]>,
     pub(crate) kw_char_words: Box<[u64]>,
     pub(crate) name_bigram_words: Box<[u64]>,
+    pub(crate) kw_bigram_words: Box<[u64]>,
+    pub(crate) name_trigram_words: Box<[u64]>,
+    pub(crate) kw_trigram_words: Box<[u64]>,
     pub(crate) unique_kws: Box<[(u32, u16)]>,
     pub(crate) names_sorted: Vec<u32>,
     pub(crate) tokens_sorted: Vec<(u32, u32)>,
@@ -83,6 +86,16 @@ pub fn bigram_mask(bytes: &[u8]) -> u64 {
     let mut m: u64 = 0;
     for pair in bytes.windows(2) {
         let bit = (u64::from(pair[0]) * 33 + u64::from(pair[1])) & 63;
+        m |= 1 << bit;
+    }
+    m
+}
+
+pub fn trigram_mask(bytes: &[u8]) -> u64 {
+    let mut m: u64 = 0;
+    for window in bytes.windows(3) {
+        let bit =
+            ((u64::from(window[0]) * 33 + u64::from(window[1])) * 33 + u64::from(window[2])) & 63;
         m |= 1 << bit;
     }
     m
@@ -201,6 +214,13 @@ fn push_span(arena: &mut String, s: &str) -> (u32, u16) {
     (off, len)
 }
 
+fn kw_ngram_mask(keywords: &[String], mask: fn(&[u8]) -> u64) -> u64 {
+    keywords
+        .iter()
+        .map(|k| mask(k.as_bytes()))
+        .fold(0u64, |acc, m| acc | m)
+}
+
 fn build_rows(raws: &[RawPkg], arena: &mut String) -> Vec<PkgRow> {
     let n = raws.len();
     let mut rows: Vec<PkgRow> = Vec::with_capacity(n);
@@ -208,18 +228,10 @@ fn build_rows(raws: &[RawPkg], arena: &mut String) -> Vec<PkgRow> {
         let (name_off, name_len) = push_span(arena, &raw.name);
         let normalized: String = raw.name.chars().filter(|c| c.is_alphanumeric()).collect();
         let (norm_off, norm_len) = push_span(arena, &normalized);
-        let kw_mask = raw
-            .keywords
-            .iter()
-            .map(|k| byte_mask(k.as_bytes()))
-            .fold(0u64, |acc, m| acc | m);
+        let kw_mask = kw_ngram_mask(&raw.keywords, byte_mask);
         let name_mask = byte_mask(raw.name.as_bytes());
         let name_bigrams = bigram_mask(raw.name.as_bytes());
-        let kw_bigrams = raw
-            .keywords
-            .iter()
-            .map(|k| bigram_mask(k.as_bytes()))
-            .fold(0u64, |acc, m| acc | m);
+        let kw_bigrams = kw_ngram_mask(&raw.keywords, bigram_mask);
         let tokens_len: u16 = raw
             .tokens
             .len()
@@ -386,6 +398,7 @@ fn build_keyword_ids(
 
 pub(crate) const CHAR_BITS: usize = 40;
 pub(crate) const BIGRAM_BITS: usize = 64;
+pub(crate) const TRIGRAM_BITS: usize = 64;
 
 pub(crate) fn row_words(rows: usize) -> usize {
     rows.div_ceil(64)
@@ -463,6 +476,18 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
     let kw_char_words = build_word_table(rows.iter().map(|r| r.kw_mask), words, CHAR_BITS);
     let name_bigram_words =
         build_word_table(rows.iter().map(|r| r.name_bigrams), words, BIGRAM_BITS);
+    let kw_bigram_words = build_word_table(rows.iter().map(|r| r.kw_bigrams), words, BIGRAM_BITS);
+    let name_trigram_words = build_word_table(
+        raws.iter().map(|raw| trigram_mask(raw.name.as_bytes())),
+        words,
+        TRIGRAM_BITS,
+    );
+    let kw_trigram_words = build_word_table(
+        raws.iter()
+            .map(|raw| kw_ngram_mask(&raw.keywords, trigram_mask)),
+        words,
+        TRIGRAM_BITS,
+    );
 
     let mut index = PackageIndex {
         rank_bits: build_rank_bits(&rows).into_boxed_slice(),
@@ -479,6 +504,9 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
         token_scan_nonascii: scan.nonascii_ids.into_boxed_slice(),
         name_char_words: name_char_words.into_boxed_slice(),
         name_bigram_words: name_bigram_words.into_boxed_slice(),
+        kw_bigram_words: kw_bigram_words.into_boxed_slice(),
+        name_trigram_words: name_trigram_words.into_boxed_slice(),
+        kw_trigram_words: kw_trigram_words.into_boxed_slice(),
         kw_char_words: kw_char_words.into_boxed_slice(),
         unique_kws: unique_kws.into_boxed_slice(),
         names_sorted: Vec::new(),
@@ -585,6 +613,18 @@ impl PackageIndex {
 
     pub(crate) fn name_bigram_word(&self, word: usize, bit: usize) -> u64 {
         self.name_bigram_words[word * BIGRAM_BITS + bit]
+    }
+
+    pub(crate) fn kw_bigram_word(&self, word: usize, bit: usize) -> u64 {
+        self.kw_bigram_words[word * BIGRAM_BITS + bit]
+    }
+
+    pub(crate) fn name_trigram_word(&self, word: usize, bit: usize) -> u64 {
+        self.name_trigram_words[word * TRIGRAM_BITS + bit]
+    }
+
+    pub(crate) fn kw_trigram_word(&self, word: usize, bit: usize) -> u64 {
+        self.kw_trigram_words[word * TRIGRAM_BITS + bit]
     }
 
     pub fn exact_name_range(&self, q: &[u8]) -> Range<usize> {
@@ -729,6 +769,9 @@ impl PackageIndex {
         if self.name_char_words.len() != row_words(self.rows.len()) * CHAR_BITS
             || self.kw_char_words.len() != row_words(self.rows.len()) * CHAR_BITS
             || self.name_bigram_words.len() != row_words(self.rows.len()) * BIGRAM_BITS
+            || self.kw_bigram_words.len() != row_words(self.rows.len()) * BIGRAM_BITS
+            || self.name_trigram_words.len() != row_words(self.rows.len()) * TRIGRAM_BITS
+            || self.kw_trigram_words.len() != row_words(self.rows.len()) * TRIGRAM_BITS
         {
             return false;
         }
