@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -6,7 +7,7 @@ use crate::search::SearchFilter;
 use crate::search::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE};
 use crate::search::index::{PackageIndex, bigram_mask, byte_mask, needs_rebuild};
 use crate::search::query::{ParsedQuery, parse_query};
-use crate::search::tiers::{Candidate, Tier, candidate_ordering, tier_at};
+use crate::search::tiers::{Scored, Tier, pack_sort_key, tier_at, tier_of_key};
 
 const RESULT_LIMIT: usize = 30;
 const FUZZY_GATE: usize = 5;
@@ -40,31 +41,28 @@ pub fn search_index_tiered(
     let q = pq.text();
     match &pq {
         ParsedQuery::Quoted(_) => quoted_pairs(index, q, filter, installed),
-        ParsedQuery::Short(_) => to_sorted_pairs(gather_cheap_candidates(
+        ParsedQuery::Short(_) => to_sorted_pairs(
             index,
-            q,
-            SHORT_TIERS,
-            filter,
-            installed,
-        )),
+            gather_cheap_candidates(index, q, SHORT_TIERS, filter, installed),
+        ),
         ParsedQuery::Normal(_) => {
             if q.split_whitespace().count() > 1 {
                 let cands = multi_term_candidates(index, q, filter, installed);
                 if !cands.is_empty() {
-                    return to_sorted_pairs(cands);
+                    return to_sorted_pairs(index, cands);
                 }
             }
             let cheap = gather_cheap_candidates(index, q, CHEAP_TIERS_ALL, filter, installed);
             if cheap.len() >= RESULT_LIMIT {
-                return to_sorted_pairs(cheap);
+                return to_sorted_pairs(index, cheap);
             }
-            let seen: HashSet<u32> = cheap.iter().map(|c| c.view.id).collect();
+            let seen: HashSet<u32> = cheap.iter().map(|c| index.row(c.pkg as usize).id).collect();
             let cands = if cheap.len() >= FUZZY_GATE {
                 expensive_only_pass(index, q, cheap, &seen, filter, installed)
             } else {
                 fused_expensive_fuzzy_pass(index, q, cheap, &seen, filter, installed)
             };
-            to_sorted_pairs(cands)
+            to_sorted_pairs(index, cands)
         }
     }
 }
@@ -113,63 +111,108 @@ impl SearchEngine {
     }
 }
 
-fn gather_cheap_candidates<'a>(
-    index: &'a PackageIndex,
+fn scored_push(
+    out: &mut Vec<Scored>,
+    index: &PackageIndex,
+    pkg: usize,
+    tier: Tier,
+    distance: u8,
+    first_letter_match: bool,
+) {
+    let row = index.row(pkg);
+    out.push(Scored {
+        key: pack_sort_key(
+            tier,
+            distance,
+            first_letter_match,
+            index.name(pkg).len(),
+            row.is_repo,
+            row.popularity,
+        ),
+        pkg: pkg as u32,
+    });
+}
+
+fn scored_ordering(index: &PackageIndex, a: &Scored, b: &Scored) -> std::cmp::Ordering {
+    a.key
+        .cmp(&b.key)
+        .then_with(|| index.name(a.pkg as usize).cmp(index.name(b.pkg as usize)))
+        .then_with(|| {
+            index
+                .row(a.pkg as usize)
+                .id
+                .cmp(&index.row(b.pkg as usize).id)
+        })
+}
+
+thread_local! {
+    static GATHER: RefCell<(Vec<u32>, u32)> = const { RefCell::new((Vec::new(), 1)) };
+}
+
+fn gather_cheap_candidates(
+    index: &PackageIndex,
     q: &str,
     allowed: &[Tier],
     filter: SearchFilter,
     installed: &HashSet<String>,
-) -> Vec<Candidate<'a>> {
-    let qmask = byte_mask(q.as_bytes());
-    let qbig = bigram_mask(q.as_bytes());
+) -> Vec<Scored> {
     let q_bytes = q.as_bytes();
-    let mut idxs: Vec<u32> = Vec::new();
-    if allowed.contains(&Tier::ExactName) {
-        for i in index.exact_name_range(q_bytes) {
-            idxs.push(index.names_sorted[i]);
+    let only_all = filter == SearchFilter::All;
+    GATHER.with(|state| {
+        let mut state = state.borrow_mut();
+        let (marks, epoch) = &mut *state;
+        if marks.len() < index.len() {
+            marks.resize(index.len(), 0);
         }
-    }
-    if allowed.contains(&Tier::ExactToken) {
-        for i in index.exact_token_range(q_bytes) {
-            idxs.push(index.tokens_sorted[i].1);
+        *epoch = epoch.wrapping_add(1);
+        if *epoch == 0 {
+            *epoch = 1;
         }
-    }
-    if allowed.contains(&Tier::PrefixName) {
-        for i in index.prefix_name_range(q_bytes) {
-            idxs.push(index.names_sorted[i]);
+        if *epoch == 1 {
+            marks.fill(0);
         }
-    }
-    if allowed.contains(&Tier::PrefixToken) {
-        for i in index.prefix_token_range(q_bytes) {
-            idxs.push(index.tokens_sorted[i].1);
-        }
-    }
-    idxs.sort_unstable();
-    idxs.dedup();
-    let mut cands: Vec<Candidate<'a>> = Vec::with_capacity(idxs.len());
-    for i in idxs {
-        if filter.matches(index.view(i as usize), installed)
-            && let Some(tier) = tier_at(index, i as usize, q, allowed, qmask, qbig)
-        {
-            cands.push(Candidate {
-                view: index.view(i as usize),
-                tier,
-                distance: 0,
-                first_letter_match: false,
+        let epoch = *epoch;
+        let mut out: Vec<Scored> = Vec::new();
+        for &tier in allowed {
+            let (from_tokens, range) = match tier {
+                Tier::ExactName => (false, index.exact_name_range(q_bytes)),
+                Tier::ExactToken => (true, index.exact_token_range(q_bytes)),
+                Tier::PrefixName => (false, index.prefix_name_range(q_bytes)),
+                Tier::PrefixToken => (true, index.prefix_token_range(q_bytes)),
+                _ => continue,
+            };
+            let postings = range.map(|i| {
+                if from_tokens {
+                    index.tokens_sorted[i].1 as usize
+                } else {
+                    index.names_sorted[i] as usize
+                }
             });
+            for pkg in postings {
+                if marks[pkg] == epoch {
+                    continue;
+                }
+                marks[pkg] = epoch;
+                if filter.matches(index.view(pkg), installed) {
+                    scored_push(&mut out, index, pkg, tier, 0, false);
+                }
+            }
+            if only_all && out.len() >= RESULT_LIMIT {
+                break;
+            }
         }
-    }
-    cands
+        out
+    })
 }
 
-fn expensive_only_pass<'a>(
-    index: &'a PackageIndex,
+fn expensive_only_pass(
+    index: &PackageIndex,
     q: &str,
-    mut cands: Vec<Candidate<'a>>,
+    mut cands: Vec<Scored>,
     seen: &HashSet<u32>,
     filter: SearchFilter,
     installed: &HashSet<String>,
-) -> Vec<Candidate<'a>> {
+) -> Vec<Scored> {
     let qmask = byte_mask(q.as_bytes());
     let qbig = bigram_mask(q.as_bytes());
     for i in 0..index.len() {
@@ -180,12 +223,7 @@ fn expensive_only_pass<'a>(
         if filter.matches(index.view(i), installed)
             && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask, qbig)
         {
-            cands.push(Candidate {
-                view: index.view(i),
-                tier,
-                distance: 0,
-                first_letter_match: false,
-            });
+            scored_push(&mut cands, index, i, tier, 0, false);
         }
     }
     cands
@@ -263,12 +301,12 @@ fn normalized_name_tiers(
     out
 }
 
-fn multi_term_candidates<'a>(
-    index: &'a PackageIndex,
+fn multi_term_candidates(
+    index: &PackageIndex,
     q: &str,
     filter: SearchFilter,
     installed: &HashSet<String>,
-) -> Vec<Candidate<'a>> {
+) -> Vec<Scored> {
     let mut survivors: Vec<(usize, Tier)> = Vec::new();
     for term in q.split_whitespace() {
         let qmask = byte_mask(term.as_bytes());
@@ -309,15 +347,11 @@ fn multi_term_candidates<'a>(
             Err(pos) => survivors.insert(pos, (pkg, tier)),
         }
     }
-    survivors
-        .into_iter()
-        .map(|(pkg, tier)| Candidate {
-            view: index.view(pkg),
-            tier,
-            distance: 0,
-            first_letter_match: false,
-        })
-        .collect()
+    let mut out = Vec::with_capacity(survivors.len());
+    for (pkg, tier) in survivors {
+        scored_push(&mut out, index, pkg, tier, 0, false);
+    }
+    out
 }
 
 fn fuzzy_score_from_seed(
@@ -343,20 +377,20 @@ fn fuzzy_score_from_seed(
     (distance, first_letter_match)
 }
 
-fn fused_expensive_fuzzy_pass<'a>(
-    index: &'a PackageIndex,
+fn fused_expensive_fuzzy_pass(
+    index: &PackageIndex,
     q: &str,
-    mut cands: Vec<Candidate<'a>>,
+    mut cands: Vec<Scored>,
     seen: &HashSet<u32>,
     filter: SearchFilter,
     installed: &HashSet<String>,
-) -> Vec<Candidate<'a>> {
+) -> Vec<Scored> {
     let qmask = byte_mask(q.as_bytes());
     let qbig = bigram_mask(q.as_bytes());
     let q_ascii = q.is_ascii();
     let q_first = q.chars().next();
     let mut matcher = FuzzyMatcher::new(q.as_bytes());
-    let mut fuzzy_buf: Vec<Candidate<'a>> = Vec::new();
+    let mut fuzzy_buf: Vec<Scored> = Vec::new();
     let mut placed: HashSet<u32> = HashSet::new();
 
     for i in 0..index.len() {
@@ -370,12 +404,7 @@ fn fused_expensive_fuzzy_pass<'a>(
             && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask, qbig)
         {
             if filter.matches(index.view(i), installed) {
-                cands.push(Candidate {
-                    view: index.view(i),
-                    tier,
-                    distance: 0,
-                    first_letter_match: false,
-                });
+                scored_push(&mut cands, index, i, tier, 0, false);
             }
             placed.insert(i as u32);
             continue;
@@ -402,12 +431,14 @@ fn fused_expensive_fuzzy_pass<'a>(
                 seed_first_letter,
                 q_first,
             );
-            fuzzy_buf.push(Candidate {
-                view: index.view(i),
-                tier: Tier::Fuzzy,
+            scored_push(
+                &mut fuzzy_buf,
+                index,
+                i,
+                Tier::Fuzzy,
                 distance,
                 first_letter_match,
-            });
+            );
             placed.insert(i as u32);
         }
     }
@@ -443,12 +474,14 @@ fn fused_expensive_fuzzy_pass<'a>(
                 seed_first_letter,
                 q_first,
             );
-            fuzzy_buf.push(Candidate {
-                view: index.view(pkg_idx as usize),
-                tier: Tier::Fuzzy,
+            scored_push(
+                &mut fuzzy_buf,
+                index,
+                pkg_idx as usize,
+                Tier::Fuzzy,
                 distance,
                 first_letter_match,
-            });
+            );
             placed.insert(pkg_idx);
         }
     }
@@ -465,28 +498,32 @@ fn quoted_pairs(
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> Vec<(u32, Tier)> {
-    let cands: Vec<Candidate> = (0..index.len())
-        .filter(|&pi| filter.matches(index.view(pi), installed))
-        .filter(|&pi| index.name(pi).contains(q))
-        .map(|pi| Candidate {
-            view: index.view(pi),
-            tier: Tier::Substring,
-            distance: 0,
-            first_letter_match: false,
-        })
-        .collect();
-    to_sorted_pairs(cands)
+    let mut cands: Vec<Scored> = Vec::new();
+    for pi in 0..index.len() {
+        if !filter.matches(index.view(pi), installed) {
+            continue;
+        }
+        if !index.name(pi).contains(q) {
+            continue;
+        }
+        scored_push(&mut cands, index, pi, Tier::Substring, 0, false);
+    }
+    to_sorted_pairs(index, cands)
 }
 
-fn to_sorted_pairs(mut cands: Vec<Candidate>) -> Vec<(u32, Tier)> {
+fn to_sorted_pairs(index: &PackageIndex, mut cands: Vec<Scored>) -> Vec<(u32, Tier)> {
+    let mut ord = |a: &Scored, b: &Scored| scored_ordering(index, a, b);
     if cands.len() > RESULT_LIMIT {
-        cands.select_nth_unstable_by(RESULT_LIMIT, candidate_ordering);
-        cands[..RESULT_LIMIT + 1].sort_by(candidate_ordering);
+        cands.select_nth_unstable_by(RESULT_LIMIT, &mut ord);
+        cands[..RESULT_LIMIT + 1].sort_by(&mut ord);
     } else {
-        cands.sort_by(candidate_ordering);
+        cands.sort_by(&mut ord);
     }
     cands.truncate(RESULT_LIMIT);
-    cands.into_iter().map(|c| (c.view.id, c.tier)).collect()
+    cands
+        .into_iter()
+        .map(|c| (index.row(c.pkg as usize).id, tier_of_key(c.key)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -528,7 +565,7 @@ mod tests {
             SearchFilter::All,
             &installed,
         );
-        assert_eq!(ids_of(&exact_name), vec![1]);
+        assert_eq!(ids_of(&index, &exact_name), vec![1]);
 
         let exact_token = gather_cheap_candidates(
             &index,
@@ -537,7 +574,7 @@ mod tests {
             SearchFilter::All,
             &installed,
         );
-        assert_eq!(ids_of(&exact_token), vec![3]);
+        assert_eq!(ids_of(&index, &exact_token), vec![3]);
 
         let prefix_name = gather_cheap_candidates(
             &index,
@@ -546,7 +583,7 @@ mod tests {
             SearchFilter::All,
             &installed,
         );
-        assert_eq!(ids_of(&prefix_name), vec![1, 2]);
+        assert_eq!(ids_of(&index, &prefix_name), vec![1, 2]);
 
         let prefix_token = gather_cheap_candidates(
             &index,
@@ -555,7 +592,7 @@ mod tests {
             SearchFilter::All,
             &installed,
         );
-        assert_eq!(ids_of(&prefix_token), vec![1, 2, 5]);
+        assert_eq!(ids_of(&index, &prefix_token), vec![1, 2, 5]);
 
         let all_cheap = gather_cheap_candidates(
             &index,
@@ -564,12 +601,16 @@ mod tests {
             SearchFilter::All,
             &installed,
         );
-        assert_eq!(ids_of(&all_cheap), vec![1, 2, 5]);
-        assert!(all_cheap.iter().all(|c| c.tier != Tier::Substring));
+        assert_eq!(ids_of(&index, &all_cheap), vec![1, 2, 5]);
+        assert!(
+            all_cheap
+                .iter()
+                .all(|c| tier_of_key(c.key) != Tier::Substring)
+        );
     }
 
-    fn ids_of(cands: &[Candidate]) -> Vec<u32> {
-        let mut v: Vec<u32> = cands.iter().map(|c| c.view.id).collect();
+    fn ids_of(index: &PackageIndex, cands: &[Scored]) -> Vec<u32> {
+        let mut v: Vec<u32> = cands.iter().map(|c| index.row(c.pkg as usize).id).collect();
         v.sort();
         v
     }
