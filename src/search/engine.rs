@@ -267,14 +267,41 @@ fn expensive_only_pass(
     cands
 }
 
-fn term_seed_passes(row: &crate::search::index::PkgRow, qmask: u64, qbig: u64) -> bool {
-    if (qmask & !row.name_mask) != 0 && (qmask & !row.kw_mask) != 0 {
-        return false;
+fn seed_words(index: &PackageIndex, qmask: u64, out: &mut Vec<u64>) {
+    let chars: Vec<usize> = (0..CHAR_BITS).filter(|b| qmask >> b & 1 == 1).collect();
+    out.clear();
+    out.resize(index.row_words(), 0);
+    for (w, slot) in out.iter_mut().enumerate() {
+        let mut name_all = u64::MAX;
+        let mut kw_all = u64::MAX;
+        for &b in &chars {
+            name_all &= index.name_char_word(w, b);
+            kw_all &= index.kw_char_word(w, b);
+        }
+        *slot = name_all | kw_all;
     }
-    if (qbig & !row.name_bigrams) != 0 && (qbig & !row.kw_bigrams) != 0 {
-        return false;
-    }
-    true
+    mask_tail(index, out);
+}
+
+fn seed_rows(
+    index: &PackageIndex,
+    term: &str,
+    qmask: u64,
+    qbig: u64,
+    filter: SearchFilter,
+    installed: &HashSet<String>,
+) -> Vec<(usize, Tier)> {
+    PREFILTER.with(|cell| {
+        let mut words = cell.borrow_mut();
+        seed_words(index, qmask, &mut words);
+        let mut out: Vec<(usize, Tier)> = Vec::new();
+        for_each_row(&words, |pkg| {
+            if let Some(tier) = term_tier_at(index, pkg, term, qmask, qbig, filter, installed) {
+                out.push((pkg, tier));
+            }
+        });
+        out
+    })
 }
 
 fn term_tier_at(
@@ -328,10 +355,7 @@ fn term_matches_any(
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> bool {
-    (0..index.len()).any(|pkg| {
-        term_seed_passes(index.row(pkg), qmask, qbig)
-            && term_tier_at(index, pkg, term, qmask, qbig, filter, installed).is_some()
-    })
+    !seed_rows(index, term, qmask, qbig, filter, installed).is_empty()
 }
 
 fn normalized_name_tiers(
@@ -377,16 +401,7 @@ fn multi_term_candidates(
         let qmask = byte_mask(term.as_bytes());
         let qbig = bigram_mask(term.as_bytes());
         if survivors.is_empty() {
-            survivors = (0..index.len())
-                .filter_map(|pkg| {
-                    let r = index.row(pkg);
-                    if !term_seed_passes(r, qmask, qbig) {
-                        return None;
-                    }
-                    term_tier_at(index, pkg, term, qmask, qbig, filter, installed)
-                        .map(|tier| (pkg, tier))
-                })
-                .collect();
+            survivors = seed_rows(index, term, qmask, qbig, filter, installed);
             continue;
         }
         let mut kept: Vec<(usize, Tier)> = Vec::new();
