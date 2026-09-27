@@ -226,11 +226,13 @@ fn merge_baseline(devel: &mut DevelInfo, srcinfo: &srcinfo::Srcinfo, pkg_info: P
 }
 
 fn srcinfo_for_dir(dir: &std::path::Path) -> anyhow::Result<srcinfo::Srcinfo> {
-    if dir.join(".SRCINFO").exists() {
-        crate::srcinfo_io::read_from_dir(dir)
-    } else {
-        crate::srcinfo_io::generate(dir)
+    if !dir.join(".SRCINFO").exists() {
+        anyhow::bail!(
+            "missing .SRCINFO in {} (refusing to source PKGBUILD)",
+            dir.display()
+        );
     }
+    crate::srcinfo_io::read_from_dir(dir)
 }
 
 fn fetch_base_devel_info(base: &str, arch: &str) -> anyhow::Result<Option<PkgInfo>> {
@@ -676,5 +678,27 @@ mod tests {
             grouped.get("other").expect("other present"),
             &vec!["baz".to_string()]
         );
+    }
+
+    #[test]
+    fn srcinfo_for_dir_refuses_missing_srcinfo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("PKGBUILD"), "touch .executed_marker\n")
+            .expect("write PKGBUILD");
+        let error = srcinfo_for_dir(dir.path()).unwrap_err();
+        assert!(error.to_string().contains("refusing to source PKGBUILD"));
+        assert!(!dir.path().join(".executed_marker").exists());
+    }
+
+    #[test]
+    fn srcinfo_for_dir_reads_existing_srcinfo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join(".SRCINFO"),
+            "pkgbase = example\npkgver = 1.0\npkgrel = 1\n\npkgname = example\n",
+        )
+        .expect("write .SRCINFO");
+        let srcinfo = srcinfo_for_dir(dir.path()).expect("srcinfo parses");
+        assert_eq!(srcinfo.base.pkgbase, "example");
     }
 }
