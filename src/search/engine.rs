@@ -56,12 +56,25 @@ pub fn search_index_tiered(
             if cheap.len() >= RESULT_LIMIT {
                 return to_sorted_pairs(index, cheap);
             }
-            let seen: HashSet<u32> = cheap.iter().map(|c| index.row(c.pkg as usize).id).collect();
-            let cands = if cheap.len() >= FUZZY_GATE {
-                expensive_only_pass(index, q, cheap, &seen, filter, installed)
-            } else {
-                fused_expensive_fuzzy_pass(index, q, cheap, &seen, filter, installed)
-            };
+            let cands = SCAN_SEEN.with(|seen_cell| {
+                SCAN_PLACED.with(|placed_cell| {
+                    let mut seen = seen_cell.borrow_mut();
+                    let mut placed = placed_cell.borrow_mut();
+                    if cheap.len() >= FUZZY_GATE {
+                        expensive_only_pass(index, q, cheap, &mut seen, filter, installed)
+                    } else {
+                        fused_expensive_fuzzy_pass(
+                            index,
+                            q,
+                            cheap,
+                            &mut seen,
+                            &mut placed,
+                            filter,
+                            installed,
+                        )
+                    }
+                })
+            });
             to_sorted_pairs(index, cands)
         }
     }
@@ -146,7 +159,44 @@ fn scored_ordering(index: &PackageIndex, a: &Scored, b: &Scored) -> std::cmp::Or
 }
 
 thread_local! {
-    static GATHER: RefCell<(Vec<u32>, u32)> = const { RefCell::new((Vec::new(), 1)) };
+    static GATHER: RefCell<EpochSet> = const { RefCell::new(EpochSet::new()) };
+    static SCAN_SEEN: RefCell<EpochSet> = const { RefCell::new(EpochSet::new()) };
+    static SCAN_PLACED: RefCell<EpochSet> = const { RefCell::new(EpochSet::new()) };
+}
+
+struct EpochSet {
+    slots: Vec<u32>,
+    epoch: u32,
+}
+
+impl EpochSet {
+    const fn new() -> Self {
+        Self {
+            slots: Vec::new(),
+            epoch: 0,
+        }
+    }
+
+    fn reset(&mut self, len: usize) {
+        if self.slots.len() < len {
+            self.slots.resize(len, 0);
+        }
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            self.epoch = 1;
+        }
+        if self.epoch == 1 {
+            self.slots.fill(0);
+        }
+    }
+
+    fn insert(&mut self, pkg: usize) {
+        self.slots[pkg] = self.epoch;
+    }
+
+    fn contains(&self, pkg: usize) -> bool {
+        self.slots[pkg] == self.epoch
+    }
 }
 
 fn gather_cheap_candidates(
@@ -159,19 +209,8 @@ fn gather_cheap_candidates(
     let q_bytes = q.as_bytes();
     let only_all = filter == SearchFilter::All;
     GATHER.with(|state| {
-        let mut state = state.borrow_mut();
-        let (marks, epoch) = &mut *state;
-        if marks.len() < index.len() {
-            marks.resize(index.len(), 0);
-        }
-        *epoch = epoch.wrapping_add(1);
-        if *epoch == 0 {
-            *epoch = 1;
-        }
-        if *epoch == 1 {
-            marks.fill(0);
-        }
-        let epoch = *epoch;
+        let mut marks = state.borrow_mut();
+        marks.reset(index.len());
         let mut out: Vec<Scored> = Vec::new();
         for &tier in allowed {
             let (from_tokens, range) = match tier {
@@ -189,10 +228,10 @@ fn gather_cheap_candidates(
                 }
             });
             for pkg in postings {
-                if marks[pkg] == epoch {
+                if marks.contains(pkg) {
                     continue;
                 }
-                marks[pkg] = epoch;
+                marks.insert(pkg);
                 if filter.matches(index.view(pkg), installed) {
                     scored_push(&mut out, index, pkg, tier, 0, false);
                 }
@@ -209,15 +248,18 @@ fn expensive_only_pass(
     index: &PackageIndex,
     q: &str,
     mut cands: Vec<Scored>,
-    seen: &HashSet<u32>,
+    seen: &mut EpochSet,
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> Vec<Scored> {
     let qmask = byte_mask(q.as_bytes());
     let qbig = bigram_mask(q.as_bytes());
+    seen.reset(index.len());
+    for c in &cands {
+        seen.insert(c.pkg as usize);
+    }
     for i in 0..index.len() {
-        let r = index.row(i);
-        if seen.contains(&r.id) {
+        if seen.contains(i) {
             continue;
         }
         if filter.matches(index.view(i), installed)
@@ -396,7 +438,8 @@ fn fused_expensive_fuzzy_pass(
     index: &PackageIndex,
     q: &str,
     mut cands: Vec<Scored>,
-    seen: &HashSet<u32>,
+    seen: &mut EpochSet,
+    placed: &mut EpochSet,
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> Vec<Scored> {
@@ -406,12 +449,16 @@ fn fused_expensive_fuzzy_pass(
     let q_first = q.chars().next();
     let mut matcher = FuzzyMatcher::new(q.as_bytes());
     let mut fuzzy_buf: Vec<Scored> = Vec::new();
-    let mut placed: HashSet<u32> = HashSet::new();
+    seen.reset(index.len());
+    placed.reset(index.len());
+    for c in &cands {
+        seen.insert(c.pkg as usize);
+    }
 
     for i in 0..index.len() {
         let r = index.row(i);
-        if seen.contains(&r.id) {
-            placed.insert(i as u32);
+        if seen.contains(i) {
+            placed.insert(i);
             continue;
         }
         let name_missing = qmask & !r.name_mask;
@@ -421,20 +468,20 @@ fn fused_expensive_fuzzy_pass(
             if filter.matches(index.view(i), installed) {
                 scored_push(&mut cands, index, i, tier, 0, false);
             }
-            placed.insert(i as u32);
+            placed.insert(i);
             continue;
         }
         if name_missing.count_ones() as usize > MAX_EDIT_DISTANCE {
             continue;
         }
-        let name_len_ok = !(q_ascii && index.name(i).is_ascii())
-            || index.name(i).len().abs_diff(q.len()) <= MAX_EDIT_DISTANCE;
+        let name_len_ok = !(q_ascii && r.ascii_name)
+            || (r.name_len as usize).abs_diff(q.len()) <= MAX_EDIT_DISTANCE;
         if name_len_ok
             && let Some(name_d) =
                 matcher.within_distance(index.name(i).as_bytes(), r.name_mask, MAX_EDIT_DISTANCE)
         {
             if !filter.matches(index.view(i), installed) {
-                placed.insert(i as u32);
+                placed.insert(i);
                 continue;
             }
             let seed_first_letter = index.name(i).chars().next() == q_first;
@@ -454,7 +501,7 @@ fn fused_expensive_fuzzy_pass(
                 distance,
                 first_letter_match,
             );
-            placed.insert(i as u32);
+            placed.insert(i);
         }
     }
 
@@ -472,11 +519,11 @@ fn fused_expensive_fuzzy_pass(
             continue;
         };
         for j in index.exact_token_range(token.as_bytes()) {
-            let pkg_idx = index.tokens_sorted[j].1;
-            if placed.contains(&pkg_idx) {
+            let pkg_idx = index.tokens_sorted[j].1 as usize;
+            if placed.contains(pkg_idx) {
                 continue;
             }
-            if !filter.matches(index.view(pkg_idx as usize), installed) {
+            if !filter.matches(index.view(pkg_idx), installed) {
                 placed.insert(pkg_idx);
                 continue;
             }
@@ -484,7 +531,7 @@ fn fused_expensive_fuzzy_pass(
             let (distance, first_letter_match) = fuzzy_score_from_seed(
                 &mut matcher,
                 index,
-                pkg_idx as usize,
+                pkg_idx,
                 tok_d as u8,
                 seed_first_letter,
                 q_first,
@@ -492,7 +539,7 @@ fn fused_expensive_fuzzy_pass(
             scored_push(
                 &mut fuzzy_buf,
                 index,
-                pkg_idx as usize,
+                pkg_idx,
                 Tier::Fuzzy,
                 distance,
                 first_letter_match,
