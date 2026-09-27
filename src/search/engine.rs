@@ -812,6 +812,7 @@ fn to_sorted_pairs(index: &PackageIndex, cands: Vec<Scored>) -> Vec<(u32, Tier)>
 mod tests {
     use super::*;
     use crate::search::index::{RawPkg, assemble, tokenize};
+    use crate::search::tiers::{Candidate, candidate_ordering};
     use std::collections::HashMap;
 
     fn pkg(id: u32, name: &str, is_repo: bool, popularity: u16) -> RawPkg {
@@ -986,6 +987,41 @@ mod tests {
         let index = index_with(packages);
         let ids = search_index(&index, "prefix");
         assert_eq!(ids, (1u32..=30).collect::<Vec<u32>>());
+    }
+
+    #[test]
+    fn exact_token_block_is_sorted_so_the_first_thirty_are_the_best_thirty() {
+        let packages: Vec<RawPkg> = (1u32..=60)
+            .map(|i| RawPkg {
+                id: i,
+                name: format!("tool-git-{}", "x".repeat((i % 7) as usize)),
+                tokens: vec!["git".to_string()],
+                keywords: Vec::new(),
+                popularity: (i * 37 % 1000) as u16,
+                is_repo: i % 5 == 0,
+            })
+            .collect();
+        let index = index_with(packages);
+
+        let mut expected: Vec<Candidate<'_>> = (0..index.len())
+            .map(|pi| Candidate {
+                view: index.view(pi),
+                tier: Tier::ExactToken,
+                distance: 0,
+                first_letter_match: false,
+            })
+            .collect();
+        expected.sort_by(candidate_ordering);
+
+        let got: Vec<u32> = search_index(&index, "git");
+        assert_eq!(got.len(), RESULT_LIMIT);
+        assert_eq!(
+            got,
+            expected[..RESULT_LIMIT]
+                .iter()
+                .map(|c| c.view.id)
+                .collect::<Vec<u32>>()
+        );
     }
 
     #[test]

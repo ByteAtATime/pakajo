@@ -771,6 +771,13 @@ mod tests {
     }
 
     #[test]
+    fn every_mapped_char_fits_in_char_bits() {
+        for b in 0u8..=255 {
+            assert!(char_bit(b) >> CHAR_BITS == 0, "char_bit({b}) overflows");
+        }
+    }
+
+    #[test]
     fn tokenize_splits_on_non_alphanumeric_runs() {
         assert_eq!(
             tokenize("google-chrome"),
