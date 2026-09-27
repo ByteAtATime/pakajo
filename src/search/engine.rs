@@ -474,7 +474,9 @@ fn fused_expensive_fuzzy_pass(
             continue;
         }
         let name_missing = qmask & !r.name_mask;
-        if (name_missing == 0 || (qmask & !r.kw_mask) == 0)
+        let name_tier_arm = r.name_len as usize >= q.len() && (qbig & !r.name_bigrams) == 0;
+        let kw_tier_arm = r.max_kw_len as usize >= q.len() && (qbig & !r.kw_bigrams) == 0;
+        if (name_tier_arm || kw_tier_arm)
             && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask, qbig)
         {
             if filter.matches(index.view(i), installed) {

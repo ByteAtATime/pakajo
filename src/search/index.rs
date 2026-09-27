@@ -27,6 +27,7 @@ pub(crate) struct PkgRow {
     tokens_len: u16,
     kws_start: u32,
     kws_len: u16,
+    pub(crate) max_kw_len: u16,
     pub(crate) popularity: u16,
     pub(crate) is_repo: bool,
     pub(crate) ascii_name: bool,
@@ -221,6 +222,14 @@ fn build_rows(raws: &[RawPkg], arena: &mut String) -> Vec<PkgRow> {
             .len()
             .try_into()
             .expect("keyword count exceeds u16");
+        let max_kw_len: u16 = raw
+            .keywords
+            .iter()
+            .map(|k| k.len())
+            .max()
+            .unwrap_or(0)
+            .try_into()
+            .expect("keyword length exceeds u16");
         rows.push(PkgRow {
             id: raw.id,
             name_off,
@@ -231,6 +240,7 @@ fn build_rows(raws: &[RawPkg], arena: &mut String) -> Vec<PkgRow> {
             tokens_len,
             kws_start: 0,
             kws_len,
+            max_kw_len,
             popularity: raw.popularity,
             is_repo: raw.is_repo,
             ascii_name: raw.name.is_ascii(),
