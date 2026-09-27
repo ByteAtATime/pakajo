@@ -10,6 +10,22 @@ pub fn ansi_strip(s: &str) -> String {
     ANSI_RE.replace_all(s, "").into_owned()
 }
 
+fn is_control(c: char) -> bool {
+    matches!(c, '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}')
+}
+
+pub fn strip_controls(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.chars().any(is_control) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    std::borrow::Cow::Owned(s.chars().filter(|c| !is_control(*c)).collect())
+}
+
+#[cfg(test)]
+pub(crate) fn drives_terminal(s: &str) -> bool {
+    s.chars().any(is_control)
+}
+
 pub const COLON: &str = "\x1b[1;34m";
 pub const BOLD: &str = "\x1b[0;1m";
 pub const VERSION: &str = "\x1b[38;5;243m";
@@ -125,7 +141,49 @@ pub fn visible_width(s: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{ansi_strip, visible_width};
+    use std::borrow::Cow;
+
+    use super::{ansi_strip, drives_terminal, strip_controls, visible_width};
+
+    #[test]
+    fn strip_controls_neutralizes_aur_metadata_payload() {
+        let payload = "\x1b]52;c;QVRUQUNL\x07 \x1b[?25l \x1b[8mHIDDEN-TEXT\x1b[28m";
+        let out = strip_controls(payload);
+        assert!(
+            !drives_terminal(&out),
+            "output still drives the terminal: {out:?}"
+        );
+        assert_eq!(out, "]52;c;QVRUQUNL [?25l [8mHIDDEN-TEXT[28m");
+    }
+
+    #[test]
+    fn strip_controls_neutralizes_sequences_ansi_strip_leaks() {
+        for payload in [
+            "\x1b7X\x1b8",
+            "\x1bc",
+            "\x1b[>c",
+            "\x1b[3 q",
+            "\x1bP1$r0m\x1b\\",
+            "\x1b_payload\x1b\\",
+            "over\twritten\rhere",
+            "back\u{8}space",
+            "del\x7fete",
+            "\u{9b}52c",
+        ] {
+            assert!(
+                !drives_terminal(&strip_controls(payload)),
+                "leaked for {payload:?}: {:?}",
+                strip_controls(payload)
+            );
+        }
+    }
+
+    #[test]
+    fn strip_controls_borrows_clean_text_without_allocating() {
+        let clean = "Audio visualizer for Linux, 日本語 ✓";
+        assert!(matches!(strip_controls(clean), Cow::Borrowed(_)));
+        assert_eq!(strip_controls(clean), clean);
+    }
 
     #[test]
     fn ansi_strip_table() {

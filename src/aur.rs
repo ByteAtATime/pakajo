@@ -1,10 +1,21 @@
 use std::time::Duration;
 
 use anyhow::Context as _;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::color::strip_controls;
 
 const AUR_RPC_URL: &str = "https://aur.archlinux.org/rpc/v5";
 const MAX_BATCH: usize = 200;
+
+fn de_text<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.map(|s| strip_controls(&s).into_owned()))
+}
+
+fn de_texts<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let raw = Vec::<String>::deserialize(d)?;
+    Ok(raw.iter().map(|s| strip_controls(s).into_owned()).collect())
+}
 
 #[derive(Debug, Deserialize)]
 pub struct RpcResponse<T> {
@@ -27,38 +38,40 @@ pub struct AurInfo {
     pub package_base_id: u64,
     pub package_base: String,
     pub version: String,
+    #[serde(default, deserialize_with = "de_text")]
     pub description: Option<String>,
-    #[serde(rename = "URL")]
+    #[serde(rename = "URL", default, deserialize_with = "de_text")]
     pub url: Option<String>,
     pub num_votes: u64,
     pub popularity: f64,
     pub out_of_date: Option<i64>,
+    #[serde(default, deserialize_with = "de_text")]
     pub maintainer: Option<String>,
     pub first_submitted: i64,
     pub last_modified: i64,
-    #[serde(rename = "URLPath")]
+    #[serde(rename = "URLPath", default)]
     pub url_path: Option<String>,
     #[serde(default)]
     pub submitter: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_texts")]
     pub depends: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_texts")]
     pub make_depends: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_texts")]
     pub check_depends: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_texts")]
     pub opt_depends: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_texts")]
     pub conflicts: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_texts")]
     pub provides: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_texts")]
     pub replaces: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_texts")]
     pub groups: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_texts")]
     pub license: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_texts")]
     pub keywords: Vec<String>,
     #[serde(default)]
     pub co_maintainers: Vec<String>,
@@ -133,6 +146,7 @@ impl Default for AurClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::drives_terminal;
 
     #[test]
     fn parses_multiinfo_sample() {
@@ -217,5 +231,29 @@ mod tests {
         let pkg = &parsed.results[0];
         assert_eq!(pkg.name, "google-chrome");
         assert_eq!(pkg.submitter, None);
+    }
+
+    #[test]
+    fn rpc_metadata_cannot_drive_the_terminal() {
+        let payload = "\u{1b}]52;c;QVRUQUNL\u{7} \u{1b}[?25l \u{1b}[8mHIDDEN\u{1b}[28m";
+        let hostile = serde_json::to_string(&payload).unwrap();
+        let sample = format!(
+            r#"{{"version":5,"type":"multiinfo","resultcount":1,"results":[{{"ID":1,"Name":"cava","PackageBaseID":1,"PackageBase":"cava","Version":"1.0-1","FirstSubmitted":1,"LastModified":2,"NumVotes":0,"Popularity":0.0,"Description":{h},"URL":{h},"Maintainer":{h},"Depends":[{h}]}}]}}"#,
+            h = hostile
+        );
+
+        let parsed: RpcResponse<AurInfo> = serde_json::from_str(&sample).unwrap();
+        let pkg = &parsed.results[0];
+        assert_eq!(
+            pkg.description.as_deref(),
+            Some("]52;c;QVRUQUNL [?25l [8mHIDDEN[28m")
+        );
+        for text in [
+            pkg.url.as_deref().unwrap_or_default(),
+            pkg.maintainer.as_deref().unwrap_or_default(),
+            &pkg.depends[0],
+        ] {
+            assert!(!drives_terminal(text), "still hostile: {text:?}");
+        }
     }
 }

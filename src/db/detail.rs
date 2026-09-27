@@ -3,6 +3,7 @@ impl super::PackageDb {
         use rusqlite::OptionalExtension;
         let conn = self.read.lock().expect("read connection poisoned");
         let split_list = super::split_list;
+        let clean_text = super::clean_text;
         let key = name.to_string();
         let info: Option<crate::aur::AurInfo> = conn
             .query_row(
@@ -18,12 +19,12 @@ impl super::PackageDb {
                         package_base_id: 0,
                         package_base: row.get(4)?,
                         version: row.get(0)?,
-                        description: row.get(1)?,
-                        url: row.get(5)?,
+                        description: row.get::<_, Option<String>>(1)?.map(clean_text),
+                        url: row.get::<_, Option<String>>(5)?.map(clean_text),
                         num_votes: row.get::<_, i64>(2)? as u64,
                         popularity: row.get(3)?,
                         out_of_date: row.get(6)?,
-                        maintainer: row.get(7)?,
+                        maintainer: row.get::<_, Option<String>>(7)?.map(clean_text),
                         first_submitted: 0,
                         last_modified: row.get::<_, i64>(16)?,
                         url_path: None,
@@ -92,6 +93,37 @@ impl super::PackageDb {
 mod tests {
     use crate::aur::AurInfo;
     use crate::db::PackageDb;
+
+    #[test]
+    fn detail_reads_a_poisoned_index_row_inert() {
+        use crate::color::drives_terminal;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = PackageDb::open(&dir.path().join("aur-meta.sqlite")).expect("open");
+
+        let hostile = "\u{1b}]52;c;QVRUQUNL\u{7} \u{1b}[?25l";
+        {
+            let conn = index.write.lock().expect("write connection poisoned");
+            conn.execute(
+                "INSERT INTO packages \
+                 (name,source,version,description,url,maintainer,license,depends,package_base,num_votes,popularity,last_update,keywords) \
+                 VALUES ('evil','aur','1.0-1',?1,?1,?1,?1,?1,'evil',0,0.0,1,'')",
+                [hostile],
+            )
+            .expect("seed hostile row");
+        }
+
+        let info = index.detail("evil").expect("query").expect("present");
+        for text in [
+            info.description.as_deref().unwrap_or_default(),
+            info.url.as_deref().unwrap_or_default(),
+            info.maintainer.as_deref().unwrap_or_default(),
+            &info.license[0],
+            &info.depends[0],
+        ] {
+            assert!(!drives_terminal(text), "still hostile: {text:?}");
+        }
+        assert_eq!(info.description.as_deref(), Some("]52;c;QVRUQUNL [?25l"));
+    }
 
     #[test]
     fn detail_correctly_queried_and_omitted_keys_are_empty() {

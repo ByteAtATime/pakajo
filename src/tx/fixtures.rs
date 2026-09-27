@@ -10,6 +10,7 @@ use std::path::Path;
 pub struct Pkg {
     pub name: &'static str,
     pub version: &'static str,
+    pub desc: Option<&'static str>,
     pub depends: Vec<&'static str>,
     pub provides: Vec<&'static str>,
     pub conflicts: Vec<&'static str>,
@@ -22,6 +23,7 @@ impl Pkg {
         Pkg {
             name,
             version: "1.0-1",
+            desc: None,
             depends: Vec::new(),
             provides: Vec::new(),
             conflicts: Vec::new(),
@@ -40,6 +42,7 @@ impl Pkg {
         Pkg {
             name,
             version,
+            desc: None,
             depends: depends.to_vec(),
             provides: provides.to_vec(),
             conflicts: Vec::new(),
@@ -47,6 +50,14 @@ impl Pkg {
             groups: groups.to_vec(),
         }
     }
+}
+
+fn push_tag(out: &mut String, tag: &str, value: &str) {
+    out.push_str(tag);
+    out.push('\n');
+    out.push_str(value);
+    out.push('\n');
+    out.push('\n');
 }
 
 fn push_tag_list(out: &mut String, tag: &str, entries: &[&'static str]) {
@@ -69,6 +80,9 @@ fn desc(package: &Pkg) -> Vec<u8> {
         package.version,
         filename(package.name, package.version),
     );
+    if let Some(desc) = package.desc {
+        push_tag(&mut out, "%DESC%", desc);
+    }
     push_tag_list(&mut out, "%DEPENDS%", &package.depends);
     push_tag_list(&mut out, "%CONFLICTS%", &package.conflicts);
     push_tag_list(&mut out, "%REPLACES%", &package.replaces);

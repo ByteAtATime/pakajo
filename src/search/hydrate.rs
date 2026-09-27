@@ -13,7 +13,10 @@ pub fn row_to_result(row: &PackageRow, installed: &HashSet<String>) -> SearchRes
     SearchResult {
         name: row.name.clone(),
         source,
-        description: row.description.clone(),
+        description: row
+            .description
+            .clone()
+            .map(|d| crate::color::strip_controls(&d).into_owned()),
         version: row.version.clone(),
         repo: row.repo.clone(),
         installed: installed.contains(&row.name),

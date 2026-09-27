@@ -137,9 +137,13 @@ pub(super) fn split_list(value: Option<String>) -> Vec<String> {
         Some(text) => text
             .split('\n')
             .filter(|entry| !entry.is_empty())
-            .map(|entry| entry.to_string())
+            .map(|entry| clean_text(entry.to_string()))
             .collect(),
     }
+}
+
+pub(super) fn clean_text(value: String) -> String {
+    crate::color::strip_controls(&value).into_owned()
 }
 
 pub mod detail;

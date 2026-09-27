@@ -158,12 +158,13 @@ fn insert_repo_rows(stmt: &mut rusqlite::Statement, handle: &alpm::Alpm) -> anyh
     for db in handle.syncdbs().iter() {
         let repo = db.name();
         for pkg in db.pkgs().iter() {
+            let desc = pkg.desc().map(crate::color::strip_controls);
             stmt.execute(rusqlite::params![
                 pkg.name(),
                 "repo",
                 repo,
                 pkg.version().as_str(),
-                pkg.desc(),
+                desc.as_ref(),
                 &null_votes,
                 &null_popularity,
                 pkg.build_date(),

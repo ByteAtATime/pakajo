@@ -1,4 +1,5 @@
 use crate::aur::AurInfo;
+use crate::color::strip_controls;
 use alpm_utils::DbListExt;
 
 #[derive(Debug, Clone)]
@@ -175,10 +176,14 @@ impl From<&alpm::Package> for Package {
         let build_date = pkg.build_date();
         Self {
             name: pkg.name().to_string(),
-            description: pkg.desc().map(|x| x.to_string()),
+            description: pkg.desc().map(|x| strip_controls(x).into_owned()),
             version: pkg.version().to_string(),
-            maintainer: pkg.packager().map(|x| x.to_string()),
-            licenses: pkg.licenses().iter().map(|x| x.to_string()).collect(),
+            maintainer: pkg.packager().map(|x| strip_controls(x).into_owned()),
+            licenses: pkg
+                .licenses()
+                .iter()
+                .map(|x| strip_controls(x).into_owned())
+                .collect(),
             groups: pkg.groups().iter().map(|x| x.to_string()).collect(),
             provides: pkg.provides().iter().map(|x| x.to_string()).collect(),
             conflicts: pkg.conflicts().iter().map(|x| x.to_string()).collect(),
@@ -474,6 +479,33 @@ mod tests {
             members.iter().any(|m| m == "make"),
             "base-devel should contain make; got {members:?}"
         );
+    }
+
+    #[test]
+    fn repo_package_description_cannot_drive_the_terminal() {
+        use crate::color::drives_terminal;
+        use crate::tx::fixtures::{Pkg, fixture};
+
+        let hostile = "\u{1b}]52;c;QVRUQUNL\u{7} \u{1b}[?25l \u{1b}[8mHIDDEN\u{1b}[28m";
+        let pkg = Pkg {
+            desc: Some(hostile),
+            ..Pkg::plain("hostile-repo-pkg")
+        };
+        let (_dir, handle) = fixture(&[pkg]);
+        let alpm_pkg = handle
+            .syncdbs()
+            .iter()
+            .flat_map(|db| db.pkgs().iter())
+            .find(|p| p.name() == "hostile-repo-pkg")
+            .expect("fixture package should be indexed");
+
+        let converted = Package::from(alpm_pkg);
+        let desc = converted.description.as_deref().unwrap_or_default();
+        assert!(
+            !drives_terminal(desc),
+            "repo description still drives the terminal: {desc:?}"
+        );
+        assert_eq!(desc, "]52;c;QVRUQUNL [?25l [8mHIDDEN[28m");
     }
 
     #[test]
