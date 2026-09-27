@@ -229,15 +229,6 @@ fn expensive_only_pass(
     cands
 }
 
-const TERM_TIERS: &[Tier] = &[
-    Tier::ExactName,
-    Tier::ExactToken,
-    Tier::PrefixName,
-    Tier::PrefixToken,
-    Tier::Substring,
-    Tier::Keyword,
-];
-
 fn term_tier_at(
     index: &PackageIndex,
     pkg: usize,
@@ -250,7 +241,35 @@ fn term_tier_at(
     if !filter.matches(index.view(pkg), installed) {
         return None;
     }
-    tier_at(index, pkg, term, TERM_TIERS, qmask, qbig)
+    let name = index.name(pkg);
+    if name == term {
+        return Some(Tier::ExactName);
+    }
+    let mut prefix_token = false;
+    for k in 0..index.tokens_len(pkg) {
+        let token = index.token(pkg, k);
+        if token == term {
+            return Some(Tier::ExactToken);
+        }
+        prefix_token |= token.starts_with(term);
+    }
+    if name.starts_with(term) {
+        return Some(Tier::PrefixName);
+    }
+    if prefix_token {
+        return Some(Tier::PrefixToken);
+    }
+    let r = index.row(pkg);
+    if (qmask & !r.name_mask) == 0 && (qbig & !r.name_bigrams) == 0 && name.contains(term) {
+        return Some(Tier::Substring);
+    }
+    if (qmask & !r.kw_mask) == 0
+        && (qbig & !r.kw_bigrams) == 0
+        && (0..index.kws_len(pkg)).any(|k| index.keyword(pkg, k).contains(term))
+    {
+        return Some(Tier::Keyword);
+    }
+    None
 }
 
 fn term_matches_any(
