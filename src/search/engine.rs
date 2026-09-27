@@ -271,6 +271,16 @@ fn expensive_only_pass(
     cands
 }
 
+fn term_seed_passes(row: &crate::search::index::PkgRow, qmask: u64, qbig: u64) -> bool {
+    if (qmask & !row.name_mask) != 0 && (qmask & !row.kw_mask) != 0 {
+        return false;
+    }
+    if (qbig & !row.name_bigrams) != 0 && (qbig & !row.kw_bigrams) != 0 {
+        return false;
+    }
+    true
+}
+
 fn term_tier_at(
     index: &PackageIndex,
     pkg: usize,
@@ -322,8 +332,10 @@ fn term_matches_any(
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> bool {
-    (0..index.len())
-        .any(|pkg| term_tier_at(index, pkg, term, qmask, qbig, filter, installed).is_some())
+    (0..index.len()).any(|pkg| {
+        term_seed_passes(index.row(pkg), qmask, qbig)
+            && term_tier_at(index, pkg, term, qmask, qbig, filter, installed).is_some()
+    })
 }
 
 fn normalized_name_tiers(
@@ -372,7 +384,7 @@ fn multi_term_candidates(
             survivors = (0..index.len())
                 .filter_map(|pkg| {
                     let r = index.row(pkg);
-                    if (qmask & !r.name_mask) != 0 && (qmask & !r.kw_mask) != 0 {
+                    if !term_seed_passes(r, qmask, qbig) {
                         return None;
                     }
                     term_tier_at(index, pkg, term, qmask, qbig, filter, installed)
