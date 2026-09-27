@@ -575,16 +575,6 @@ impl PackageIndex {
         self.token_scan_starts[len] as usize..self.token_scan_starts[len + 1] as usize
     }
 
-    pub(crate) fn view(&self, pi: usize) -> crate::search::tiers::PkgView<'_> {
-        let r = &self.rows[pi];
-        crate::search::tiers::PkgView {
-            name: self.name(pi),
-            id: r.id,
-            popularity: r.popularity,
-            is_repo: r.is_repo,
-        }
-    }
-
     pub(crate) fn name_char_word(&self, word: usize, bit: usize) -> u64 {
         self.name_char_words[word * CHAR_BITS + bit]
     }
@@ -891,10 +881,10 @@ mod tests {
         assert_eq!(loaded.tokens_len(0), 1);
         assert_eq!(loaded.token(0, 0), "vim");
         assert_eq!(loaded.kws_len(0), 0);
-        let v0 = loaded.view(0);
-        assert_eq!(v0.id, 1);
-        assert_eq!(v0.popularity, 0);
-        assert!(!v0.is_repo);
+        let r0 = loaded.row(0);
+        assert_eq!(r0.id, 1);
+        assert_eq!(r0.popularity, 0);
+        assert!(!r0.is_repo);
 
         assert_eq!(loaded.name(1), "google-chrome");
         assert_eq!(loaded.tokens_len(1), 2);
@@ -909,10 +899,10 @@ mod tests {
             .collect();
         kws.sort_unstable();
         assert_eq!(kws, vec!["browser", "web"]);
-        let v1 = loaded.view(1);
-        assert_eq!(v1.id, 2);
-        assert_eq!(v1.popularity, 100);
-        assert!(!v1.is_repo);
+        let r1 = loaded.row(1);
+        assert_eq!(r1.id, 2);
+        assert_eq!(r1.popularity, 100);
+        assert!(!r1.is_repo);
 
         let utoks: Vec<&str> = (0..loaded.unique_tokens.len())
             .map(|id| loaded.token_str(id))

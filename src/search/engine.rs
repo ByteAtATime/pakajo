@@ -230,7 +230,7 @@ fn gather_cheap_candidates(
                     continue;
                 }
                 marks.insert(pkg);
-                if filter.matches(index.view(pkg), installed) {
+                if filter.row_matches(index, pkg, installed) {
                     scored_push(&mut out, index, pkg, tier, 0, false);
                 }
                 if stop_in_range && out.len() >= RESULT_LIMIT {
@@ -263,7 +263,7 @@ fn expensive_only_pass(
         if seen.contains(i) {
             continue;
         }
-        if filter.matches(index.view(i), installed)
+        if filter.row_matches(index, i, installed)
             && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask, qbig)
         {
             scored_push(&mut cands, index, i, tier, 0, false);
@@ -334,7 +334,7 @@ fn term_tier_at(
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> Option<Tier> {
-    if !filter.matches(index.view(pkg), installed) {
+    if !filter.row_matches(index, pkg, installed) {
         return None;
     }
     let name = index.name(pkg);
@@ -403,7 +403,7 @@ fn normalized_name_tiers(
     let nqmask = byte_mask(nq.as_bytes());
     for pkg in 0..index.len() {
         let r = index.row(pkg);
-        if (nqmask & !r.name_mask) != 0 || !filter.matches(index.view(pkg), installed) {
+        if (nqmask & !r.name_mask) != 0 || !filter.row_matches(index, pkg, installed) {
             continue;
         }
         let nn = index.norm_name(pkg);
@@ -634,7 +634,7 @@ fn fused_expensive_row(
     if (name_tier_arm || kw_tier_arm)
         && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, chars.mask, qbig)
     {
-        if filter.matches(index.view(i), installed) {
+        if filter.row_matches(index, i, installed) {
             scored_push(cands, index, i, tier, 0, false);
         }
         placed.insert(i);
@@ -648,7 +648,7 @@ fn fused_expensive_row(
     else {
         return;
     };
-    if !filter.matches(index.view(i), installed) {
+    if !filter.row_matches(index, i, installed) {
         placed.insert(i);
         return;
     }
@@ -697,7 +697,7 @@ fn seed_fuzzy_token(
         if placed.contains(pkg) {
             continue;
         }
-        if !filter.matches(index.view(pkg), installed) {
+        if !filter.row_matches(index, pkg, installed) {
             placed.insert(pkg);
             continue;
         }
@@ -837,7 +837,7 @@ fn quoted_pairs(
         let mut words = cell.borrow_mut();
         bigram_words(index, bigram_mask(q.as_bytes()), &mut words);
         for_each_row(&words, |pi| {
-            if filter.matches(index.view(pi), installed) && index.name(pi).contains(q) {
+            if filter.row_matches(index, pi, installed) && index.name(pi).contains(q) {
                 scored_push(&mut cands, index, pi, Tier::Substring, 0, false);
             }
             ControlFlow::Continue(())
@@ -910,7 +910,7 @@ fn to_sorted_pairs(index: &PackageIndex, cands: Vec<Scored>) -> Vec<(u32, Tier)>
 mod tests {
     use super::*;
     use crate::search::index::{RawPkg, assemble, tokenize};
-    use crate::search::tiers::{Candidate, candidate_ordering};
+    use crate::search::tiers::{Candidate, PkgView, candidate_ordering};
     use std::collections::HashMap;
 
     fn pkg(id: u32, name: &str, is_repo: bool, popularity: u16) -> RawPkg {
@@ -1108,6 +1108,16 @@ mod tests {
         assert_eq!(ids, (1u32..=30).collect::<Vec<u32>>());
     }
 
+    fn view_of<'a>(index: &'a PackageIndex, pi: usize) -> PkgView<'a> {
+        let r = index.row(pi);
+        PkgView {
+            name: index.name(pi),
+            id: r.id,
+            popularity: r.popularity,
+            is_repo: r.is_repo,
+        }
+    }
+
     #[test]
     fn exact_token_block_is_sorted_so_the_first_thirty_are_the_best_thirty() {
         let packages: Vec<RawPkg> = (1u32..=60)
@@ -1124,7 +1134,7 @@ mod tests {
 
         let mut expected: Vec<Candidate<'_>> = (0..index.len())
             .map(|pi| Candidate {
-                view: index.view(pi),
+                view: view_of(&index, pi),
                 tier: Tier::ExactToken,
                 distance: 0,
                 first_letter_match: false,

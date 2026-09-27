@@ -4,7 +4,7 @@ use crate::db::PackageDb;
 use crate::package::PackageSource;
 
 use engine::SearchEngine;
-use tiers::{PkgView, Tier};
+use tiers::Tier;
 
 pub mod engine;
 pub mod fuzzy;
@@ -38,12 +38,17 @@ pub enum SearchFilter {
 }
 
 impl SearchFilter {
-    pub fn matches(self, view: PkgView<'_>, installed: &HashSet<String>) -> bool {
+    pub fn row_matches(
+        self,
+        index: &index::PackageIndex,
+        pi: usize,
+        installed: &HashSet<String>,
+    ) -> bool {
         match self {
             SearchFilter::All => true,
-            SearchFilter::Official => view.is_repo,
-            SearchFilter::Aur => !view.is_repo,
-            SearchFilter::Installed => installed.contains(view.name),
+            SearchFilter::Official => index.row(pi).is_repo,
+            SearchFilter::Aur => !index.row(pi).is_repo,
+            SearchFilter::Installed => installed.contains(index.name(pi)),
         }
     }
 }
