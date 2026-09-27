@@ -33,24 +33,21 @@ pub struct Scored {
     pub pkg: u32,
 }
 
-pub fn pack_sort_key(
-    tier: Tier,
-    distance: u8,
-    first_letter_match: bool,
-    name_len: usize,
-    is_repo: bool,
-    popularity: u16,
-) -> u64 {
-    let name_len = name_len.min(u16::MAX as usize) as u64;
+const FIRST_LETTER_SHIFT: u32 = 33;
+
+pub fn rank_bits(name_len: u16, is_repo: bool, popularity: u16) -> u64 {
+    (1 << FIRST_LETTER_SHIFT)
+        | (name_len as u64) << 17
+        | ((!is_repo) as u64) << 16
+        | (u16::MAX - popularity) as u64
+}
+
+pub fn pack_sort_key(tier: Tier, distance: u8, first_letter_match: bool, rank: u64) -> u64 {
     let not_first = (!first_letter_match) as u64;
-    let not_repo = (!is_repo) as u64;
-    let not_pop = (u16::MAX - popularity) as u64;
     ((tier as u64) << 42)
         | ((distance as u64) << 34)
-        | (not_first << 33)
-        | (name_len << 17)
-        | (not_repo << 16)
-        | not_pop
+        | (rank & !(1 << FIRST_LETTER_SHIFT))
+        | (not_first << FIRST_LETTER_SHIFT)
 }
 
 pub fn tier_of_key(key: u64) -> Tier {

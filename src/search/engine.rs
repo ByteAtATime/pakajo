@@ -1,5 +1,6 @@
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -134,21 +135,13 @@ fn scored_push(
     distance: u8,
     first_letter_match: bool,
 ) {
-    let row = index.row(pkg);
     out.push(Scored {
-        key: pack_sort_key(
-            tier,
-            distance,
-            first_letter_match,
-            index.name(pkg).len(),
-            row.is_repo,
-            row.popularity,
-        ),
+        key: pack_sort_key(tier, distance, first_letter_match, index.rank_word(pkg)),
         pkg: pkg as u32,
     });
 }
 
-fn scored_ordering(index: &PackageIndex, a: &Scored, b: &Scored) -> std::cmp::Ordering {
+fn scored_ordering(index: &PackageIndex, a: &Scored, b: &Scored) -> Ordering {
     a.key
         .cmp(&b.key)
         .then_with(|| index.name(a.pkg as usize).cmp(index.name(b.pkg as usize)))
@@ -736,15 +729,60 @@ fn quoted_pairs(
     to_sorted_pairs(index, cands)
 }
 
-fn to_sorted_pairs(index: &PackageIndex, mut cands: Vec<Scored>) -> Vec<(u32, Tier)> {
-    let mut ord = |a: &Scored, b: &Scored| scored_ordering(index, a, b);
-    if cands.len() > RESULT_LIMIT {
-        cands.select_nth_unstable_by(RESULT_LIMIT, &mut ord);
-        cands[..RESULT_LIMIT + 1].sort_by(&mut ord);
-    } else {
-        cands.sort_by(&mut ord);
+struct WorstFirst<'a> {
+    index: &'a PackageIndex,
+    scored: Scored,
+}
+
+impl Ord for WorstFirst<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        scored_ordering(self.index, &other.scored, &self.scored)
     }
-    cands.truncate(RESULT_LIMIT);
+}
+
+impl PartialOrd for WorstFirst<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for WorstFirst<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for WorstFirst<'_> {}
+
+fn beats_heap_top(
+    index: &PackageIndex,
+    heap: &BinaryHeap<WorstFirst<'_>>,
+    scored: &Scored,
+) -> bool {
+    heap.peek()
+        .is_some_and(|worst| scored_ordering(index, scored, &worst.scored) == Ordering::Less)
+}
+
+fn best_k(index: &PackageIndex, cands: Vec<Scored>, k: usize) -> Vec<Scored> {
+    let mut heap: BinaryHeap<WorstFirst<'_>> = BinaryHeap::with_capacity(k);
+    for scored in cands {
+        if heap.len() == k {
+            if !beats_heap_top(index, &heap, &scored) {
+                continue;
+            }
+            heap.pop();
+        }
+        heap.push(WorstFirst { index, scored });
+    }
+    heap.into_vec().into_iter().map(|w| w.scored).collect()
+}
+
+fn to_sorted_pairs(index: &PackageIndex, cands: Vec<Scored>) -> Vec<(u32, Tier)> {
+    let mut cands = match cands.len() > RESULT_LIMIT {
+        true => best_k(index, cands, RESULT_LIMIT),
+        false => cands,
+    };
+    cands.sort_by(|a, b| scored_ordering(index, a, b));
     cands
         .into_iter()
         .map(|c| (index.row(c.pkg as usize).id, tier_of_key(c.key)))
@@ -919,6 +957,16 @@ mod tests {
         let index = index_with(packages);
         let ids = search_index(&index, "prefix");
         assert_eq!(ids.len(), 30);
+    }
+
+    #[test]
+    fn overflowing_candidates_keep_the_best_thirty_ranked() {
+        let packages: Vec<RawPkg> = (1u32..=40)
+            .map(|i| pkg(i, &format!("prefix-{i}"), false, 0))
+            .collect();
+        let index = index_with(packages);
+        let ids = search_index(&index, "prefix");
+        assert_eq!(ids, (1u32..=30).collect::<Vec<u32>>());
     }
 
     #[test]

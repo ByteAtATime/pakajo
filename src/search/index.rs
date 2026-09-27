@@ -3,6 +3,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::search::tiers::rank_bits;
+
 const POP_NORM_MAX: f64 = 100.0;
 const INDEX_MAGIC: [u8; 4] = *b"v002";
 
@@ -49,6 +51,7 @@ pub(crate) struct RawPkg {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct PackageIndex {
     pub(crate) rows: Vec<PkgRow>,
+    pub(crate) rank_bits: Box<[u64]>,
     pub(crate) arena: Box<str>,
     pub(crate) token_ids: Box<[u32]>,
     pub(crate) kw_ids: Box<[u32]>,
@@ -331,6 +334,12 @@ fn build_token_inversion(
     }
 }
 
+fn build_rank_bits(rows: &[PkgRow]) -> Vec<u64> {
+    rows.iter()
+        .map(|r| rank_bits(r.name_len, r.is_repo, r.popularity))
+        .collect()
+}
+
 fn build_keyword_ids(
     raws: &[RawPkg],
     arena: &mut String,
@@ -411,6 +420,7 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
         build_word_table(rows.iter().map(|r| r.name_bigrams), words, BIGRAM_BITS);
 
     let mut index = PackageIndex {
+        rank_bits: build_rank_bits(&rows).into_boxed_slice(),
         rows,
         arena: arena.into_boxed_str(),
         token_ids: token_ids.into_boxed_slice(),
@@ -452,6 +462,10 @@ impl PackageIndex {
 
     pub(crate) fn row(&self, pi: usize) -> &PkgRow {
         &self.rows[pi]
+    }
+
+    pub(crate) fn rank_word(&self, pi: usize) -> u64 {
+        self.rank_bits[pi]
     }
 
     pub(crate) fn row_words(&self) -> usize {
@@ -640,6 +654,9 @@ impl PackageIndex {
             let end = start + len as usize;
             end <= arena.len() && arena.is_char_boundary(start) && arena.is_char_boundary(end)
         };
+        if self.rank_bits.len() != self.rows.len() {
+            return false;
+        }
         if self.unique_token_masks.len() != self.unique_tokens.len() {
             return false;
         }
