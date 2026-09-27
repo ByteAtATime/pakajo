@@ -1,19 +1,20 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use crate::search::SearchFilter;
 use crate::search::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE, at_most_two_missing};
-use crate::search::index::{CHAR_BITS, PackageIndex, bigram_mask, byte_mask, needs_rebuild};
+use crate::search::index::{PackageIndex, bigram_mask, byte_mask, needs_rebuild};
 use crate::search::query::{ParsedQuery, parse_query};
 use crate::search::tiers::{Scored, Tier, pack_sort_key, tier_at, tier_of_key};
 
 const RESULT_LIMIT: usize = 30;
 const FUZZY_GATE: usize = 5;
-const MIN_BITMAP_QUERY_CHARS: u32 = 3;
-const MAX_BITMAP_QUERY_CHARS: u32 = 12;
+const MIN_BITMAP_QUERY_CHARS: usize = 3;
+const MAX_BITMAP_QUERY_CHARS: usize = 12;
 
 const SHORT_TIERS: &[Tier] = &[Tier::ExactName, Tier::ExactToken, Tier::PrefixName];
 const CHEAP_TIERS_ALL: &[Tier] = &[
@@ -272,19 +273,40 @@ fn expensive_only_pass(
 }
 
 fn seed_words(index: &PackageIndex, qmask: u64, out: &mut Vec<u64>) {
-    let chars: Vec<usize> = (0..CHAR_BITS).filter(|b| qmask >> b & 1 == 1).collect();
     out.clear();
     out.resize(index.row_words(), 0);
     for (w, slot) in out.iter_mut().enumerate() {
+        let mut rest = qmask;
         let mut name_all = u64::MAX;
         let mut kw_all = u64::MAX;
-        for &b in &chars {
+        while rest != 0 {
+            let b = rest.trailing_zeros() as usize;
             name_all &= index.name_char_word(w, b);
             kw_all &= index.kw_char_word(w, b);
+            rest &= rest - 1;
         }
         *slot = name_all | kw_all;
     }
     mask_tail(index, out);
+}
+
+fn for_each_seed_row(
+    index: &PackageIndex,
+    term: &str,
+    qmask: u64,
+    qbig: u64,
+    filter: SearchFilter,
+    installed: &HashSet<String>,
+    mut visit: impl FnMut(usize, Tier) -> ControlFlow<()>,
+) {
+    PREFILTER.with(|cell| {
+        let mut words = cell.borrow_mut();
+        seed_words(index, qmask, &mut words);
+        for_each_row(&words, |pkg| {
+            term_tier_at(index, pkg, term, qmask, qbig, filter, installed)
+                .map_or(ControlFlow::Continue(()), |tier| visit(pkg, tier))
+        });
+    });
 }
 
 fn seed_rows(
@@ -295,17 +317,12 @@ fn seed_rows(
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> Vec<(usize, Tier)> {
-    PREFILTER.with(|cell| {
-        let mut words = cell.borrow_mut();
-        seed_words(index, qmask, &mut words);
-        let mut out: Vec<(usize, Tier)> = Vec::new();
-        for_each_row(&words, |pkg| {
-            if let Some(tier) = term_tier_at(index, pkg, term, qmask, qbig, filter, installed) {
-                out.push((pkg, tier));
-            }
-        });
-        out
-    })
+    let mut out: Vec<(usize, Tier)> = Vec::new();
+    for_each_seed_row(index, term, qmask, qbig, filter, installed, |pkg, tier| {
+        out.push((pkg, tier));
+        ControlFlow::Continue(())
+    });
+    out
 }
 
 fn term_tier_at(
@@ -359,7 +376,12 @@ fn term_matches_any(
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> bool {
-    !seed_rows(index, term, qmask, qbig, filter, installed).is_empty()
+    let mut matched = false;
+    for_each_seed_row(index, term, qmask, qbig, filter, installed, |_, _| {
+        matched = true;
+        ControlFlow::Break(())
+    });
+    matched
 }
 
 fn normalized_name_tiers(
@@ -473,39 +495,60 @@ struct FusedCtx<'a> {
     installed: &'a HashSet<String>,
 }
 
-fn drop_subsets(n: usize) -> Vec<u64> {
-    let mut out = vec![0u64];
-    for d in 0..n {
-        out.push(1u64 << d);
+const DROPPED_SUBSET_COUNT: usize =
+    1 + MAX_BITMAP_QUERY_CHARS + MAX_BITMAP_QUERY_CHARS * (MAX_BITMAP_QUERY_CHARS - 1) / 2;
+
+const DROPPED_SUBSETS: [u64; DROPPED_SUBSET_COUNT] = {
+    let mut out = [0u64; DROPPED_SUBSET_COUNT];
+    let mut slot = 1;
+    let mut d = 0;
+    while d < MAX_BITMAP_QUERY_CHARS {
+        out[slot] = 1u64 << d;
+        slot += 1;
+        d += 1;
     }
-    for a in 0..n {
-        for b in a + 1..n {
-            out.push((1u64 << a) | (1u64 << b));
+    let mut a = 0;
+    while a < MAX_BITMAP_QUERY_CHARS {
+        let mut b = a + 1;
+        while b < MAX_BITMAP_QUERY_CHARS {
+            out[slot] = (1u64 << a) | (1u64 << b);
+            slot += 1;
+            b += 1;
         }
+        a += 1;
     }
     out
+};
+
+fn dropped_subsets(query_chars: usize) -> &'static [u64] {
+    &DROPPED_SUBSETS[..1 + query_chars + query_chars * query_chars.saturating_sub(1) / 2]
 }
 
 fn prefilter_words(index: &PackageIndex, qmask: u64, out: &mut Vec<u64>) {
-    let words = index.row_words();
+    let dropped = dropped_subsets(qmask.count_ones() as usize);
     out.clear();
-    out.resize(words, 0);
-    let chars: Vec<usize> = (0..CHAR_BITS).filter(|b| qmask >> b & 1 == 1).collect();
-    let dropped = drop_subsets(chars.len());
+    out.resize(index.row_words(), 0);
     for (w, slot) in out.iter_mut().enumerate() {
         let mut name_union = 0u64;
-        for d in &dropped {
+        for d in dropped {
             let mut acc = u64::MAX;
-            for (ci, &b) in chars.iter().enumerate() {
-                if d >> ci & 1 == 0 {
+            let mut rank = 0;
+            let mut rest = qmask;
+            while rest != 0 {
+                let b = rest.trailing_zeros() as usize;
+                if d >> rank & 1 == 0 {
                     acc &= index.name_char_word(w, b);
                 }
+                rank += 1;
+                rest &= rest - 1;
             }
             name_union |= acc;
         }
         let mut kw_all = u64::MAX;
-        for &b in &chars {
-            kw_all &= index.kw_char_word(w, b);
+        let mut rest = qmask;
+        while rest != 0 {
+            kw_all &= index.kw_char_word(w, rest.trailing_zeros() as usize);
+            rest &= rest - 1;
         }
         *slot = name_union | kw_all;
     }
@@ -628,17 +671,17 @@ fn fused_expensive_fuzzy_pass(
 
     PREFILTER.with(|cell| {
         let mut words = cell.borrow_mut();
-        let query_chars = qmask.count_ones();
+        let query_chars = qmask.count_ones() as usize;
         if (MIN_BITMAP_QUERY_CHARS..=MAX_BITMAP_QUERY_CHARS).contains(&query_chars) {
             prefilter_words(index, qmask, &mut words);
         } else {
             full_words(index, &mut words);
         }
         for_each_row(&words, |i| {
-            if seen.contains(i) {
-                return;
+            if !seen.contains(i) {
+                fused_expensive_row(&ctx, i, &mut matcher, &mut cands, &mut fuzzy_buf, placed);
             }
-            fused_expensive_row(&ctx, i, &mut matcher, &mut cands, &mut fuzzy_buf, placed);
+            ControlFlow::Continue(())
         });
     });
 
@@ -715,11 +758,13 @@ fn bigram_words(index: &PackageIndex, qbig: u64, out: &mut Vec<u64>) {
     mask_tail(index, out);
 }
 
-fn for_each_row(words: &[u64], mut visit: impl FnMut(usize)) {
+fn for_each_row(words: &[u64], mut visit: impl FnMut(usize) -> ControlFlow<()>) {
     for (w, word) in words.iter().enumerate() {
         let mut bits = *word;
         while bits != 0 {
-            visit(w * 64 + bits.trailing_zeros() as usize);
+            if visit(w * 64 + bits.trailing_zeros() as usize).is_break() {
+                return;
+            }
             bits &= bits.wrapping_sub(1);
         }
     }
@@ -736,13 +781,10 @@ fn quoted_pairs(
         let mut words = cell.borrow_mut();
         bigram_words(index, bigram_mask(q.as_bytes()), &mut words);
         for_each_row(&words, |pi| {
-            if !filter.matches(index.view(pi), installed) {
-                return;
+            if filter.matches(index.view(pi), installed) && index.name(pi).contains(q) {
+                scored_push(&mut cands, index, pi, Tier::Substring, 0, false);
             }
-            if !index.name(pi).contains(q) {
-                return;
-            }
-            scored_push(&mut cands, index, pi, Tier::Substring, 0, false);
+            ControlFlow::Continue(())
         });
     });
     to_sorted_pairs(index, cands)
