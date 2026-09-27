@@ -5,12 +5,14 @@ use std::sync::{Arc, RwLock};
 
 use crate::search::SearchFilter;
 use crate::search::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE, at_most_two_missing};
-use crate::search::index::{PackageIndex, bigram_mask, byte_mask, needs_rebuild};
+use crate::search::index::{CHAR_BITS, PackageIndex, bigram_mask, byte_mask, needs_rebuild};
 use crate::search::query::{ParsedQuery, parse_query};
 use crate::search::tiers::{Scored, Tier, pack_sort_key, tier_at, tier_of_key};
 
 const RESULT_LIMIT: usize = 30;
 const FUZZY_GATE: usize = 5;
+const MIN_BITMAP_QUERY_CHARS: u32 = 3;
+const MAX_BITMAP_QUERY_CHARS: u32 = 12;
 
 const SHORT_TIERS: &[Tier] = &[Tier::ExactName, Tier::ExactToken, Tier::PrefixName];
 const CHEAP_TIERS_ALL: &[Tier] = &[
@@ -162,6 +164,7 @@ thread_local! {
     static GATHER: RefCell<EpochSet> = const { RefCell::new(EpochSet::new()) };
     static SCAN_SEEN: RefCell<EpochSet> = const { RefCell::new(EpochSet::new()) };
     static SCAN_PLACED: RefCell<EpochSet> = const { RefCell::new(EpochSet::new()) };
+    static PREFILTER: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
 }
 
 struct EpochSet {
@@ -446,6 +449,141 @@ fn fuzzy_score_from_seed(
     (distance, first_letter_match)
 }
 
+#[derive(Clone, Copy)]
+struct FusedCtx<'a> {
+    index: &'a PackageIndex,
+    q: &'a str,
+    qmask: u64,
+    qbig: u64,
+    q_ascii: bool,
+    q_first: Option<char>,
+    filter: SearchFilter,
+    installed: &'a HashSet<String>,
+}
+
+fn drop_subsets(n: usize) -> Vec<u64> {
+    let mut out = vec![0u64];
+    for d in 0..n {
+        out.push(1u64 << d);
+    }
+    for a in 0..n {
+        for b in a + 1..n {
+            out.push((1u64 << a) | (1u64 << b));
+        }
+    }
+    out
+}
+
+fn prefilter_words(index: &PackageIndex, qmask: u64, out: &mut Vec<u64>) {
+    let words = index.row_words();
+    out.clear();
+    out.resize(words, 0);
+    let chars: Vec<usize> = (0..CHAR_BITS).filter(|b| qmask >> b & 1 == 1).collect();
+    let dropped = drop_subsets(chars.len());
+    for (w, slot) in out.iter_mut().enumerate() {
+        let mut name_union = 0u64;
+        for d in &dropped {
+            let mut acc = u64::MAX;
+            for (ci, &b) in chars.iter().enumerate() {
+                if d >> ci & 1 == 0 {
+                    acc &= index.name_char_word(w, b);
+                }
+            }
+            name_union |= acc;
+        }
+        let mut kw_all = u64::MAX;
+        for &b in &chars {
+            kw_all &= index.kw_char_word(w, b);
+        }
+        *slot = name_union | kw_all;
+    }
+    mask_tail(index, out);
+}
+
+fn full_words(index: &PackageIndex, out: &mut Vec<u64>) {
+    out.clear();
+    out.resize(index.row_words(), u64::MAX);
+    mask_tail(index, out);
+}
+
+fn mask_tail(index: &PackageIndex, words: &mut [u64]) {
+    let tail = index.len() % 64;
+    if tail != 0
+        && let Some(last) = words.last_mut()
+    {
+        *last &= (1u64 << tail) - 1;
+    }
+}
+
+fn fused_expensive_row(
+    ctx: &FusedCtx,
+    i: usize,
+    matcher: &mut FuzzyMatcher,
+    cands: &mut Vec<Scored>,
+    fuzzy_buf: &mut Vec<Scored>,
+    placed: &mut EpochSet,
+) {
+    let FusedCtx {
+        index,
+        q,
+        qmask,
+        qbig,
+        q_ascii,
+        q_first,
+        filter,
+        installed,
+    } = *ctx;
+    let r = index.row(i);
+    let name_missing = qmask & !r.name_mask;
+    let name_tier_arm = r.name_len as usize >= q.len() && (qbig & !r.name_bigrams) == 0;
+    let kw_tier_arm = r.max_kw_len as usize >= q.len() && (qbig & !r.kw_bigrams) == 0;
+    if (name_tier_arm || kw_tier_arm)
+        && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask, qbig)
+    {
+        if filter.matches(index.view(i), installed) {
+            scored_push(cands, index, i, tier, 0, false);
+        }
+        placed.insert(i);
+        return;
+    }
+    let name_extra = r.name_mask & !qmask;
+    if q_ascii {
+        if !at_most_two_missing(name_missing) || !at_most_two_missing(name_extra) {
+            return;
+        }
+    } else if name_missing.count_ones() as usize + name_extra.count_ones() as usize
+        > MAX_EDIT_DISTANCE
+    {
+        return;
+    }
+    let name_len_ok =
+        !(q_ascii && r.ascii_name) || (r.name_len as usize).abs_diff(q.len()) <= MAX_EDIT_DISTANCE;
+    if !name_len_ok {
+        return;
+    }
+    let Some(name_d) =
+        matcher.within_distance(index.name(i).as_bytes(), r.name_mask, MAX_EDIT_DISTANCE)
+    else {
+        return;
+    };
+    if !filter.matches(index.view(i), installed) {
+        placed.insert(i);
+        return;
+    }
+    let seed_first_letter = index.name(i).chars().next() == q_first;
+    let (distance, first_letter_match) =
+        fuzzy_score_from_seed(matcher, index, i, name_d as u8, seed_first_letter, q_first);
+    scored_push(
+        fuzzy_buf,
+        index,
+        i,
+        Tier::Fuzzy,
+        distance,
+        first_letter_match,
+    );
+    placed.insert(i);
+}
+
 fn fused_expensive_fuzzy_pass(
     index: &PackageIndex,
     q: &str,
@@ -456,75 +594,45 @@ fn fused_expensive_fuzzy_pass(
     installed: &HashSet<String>,
 ) -> Vec<Scored> {
     let qmask = byte_mask(q.as_bytes());
-    let qbig = bigram_mask(q.as_bytes());
     let q_ascii = q.is_ascii();
-    let q_first = q.chars().next();
+    let ctx = FusedCtx {
+        index,
+        q,
+        qmask,
+        qbig: bigram_mask(q.as_bytes()),
+        q_ascii,
+        q_first: q.chars().next(),
+        filter,
+        installed,
+    };
     let mut matcher = FuzzyMatcher::new(q.as_bytes());
     let mut fuzzy_buf: Vec<Scored> = Vec::new();
     seen.reset(index.len());
     placed.reset(index.len());
     for c in &cands {
         seen.insert(c.pkg as usize);
+        placed.insert(c.pkg as usize);
     }
 
-    for i in 0..index.len() {
-        let r = index.row(i);
-        if seen.contains(i) {
-            placed.insert(i);
-            continue;
+    PREFILTER.with(|cell| {
+        let mut words = cell.borrow_mut();
+        let query_chars = qmask.count_ones();
+        if (MIN_BITMAP_QUERY_CHARS..=MAX_BITMAP_QUERY_CHARS).contains(&query_chars) {
+            prefilter_words(index, qmask, &mut words);
+        } else {
+            full_words(index, &mut words);
         }
-        let name_missing = qmask & !r.name_mask;
-        let name_tier_arm = r.name_len as usize >= q.len() && (qbig & !r.name_bigrams) == 0;
-        let kw_tier_arm = r.max_kw_len as usize >= q.len() && (qbig & !r.kw_bigrams) == 0;
-        if (name_tier_arm || kw_tier_arm)
-            && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, qmask, qbig)
-        {
-            if filter.matches(index.view(i), installed) {
-                scored_push(&mut cands, index, i, tier, 0, false);
+        for (w, word) in words.iter().enumerate() {
+            let mut bits = *word;
+            while bits != 0 {
+                let i = w * 64 + bits.trailing_zeros() as usize;
+                bits &= bits.wrapping_sub(1);
+                if !seen.contains(i) {
+                    fused_expensive_row(&ctx, i, &mut matcher, &mut cands, &mut fuzzy_buf, placed);
+                }
             }
-            placed.insert(i);
-            continue;
         }
-        let name_extra = r.name_mask & !qmask;
-        if q_ascii {
-            if !at_most_two_missing(name_missing) || !at_most_two_missing(name_extra) {
-                continue;
-            }
-        } else if name_missing.count_ones() as usize + name_extra.count_ones() as usize
-            > MAX_EDIT_DISTANCE
-        {
-            continue;
-        }
-        let name_len_ok = !(q_ascii && r.ascii_name)
-            || (r.name_len as usize).abs_diff(q.len()) <= MAX_EDIT_DISTANCE;
-        if name_len_ok
-            && let Some(name_d) =
-                matcher.within_distance(index.name(i).as_bytes(), r.name_mask, MAX_EDIT_DISTANCE)
-        {
-            if !filter.matches(index.view(i), installed) {
-                placed.insert(i);
-                continue;
-            }
-            let seed_first_letter = index.name(i).chars().next() == q_first;
-            let (distance, first_letter_match) = fuzzy_score_from_seed(
-                &mut matcher,
-                index,
-                i,
-                name_d as u8,
-                seed_first_letter,
-                q_first,
-            );
-            scored_push(
-                &mut fuzzy_buf,
-                index,
-                i,
-                Tier::Fuzzy,
-                distance,
-                first_letter_match,
-            );
-            placed.insert(i);
-        }
-    }
+    });
 
     for slot in 0..index.token_scan_ids.len() {
         let token_mask = index.token_scan_masks[slot];
@@ -557,14 +665,14 @@ fn fused_expensive_fuzzy_pass(
                 placed.insert(pkg_idx);
                 continue;
             }
-            let seed_first_letter = token.chars().next() == q_first;
+            let seed_first_letter = token.chars().next() == ctx.q_first;
             let (distance, first_letter_match) = fuzzy_score_from_seed(
                 &mut matcher,
                 index,
                 pkg_idx,
                 tok_d as u8,
                 seed_first_letter,
-                q_first,
+                ctx.q_first,
             );
             scored_push(
                 &mut fuzzy_buf,
@@ -899,6 +1007,50 @@ mod tests {
             !ids.iter().any(|&id| (2..=6).contains(&id)),
             "AUR packages must be excluded"
         );
+    }
+
+    #[test]
+    fn prefilter_excludes_only_rows_that_cannot_match() {
+        let raws: Vec<RawPkg> = (0u32..300)
+            .map(|i| {
+                let mut p = pkg(i + 1, &format!("pkg-{i}-alpha-beta-gamma"), false, 0);
+                p.keywords = if i % 3 == 0 {
+                    vec!["alphx".to_string()]
+                } else {
+                    vec!["zulu".to_string()]
+                };
+                p
+            })
+            .chain((300u32..340).map(|i| {
+                let mut p = pkg(i + 1, &format!("node-js-{i}"), false, 0);
+                p.keywords = vec!["nodejs".to_string()];
+                p
+            }))
+            .collect();
+        let index = index_with(raws);
+
+        for q in ["alpha", "node", "alphaq", "alphabet", "ndej", "zz"] {
+            let qmask = byte_mask(q.as_bytes());
+            if qmask.count_ones() < 3 {
+                continue;
+            }
+            let mut words: Vec<u64> = Vec::new();
+            prefilter_words(&index, qmask, &mut words);
+            for i in 0..index.len() {
+                let r = index.row(i);
+                let name_missing = qmask & !r.name_mask;
+                let name_arm = at_most_two_missing(name_missing);
+                let kw_arm = qmask & r.kw_mask == qmask;
+                let set = words[i / 64] >> (i % 64) & 1 == 1;
+                if set {
+                    continue;
+                }
+                assert!(
+                    !name_arm && !kw_arm,
+                    "query {q} row {i} passes the gates but the prefilter dropped it"
+                );
+            }
+        }
     }
 
     #[test]

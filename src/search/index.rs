@@ -56,6 +56,8 @@ pub struct PackageIndex {
     pub(crate) unique_token_masks: Box<[u64]>,
     pub(crate) token_scan_ids: Box<[u32]>,
     pub(crate) token_scan_masks: Box<[u64]>,
+    pub(crate) name_char_words: Box<[u64]>,
+    pub(crate) kw_char_words: Box<[u64]>,
     pub(crate) unique_kws: Box<[(u32, u16)]>,
     pub(crate) names_sorted: Vec<u32>,
     pub(crate) tokens_sorted: Vec<(u32, u32)>,
@@ -355,6 +357,29 @@ fn build_keyword_ids(
     (kw_ids, unique_kws)
 }
 
+pub(crate) const CHAR_BITS: usize = 40;
+
+pub(crate) fn row_words(rows: usize) -> usize {
+    rows.div_ceil(64)
+}
+
+fn build_char_words(masks: impl Iterator<Item = u64>, words: usize) -> Vec<u64> {
+    let mut out = vec![0u64; words * CHAR_BITS];
+    for (i, mask) in masks.enumerate() {
+        let mut rest = mask & ((1u64 << CHAR_BITS) - 1);
+        while rest != 0 {
+            let bit = rest.trailing_zeros() as usize;
+            out[word_of(i) * CHAR_BITS + bit] |= 1u64 << (i % 64);
+            rest &= rest - 1;
+        }
+    }
+    out
+}
+
+fn word_of(row: usize) -> usize {
+    row / 64
+}
+
 fn build_token_scan(unique_tokens: &[(u32, u16)], masks: &[u64]) -> (Vec<u32>, Vec<u64>) {
     let mut order: Vec<u32> = (0..unique_tokens.len() as u32).collect();
     order.sort_unstable_by_key(|&id| (unique_tokens[id as usize].1, id));
@@ -376,6 +401,9 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
     );
     let (kw_ids, unique_kws) = build_keyword_ids(&raws, &mut arena, &mut rows);
     let (scan_ids, scan_masks) = build_token_scan(&unique_tokens, &unique_token_masks);
+    let words = row_words(n);
+    let name_char_words = build_char_words(rows.iter().map(|r| r.name_mask), words);
+    let kw_char_words = build_char_words(rows.iter().map(|r| r.kw_mask), words);
 
     let mut index = PackageIndex {
         rows,
@@ -386,6 +414,8 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
         unique_token_masks: unique_token_masks.into_boxed_slice(),
         token_scan_ids: scan_ids.into_boxed_slice(),
         token_scan_masks: scan_masks.into_boxed_slice(),
+        name_char_words: name_char_words.into_boxed_slice(),
+        kw_char_words: kw_char_words.into_boxed_slice(),
         unique_kws: unique_kws.into_boxed_slice(),
         names_sorted: Vec::new(),
         tokens_sorted,
@@ -416,6 +446,10 @@ impl PackageIndex {
 
     pub(crate) fn row(&self, pi: usize) -> &PkgRow {
         &self.rows[pi]
+    }
+
+    pub(crate) fn row_words(&self) -> usize {
+        row_words(self.rows.len())
     }
 
     fn slice(&self, off: u32, len: u16) -> &str {
@@ -466,6 +500,14 @@ impl PackageIndex {
             popularity: r.popularity,
             is_repo: r.is_repo,
         }
+    }
+
+    pub(crate) fn name_char_word(&self, word: usize, bit: usize) -> u64 {
+        self.name_char_words[word * CHAR_BITS + bit]
+    }
+
+    pub(crate) fn kw_char_word(&self, word: usize, bit: usize) -> u64 {
+        self.kw_char_words[word * CHAR_BITS + bit]
     }
 
     pub fn exact_name_range(&self, q: &[u8]) -> Range<usize> {
@@ -593,6 +635,11 @@ impl PackageIndex {
         }
         if self.token_scan_ids.len() != self.unique_tokens.len()
             || self.token_scan_masks.len() != self.unique_tokens.len()
+        {
+            return false;
+        }
+        if self.name_char_words.len() != row_words(self.rows.len()) * CHAR_BITS
+            || self.kw_char_words.len() != row_words(self.rows.len()) * CHAR_BITS
         {
             return false;
         }
