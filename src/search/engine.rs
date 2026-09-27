@@ -622,16 +622,12 @@ fn fused_expensive_fuzzy_pass(
         } else {
             full_words(index, &mut words);
         }
-        for (w, word) in words.iter().enumerate() {
-            let mut bits = *word;
-            while bits != 0 {
-                let i = w * 64 + bits.trailing_zeros() as usize;
-                bits &= bits.wrapping_sub(1);
-                if !seen.contains(i) {
-                    fused_expensive_row(&ctx, i, &mut matcher, &mut cands, &mut fuzzy_buf, placed);
-                }
+        for_each_row(&words, |i| {
+            if seen.contains(i) {
+                return;
             }
-        }
+            fused_expensive_row(&ctx, i, &mut matcher, &mut cands, &mut fuzzy_buf, placed);
+        });
     });
 
     for slot in 0..index.token_scan_ids.len() {
@@ -692,6 +688,31 @@ fn fused_expensive_fuzzy_pass(
     cands
 }
 
+fn bigram_words(index: &PackageIndex, qbig: u64, out: &mut Vec<u64>) {
+    out.clear();
+    out.resize(index.row_words(), u64::MAX);
+    for (w, slot) in out.iter_mut().enumerate() {
+        let mut acc = u64::MAX;
+        let mut rest = qbig;
+        while rest != 0 {
+            acc &= index.name_bigram_word(w, rest.trailing_zeros() as usize);
+            rest &= rest - 1;
+        }
+        *slot = acc;
+    }
+    mask_tail(index, out);
+}
+
+fn for_each_row(words: &[u64], mut visit: impl FnMut(usize)) {
+    for (w, word) in words.iter().enumerate() {
+        let mut bits = *word;
+        while bits != 0 {
+            visit(w * 64 + bits.trailing_zeros() as usize);
+            bits &= bits.wrapping_sub(1);
+        }
+    }
+}
+
 fn quoted_pairs(
     index: &PackageIndex,
     q: &str,
@@ -699,15 +720,19 @@ fn quoted_pairs(
     installed: &HashSet<String>,
 ) -> Vec<(u32, Tier)> {
     let mut cands: Vec<Scored> = Vec::new();
-    for pi in 0..index.len() {
-        if !filter.matches(index.view(pi), installed) {
-            continue;
-        }
-        if !index.name(pi).contains(q) {
-            continue;
-        }
-        scored_push(&mut cands, index, pi, Tier::Substring, 0, false);
-    }
+    PREFILTER.with(|cell| {
+        let mut words = cell.borrow_mut();
+        bigram_words(index, bigram_mask(q.as_bytes()), &mut words);
+        for_each_row(&words, |pi| {
+            if !filter.matches(index.view(pi), installed) {
+                return;
+            }
+            if !index.name(pi).contains(q) {
+                return;
+            }
+            scored_push(&mut cands, index, pi, Tier::Substring, 0, false);
+        });
+    });
     to_sorted_pairs(index, cands)
 }
 

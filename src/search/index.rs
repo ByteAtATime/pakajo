@@ -58,6 +58,7 @@ pub struct PackageIndex {
     pub(crate) token_scan_masks: Box<[u64]>,
     pub(crate) name_char_words: Box<[u64]>,
     pub(crate) kw_char_words: Box<[u64]>,
+    pub(crate) name_bigram_words: Box<[u64]>,
     pub(crate) unique_kws: Box<[(u32, u16)]>,
     pub(crate) names_sorted: Vec<u32>,
     pub(crate) tokens_sorted: Vec<(u32, u32)>,
@@ -358,18 +359,20 @@ fn build_keyword_ids(
 }
 
 pub(crate) const CHAR_BITS: usize = 40;
+pub(crate) const BIGRAM_BITS: usize = 64;
 
 pub(crate) fn row_words(rows: usize) -> usize {
     rows.div_ceil(64)
 }
 
-fn build_char_words(masks: impl Iterator<Item = u64>, words: usize) -> Vec<u64> {
-    let mut out = vec![0u64; words * CHAR_BITS];
+fn build_word_table(masks: impl Iterator<Item = u64>, words: usize, bits: usize) -> Vec<u64> {
+    let mut out = vec![0u64; words * bits];
+    let keep = u64::MAX >> (64 - bits);
     for (i, mask) in masks.enumerate() {
-        let mut rest = mask & ((1u64 << CHAR_BITS) - 1);
+        let mut rest = mask & keep;
         while rest != 0 {
             let bit = rest.trailing_zeros() as usize;
-            out[word_of(i) * CHAR_BITS + bit] |= 1u64 << (i % 64);
+            out[word_of(i) * bits + bit] |= 1u64 << (i % 64);
             rest &= rest - 1;
         }
     }
@@ -402,8 +405,10 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
     let (kw_ids, unique_kws) = build_keyword_ids(&raws, &mut arena, &mut rows);
     let (scan_ids, scan_masks) = build_token_scan(&unique_tokens, &unique_token_masks);
     let words = row_words(n);
-    let name_char_words = build_char_words(rows.iter().map(|r| r.name_mask), words);
-    let kw_char_words = build_char_words(rows.iter().map(|r| r.kw_mask), words);
+    let name_char_words = build_word_table(rows.iter().map(|r| r.name_mask), words, CHAR_BITS);
+    let kw_char_words = build_word_table(rows.iter().map(|r| r.kw_mask), words, CHAR_BITS);
+    let name_bigram_words =
+        build_word_table(rows.iter().map(|r| r.name_bigrams), words, BIGRAM_BITS);
 
     let mut index = PackageIndex {
         rows,
@@ -415,6 +420,7 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
         token_scan_ids: scan_ids.into_boxed_slice(),
         token_scan_masks: scan_masks.into_boxed_slice(),
         name_char_words: name_char_words.into_boxed_slice(),
+        name_bigram_words: name_bigram_words.into_boxed_slice(),
         kw_char_words: kw_char_words.into_boxed_slice(),
         unique_kws: unique_kws.into_boxed_slice(),
         names_sorted: Vec::new(),
@@ -508,6 +514,10 @@ impl PackageIndex {
 
     pub(crate) fn kw_char_word(&self, word: usize, bit: usize) -> u64 {
         self.kw_char_words[word * CHAR_BITS + bit]
+    }
+
+    pub(crate) fn name_bigram_word(&self, word: usize, bit: usize) -> u64 {
+        self.name_bigram_words[word * BIGRAM_BITS + bit]
     }
 
     pub fn exact_name_range(&self, q: &[u8]) -> Range<usize> {
@@ -640,6 +650,7 @@ impl PackageIndex {
         }
         if self.name_char_words.len() != row_words(self.rows.len()) * CHAR_BITS
             || self.kw_char_words.len() != row_words(self.rows.len()) * CHAR_BITS
+            || self.name_bigram_words.len() != row_words(self.rows.len()) * BIGRAM_BITS
         {
             return false;
         }
