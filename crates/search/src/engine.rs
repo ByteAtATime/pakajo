@@ -585,7 +585,7 @@ impl<'a> SearchQuery<'a> {
     {
         let mut pairs = self
             .engine
-            .search_tiered(&self.text, self.filter, &self.installed);
+            .search_tiered(&self.text, self.filter, self.installed);
         pairs.truncate(self.limit);
         let ids: Vec<u32> = pairs.iter().map(|(id, _)| *id).collect();
         let mut results = hydrate(&ids)?;
