@@ -1,17 +1,16 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use crate::SearchError;
-use crate::SearchFilter;
 use crate::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE, at_most_two_missing};
 use crate::index::{IndexRow, PackageIndex, bigram_mask, build_from_rows, byte_mask, trigram_mask};
 use crate::query::{ParsedQuery, parse_query};
 use crate::tiers::{ALL_TIERS, Scored, Tier, pack_sort_key, tier_at};
-use crate::{PackageGroup, PackageMeta, SearchResult, Source};
+use crate::{PackageGroup, SearchResult, Source};
+use crate::{SearchError, SearchFilter};
 
 const RESULT_LIMIT: usize = 30;
 const FUZZY_GATE: usize = 5;
@@ -268,31 +267,19 @@ impl<'a> SearchQuery<'a> {
 
     pub fn execute<H>(self, hydrate: H) -> Result<Vec<SearchResult>, SearchError>
     where
-        H: Fn(&[u32]) -> Result<HashMap<u32, PackageMeta>, SearchError>,
+        H: Fn(&[u32]) -> Result<HashMap<u32, SearchResult>, SearchError>,
     {
         let mut pairs = self
             .engine
             .search_tiered(&self.text, self.filter, &self.installed);
         pairs.truncate(self.limit);
         let ids: Vec<u32> = pairs.iter().map(|(id, _)| *id).collect();
-        let metas = hydrate(&ids)?;
+        let mut results = hydrate(&ids)?;
         let mut entries: Vec<(Tier, SearchResult)> = Vec::with_capacity(pairs.len());
         for (id, tier) in &pairs {
-            if let Some(meta) = metas.get(id) {
-                entries.push((
-                    *tier,
-                    SearchResult {
-                        name: meta.name.clone(),
-                        source: meta.source,
-                        description: meta.description.clone(),
-                        version: meta.version.clone(),
-                        repo: meta.repo.clone(),
-                        installed: self.installed.contains(&meta.name.to_lowercase()),
-                        num_votes: meta.num_votes,
-                        popularity: meta.popularity,
-                        last_update: meta.last_update,
-                    },
-                ));
+            if let Some(mut result) = results.remove(id) {
+                result.installed = self.installed.contains(&result.name.to_lowercase());
+                entries.push((*tier, result));
             }
         }
         let query = self.text.to_lowercase();
@@ -992,52 +979,12 @@ fn quoted_pairs(
     to_sorted_pairs(index, cands)
 }
 
-struct WorstFirst<'a> {
-    index: &'a PackageIndex,
-    scored: Scored,
-}
-
-impl Ord for WorstFirst<'_> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        scored_ordering(self.index, &other.scored, &self.scored)
+fn best_k(index: &PackageIndex, mut cands: Vec<Scored>, k: usize) -> Vec<Scored> {
+    if cands.len() > k {
+        cands.select_nth_unstable_by(k, |a, b| scored_ordering(index, a, b));
+        cands.truncate(k);
     }
-}
-
-impl PartialOrd for WorstFirst<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for WorstFirst<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-impl Eq for WorstFirst<'_> {}
-
-fn beats_heap_top(
-    index: &PackageIndex,
-    heap: &BinaryHeap<WorstFirst<'_>>,
-    scored: &Scored,
-) -> bool {
-    heap.peek()
-        .is_some_and(|worst| scored_ordering(index, scored, &worst.scored) == Ordering::Less)
-}
-
-fn best_k(index: &PackageIndex, cands: Vec<Scored>, k: usize) -> Vec<Scored> {
-    let mut heap: BinaryHeap<WorstFirst<'_>> = BinaryHeap::with_capacity(k);
-    for scored in cands {
-        if heap.len() == k {
-            if !beats_heap_top(index, &heap, &scored) {
-                continue;
-            }
-            heap.pop();
-        }
-        heap.push(WorstFirst { index, scored });
-    }
-    heap.into_vec().into_iter().map(|w| w.scored).collect()
+    cands
 }
 
 fn to_sorted_pairs(index: &PackageIndex, cands: Vec<Scored>) -> Vec<(u32, Tier)> {
@@ -1467,6 +1414,28 @@ mod tests {
     }
 
     #[test]
+    fn result_limit_keeps_the_best_thirty_not_the_first_thirty() {
+        let packages: Vec<RawPkg> = (0..40u32)
+            .map(|i| {
+                let name = format!("t-{i:02}");
+                RawPkg {
+                    id: i + 1,
+                    name: name.clone(),
+                    tokens: tokenize(&name),
+                    keywords: Vec::new(),
+                    popularity: i as u16,
+                    is_repo: false,
+                }
+            })
+            .collect();
+        let index = index_with(packages);
+        assert_eq!(
+            search_index(&index, "t-"),
+            (11..=40u32).rev().collect::<Vec<u32>>()
+        );
+    }
+
+    #[test]
     fn quoted_query_respects_filter() {
         let index = index_with(vec![
             pkg(1, "google-chrome", true, 0),
@@ -1591,8 +1560,8 @@ mod multi_term_tests {
 #[cfg(test)]
 mod query_api_tests {
     use super::*;
+    use crate::Source;
     use crate::index::IndexRow;
-    use crate::{PackageMeta, Source};
     use std::collections::HashMap;
 
     fn index_row(id: u32, name: &str) -> IndexRow {
@@ -1605,24 +1574,25 @@ mod query_api_tests {
         }
     }
 
-    fn test_meta(name: &str) -> PackageMeta {
-        PackageMeta {
+    fn test_result(name: &str) -> SearchResult {
+        SearchResult {
             name: name.to_string(),
             description: None,
             source: Source::Aur,
             repo: None,
             version: None,
+            installed: false,
             last_update: 0,
             num_votes: 0,
             popularity: 0.0,
         }
     }
 
-    fn engine_with(names: &[&str]) -> (SearchEngine, HashMap<u32, PackageMeta>) {
+    fn engine_with(names: &[&str]) -> (SearchEngine, HashMap<u32, SearchResult>) {
         let rows = make_rows(names);
-        let metas: HashMap<u32, PackageMeta> = rows
+        let metas: HashMap<u32, SearchResult> = rows
             .iter()
-            .map(|row| (row.id, test_meta(&row.name)))
+            .map(|row| (row.id, test_result(&row.name)))
             .collect();
         let engine = SearchEngine::build(None, || Ok(make_rows(names))).expect("build engine");
         (engine, metas)
@@ -1637,8 +1607,8 @@ mod query_api_tests {
     }
 
     fn full_hydrator(
-        metas: &HashMap<u32, PackageMeta>,
-    ) -> impl Fn(&[u32]) -> Result<HashMap<u32, PackageMeta>, SearchError> + '_ {
+        metas: &HashMap<u32, SearchResult>,
+    ) -> impl Fn(&[u32]) -> Result<HashMap<u32, SearchResult>, SearchError> + '_ {
         |ids| {
             let mut out = HashMap::with_capacity(ids.len());
             for id in ids {
@@ -1750,7 +1720,7 @@ mod query_api_tests {
     #[test]
     fn hydrator_miss_skips_rows_without_panic() {
         let (engine, metas) = engine_with(&["alpha", "alphabet", "alphasonic"]);
-        let partial: HashMap<u32, PackageMeta> =
+        let partial: HashMap<u32, SearchResult> =
             metas.into_iter().filter(|(id, _)| *id != 2).collect();
 
         let results: Vec<SearchResult> = engine

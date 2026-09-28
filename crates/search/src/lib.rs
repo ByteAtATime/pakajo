@@ -52,18 +52,6 @@ pub enum Source {
 }
 
 #[derive(Clone, Debug)]
-pub struct PackageMeta {
-    pub name: String,
-    pub description: Option<String>,
-    pub source: Source,
-    pub repo: Option<String>,
-    pub version: Option<String>,
-    pub last_update: i64,
-    pub num_votes: i64,
-    pub popularity: f64,
-}
-
-#[derive(Clone, Debug)]
 pub struct PackageGroup {
     pub name: String,
     pub repo: String,
