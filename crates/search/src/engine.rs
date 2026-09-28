@@ -15,8 +15,7 @@ use crate::{PackageGroup, PackageMeta, SearchResult, Source};
 
 const RESULT_LIMIT: usize = 30;
 const FUZZY_GATE: usize = 5;
-const MIN_BITMAP_QUERY_CHARS: usize = 3;
-const MAX_BITMAP_QUERY_CHARS: usize = 12;
+const MIN_PREFILTER_CHARS: u32 = 3;
 
 const SHORT_TIERS: &[Tier] = &[Tier::ExactName, Tier::ExactToken, Tier::PrefixName];
 const CHEAP_TIERS_ALL: &[Tier] = &[
@@ -728,64 +727,37 @@ struct FusedCtx<'a> {
     installed: &'a HashSet<String>,
 }
 
-const DROPPED_SUBSET_COUNT: usize =
-    1 + MAX_BITMAP_QUERY_CHARS + MAX_BITMAP_QUERY_CHARS * (MAX_BITMAP_QUERY_CHARS - 1) / 2;
-
-const DROPPED_SUBSETS: [u64; DROPPED_SUBSET_COUNT] = {
-    let mut out = [0u64; DROPPED_SUBSET_COUNT];
-    let mut slot = 1;
-    let mut d = 0;
-    while d < MAX_BITMAP_QUERY_CHARS {
-        out[slot] = 1u64 << d;
-        slot += 1;
-        d += 1;
-    }
-    let mut a = 0;
-    while a < MAX_BITMAP_QUERY_CHARS {
-        let mut b = a + 1;
-        while b < MAX_BITMAP_QUERY_CHARS {
-            out[slot] = (1u64 << a) | (1u64 << b);
-            slot += 1;
-            b += 1;
-        }
-        a += 1;
-    }
-    out
-};
-
-fn dropped_subsets(query_chars: usize) -> &'static [u64] {
-    &DROPPED_SUBSETS[..1 + query_chars + query_chars * query_chars.saturating_sub(1) / 2]
-}
-
 fn prefilter_words(index: &PackageIndex, qmask: u64, out: &mut Vec<u64>) {
-    let dropped = dropped_subsets(qmask.count_ones() as usize);
     out.clear();
     out.resize(index.row_words(), 0);
     for (w, slot) in out.iter_mut().enumerate() {
-        let mut name_union = 0u64;
-        for d in dropped {
-            let mut acc = u64::MAX;
-            let mut rank = 0;
-            let mut rest = qmask;
-            while rest != 0 {
-                let b = rest.trailing_zeros() as usize;
-                if d >> rank & 1 == 0 {
-                    acc &= index.name_char_word(w, b);
-                }
-                rank += 1;
-                rest &= rest - 1;
-            }
-            name_union |= acc;
-        }
-        let mut kw_all = u64::MAX;
-        let mut rest = qmask;
-        while rest != 0 {
-            kw_all &= index.kw_char_word(w, rest.trailing_zeros() as usize);
-            rest &= rest - 1;
-        }
-        *slot = name_union | kw_all;
+        *slot = at_most_two_absent(qmask, |b| !index.name_char_word(w, b))
+            | all_present(qmask, |b| index.kw_char_word(w, b));
     }
     mask_tail(index, out);
+}
+
+fn at_most_two_absent(qmask: u64, absent: impl Fn(usize) -> u64) -> u64 {
+    let (mut once, mut twice, mut thrice) = (0u64, 0u64, 0u64);
+    let mut rest = qmask;
+    while rest != 0 {
+        let bit = absent(rest.trailing_zeros() as usize);
+        thrice |= twice & bit;
+        twice |= once & bit;
+        once |= bit;
+        rest &= rest - 1;
+    }
+    !thrice
+}
+
+fn all_present(qmask: u64, present: impl Fn(usize) -> u64) -> u64 {
+    let mut rows = u64::MAX;
+    let mut rest = qmask;
+    while rest != 0 {
+        rows &= present(rest.trailing_zeros() as usize);
+        rest &= rest - 1;
+    }
+    rows
 }
 
 fn full_words(index: &PackageIndex, out: &mut Vec<u64>) {
@@ -944,8 +916,7 @@ fn fused_expensive_fuzzy_pass(
 
     PREFILTER.with(|cell| {
         let mut words = cell.borrow_mut();
-        let query_chars = ctx.chars.mask.count_ones() as usize;
-        if (MIN_BITMAP_QUERY_CHARS..=MAX_BITMAP_QUERY_CHARS).contains(&query_chars) {
+        if ctx.chars.mask.count_ones() >= MIN_PREFILTER_CHARS {
             prefilter_words(index, ctx.chars.mask, &mut words);
         } else {
             full_words(index, &mut words);
@@ -1496,6 +1467,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn prefilter_keeps_a_row_missing_two_of_three_query_chars() {
+        let index = index_with(vec![pkg(1, "abcde", false, 0)]);
+        let qmask = byte_mask(b"axy");
+        assert!(at_most_two_missing(qmask & !index.row(0).name_mask));
+        let mut words: Vec<u64> = Vec::new();
+        prefilter_words(&index, qmask, &mut words);
+        assert_eq!(
+            words[0] & 1,
+            1,
+            "a row within edit distance 2 must survive the prefilter"
+        );
     }
 
     #[test]
