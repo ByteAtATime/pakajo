@@ -683,105 +683,80 @@ impl PackageIndex {
     }
 
     fn validate(&self) -> bool {
+        self.spans_valid()
+            && self.side_tables_sized()
+            && self.token_scan_valid()
+            && self.row_references_valid()
+            && self.sort_orders_valid()
+    }
+
+    fn spans_valid(&self) -> bool {
         let arena = &self.arena;
         let ok_span = |off: u32, len: u16| -> bool {
             let start = off as usize;
             let end = start + len as usize;
             end <= arena.len() && arena.is_char_boundary(start) && arena.is_char_boundary(end)
         };
-        if self.rank_bits.len() != self.rows.len() || self.max_kw_lens.len() != self.rows.len() {
-            return false;
-        }
-        if self.unique_token_masks.len() != self.unique_tokens.len() {
-            return false;
-        }
-        if self.token_scan_ids.len() + self.token_scan_nonascii.len() != self.unique_tokens.len()
-            || self.token_scan_masks.len() != self.token_scan_ids.len()
-        {
-            return false;
-        }
-        if self.token_scan_starts.last().copied() != Some(self.token_scan_ids.len() as u32) {
-            return false;
-        }
-        for &id in &self.token_scan_nonascii {
-            if id as usize >= self.unique_tokens.len() {
-                return false;
-            }
-        }
-        if self.name_char_words.len() != row_words(self.rows.len()) * CHAR_BITS
-            || self.kw_char_words.len() != row_words(self.rows.len()) * CHAR_BITS
-            || self.name_bigram_words.len() != row_words(self.rows.len()) * BIGRAM_BITS
-            || self.kw_bigram_words.len() != row_words(self.rows.len()) * BIGRAM_BITS
-            || self.name_trigram_words.len() != row_words(self.rows.len()) * TRIGRAM_BITS
-            || self.kw_trigram_words.len() != row_words(self.rows.len()) * TRIGRAM_BITS
-        {
-            return false;
-        }
-        for slot in 0..self.token_scan_ids.len() {
-            let id = self.token_scan_ids[slot] as usize;
-            if id >= self.unique_tokens.len() {
-                return false;
-            }
-            if self.token_scan_masks[slot] != self.unique_token_masks[id] {
-                return false;
-            }
-        }
-        for &(off, len) in &self.unique_tokens {
-            if !ok_span(off, len) {
-                return false;
-            }
-        }
-        for &(off, len) in &self.unique_kws {
-            if !ok_span(off, len) {
-                return false;
-            }
-        }
-        for r in &self.rows {
-            if !ok_span(r.name_off, r.name_len) {
-                return false;
-            }
-            if !ok_span(r.norm_off, r.norm_len) {
-                return false;
-            }
-            if (r.tokens_start as usize + r.tokens_len as usize) > self.token_ids.len() {
-                return false;
-            }
-            if (r.kws_start as usize + r.kws_len as usize) > self.kw_ids.len() {
-                return false;
-            }
-            for k in 0..r.tokens_len as usize {
-                let id = self.token_ids[r.tokens_start as usize + k];
-                if id as usize >= self.unique_tokens.len() {
-                    return false;
-                }
-            }
-            for k in 0..r.kws_len as usize {
-                let id = self.kw_ids[r.kws_start as usize + k];
-                if id as usize >= self.unique_kws.len() {
-                    return false;
-                }
-            }
-        }
-        for &pi in &self.names_sorted {
-            if pi as usize >= self.rows.len() {
-                return false;
-            }
-        }
-        for &(tid, pi) in &self.tokens_sorted {
-            if tid as usize >= self.unique_tokens.len() {
-                return false;
-            }
-            if pi as usize >= self.rows.len() {
-                return false;
-            }
-        }
-        for w in self.tokens_sorted.windows(2) {
-            if w[0].0 == w[1].0 && self.rank_bits[w[0].1 as usize] > self.rank_bits[w[1].1 as usize]
-            {
-                return false;
-            }
-        }
-        true
+        self.rows
+            .iter()
+            .all(|r| ok_span(r.name_off, r.name_len) && ok_span(r.norm_off, r.norm_len))
+            && self.unique_tokens.iter().all(|&(o, l)| ok_span(o, l))
+            && self.unique_kws.iter().all(|&(o, l)| ok_span(o, l))
+    }
+
+    fn side_tables_sized(&self) -> bool {
+        let rows = self.rows.len();
+        let words = row_words(rows);
+        self.rank_bits.len() == rows
+            && self.max_kw_lens.len() == rows
+            && self.unique_token_masks.len() == self.unique_tokens.len()
+            && self.name_char_words.len() == words * CHAR_BITS
+            && self.kw_char_words.len() == words * CHAR_BITS
+            && self.name_bigram_words.len() == words * BIGRAM_BITS
+            && self.kw_bigram_words.len() == words * BIGRAM_BITS
+            && self.name_trigram_words.len() == words * TRIGRAM_BITS
+            && self.kw_trigram_words.len() == words * TRIGRAM_BITS
+    }
+
+    fn token_scan_valid(&self) -> bool {
+        let tokens = self.unique_tokens.len();
+        self.token_scan_ids.len() + self.token_scan_nonascii.len() == tokens
+            && self.token_scan_masks.len() == self.token_scan_ids.len()
+            && self.token_scan_starts.last().copied() == Some(self.token_scan_ids.len() as u32)
+            && self
+                .token_scan_nonascii
+                .iter()
+                .all(|&id| (id as usize) < tokens)
+            && (0..self.token_scan_ids.len()).all(|slot| {
+                let id = self.token_scan_ids[slot] as usize;
+                id < tokens && self.token_scan_masks[slot] == self.unique_token_masks[id]
+            })
+    }
+
+    fn row_references_valid(&self) -> bool {
+        let rows = self.rows.len();
+        self.rows.iter().all(|r| {
+            let tokens = r.tokens_start as usize..r.tokens_start as usize + r.tokens_len as usize;
+            let kws = r.kws_start as usize..r.kws_start as usize + r.kws_len as usize;
+            tokens.end <= self.token_ids.len()
+                && kws.end <= self.kw_ids.len()
+                && self.token_ids[tokens.clone()]
+                    .iter()
+                    .all(|&id| (id as usize) < self.unique_tokens.len())
+                && self.kw_ids[kws.clone()]
+                    .iter()
+                    .all(|&id| (id as usize) < self.unique_kws.len())
+        }) && self.names_sorted.iter().all(|&pi| (pi as usize) < rows)
+            && self
+                .tokens_sorted
+                .iter()
+                .all(|&(tid, pi)| (tid as usize) < self.unique_tokens.len() && (pi as usize) < rows)
+    }
+
+    fn sort_orders_valid(&self) -> bool {
+        self.tokens_sorted.windows(2).all(|w| {
+            w[0].0 != w[1].0 || self.rank_bits[w[0].1 as usize] <= self.rank_bits[w[1].1 as usize]
+        })
     }
 }
 
