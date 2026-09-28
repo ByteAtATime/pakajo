@@ -7,26 +7,44 @@ pub(crate) fn at_most_two_missing(miss: u64) -> bool {
     m1 & m1.wrapping_sub(1) == 0
 }
 
-pub struct FuzzyMatcher<'q> {
-    q: &'q [u8],
-    qmask: u64,
+struct Rows {
     prev_prev: Vec<usize>,
     prev: Vec<usize>,
     cur: Vec<usize>,
 }
 
+impl Rows {
+    fn new(m: usize) -> Self {
+        Self {
+            prev_prev: vec![0; m + 1],
+            prev: (0..=m).collect(),
+            cur: vec![0; m + 1],
+        }
+    }
+
+    fn reset(&mut self, m: usize) {
+        self.prev_prev.clear();
+        self.prev_prev.resize(m + 1, 0);
+        self.cur.clear();
+        self.cur.resize(m + 1, 0);
+        for (j, slot) in self.prev.iter_mut().enumerate() {
+            *slot = j;
+        }
+    }
+}
+
+pub struct FuzzyMatcher<'q> {
+    q: &'q [u8],
+    qmask: u64,
+    rows: Rows,
+}
+
 impl<'q> FuzzyMatcher<'q> {
     pub fn new(q: &'q [u8]) -> Self {
-        let m = q.len();
-        let prev_prev: Vec<usize> = vec![0usize; m + 1];
-        let prev: Vec<usize> = (0..=m).collect();
-        let cur: Vec<usize> = vec![0usize; m + 1];
         Self {
             q,
             qmask: byte_mask(q),
-            prev_prev,
-            prev,
-            cur,
+            rows: Rows::new(q.len()),
         }
     }
 
@@ -47,81 +65,44 @@ impl<'q> FuzzyMatcher<'q> {
             return None;
         }
         if both_ascii {
-            return self.within_ascii_dist(cand, max);
+            return self.run(cand, self.q, max);
         }
         let q_str = std::str::from_utf8(self.q).expect("query bytes are valid utf-8");
         let cand_str = std::str::from_utf8(cand).expect("candidate bytes are valid utf-8");
-        edit_distance_chars(cand_str, q_str, max)
+        let q_chars: Vec<char> = q_str.chars().collect();
+        let cand_chars: Vec<char> = cand_str.chars().collect();
+        self.run(&cand_chars, &q_chars, max)
     }
 
-    fn within_ascii_dist(&mut self, cand: &[u8], max: usize) -> Option<usize> {
-        let q = self.q;
-        let n = cand.len();
-        let m = q.len();
-        for j in 0..=m {
-            self.prev[j] = j;
+    fn run<T: Copy + PartialEq>(&mut self, cand: &[T], q: &[T], max: usize) -> Option<usize> {
+        let (n, m) = (cand.len(), q.len());
+        if n.abs_diff(m) > max {
+            return None;
         }
+        self.rows.reset(m);
         for i in 1..=n {
-            self.cur[0] = i;
-            let mut row_min = self.cur[0];
+            let rows = &mut self.rows;
+            rows.cur[0] = i;
+            let mut row_min = i;
             for j in 1..=m {
-                let cost = if cand[i - 1] == q[j - 1] { 0 } else { 1 };
-                let del = self.prev[j] + 1;
-                let ins = self.cur[j - 1] + 1;
-                let sub = self.prev[j - 1] + cost;
-                self.cur[j] = del.min(ins).min(sub);
+                let cost = usize::from(cand[i - 1] != q[j - 1]);
+                let mut best = (rows.prev[j] + 1)
+                    .min(rows.cur[j - 1] + 1)
+                    .min(rows.prev[j - 1] + cost);
                 if i >= 2 && j >= 2 && cand[i - 1] == q[j - 2] && cand[i - 2] == q[j - 1] {
-                    self.cur[j] = self.cur[j].min(self.prev_prev[j - 2] + 1);
+                    best = best.min(rows.prev_prev[j - 2] + 1);
                 }
-                if self.cur[j] < row_min {
-                    row_min = self.cur[j];
-                }
+                rows.cur[j] = best;
+                row_min = row_min.min(best);
             }
             if row_min > max {
                 return None;
             }
-            std::mem::swap(&mut self.prev_prev, &mut self.prev);
-            std::mem::swap(&mut self.prev, &mut self.cur);
+            std::mem::swap(&mut self.rows.prev_prev, &mut self.rows.prev);
+            std::mem::swap(&mut self.rows.prev, &mut self.rows.cur);
         }
-        let d = self.prev[m];
-        (d <= max).then_some(d)
+        (self.rows.prev[m] <= max).then_some(self.rows.prev[m])
     }
-}
-
-fn edit_distance_chars(a: &str, b: &str, max: usize) -> Option<usize> {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let (n, m) = (a.len(), b.len());
-    if n.abs_diff(m) > max {
-        return None;
-    }
-    let mut prev_prev: Vec<usize> = vec![0usize; m + 1];
-    let mut prev: Vec<usize> = (0..=m).collect();
-    let mut cur: Vec<usize> = vec![0usize; m + 1];
-    for i in 1..=n {
-        cur[0] = i;
-        let mut row_min = cur[0];
-        for j in 1..=m {
-            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            let del = prev[j] + 1;
-            let ins = cur[j - 1] + 1;
-            let sub = prev[j - 1] + cost;
-            cur[j] = del.min(ins).min(sub);
-            if i >= 2 && j >= 2 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                cur[j] = cur[j].min(prev_prev[j - 2] + 1);
-            }
-            if cur[j] < row_min {
-                row_min = cur[j];
-            }
-        }
-        if row_min > max {
-            return None;
-        }
-        std::mem::swap(&mut prev_prev, &mut prev);
-        std::mem::swap(&mut prev, &mut cur);
-    }
-    let d = prev[m];
-    (d <= max).then_some(d)
 }
 
 #[cfg(test)]
@@ -152,5 +133,30 @@ mod tests {
     #[test]
     fn edit_distance_length_cutoff() {
         assert!(!within("a", "abcd", 2));
+    }
+
+    #[test]
+    fn non_ascii_compares_chars_not_bytes() {
+        assert!(within("über", "yber", 2));
+        assert!(!within("über", "zzzzzz", 2));
+    }
+
+    #[test]
+    fn matcher_shares_its_rows_between_the_byte_and_char_paths() {
+        let mut matcher = FuzzyMatcher::new("über".as_bytes());
+        for _ in 0..3 {
+            assert_eq!(
+                matcher.within_distance(b"yber", byte_mask(b"yber"), 2),
+                Some(1)
+            );
+            assert_eq!(
+                matcher.within_distance("über".as_bytes(), byte_mask("über".as_bytes()), 2),
+                Some(0)
+            );
+            assert_eq!(
+                matcher.within_distance(b"qqqqqqqq", byte_mask(b"qqqqqqqq"), 2),
+                None
+            );
+        }
     }
 }
