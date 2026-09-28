@@ -7,7 +7,7 @@ use crate::SearchError;
 use crate::tiers::rank_bits;
 
 const POP_NORM_MAX: f64 = 100.0;
-const INDEX_MAGIC: [u8; 4] = *b"v004";
+const INDEX_MAGIC: [u8; 4] = *b"v003";
 
 fn next_prefix_bound(q: &[u8]) -> Option<Vec<u8>> {
     let last = q.len() - 1;
