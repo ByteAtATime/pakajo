@@ -14,7 +14,6 @@ use pakajo::dashboard::DashboardSnapshot;
 
 use pakajo::db::PackageDb;
 use pakajo::search::SearchFilter;
-use pakajo::search::SearchResult;
 use pakajo::search::engine::SearchEngine;
 
 use crate::Element;
@@ -26,7 +25,7 @@ use cosmic::widget::divider;
 #[derive(Default)]
 pub struct SearchPane {
     pub(crate) query: String,
-    pub(crate) results: Vec<SearchResult>,
+    pub(crate) results: Vec<pakajo_search::SearchResult>,
     pub(crate) state: SearchState,
     pub(crate) seq: u64,
     pub(crate) filter: SearchFilter,
@@ -122,7 +121,7 @@ impl SearchPane {
             Some(result) => {
                 let load = DetailMessage::Load {
                     name: result.name.clone(),
-                    source: result.source,
+                    source: result.source.into(),
                 };
                 Task::done(cosmic::Action::App(crate::Message::Detail(load)))
             }
@@ -303,7 +302,7 @@ pub enum SearchMessage {
     QueryChanged(String),
     ResultsReady {
         seq: u64,
-        results: Vec<SearchResult>,
+        results: Vec<pakajo_search::SearchResult>,
     },
     GroupsLoaded(Arc<Vec<(String, String)>>),
     FilterChanged(SearchFilter),
@@ -320,11 +319,27 @@ pub fn execute_search_for(
     installed: Arc<HashSet<String>>,
     text: String,
     filter: SearchFilter,
-) -> Vec<SearchResult> {
+) -> Vec<pakajo_search::SearchResult> {
     let (Some(engine), Some(local)) = (search_engine.as_ref(), db.as_ref()) else {
         return Vec::new();
     };
-    pakajo::search::dispatch_search(engine, local, &installed, &text, &group_index, filter)
+    match engine
+        .query(&text)
+        .filter(filter)
+        .installed(&installed)
+        .groups(&group_index)
+        .execute(|ids| pakajo::search::hydrate_metas(local, ids))
+    {
+        Ok(results) => results,
+        Err(e) => {
+            let err: anyhow::Error = e.into();
+            eprintln!(
+                "[pakajo] search failed: {}",
+                pakajo::search::friendly_search_error(&err)
+            );
+            Vec::new()
+        }
+    }
 }
 
 pub fn next_selected_index(len: usize, current: Option<usize>, delta: i32) -> Option<usize> {
@@ -413,7 +428,7 @@ pub fn search_status_bar<'a>(
 }
 
 fn results_list<'a>(
-    results: &'a [SearchResult],
+    results: &'a [pakajo_search::SearchResult],
     selected_index: Option<usize>,
     scroller: &SelectionScroller,
 ) -> Element<'a> {
@@ -430,7 +445,7 @@ fn results_list<'a>(
 }
 
 pub fn results_scroller<'a>(
-    results: &'a [SearchResult],
+    results: &'a [pakajo_search::SearchResult],
     selected_index: Option<usize>,
     scroller: &SelectionScroller,
 ) -> Element<'a> {
@@ -466,7 +481,11 @@ fn secondary_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
     }
 }
 
-pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool) -> Element<'_> {
+pub fn search_result_row(
+    result: &pakajo_search::SearchResult,
+    index: usize,
+    is_selected: bool,
+) -> Element<'_> {
     let app_theme = cosmic::theme::active();
     let repo = result.repo.as_deref().unwrap_or("aur");
     let is_aur = result.repo.is_none();
@@ -506,7 +525,7 @@ pub fn search_result_row(result: &SearchResult, index: usize, is_selected: bool)
                 .class(cosmic::theme::Text::Color(name_color)),
         )
         .push(
-            text::monotext(result.version.clone())
+            text::monotext(result.version.clone().unwrap_or_default())
                 .width(Length::Fill)
                 .wrapping(cosmic::iced::widget::text::Wrapping::None)
                 .ellipsize(cosmic::iced::widget::text::Ellipsize::End(

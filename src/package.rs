@@ -17,6 +17,16 @@ pub enum PackageSource {
     Group,
 }
 
+impl From<pakajo_search::Source> for PackageSource {
+    fn from(source: pakajo_search::Source) -> Self {
+        match source {
+            pakajo_search::Source::Repo => PackageSource::Repo,
+            pakajo_search::Source::Aur => PackageSource::Aur,
+            pakajo_search::Source::Group => PackageSource::Group,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct InstalledData {
     pub version: String,
