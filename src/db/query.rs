@@ -5,7 +5,7 @@ use pakajo_search::{SearchError, SearchResult, Source};
 
 use super::PackageDb;
 
-pub struct PackageRow {
+struct PackageRow {
     pub name: String,
     pub description: Option<String>,
     pub source: String,
@@ -14,7 +14,6 @@ pub struct PackageRow {
     pub last_update: Option<i64>,
     pub num_votes: Option<i64>,
     pub popularity: Option<f64>,
-    pub package_base: Option<String>,
 }
 
 pub fn engine_for(db: &PackageDb) -> Result<SearchEngine, SearchError> {
@@ -90,9 +89,8 @@ fn row_to_package(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackageRow> {
         repo: row.get(3)?,
         version: row.get(4)?,
         last_update: row.get(5)?,
-        package_base: row.get(6)?,
-        num_votes: row.get(7)?,
-        popularity: row.get(8)?,
+        num_votes: row.get(6)?,
+        popularity: row.get(7)?,
     })
 }
 
@@ -118,7 +116,7 @@ impl super::PackageDb {
             .map_err(store_error)
     }
 
-    pub fn hydrate_by_ids(
+    fn hydrate_by_ids(
         &self,
         ids: &[u32],
     ) -> anyhow::Result<std::collections::HashMap<u32, PackageRow>> {
@@ -127,16 +125,15 @@ impl super::PackageDb {
         }
         let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT name, description, source, repo, version, \
-             last_update, package_base, num_votes, popularity, rowid \
-             FROM packages WHERE rowid IN ({placeholders})"
+            "SELECT name, description, source, repo, version, last_update, \
+             num_votes, popularity, rowid FROM packages WHERE rowid IN ({placeholders})"
         );
         let conn = self.read.lock().expect("read connection poisoned");
         let mut stmt = conn.prepare(&sql)?;
         let params: Vec<i64> = ids.iter().map(|&id| id as i64).collect();
         let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             let pkg = row_to_package(row)?;
-            let rowid: i64 = row.get(9)?;
+            let rowid: i64 = row.get(8)?;
             Ok((rowid as u32, pkg))
         })?;
         rows.collect::<rusqlite::Result<std::collections::HashMap<u32, PackageRow>>>()
