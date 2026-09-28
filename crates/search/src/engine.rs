@@ -495,28 +495,25 @@ impl TermMasks {
     }
 }
 
-fn and_bits(mut rest: u64, mut word: impl FnMut(usize) -> u64) -> u64 {
-    let mut acc = u64::MAX;
-    while rest != 0 {
-        acc &= word(rest.trailing_zeros() as usize);
-        rest &= rest - 1;
-    }
-    acc
-}
-
-fn seed_words(index: &PackageIndex, masks: &TermMasks, out: &mut Vec<u64>) {
+fn word_map(index: &PackageIndex, out: &mut Vec<u64>, word: impl Fn(usize) -> u64) {
     out.clear();
     out.resize(index.row_words(), 0);
     for (w, slot) in out.iter_mut().enumerate() {
-        let name = and_bits(masks.chars, |b| index.name_char_word(w, b))
-            & and_bits(masks.bigrams, |b| index.name_bigram_word(w, b))
-            & and_bits(masks.trigrams, |b| index.name_trigram_word(w, b));
-        let kw = and_bits(masks.chars, |b| index.kw_char_word(w, b))
-            & and_bits(masks.bigrams, |b| index.kw_bigram_word(w, b))
-            & and_bits(masks.trigrams, |b| index.kw_trigram_word(w, b));
-        *slot = name | kw;
+        *slot = word(w);
     }
     mask_tail(index, out);
+}
+
+fn seed_words(index: &PackageIndex, masks: &TermMasks, out: &mut Vec<u64>) {
+    word_map(index, out, |w| {
+        let name = all_present(masks.chars, |b| index.name_char_word(w, b))
+            & all_present(masks.bigrams, |b| index.name_bigram_word(w, b))
+            & all_present(masks.trigrams, |b| index.name_trigram_word(w, b));
+        let kw = all_present(masks.chars, |b| index.kw_char_word(w, b))
+            & all_present(masks.bigrams, |b| index.kw_bigram_word(w, b))
+            & all_present(masks.trigrams, |b| index.kw_trigram_word(w, b));
+        name | kw
+    });
 }
 
 fn for_each_seed_row(
@@ -728,13 +725,10 @@ struct FusedCtx<'a> {
 }
 
 fn prefilter_words(index: &PackageIndex, qmask: u64, out: &mut Vec<u64>) {
-    out.clear();
-    out.resize(index.row_words(), 0);
-    for (w, slot) in out.iter_mut().enumerate() {
-        *slot = at_most_two_absent(qmask, |b| !index.name_char_word(w, b))
-            | all_present(qmask, |b| index.kw_char_word(w, b));
-    }
-    mask_tail(index, out);
+    word_map(index, out, |w| {
+        at_most_two_absent(qmask, |b| !index.name_char_word(w, b))
+            | all_present(qmask, |b| index.kw_char_word(w, b))
+    });
 }
 
 fn at_most_two_absent(qmask: u64, absent: impl Fn(usize) -> u64) -> u64 {
@@ -761,9 +755,7 @@ fn all_present(qmask: u64, present: impl Fn(usize) -> u64) -> u64 {
 }
 
 fn full_words(index: &PackageIndex, out: &mut Vec<u64>) {
-    out.clear();
-    out.resize(index.row_words(), u64::MAX);
-    mask_tail(index, out);
+    word_map(index, out, |_| u64::MAX);
 }
 
 fn mask_tail(index: &PackageIndex, words: &mut [u64]) {
@@ -963,18 +955,9 @@ fn fused_expensive_fuzzy_pass(
 }
 
 fn bigram_words(index: &PackageIndex, qbig: u64, out: &mut Vec<u64>) {
-    out.clear();
-    out.resize(index.row_words(), u64::MAX);
-    for (w, slot) in out.iter_mut().enumerate() {
-        let mut acc = u64::MAX;
-        let mut rest = qbig;
-        while rest != 0 {
-            acc &= index.name_bigram_word(w, rest.trailing_zeros() as usize);
-            rest &= rest - 1;
-        }
-        *slot = acc;
-    }
-    mask_tail(index, out);
+    word_map(index, out, |w| {
+        all_present(qbig, |b| index.name_bigram_word(w, b))
+    });
 }
 
 fn for_each_row(words: &[u64], mut visit: impl FnMut(usize) -> ControlFlow<()>) {
