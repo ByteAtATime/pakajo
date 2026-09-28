@@ -10,7 +10,7 @@ use crate::SearchFilter;
 use crate::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE, at_most_two_missing};
 use crate::index::{IndexRow, PackageIndex, bigram_mask, build_from_rows, byte_mask, trigram_mask};
 use crate::query::{ParsedQuery, parse_query};
-use crate::tiers::{Scored, Tier, pack_sort_key, tier_at, tier_of_key};
+use crate::tiers::{ALL_TIERS, Scored, Tier, pack_sort_key, tier_at, tier_of_key};
 use crate::{PackageGroup, PackageMeta, SearchResult, Source};
 
 const RESULT_LIMIT: usize = 30;
@@ -562,40 +562,7 @@ fn term_tier_at(
     if !filter.row_matches(index, pkg, installed) {
         return None;
     }
-    let name = index.name(pkg);
-    if name == term {
-        return Some(Tier::ExactName);
-    }
-    let mut prefix_token = false;
-    for k in 0..index.tokens_len(pkg) {
-        let token = index.token(pkg, k);
-        if token == term {
-            return Some(Tier::ExactToken);
-        }
-        prefix_token |= token.starts_with(term);
-    }
-    if name.starts_with(term) {
-        return Some(Tier::PrefixName);
-    }
-    if prefix_token {
-        return Some(Tier::PrefixToken);
-    }
-    let r = index.row(pkg);
-    if r.name_len as usize >= term.len()
-        && (masks.chars & !r.name_mask) == 0
-        && (masks.bigrams & !r.name_bigrams) == 0
-        && name.contains(term)
-    {
-        return Some(Tier::Substring);
-    }
-    if index.max_kw_len(pkg) as usize >= term.len()
-        && (masks.chars & !r.kw_mask) == 0
-        && (masks.bigrams & !r.kw_bigrams) == 0
-        && (0..index.kws_len(pkg)).any(|k| index.keyword(pkg, k).contains(term))
-    {
-        return Some(Tier::Keyword);
-    }
-    None
+    tier_at(index, pkg, term, ALL_TIERS, masks.chars, masks.bigrams)
 }
 
 fn term_matches_any(

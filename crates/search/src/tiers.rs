@@ -36,6 +36,15 @@ pub(crate) struct Scored {
     pub pkg: u32,
 }
 
+pub(crate) const ALL_TIERS: &[Tier] = &[
+    Tier::ExactName,
+    Tier::ExactToken,
+    Tier::PrefixName,
+    Tier::PrefixToken,
+    Tier::Substring,
+    Tier::Keyword,
+];
+
 const FIRST_LETTER_SHIFT: u32 = 33;
 
 pub(crate) fn rank_bits(name_len: u16, is_repo: bool, popularity: u16) -> u64 {
@@ -92,6 +101,7 @@ pub(crate) fn tier_at(
     qmask: u64,
     qbig: u64,
 ) -> Option<Tier> {
+    let mut tokens = None;
     for &tier in allowed {
         match tier {
             Tier::ExactName => {
@@ -99,18 +109,14 @@ pub(crate) fn tier_at(
                     return Some(tier);
                 }
             }
-            Tier::ExactToken => {
-                if (0..index.tokens_len(pi)).any(|k| index.token(pi, k) == q) {
+            Tier::ExactToken | Tier::PrefixToken => {
+                let hits = *tokens.get_or_insert_with(|| token_hits(index, pi, q));
+                if (tier == Tier::ExactToken && hits.0) || (tier == Tier::PrefixToken && hits.1) {
                     return Some(tier);
                 }
             }
             Tier::PrefixName => {
                 if index.name(pi).starts_with(q) {
-                    return Some(tier);
-                }
-            }
-            Tier::PrefixToken => {
-                if (0..index.tokens_len(pi)).any(|k| index.token(pi, k).starts_with(q)) {
                     return Some(tier);
                 }
             }
@@ -138,6 +144,17 @@ pub(crate) fn tier_at(
         }
     }
     None
+}
+
+fn token_hits(index: &PackageIndex, pi: usize, q: &str) -> (bool, bool) {
+    let mut exact = false;
+    let mut prefix = false;
+    for k in 0..index.tokens_len(pi) {
+        let token = index.token(pi, k);
+        exact |= token == q;
+        prefix |= token.starts_with(q);
+    }
+    (exact, prefix)
 }
 
 #[cfg(test)]
