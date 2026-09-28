@@ -294,7 +294,7 @@ pub fn installed_names(handle: &alpm::Alpm) -> std::collections::HashSet<String>
         .localdb()
         .pkgs()
         .iter()
-        .map(|p| p.name().to_string())
+        .map(|p| p.name().to_lowercase())
         .collect()
 }
 

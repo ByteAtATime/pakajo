@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::sync::{Arc, RwLock};
 
 use crate::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE, at_most_two_missing};
@@ -231,6 +232,8 @@ mod query_tests {
         );
     }
 }
+
+static NO_INSTALLED: LazyLock<HashSet<String>> = LazyLock::new(HashSet::new);
 
 const RESULT_LIMIT: usize = 30;
 const FUZZY_GATE: usize = 5;
@@ -533,7 +536,7 @@ impl SearchEngine {
             engine: self,
             text: text.to_owned(),
             filter: SearchFilter::All,
-            installed: HashSet::new(),
+            installed: &NO_INSTALLED,
             groups: Vec::new(),
             limit: RESULT_LIMIT,
         }
@@ -544,7 +547,7 @@ pub struct SearchQuery<'a> {
     engine: &'a SearchEngine,
     text: String,
     filter: SearchFilter,
-    installed: HashSet<String>,
+    installed: &'a HashSet<String>,
     groups: Vec<PackageGroup>,
     limit: usize,
 }
@@ -555,8 +558,8 @@ impl<'a> SearchQuery<'a> {
         self
     }
 
-    pub fn installed(mut self, installed: &HashSet<String>) -> Self {
-        self.installed = installed.iter().map(|name| name.to_lowercase()).collect();
+    pub fn installed(mut self, installed: &'a HashSet<String>) -> Self {
+        self.installed = installed;
         self
     }
 
@@ -1899,32 +1902,36 @@ mod query_api_tests {
     }
 
     #[test]
-    fn installed_folding_ignores_name_case() {
-        let (engine, metas) = engine_with(&["vim"]);
-        let upper: HashSet<String> = ["VIM".to_string()].into_iter().collect();
+    fn installed_marks_a_hit_whose_own_case_differs() {
+        let (engine, metas) = engine_with(&["Vim"]);
+        let installed: HashSet<String> = ["vim".to_string()].into_iter().collect();
         let results: Vec<SearchResult> = engine
             .query("vim")
-            .installed(&upper)
+            .installed(&installed)
             .execute(full_hydrator(&metas))
             .expect("execute");
         let vim = results
             .iter()
-            .find(|result| result.name == "vim")
-            .expect("vim hit");
-        assert!(vim.installed, "VIM entry must mark vim installed");
+            .find(|result| result.name == "Vim")
+            .expect("Vim hit");
+        assert!(vim.installed, "a normalised set must mark Vim installed");
+    }
 
-        let (engine, metas) = engine_with(&["VIM"]);
-        let lower: HashSet<String> = ["vim".to_string()].into_iter().collect();
+    #[test]
+    fn installed_filter_admits_rows_whose_index_name_is_lowercase() {
+        let (engine, metas) = engine_with(&["Vim"]);
+        let installed: HashSet<String> = ["vim".to_string()].into_iter().collect();
         let results: Vec<SearchResult> = engine
             .query("vim")
-            .installed(&lower)
+            .filter(SearchFilter::Installed)
+            .installed(&installed)
             .execute(full_hydrator(&metas))
             .expect("execute");
-        let vim = results
-            .iter()
-            .find(|result| result.name == "VIM")
-            .expect("VIM hit");
-        assert!(vim.installed, "vim entry must mark VIM installed");
+        assert_eq!(
+            results.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["Vim"],
+            "the index stores a lowercased name, so a normalised set must match it"
+        );
     }
 
     #[test]
