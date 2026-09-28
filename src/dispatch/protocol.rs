@@ -12,14 +12,16 @@ pub struct TerminalDecider {
     json: bool,
     skip_review: bool,
     tty: bool,
+    pager: String,
 }
 
 impl TerminalDecider {
-    pub fn new(json: bool, skip_review: bool, tty: bool) -> Self {
+    pub fn new(json: bool, skip_review: bool, tty: bool, pager: String) -> Self {
         Self {
             json,
             skip_review,
             tty,
+            pager,
         }
     }
 }
@@ -48,7 +50,7 @@ impl Decider for TerminalDecider {
         if self.json {
             return true;
         }
-        crate::cli::review::review_pkgbuilds(pkgbuilds)
+        crate::cli::review::review_pkgbuilds(pkgbuilds, &self.pager)
     }
 }
 
@@ -87,7 +89,7 @@ mod tests {
     fn deterministic_json_decider_answers_both_prompts() {
         use crate::build::BuildDecision;
         let plan = empty_plan();
-        let terminal = TerminalDecider::new(true, false, false);
+        let terminal = TerminalDecider::new(true, false, false, String::new());
         assert_eq!(terminal.confirm_build(&plan), BuildDecision::Review);
         assert!(terminal.review_pkgbuilds(&[]));
     }
@@ -95,14 +97,14 @@ mod tests {
     #[test]
     fn terminal_json_decider_bails_on_conflicts_like_noconfirm() {
         let report = conflicted_report();
-        let terminal = TerminalDecider::new(true, false, false);
+        let terminal = TerminalDecider::new(true, false, false, String::new());
         assert!(!terminal.confirm_conflicts(&report));
     }
 
     #[test]
     fn terminal_headless_decider_bails_on_conflicts_without_prompting() {
         let report = conflicted_report();
-        let terminal = TerminalDecider::new(false, false, false);
+        let terminal = TerminalDecider::new(false, false, false, String::new());
         assert!(!terminal.confirm_conflicts(&report));
     }
 }

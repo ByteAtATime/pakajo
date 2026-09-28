@@ -13,6 +13,17 @@ pub fn cache_base() -> anyhow::Result<PathBuf> {
     }
 }
 
+pub fn config_base() -> anyhow::Result<PathBuf> {
+    match std::env::var("XDG_CONFIG_HOME") {
+        Ok(xdg) if !xdg.is_empty() => Ok(PathBuf::from(xdg)),
+        _ => {
+            let home = std::env::var("HOME")
+                .context("no config directory: set XDG_CONFIG_HOME or HOME")?;
+            Ok(PathBuf::from(home).join(".config"))
+        }
+    }
+}
+
 pub fn cache_root() -> anyhow::Result<PathBuf> {
     Ok(cache_base()?.join("pakajo"))
 }

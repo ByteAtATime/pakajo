@@ -1,0 +1,3 @@
+[cli]
+# Pager used when reviewing PKGBUILDs.
+# pager = "$PAGER"

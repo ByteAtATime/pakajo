@@ -43,11 +43,11 @@ pub fn parse() -> Cli {
     Cli::parse_from(argv)
 }
 
-pub fn dispatch(cli: Cli) {
+pub fn dispatch(cli: Cli, config: &crate::config::Config) {
     match cli.command {
-        Some(Command::Install(a)) => std::process::exit(install_subcommand(a)),
+        Some(Command::Install(a)) => std::process::exit(install_subcommand(a, config)),
         Some(Command::Remove(a)) => std::process::exit(remove_subcommand(a)),
-        Some(Command::Upgrade(a)) => std::process::exit(upgrade_subcommand(a)),
+        Some(Command::Upgrade(a)) => std::process::exit(upgrade_subcommand(a, config)),
         Some(Command::Search(a)) => search_subcommand(a),
         Some(Command::Info(a)) => info_subcommand(a),
         Some(Command::Clean(a)) => clean_subcommand(a),
@@ -73,7 +73,7 @@ fn outcome_code(outcome: &ChildOutcome) -> i32 {
     1
 }
 
-fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
+fn upgrade_subcommand(args: UpgradeArgs, config: &crate::config::Config) -> i32 {
     let stdin_tty = stdin_is_tty();
     let tty = stdin_tty && !args.json;
     let approvals = match piped_seal_payload(stdin_tty, std::io::stdin().lock()) {
@@ -87,7 +87,13 @@ fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
         no_refresh: args.no_refresh,
         repo_only: args.repo_only,
         ignores: args.ignores.clone(),
-        decider: match decider_for(tty, args.json, args.skip_review, approvals.as_deref()) {
+        decider: match decider_for(
+            tty,
+            args.json,
+            args.skip_review,
+            approvals.as_deref(),
+            &config.cli.pager,
+        ) {
             Ok(decider) => decider,
             Err(error) => {
                 eprintln!("{error:#}");
@@ -103,7 +109,7 @@ fn upgrade_subcommand(args: UpgradeArgs) -> i32 {
     outcome_code(&drain(crate::dispatch::sysupgrade(request), args.json))
 }
 
-fn install_subcommand(args: InstallArgs) -> i32 {
+fn install_subcommand(args: InstallArgs, config: &crate::config::Config) -> i32 {
     let positionals = args.positionals;
 
     if positionals.is_empty() {
@@ -125,7 +131,13 @@ fn install_subcommand(args: InstallArgs) -> i32 {
         reinstall: args.reinstall,
         no_check: false,
         ignores: vec![],
-        decider: match decider_for(tty, args.json, args.skip_review, approvals.as_deref()) {
+        decider: match decider_for(
+            tty,
+            args.json,
+            args.skip_review,
+            approvals.as_deref(),
+            &config.cli.pager,
+        ) {
             Ok(decider) => decider,
             Err(error) => {
                 eprintln!("{error:#}");
@@ -214,9 +226,15 @@ pub(crate) fn decider_for(
     json: bool,
     skip_review: bool,
     approvals: Option<&str>,
+    pager: &str,
 ) -> anyhow::Result<Box<dyn Decider + Send>> {
     if !sealed_decider_required(tty, approvals) {
-        return Ok(Box::new(TerminalDecider::new(json, skip_review, tty)));
+        return Ok(Box::new(TerminalDecider::new(
+            json,
+            skip_review,
+            tty,
+            pager.to_string(),
+        )));
     }
     let payload = approvals.expect("sealed decider requires approvals");
     let sealed = crate::dispatch::seal::decode_seal(payload)
@@ -437,7 +455,7 @@ mod tests {
         use crate::build::BuildDecision;
         use crate::resolve::Plan;
         let sealed = conflict_seal_payload("cava-git", "cava", true);
-        let decider = decider_for(true, true, false, Some(sealed.as_str())).expect("decider");
+        let decider = decider_for(true, true, false, Some(sealed.as_str()), "").expect("decider");
         assert_eq!(
             decider.confirm_build(&Plan::default()),
             BuildDecision::Review
@@ -453,7 +471,7 @@ mod tests {
         for json in [false, true] {
             let approving = conflict_seal_payload("cava-git", "cava", true);
             let decider =
-                decider_for(false, json, false, Some(approving.as_str())).expect("decider");
+                decider_for(false, json, false, Some(approving.as_str()), "").expect("decider");
             assert_eq!(
                 decider.confirm_build(&Plan::default()),
                 BuildDecision::Proceed
@@ -462,7 +480,7 @@ mod tests {
             assert!(decider.review_pkgbuilds(&[]));
             let refusing = conflict_seal_payload("cava-git", "cava", false);
             let decider =
-                decider_for(false, json, false, Some(refusing.as_str())).expect("decider");
+                decider_for(false, json, false, Some(refusing.as_str()), "").expect("decider");
             assert!(!decider.confirm_conflicts(&conflicted_report()));
         }
     }
@@ -470,7 +488,7 @@ mod tests {
     #[test]
     fn decider_for_rejects_corrupt_seal_loudly() {
         use super::{INVALID_PIPED_SEAL, decider_for};
-        let error = match decider_for(false, false, false, Some("not a seal")) {
+        let error = match decider_for(false, false, false, Some("not a seal"), "") {
             Ok(_) => panic!("corrupt seal accepted"),
             Err(error) => error,
         };

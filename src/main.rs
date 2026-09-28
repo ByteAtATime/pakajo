@@ -32,13 +32,31 @@ use cosmic::widget::divider;
 
 pub type Element<'a> = cosmic::Element<'a, Message>;
 
+fn fatal_config_error(error: &anyhow::Error, gui: bool) -> ! {
+    if gui {
+        let detail = format!("{error:#}");
+        let _ = std::process::Command::new("notify-send")
+            .args(["-a", "pakajo", "--", "pakajo: invalid config", &detail])
+            .spawn();
+    }
+    eprintln!("error: {error:#}");
+    std::process::exit(1);
+}
+
 fn main() -> iced::Result {
     let argv: Vec<String> = std::env::args().collect();
     if argv.get(1).map(String::as_str) == Some(pakajo::dispatch::operation::MARKER) {
         std::process::exit(pakajo::dispatch::child::run(&argv[2..]));
     }
     let cli = cli::parse();
-    cli::dispatch(cli);
+    if let Some(pakajo::cli::Command::Completions(_)) = &cli.command {
+        cli::dispatch(cli, &pakajo::config::Config::default());
+    } else {
+        match pakajo::config::load_or_create() {
+            Ok(config) => cli::dispatch(cli, &config),
+            Err(e) => fatal_config_error(&e, cli.command.is_none()),
+        }
+    }
     let settings = Settings::default().client_decorations(false);
     let flags = ();
     app::run::<PakajoApp>(settings, flags)

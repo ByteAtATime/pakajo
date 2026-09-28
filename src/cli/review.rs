@@ -11,7 +11,7 @@ use crate::color::ColorTier;
 use crate::diff::{DiffLine, StyledSegment, highlight_line, parse_unified_diff, syntax_for_file};
 use crate::pkgbuild::{PkgbuildInfo, compute_diff};
 
-pub fn review_pkgbuilds(pkgbuilds: &[PkgbuildInfo]) -> bool {
+pub fn review_pkgbuilds(pkgbuilds: &[PkgbuildInfo], pager: &str) -> bool {
     let tier = color::terminal_tier();
     let enabled = tier != ColorTier::Off;
     let mut sections: Vec<(String, String)> = Vec::new();
@@ -44,7 +44,7 @@ pub fn review_pkgbuilds(pkgbuilds: &[PkgbuildInfo]) -> bool {
         combined.push_str("\n\n");
     }
 
-    let pager = resolve_pager();
+    let pager = resolve_pager(pager);
     let result = run_pager(&pager, &combined);
     if let Err(e) = result {
         eprintln!("warning: pager '{pager}' failed: {e:#}, printing to stdout");
@@ -54,17 +54,81 @@ pub fn review_pkgbuilds(pkgbuilds: &[PkgbuildInfo]) -> bool {
     confirm_review_accept()
 }
 
-fn resolve_pager() -> String {
-    if let Ok(p) = std::env::var("PAGER")
-        && !p.is_empty()
+pub(crate) fn expand_env_with(s: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '$' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            None => out.push('$'),
+            Some('{') => {
+                chars.next();
+                let mut name = String::new();
+                let mut closed = false;
+                for c in chars.by_ref() {
+                    if c == '}' {
+                        closed = true;
+                        break;
+                    }
+                    name.push(c);
+                }
+                if !closed {
+                    out.push('$');
+                    out.push('{');
+                    out.push_str(&name);
+                } else if let Some(value) = lookup(&name) {
+                    out.push_str(&value);
+                }
+            }
+            Some(c) if c.is_ascii_alphanumeric() || *c == '_' => {
+                let mut name = String::new();
+                while let Some(c) = chars.peek() {
+                    if c.is_ascii_alphanumeric() || *c == '_' {
+                        name.push(*c);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if let Some(value) = lookup(&name) {
+                    out.push_str(&value);
+                }
+            }
+            _ => out.push('$'),
+        }
+    }
+    out
+}
+
+fn expand_env(s: &str) -> String {
+    expand_env_with(s, |name| std::env::var(name).ok())
+}
+
+fn pager_from(configured: &str, pager_env: Option<&str>, has_less: bool) -> String {
+    let trimmed = configured.trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+    if let Some(env) = pager_env
+        && !env.trim().is_empty()
     {
-        return p;
+        return env.trim().to_string();
     }
-    if which("less") {
-        "less".to_string()
-    } else {
-        "cat".to_string()
+    if has_less {
+        return "less".to_string();
     }
+    "cat".to_string()
+}
+
+fn resolve_pager(configured: &str) -> String {
+    pager_from(
+        &expand_env(configured),
+        std::env::var("PAGER").ok().as_deref(),
+        which("less"),
+    )
 }
 
 fn which(cmd: &str) -> bool {
@@ -393,5 +457,53 @@ mod tests {
         assert_eq!(render_package(chrome, false, ColorTier::Off), None);
         assert_eq!(render_package(chrome, false, ColorTier::Truecolor), None);
         assert_eq!(render_package(chrome, true, ColorTier::Basic16), None);
+    }
+
+    #[test]
+    fn expand_env_with_table() {
+        let cases: &[(&str, &str)] = &[
+            ("$PAGER", "less"),
+            ("${PAGER}", "less"),
+            ("a-$X-b", "a-v-b"),
+            ("$UNSET", ""),
+            ("$9", ""),
+            ("$", "$"),
+            ("$$", "$$"),
+            ("$-", "$-"),
+            ("foo$", "foo$"),
+            ("${}", ""),
+            ("${UNCLOSED", "${UNCLOSED"),
+        ];
+        for (input, expected) in cases {
+            let actual = expand_env_with(input, |name| match name {
+                "PAGER" => Some("less".to_string()),
+                "X" => Some("v".to_string()),
+                _ => None,
+            });
+            assert_eq!(&actual, expected, "expand_env_with({input:?})");
+        }
+    }
+
+    #[test]
+    fn pager_from_precedence_table() {
+        let cases: &[(&str, Option<&str>, bool, &str)] = &[
+            ("most", Some("less"), true, "most"),
+            ("  most  ", Some("less"), true, "most"),
+            ("   ", Some("less"), true, "less"),
+            ("", Some("less"), true, "less"),
+            ("", None, true, "less"),
+            ("", None, false, "cat"),
+            ("", Some(""), true, "less"),
+            ("", Some(""), false, "cat"),
+            ("", Some("  "), true, "less"),
+            ("   ", Some("  "), false, "cat"),
+        ];
+        for (configured, env, has_less, expected) in cases {
+            assert_eq!(
+                &pager_from(configured, *env, *has_less),
+                expected,
+                "pager_from({configured:?}, {env:?}, {has_less})"
+            );
+        }
     }
 }
