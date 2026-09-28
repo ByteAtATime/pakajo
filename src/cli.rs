@@ -90,7 +90,7 @@ fn upgrade_subcommand(args: UpgradeArgs, config: &crate::config::Config) -> i32 
         decider: match decider_for(
             tty,
             args.json,
-            args.skip_review,
+            args.skip_review || config.aur.skip_review,
             approvals.as_deref(),
             &config.cli.pager,
         ) {
@@ -134,7 +134,7 @@ fn install_subcommand(args: InstallArgs, config: &crate::config::Config) -> i32 
         decider: match decider_for(
             tty,
             args.json,
-            args.skip_review,
+            args.skip_review || config.aur.skip_review,
             approvals.as_deref(),
             &config.cli.pager,
         ) {

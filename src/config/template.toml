@@ -1,3 +1,9 @@
 [cli]
 # Pager used when reviewing PKGBUILDs.
 # pager = "$PAGER"
+
+[aur]
+# Skip PKGBUILD review before building AUR packages.
+# WARNING: Disabling this allows unreviewed commands to run on your system;
+# for your own safety, you probably shouldn't enable this!
+# skip_review = false

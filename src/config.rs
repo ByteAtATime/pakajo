@@ -9,6 +9,7 @@ const TEMPLATE: &str = include_str!("config/template.toml");
 #[serde(default)]
 pub struct Config {
     pub cli: CliConfig,
+    pub aur: AurConfig,
 }
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -18,18 +19,32 @@ pub struct CliConfig {
     pub pager: String,
 }
 
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AurConfig {
+    pub skip_review: bool,
+}
+
+fn allowed_keys(section: &str) -> Option<&'static [&'static str]> {
+    match section {
+        "cli" => Some(&["pager"]),
+        "aur" => Some(&["skip_review"]),
+        _ => None,
+    }
+}
+
 fn parse_config(text: &str) -> anyhow::Result<(Config, Vec<String>)> {
     let table: toml::Table = toml::from_str(text)?;
     let mut warnings = Vec::new();
     for (key, value) in &table {
-        if key != "cli" {
+        let Some(allowed) = allowed_keys(key) else {
             warnings.push(format!("unknown section '{key}'"));
             continue;
-        }
+        };
         if let Some(inner) = value.as_table() {
             for inner_key in inner.keys() {
-                if inner_key != "pager" {
-                    warnings.push(format!("unknown key '{inner_key}' in [cli]"));
+                if !allowed.contains(&inner_key.as_str()) {
+                    warnings.push(format!("unknown key '{inner_key}' in [{key}]"));
                 }
             }
         }
@@ -149,6 +164,21 @@ mod tests {
     fn unknown_top_level_section_warns() {
         let (_, warnings) = parse_config("[mystery]\nfoo = 1\n").expect("parses");
         assert!(warnings.iter().any(|w| w.contains("mystery")));
+    }
+
+    #[test]
+    fn aur_skip_review_parses() {
+        let (config, warnings) = parse_config("[aur]\nskip_review = true\n").expect("parses");
+        assert!(config.aur.skip_review);
+        assert_eq!(config.cli, CliConfig::default());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn aur_typo_key_warns() {
+        let (config, warnings) = parse_config("[aur]\nskip_reviw = true\n").expect("typo parses");
+        assert_eq!(config, Config::default());
+        assert!(warnings.iter().any(|w| w.contains("skip_reviw")));
     }
 
     #[test]
