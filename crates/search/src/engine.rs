@@ -470,18 +470,25 @@ fn expensive_only_pass(
     cands
 }
 
-struct TermMasks {
+#[derive(Clone, Copy)]
+struct Query {
     chars: u64,
     bigrams: u64,
     trigrams: u64,
+    first: Option<char>,
+    char_count: usize,
+    non_ascii: usize,
 }
 
-impl TermMasks {
-    fn of(term: &str) -> Self {
+impl Query {
+    fn of(text: &str) -> Self {
         Self {
-            chars: byte_mask(term.as_bytes()),
-            bigrams: bigram_mask(term.as_bytes()),
-            trigrams: trigram_mask(term.as_bytes()),
+            chars: byte_mask(text.as_bytes()),
+            bigrams: bigram_mask(text.as_bytes()),
+            trigrams: trigram_mask(text.as_bytes()),
+            first: text.chars().next(),
+            char_count: text.chars().count(),
+            non_ascii: text.chars().filter(|c| !c.is_ascii()).count(),
         }
     }
 }
@@ -495,14 +502,14 @@ fn word_map(index: &PackageIndex, out: &mut Vec<u64>, word: impl Fn(usize) -> u6
     mask_tail(index, out);
 }
 
-fn seed_words(index: &PackageIndex, masks: &TermMasks, out: &mut Vec<u64>) {
+fn seed_words(index: &PackageIndex, query: &Query, out: &mut Vec<u64>) {
     word_map(index, out, |w| {
-        let name = all_present(masks.chars, |b| index.name_char_word(w, b))
-            & all_present(masks.bigrams, |b| index.name_bigram_word(w, b))
-            & all_present(masks.trigrams, |b| index.name_trigram_word(w, b));
-        let kw = all_present(masks.chars, |b| index.kw_char_word(w, b))
-            & all_present(masks.bigrams, |b| index.kw_bigram_word(w, b))
-            & all_present(masks.trigrams, |b| index.kw_trigram_word(w, b));
+        let name = all_present(query.chars, |b| index.name_char_word(w, b))
+            & all_present(query.bigrams, |b| index.name_bigram_word(w, b))
+            & all_present(query.trigrams, |b| index.name_trigram_word(w, b));
+        let kw = all_present(query.chars, |b| index.kw_char_word(w, b))
+            & all_present(query.bigrams, |b| index.kw_bigram_word(w, b))
+            & all_present(query.trigrams, |b| index.kw_trigram_word(w, b));
         name | kw
     });
 }
@@ -510,15 +517,15 @@ fn seed_words(index: &PackageIndex, masks: &TermMasks, out: &mut Vec<u64>) {
 fn for_each_seed_row(
     index: &PackageIndex,
     term: &str,
-    masks: &TermMasks,
+    query: &Query,
     filter: SearchFilter,
     installed: &HashSet<String>,
     words: &mut Vec<u64>,
     mut visit: impl FnMut(usize, Tier) -> ControlFlow<()>,
 ) {
-    seed_words(index, masks, words);
+    seed_words(index, query, words);
     for_each_row(words, |pkg| {
-        term_tier_at(index, pkg, term, masks, filter, installed)
+        term_tier_at(index, pkg, term, query, filter, installed)
             .map_or(ControlFlow::Continue(()), |tier| visit(pkg, tier))
     });
 }
@@ -526,13 +533,13 @@ fn for_each_seed_row(
 fn seed_rows(
     index: &PackageIndex,
     term: &str,
-    masks: &TermMasks,
+    query: &Query,
     filter: SearchFilter,
     installed: &HashSet<String>,
     words: &mut Vec<u64>,
 ) -> Vec<(usize, Tier)> {
     let mut out: Vec<(usize, Tier)> = Vec::new();
-    for_each_seed_row(index, term, masks, filter, installed, words, |pkg, tier| {
+    for_each_seed_row(index, term, query, filter, installed, words, |pkg, tier| {
         out.push((pkg, tier));
         ControlFlow::Continue(())
     });
@@ -543,26 +550,26 @@ fn term_tier_at(
     index: &PackageIndex,
     pkg: usize,
     term: &str,
-    masks: &TermMasks,
+    query: &Query,
     filter: SearchFilter,
     installed: &HashSet<String>,
 ) -> Option<Tier> {
     if !filter.row_matches(index, pkg, installed) {
         return None;
     }
-    tier_at(index, pkg, term, ALL_TIERS, masks.chars, masks.bigrams)
+    tier_at(index, pkg, term, ALL_TIERS, query.chars, query.bigrams)
 }
 
 fn term_matches_any(
     index: &PackageIndex,
     term: &str,
-    masks: &TermMasks,
+    query: &Query,
     filter: SearchFilter,
     installed: &HashSet<String>,
     words: &mut Vec<u64>,
 ) -> bool {
     let mut matched = false;
-    for_each_seed_row(index, term, masks, filter, installed, words, |_, _| {
+    for_each_seed_row(index, term, query, filter, installed, words, |_, _| {
         matched = true;
         ControlFlow::Break(())
     });
@@ -610,19 +617,19 @@ fn multi_term_candidates(
 ) -> Vec<Scored> {
     let mut survivors: Vec<(usize, Tier)> = Vec::new();
     for term in q.split_whitespace() {
-        let masks = TermMasks::of(term);
+        let query = Query::of(term);
         if survivors.is_empty() {
-            survivors = seed_rows(index, term, &masks, filter, installed, &mut scratch.words);
+            survivors = seed_rows(index, term, &query, filter, installed, &mut scratch.words);
             continue;
         }
         let mut kept: Vec<(usize, Tier)> = Vec::new();
         for (pkg, tier) in survivors.iter().copied() {
-            if let Some(other) = term_tier_at(index, pkg, term, &masks, filter, installed) {
+            if let Some(other) = term_tier_at(index, pkg, term, &query, filter, installed) {
                 kept.push((pkg, tier.max(other)));
             }
         }
         if kept.is_empty() {
-            if term_matches_any(index, term, &masks, filter, installed, &mut scratch.words) {
+            if term_matches_any(index, term, &query, filter, installed, &mut scratch.words) {
                 survivors.clear();
             }
             continue;
@@ -668,50 +675,27 @@ fn fuzzy_score_from_seed(
     (distance, first_letter_match)
 }
 
-#[derive(Clone, Copy)]
-struct QueryChars {
-    mask: u64,
-    non_ascii: usize,
-    count: usize,
-}
-
-impl QueryChars {
-    fn new(q: &str) -> Self {
-        Self {
-            mask: byte_mask(q.as_bytes()),
-            non_ascii: q.chars().filter(|c| !c.is_ascii()).count(),
-            count: q.chars().count(),
-        }
-    }
-}
-
-fn char_gate_passes(
-    qc: &QueryChars,
-    cand_mask: u64,
-    cand_is_ascii: bool,
-    cand_chars: usize,
-) -> bool {
-    let missing = qc.mask & !cand_mask;
-    let extra = cand_mask & !qc.mask;
+fn char_gate_passes(query: &Query, cand_mask: u64, cand_is_ascii: bool, cand_chars: usize) -> bool {
+    let missing = query.chars & !cand_mask;
+    let extra = cand_mask & !query.chars;
     if !cand_is_ascii {
         return missing.count_ones() as usize + extra.count_ones() as usize <= MAX_EDIT_DISTANCE;
     }
-    if cand_chars.abs_diff(qc.count) > MAX_EDIT_DISTANCE {
+    if cand_chars.abs_diff(query.char_count) > MAX_EDIT_DISTANCE {
         return false;
     }
-    if qc.non_ascii == 0 {
+    if query.non_ascii == 0 {
         return at_most_two_missing(missing) && at_most_two_missing(extra);
     }
-    missing.count_ones() as usize + qc.non_ascii <= MAX_EDIT_DISTANCE && at_most_two_missing(extra)
+    missing.count_ones() as usize + query.non_ascii <= MAX_EDIT_DISTANCE
+        && at_most_two_missing(extra)
 }
 
 #[derive(Clone, Copy)]
 struct FusedCtx<'a> {
     index: &'a PackageIndex,
     q: &'a str,
-    chars: QueryChars,
-    qbig: u64,
-    q_first: Option<char>,
+    query: Query,
     filter: SearchFilter,
     installed: &'a HashSet<String>,
 }
@@ -770,17 +754,16 @@ fn fused_expensive_row(
     let FusedCtx {
         index,
         q,
-        chars,
-        qbig,
-        q_first,
+        query,
         filter,
         installed,
     } = *ctx;
     let r = index.row(i);
-    let name_tier_arm = r.name_len as usize >= q.len() && (qbig & !r.name_bigrams) == 0;
-    let kw_tier_arm = index.max_kw_len(i) as usize >= q.len() && (qbig & !r.kw_bigrams) == 0;
+    let name_tier_arm = r.name_len as usize >= q.len() && (query.bigrams & !r.name_bigrams) == 0;
+    let kw_tier_arm =
+        index.max_kw_len(i) as usize >= q.len() && (query.bigrams & !r.kw_bigrams) == 0;
     if (name_tier_arm || kw_tier_arm)
-        && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, chars.mask, qbig)
+        && let Some(tier) = tier_at(index, i, q, EXPENSIVE_TIERS, query.chars, query.bigrams)
     {
         if filter.row_matches(index, i, installed) {
             scored_push(cands, index, i, tier, 0, false);
@@ -788,7 +771,7 @@ fn fused_expensive_row(
         placed.insert(i);
         return;
     }
-    if !char_gate_passes(&chars, r.name_mask, r.ascii_name, r.name_len as usize) {
+    if !char_gate_passes(&query, r.name_mask, r.ascii_name, r.name_len as usize) {
         return;
     }
     let Some(name_d) =
@@ -800,9 +783,15 @@ fn fused_expensive_row(
         placed.insert(i);
         return;
     }
-    let seed_first_letter = index.name(i).chars().next() == q_first;
-    let (distance, first_letter_match) =
-        fuzzy_score_from_seed(matcher, index, i, name_d as u8, seed_first_letter, q_first);
+    let seed_first_letter = index.name(i).chars().next() == query.first;
+    let (distance, first_letter_match) = fuzzy_score_from_seed(
+        matcher,
+        index,
+        i,
+        name_d as u8,
+        seed_first_letter,
+        query.first,
+    );
     scored_push(
         fuzzy_buf,
         index,
@@ -825,13 +814,12 @@ fn seed_fuzzy_token(
 ) {
     let FusedCtx {
         index,
-        chars,
-        q_first,
+        query,
         filter,
         installed,
         ..
-    } = *ctx;
-    if !char_gate_passes(&chars, token_mask, ascii_token, index.token_len(tid)) {
+    } = ctx;
+    if !char_gate_passes(query, token_mask, ascii_token, index.token_len(tid)) {
         return;
     }
     let token = index.token_str(tid);
@@ -849,14 +837,14 @@ fn seed_fuzzy_token(
             placed.insert(pkg);
             continue;
         }
-        let seed_first_letter = token.chars().next() == q_first;
+        let seed_first_letter = token.chars().next() == query.first;
         let (distance, first_letter_match) = fuzzy_score_from_seed(
             matcher,
             index,
             pkg,
             seed_distance as u8,
             seed_first_letter,
-            q_first,
+            query.first,
         );
         scored_push(
             fuzzy_buf,
@@ -879,13 +867,10 @@ fn fused_expensive_fuzzy_pass(
     installed: &HashSet<String>,
 ) -> Vec<Scored> {
     let placed = &mut scratch.marks;
-    let chars = QueryChars::new(q);
     let ctx = FusedCtx {
         index,
         q,
-        chars,
-        qbig: bigram_mask(q.as_bytes()),
-        q_first: q.chars().next(),
+        query: Query::of(q),
         filter,
         installed,
     };
@@ -898,8 +883,8 @@ fn fused_expensive_fuzzy_pass(
 
     {
         let words = &mut scratch.words;
-        if ctx.chars.mask.count_ones() >= MIN_PREFILTER_CHARS {
-            prefilter_words(index, ctx.chars.mask, words);
+        if ctx.query.chars.count_ones() >= MIN_PREFILTER_CHARS {
+            prefilter_words(index, ctx.query.chars, words);
         } else {
             full_words(index, words);
         }
@@ -911,8 +896,8 @@ fn fused_expensive_fuzzy_pass(
         });
     }
 
-    let shortest = ctx.chars.count.saturating_sub(MAX_EDIT_DISTANCE);
-    let longest = ctx.chars.count + MAX_EDIT_DISTANCE;
+    let shortest = ctx.query.char_count.saturating_sub(MAX_EDIT_DISTANCE);
+    let longest = ctx.query.char_count + MAX_EDIT_DISTANCE;
     for len in shortest..=longest {
         for slot in index.token_bucket(len) {
             seed_fuzzy_token(
