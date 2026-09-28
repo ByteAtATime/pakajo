@@ -102,10 +102,7 @@ fn resolve_aur(names: &[String]) -> HashMap<String, crate::aur::AurInfo> {
 }
 
 fn cached_aur(names: &[String]) -> HashMap<String, crate::aur::AurInfo> {
-    let Some(db) = crate::db::PackageDb::db_path()
-        .ok()
-        .and_then(|path| crate::db::PackageDb::open(&path).ok())
-    else {
+    let Some(db) = crate::db::PackageDb::open_default().ok() else {
         return HashMap::new();
     };
     let mut found = HashMap::new();

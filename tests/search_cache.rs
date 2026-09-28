@@ -1,4 +1,4 @@
-use pakajo::db::{PackageDb, cache_path, db_cache_fingerprint, engine_for, hydrate_metas};
+use pakajo::db::{PackageDb, db_cache_fingerprint, engine_for, hydrate_metas};
 use pakajo_search::engine::SearchEngine;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
@@ -32,7 +32,7 @@ fn engine_for_returns_ranked_ids() {
     seed_package(&conn, "google-chrome", "aur");
     seed_package(&conn, "chromium", "repo");
 
-    let engine = engine_for(&db, &cache_path(&sqlite_path)).expect("engine");
+    let engine = engine_for(&db).expect("engine");
 
     let names = result_names(&db, &engine, "chrome");
     assert!(!names.is_empty(), "chrome query must return results");
@@ -47,7 +47,7 @@ fn rebuild_is_noop_when_fingerprint_unchanged() {
     let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
     seed_package(&conn, "google-chrome", "aur");
 
-    let engine = engine_for(&db, &cache_path(&sqlite_path)).expect("engine");
+    let engine = engine_for(&db).expect("engine");
     let before = result_names(&db, &engine, "chrome");
 
     engine
@@ -66,7 +66,7 @@ fn rebuild_picks_up_new_rows() {
     let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
     seed_package(&conn, "google-chrome", "aur");
 
-    let engine = engine_for(&db, &cache_path(&sqlite_path)).expect("engine");
+    let engine = engine_for(&db).expect("engine");
     assert!(
         result_names(&db, &engine, "firefox").is_empty(),
         "firefox absent before rebuild"
@@ -93,11 +93,11 @@ fn corrupt_cache_is_rebuilt_from_rows() {
     let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
     seed_package(&conn, "firefox", "aur");
 
-    let cache = cache_path(&sqlite_path);
-    engine_for(&db, &cache).expect("initial build");
+    let cache = db.index_cache_path();
+    engine_for(&db).expect("initial build");
     std::fs::write(&cache, b"not an index").expect("corrupt cache");
 
-    let engine = engine_for(&db, &cache).expect("recovery build");
+    let engine = engine_for(&db).expect("recovery build");
     let names = result_names(&db, &engine, "firefox");
     assert!(!names.is_empty(), "recovered engine must serve rows");
     assert_eq!(names.into_iter().next().expect("top hit"), "firefox");
@@ -111,12 +111,11 @@ fn provider_failure_surfaces_as_store_error() {
     let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
     seed_package(&conn, "firefox", "aur");
 
-    let cache = cache_path(&sqlite_path);
-    let engine = engine_for(&db, &cache).expect("engine");
+    let engine = engine_for(&db).expect("engine");
 
     conn.execute_batch("DROP TABLE packages").expect("drop");
 
-    let build_err = match engine_for(&db, &cache) {
+    let build_err = match engine_for(&db) {
         Ok(_) => panic!("dropped table must fail the build"),
         Err(err) => err,
     };
@@ -195,11 +194,10 @@ fn engine_for_fails_loud_when_store_unusable_after_move() {
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
         .expect("checkpoint");
 
-    let cache = cache_path(&sqlite_path);
     std::fs::rename(&sqlite_path, dir.path().join("aur-meta.sqlite.moved")).expect("move db away");
     conn.execute_batch("DROP TABLE packages").expect("drop");
 
-    match engine_for(&db, &cache) {
+    match engine_for(&db) {
         Ok(_) => panic!("moved-away db must fail loudly, never yield an empty engine"),
         Err(err) => assert!(
             matches!(err, pakajo_search::SearchError::Store(_)),

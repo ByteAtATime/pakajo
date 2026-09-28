@@ -1,4 +1,4 @@
-use crate::db::{cache_path, engine_for};
+use crate::db::engine_for;
 
 const NAME_LIMIT: usize = 500;
 
@@ -61,9 +61,8 @@ fn print_available(prefix: &str) -> anyhow::Result<()> {
 }
 
 fn indexed_names_with_prefix(prefix: &str) -> Option<Vec<String>> {
-    let sqlite = crate::db::PackageDb::db_path().ok()?;
-    let db = crate::db::PackageDb::open(&sqlite).ok()?;
-    match engine_for(&db, &cache_path(&sqlite)) {
+    let db = crate::db::PackageDb::open_default().ok()?;
+    match engine_for(&db) {
         Err(_) => None,
         Ok(engine) if engine.is_empty() => None,
         Ok(engine) => Some(engine.complete_prefix(prefix, NAME_LIMIT)),
@@ -89,7 +88,7 @@ fn repo_names_with_prefix(prefix: &str) -> anyhow::Result<Vec<String>> {
 mod tests {
     use super::{indexed_names_with_prefix, run};
     use crate::db::PackageDb;
-    use crate::db::{cache_path, engine_for};
+    use crate::db::engine_for;
 
     const PARITY_NAMES: &[&str] = &[
         "alpha",
@@ -143,7 +142,7 @@ mod tests {
         seed_names(&sqlite_path, PARITY_NAMES);
         drop(db);
         let db = PackageDb::open(&sqlite_path).expect("reopen");
-        let engine = engine_for(&db, &cache_path(&sqlite_path)).expect("engine");
+        let engine = engine_for(&db).expect("engine");
 
         for (prefix, limit) in [
             ("al", 3),

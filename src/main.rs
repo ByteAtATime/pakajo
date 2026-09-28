@@ -15,7 +15,7 @@ use cosmic::{
 use pakajo::aur::AurClient;
 use pakajo::cli;
 use pakajo::dashboard::DashboardMessage;
-use pakajo::db::PackageDb;
+use pakajo::db::{PackageDb, engine_for};
 use pakajo::pacman::handle;
 use pakajo_search::engine::SearchEngine;
 
@@ -103,24 +103,18 @@ impl Application for PakajoApp {
         core.window.content_container = false;
         core.window.sharp_corners = true;
         core.window.use_template = false;
-        let sqlite_path = PackageDb::db_path().ok();
-        let db = sqlite_path
+        let db = PackageDb::open_default()
+            .map_err(|e| eprintln!("local index unavailable, falling back to live search: {e:#}"))
+            .ok()
+            .map(Arc::new);
+        let search_engine = db
             .as_ref()
-            .and_then(|p| {
-                PackageDb::open(p)
-                    .map_err(|e| {
-                        eprintln!("local index unavailable, falling back to live search: {e:#}")
-                    })
+            .and_then(|db| {
+                engine_for(db)
+                    .map_err(|e| eprintln!("[pakajo] search index unavailable: {e}"))
                     .ok()
             })
             .map(Arc::new);
-        let search_engine = match (&db, &sqlite_path) {
-            (Some(db), Some(path)) => pakajo::db::engine_for(db, &pakajo::db::cache_path(path))
-                .map_err(|e| eprintln!("[pakajo] search index unavailable: {e}"))
-                .ok()
-                .map(Arc::new),
-            _ => None,
-        };
 
         let group_index = Arc::new(Vec::new());
         let (alpm, installed_names) = match handle() {

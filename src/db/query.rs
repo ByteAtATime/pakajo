@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 
 use pakajo_search::engine::SearchEngine;
 use pakajo_search::{PackageMeta, SearchError, SearchResult, Source};
@@ -18,17 +17,14 @@ pub struct PackageRow {
     pub package_base: Option<String>,
 }
 
-pub fn cache_path(sqlite: &Path) -> PathBuf {
-    sqlite.with_file_name("index.bin")
-}
-
-pub fn engine_for(db: &PackageDb, cache: &Path) -> Result<SearchEngine, SearchError> {
+pub fn engine_for(db: &PackageDb) -> Result<SearchEngine, SearchError> {
+    let cache = db.index_cache_path();
     let fingerprint = super::db_cache_fingerprint(db);
-    match SearchEngine::build(Some((cache, fingerprint)), || db.index_rows()) {
+    match SearchEngine::build(Some((cache.as_path(), fingerprint)), || db.index_rows()) {
         Err(SearchError::Corrupt) => {
             eprintln!("search cache corrupt, rebuilding");
-            let _ = std::fs::remove_file(cache);
-            SearchEngine::build(Some((cache, fingerprint)), || db.index_rows())
+            let _ = std::fs::remove_file(&cache);
+            SearchEngine::build(Some((cache.as_path(), fingerprint)), || db.index_rows())
         }
         other => other,
     }

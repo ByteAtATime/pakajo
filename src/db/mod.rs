@@ -3,6 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 
 pub struct PackageDb {
+    path: std::path::PathBuf,
     read: std::sync::Mutex<rusqlite::Connection>,
     write: std::sync::Mutex<rusqlite::Connection>,
 }
@@ -15,9 +16,18 @@ impl PackageDb {
         let read = rusqlite::Connection::open(path)?;
         apply_schema(&read)?;
         Ok(Self {
+            path: path.to_path_buf(),
             read: std::sync::Mutex::new(read),
             write: std::sync::Mutex::new(write),
         })
+    }
+
+    pub fn open_default() -> anyhow::Result<Self> {
+        Self::open(&Self::db_path()?)
+    }
+
+    pub fn index_cache_path(&self) -> std::path::PathBuf {
+        self.path.with_file_name("index.bin")
     }
 
     pub fn db_path() -> anyhow::Result<std::path::PathBuf> {
@@ -59,13 +69,13 @@ fn hash_file_stats(entries: &[(u128, u64)]) -> u64 {
 }
 
 pub fn db_cache_fingerprint(db: &PackageDb) -> u64 {
-    let Some(main) = main_db_path(db) else {
+    if db.path.as_os_str().is_empty() {
         return u64::MAX;
-    };
+    }
     let mut siblings = Vec::with_capacity(3);
-    siblings.push(main.clone());
+    siblings.push(db.path.clone());
     for suffix in ["-wal", "-shm"] {
-        let mut name = main.clone().into_os_string();
+        let mut name = db.path.clone().into_os_string();
         name.push(suffix);
         siblings.push(std::path::PathBuf::from(name));
     }
@@ -87,24 +97,6 @@ pub fn db_cache_fingerprint(db: &PackageDb) -> u64 {
         stats.push((nanos, meta.len()));
     }
     hash_file_stats(&stats)
-}
-
-fn main_db_path(db: &PackageDb) -> Option<std::path::PathBuf> {
-    let conn = db.read.lock().expect("read connection poisoned");
-    let mut stmt = conn.prepare("PRAGMA database_list").ok()?;
-    let mut rows = stmt.query([]).ok()?;
-    while let Ok(Some(row)) = rows.next() {
-        let name: String = row.get(1).ok()?;
-        if name != "main" {
-            continue;
-        }
-        let file: String = row.get(2).ok()?;
-        if file.is_empty() {
-            return None;
-        }
-        return Some(std::path::PathBuf::from(file));
-    }
-    None
 }
 
 fn apply_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -212,7 +204,7 @@ pub mod query;
 pub mod sync;
 
 pub use fetch::{AUR_META_URL, DecompressedDump, FetchOutcome, fetch};
-pub use query::{PackageRow, apply_installed_to_results, cache_path, engine_for, hydrate_metas};
+pub use query::{PackageRow, apply_installed_to_results, engine_for, hydrate_metas};
 pub use sync::RefreshOutcome;
 
 #[cfg(test)]

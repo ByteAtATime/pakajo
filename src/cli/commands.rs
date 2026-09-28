@@ -2,7 +2,7 @@ use pakajo_search::Source;
 
 pub fn run_aur_sync() -> anyhow::Result<()> {
     let handle = crate::pacman::handle()?;
-    let index = crate::db::PackageDb::open(&crate::db::PackageDb::db_path()?)?;
+    let index = crate::db::PackageDb::open_default()?;
     match index.refresh(&handle)? {
         crate::db::RefreshOutcome::NotModified => println!("index up to date"),
         crate::db::RefreshOutcome::Updated {
@@ -36,10 +36,9 @@ pub fn run_gendb() -> anyhow::Result<()> {
 }
 
 pub fn run_search(query: &str) -> anyhow::Result<()> {
-    let sqlite_path = crate::db::PackageDb::db_path()?;
-    let local = crate::db::PackageDb::open(&sqlite_path)?;
+    let local = crate::db::PackageDb::open_default()?;
     refresh_index_if_stale(&local);
-    let engine = crate::db::engine_for(&local, &crate::db::cache_path(&sqlite_path))?;
+    let engine = crate::db::engine_for(&local)?;
     let snapshot = crate::pacman::snapshot::get()?;
     let installed: std::collections::HashSet<String> = snapshot.installed.into_iter().collect();
     let results = engine
