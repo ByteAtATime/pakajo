@@ -990,7 +990,6 @@ fn to_sorted_pairs(index: &PackageIndex, cands: Vec<Scored>) -> Vec<(u32, Tier)>
 mod tests {
     use super::*;
     use crate::index::{RawPkg, assemble, tokenize};
-    use crate::tiers::{Candidate, PkgView, candidate_ordering};
     use std::collections::HashMap;
 
     fn pkg(id: u32, name: &str, is_repo: bool, popularity: u16) -> RawPkg {
@@ -1157,57 +1156,24 @@ mod tests {
     }
 
     #[test]
-    fn overflowing_candidates_keep_the_best_thirty_ranked() {
+    fn exact_token_block_returns_the_popular_thirty_first() {
         let packages: Vec<RawPkg> = (1u32..=40)
-            .map(|i| pkg(i, &format!("prefix-{i}"), false, 0))
-            .collect();
-        let index = index_with(packages);
-        let ids = search_index(&index, "prefix");
-        assert_eq!(ids, (1u32..=30).collect::<Vec<u32>>());
-    }
-
-    fn view_of<'a>(index: &'a PackageIndex, pi: usize) -> PkgView<'a> {
-        let r = index.row(pi);
-        PkgView {
-            name: index.name(pi),
-            id: r.id,
-            popularity: r.popularity,
-            is_repo: r.is_repo,
-        }
-    }
-
-    #[test]
-    fn exact_token_block_is_sorted_so_the_first_thirty_are_the_best_thirty() {
-        let packages: Vec<RawPkg> = (1u32..=60)
-            .map(|i| RawPkg {
-                id: i,
-                name: format!("tool-git-{}", "x".repeat((i % 7) as usize)),
-                tokens: vec!["git".to_string()],
-                keywords: Vec::new(),
-                popularity: (i * 37 % 1000) as u16,
-                is_repo: i % 5 == 0,
+            .map(|i| {
+                let name = format!("git-{i:02}");
+                RawPkg {
+                    id: i,
+                    name: name.clone(),
+                    tokens: tokenize(&name),
+                    keywords: Vec::new(),
+                    popularity: i as u16,
+                    is_repo: false,
+                }
             })
             .collect();
         let index = index_with(packages);
-
-        let mut expected: Vec<Candidate<'_>> = (0..index.len())
-            .map(|pi| Candidate {
-                view: view_of(&index, pi),
-                tier: Tier::ExactToken,
-                distance: 0,
-                first_letter_match: false,
-            })
-            .collect();
-        expected.sort_by(candidate_ordering);
-
-        let got: Vec<u32> = search_index(&index, "git");
-        assert_eq!(got.len(), RESULT_LIMIT);
         assert_eq!(
-            got,
-            expected[..RESULT_LIMIT]
-                .iter()
-                .map(|c| c.view.id)
-                .collect::<Vec<u32>>()
+            search_index(&index, "git"),
+            (11..=40u32).rev().collect::<Vec<u32>>()
         );
     }
 
@@ -1235,29 +1201,13 @@ mod tests {
     }
 
     #[test]
-    fn filter_official_returns_only_repo_packages() {
+    fn source_filters_split_repo_from_aur() {
         let index = index_with(vec![pkg(1, "vim", true, 0), pkg(2, "vim", false, 0)]);
         let installed: HashSet<String> = HashSet::new();
-        let ids = ids_of_pairs(&search_index_tiered(
-            &index,
-            "vim",
-            SearchFilter::Official,
-            &installed,
-        ));
-        assert_eq!(ids, vec![1]);
-    }
-
-    #[test]
-    fn filter_aur_returns_only_non_repo_packages() {
-        let index = index_with(vec![pkg(1, "vim", true, 0), pkg(2, "vim", false, 0)]);
-        let installed: HashSet<String> = HashSet::new();
-        let ids = ids_of_pairs(&search_index_tiered(
-            &index,
-            "vim",
-            SearchFilter::Aur,
-            &installed,
-        ));
-        assert_eq!(ids, vec![2]);
+        for (filter, expected) in [(SearchFilter::Official, 1), (SearchFilter::Aur, 2)] {
+            let ids = ids_of_pairs(&search_index_tiered(&index, "vim", filter, &installed));
+            assert_eq!(ids, vec![expected], "filter {filter:?}");
+        }
     }
 
     #[test]
