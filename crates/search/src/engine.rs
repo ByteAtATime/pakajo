@@ -2,12 +2,13 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
 use std::ops::ControlFlow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use crate::SearchError;
 use crate::SearchFilter;
 use crate::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE, at_most_two_missing};
-use crate::index::{PackageIndex, bigram_mask, byte_mask, needs_rebuild, trigram_mask};
+use crate::index::{IndexRow, PackageIndex, bigram_mask, build_from_rows, byte_mask, trigram_mask};
 use crate::query::{ParsedQuery, parse_query};
 use crate::tiers::{Scored, Tier, pack_sort_key, tier_at, tier_of_key};
 
@@ -25,6 +26,7 @@ const CHEAP_TIERS_ALL: &[Tier] = &[
 ];
 const EXPENSIVE_TIERS: &[Tier] = &[Tier::Substring, Tier::Keyword];
 
+#[cfg(test)]
 pub fn search_index(index: &PackageIndex, text: &str) -> Vec<u32> {
     search_index_tiered(index, text, SearchFilter::All, &HashSet::new())
         .into_iter()
@@ -84,22 +86,91 @@ pub fn search_index_tiered(
 }
 
 pub struct SearchEngine {
-    sqlite_path: PathBuf,
-    index: RwLock<Arc<PackageIndex>>,
+    cache_path: Option<PathBuf>,
+    state: RwLock<EngineState>,
+}
+
+struct EngineState {
+    index: Arc<PackageIndex>,
+    cached_fp: u64,
 }
 
 impl SearchEngine {
-    pub fn new(sqlite_path: PathBuf) -> anyhow::Result<Self> {
-        let index = PackageIndex::load_or_build(&sqlite_path)?;
+    pub fn build<F>(cache: Option<(&Path, u64)>, rows: F) -> Result<Self, SearchError>
+    where
+        F: Fn() -> Result<Vec<IndexRow>, SearchError>,
+    {
+        let Some((path, fingerprint)) = cache else {
+            return Self::without_cache(rows()?);
+        };
+        match PackageIndex::load(path) {
+            Ok((index, stored_fp)) if stored_fp == fingerprint => Ok(Self {
+                cache_path: Some(path.to_path_buf()),
+                state: RwLock::new(EngineState {
+                    index: Arc::new(index),
+                    cached_fp: fingerprint,
+                }),
+            }),
+            Ok(_) => Self::miss(path, fingerprint, rows()?),
+            Err(SearchError::Corrupt) => Err(SearchError::Corrupt),
+            Err(SearchError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                Self::miss(path, fingerprint, rows()?)
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    pub fn rebuild<F>(&self, fingerprint: u64, rows: F) -> Result<(), SearchError>
+    where
+        F: Fn() -> Result<Vec<IndexRow>, SearchError>,
+    {
+        if self.cached_fp() == fingerprint {
+            return Ok(());
+        }
+        let built = build_from_rows(rows()?);
+        let (snapshot, cache_path) = {
+            let mut state = self.state.write().expect("index lock poisoned");
+            if state.cached_fp == fingerprint {
+                return Ok(());
+            }
+            state.index = Arc::new(built);
+            state.cached_fp = fingerprint;
+            (state.index.clone(), self.cache_path.clone())
+        };
+        if fingerprint != u64::MAX
+            && let Some(path) = cache_path
+        {
+            snapshot.store(&path, fingerprint)?;
+        }
+        Ok(())
+    }
+
+    fn without_cache(rows: Vec<IndexRow>) -> Result<Self, SearchError> {
         Ok(Self {
-            sqlite_path,
-            index: RwLock::new(Arc::new(index)),
+            cache_path: None,
+            state: RwLock::new(EngineState {
+                index: Arc::new(build_from_rows(rows)),
+                cached_fp: u64::MAX,
+            }),
         })
     }
 
-    pub fn search(&self, text: &str) -> Vec<u32> {
-        let snapshot = self.index.read().expect("index lock poisoned").clone();
-        search_index(&snapshot, text)
+    fn miss(path: &Path, fingerprint: u64, rows: Vec<IndexRow>) -> Result<Self, SearchError> {
+        let index = build_from_rows(rows);
+        if fingerprint != u64::MAX {
+            index.store(path, fingerprint)?;
+        }
+        Ok(Self {
+            cache_path: Some(path.to_path_buf()),
+            state: RwLock::new(EngineState {
+                index: Arc::new(index),
+                cached_fp: fingerprint,
+            }),
+        })
+    }
+
+    fn cached_fp(&self) -> u64 {
+        self.state.read().expect("index lock poisoned").cached_fp
     }
 
     pub fn search_tiered(
@@ -108,21 +179,13 @@ impl SearchEngine {
         filter: SearchFilter,
         installed: &HashSet<String>,
     ) -> Vec<(u32, Tier)> {
-        let snapshot = self.index.read().expect("index lock poisoned").clone();
+        let snapshot = self
+            .state
+            .read()
+            .expect("index lock poisoned")
+            .index
+            .clone();
         search_index_tiered(&snapshot, text, filter, installed)
-    }
-
-    pub fn ensure_fresh(&self) -> anyhow::Result<()> {
-        if !needs_rebuild(&self.sqlite_path) {
-            return Ok(());
-        }
-        let mut guard = self.index.write().expect("index lock poisoned");
-        if !needs_rebuild(&self.sqlite_path) {
-            return Ok(());
-        }
-        let rebuilt = PackageIndex::load_or_build(&self.sqlite_path)?;
-        *guard = Arc::new(rebuilt);
-        Ok(())
     }
 }
 

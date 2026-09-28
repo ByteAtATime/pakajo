@@ -1,3 +1,4 @@
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
@@ -45,6 +46,56 @@ impl PackageDb {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
         Some(Duration::from_secs(now.as_secs().saturating_sub(parsed)))
     }
+}
+
+pub fn db_cache_fingerprint(db: &PackageDb) -> u64 {
+    let Some(main) = main_db_path(db) else {
+        return u64::MAX;
+    };
+    let mut siblings = Vec::with_capacity(3);
+    siblings.push(main.clone());
+    for suffix in ["-wal", "-shm"] {
+        let mut name = main.clone().into_os_string();
+        name.push(suffix);
+        siblings.push(std::path::PathBuf::from(name));
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for path in siblings {
+        let meta = match std::fs::metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return u64::MAX,
+        };
+        let modified = match meta.modified() {
+            Ok(modified) => modified,
+            Err(_) => return u64::MAX,
+        };
+        let nanos = match modified.duration_since(UNIX_EPOCH) {
+            Ok(age) => age.as_nanos(),
+            Err(_) => return u64::MAX,
+        };
+        nanos.hash(&mut hasher);
+        meta.len().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn main_db_path(db: &PackageDb) -> Option<std::path::PathBuf> {
+    let conn = db.read.lock().expect("read connection poisoned");
+    let mut stmt = conn.prepare("PRAGMA database_list").ok()?;
+    let mut rows = stmt.query([]).ok()?;
+    while let Ok(Some(row)) = rows.next() {
+        let name: String = row.get(1).ok()?;
+        if name != "main" {
+            continue;
+        }
+        let file: String = row.get(2).ok()?;
+        if file.is_empty() {
+            return None;
+        }
+        return Some(std::path::PathBuf::from(file));
+    }
+    None
 }
 
 fn apply_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {

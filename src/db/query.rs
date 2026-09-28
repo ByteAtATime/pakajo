@@ -25,6 +25,27 @@ fn row_to_package(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackageRow> {
 }
 
 impl super::PackageDb {
+    pub fn index_rows(&self) -> Result<Vec<pakajo_search::IndexRow>, pakajo_search::SearchError> {
+        let conn = self.read.lock().expect("read connection poisoned");
+        let mut stmt = conn
+            .prepare("SELECT rowid AS id, name, source, popularity, keywords FROM packages")
+            .map_err(store_error)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let id: i64 = row.get(0)?;
+                Ok(pakajo_search::IndexRow {
+                    id: id as u32,
+                    name: row.get(1)?,
+                    source: row.get(2)?,
+                    popularity: row.get(3)?,
+                    keywords: row.get(4)?,
+                })
+            })
+            .map_err(store_error)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(store_error)
+    }
+
     pub fn hydrate_by_ids(
         &self,
         ids: &[u32],
@@ -73,6 +94,10 @@ impl super::PackageDb {
             }
         }
     }
+}
+
+fn store_error(e: rusqlite::Error) -> pakajo_search::SearchError {
+    pakajo_search::SearchError::Store(Box::new(e))
 }
 
 fn prefix_upper_bound(prefix: &str) -> Option<String> {

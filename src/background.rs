@@ -53,8 +53,11 @@ pub fn begin_aur_sync_in_background(db: Arc<PackageDb>, search_engine: Option<Ar
                 eprintln!(
                     "[pakajo] indexed {aur_count} aur + {repo_count} repo packages (skipped {skipped})"
                 );
-                if let Some(engine) = search_engine.as_ref() {
-                    let _ = engine.ensure_fresh();
+                if let Some(engine) = search_engine.as_ref()
+                    && let Err(e) =
+                        engine.rebuild(pakajo::db::db_cache_fingerprint(&db), || db.index_rows())
+                {
+                    eprintln!("[pakajo] search index rebuild failed: {e}");
                 }
             }
             Err(e) => {

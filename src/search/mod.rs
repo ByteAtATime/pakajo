@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use crate::db::PackageDb;
 use crate::package::PackageSource;
@@ -10,15 +11,31 @@ pub mod engine {
     pub use pakajo_search::engine::SearchEngine;
 }
 pub mod hydrate;
-pub mod index {
-    pub use pakajo_search::index::index_path;
-}
 pub mod tiers {
     pub use pakajo_search::tiers::Tier;
 }
 
 pub use hydrate::apply_installed_to_results;
 pub use pakajo_search::SearchFilter;
+
+pub fn cache_path(sqlite: &Path) -> PathBuf {
+    sqlite.with_file_name("index.bin")
+}
+
+pub fn engine_for(
+    db: &PackageDb,
+    cache: &Path,
+) -> Result<SearchEngine, pakajo_search::SearchError> {
+    let fingerprint = crate::db::db_cache_fingerprint(db);
+    match SearchEngine::build(Some((cache, fingerprint)), || db.index_rows()) {
+        Err(pakajo_search::SearchError::Corrupt) => {
+            eprintln!("search cache corrupt, rebuilding");
+            let _ = std::fs::remove_file(cache);
+            SearchEngine::build(Some((cache, fingerprint)), || db.index_rows())
+        }
+        other => other,
+    }
+}
 
 #[cfg(test)]
 mod engine_tests;

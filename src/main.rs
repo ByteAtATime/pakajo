@@ -103,20 +103,26 @@ impl Application for PakajoApp {
         core.window.content_container = false;
         core.window.sharp_corners = true;
         core.window.use_template = false;
-        let search_engine = PackageDb::db_path()
-            .ok()
-            .and_then(|p| SearchEngine::new(p).ok())
-            .map(Arc::new);
-        let db = PackageDb::db_path()
-            .ok()
+        let sqlite_path = PackageDb::db_path().ok();
+        let db = sqlite_path
+            .as_ref()
             .and_then(|p| {
-                PackageDb::open(&p)
+                PackageDb::open(p)
                     .map_err(|e| {
                         eprintln!("local index unavailable, falling back to live search: {e:#}")
                     })
                     .ok()
             })
             .map(Arc::new);
+        let search_engine = match (&db, &sqlite_path) {
+            (Some(db), Some(path)) => {
+                pakajo::search::engine_for(db, &pakajo::search::cache_path(path))
+                    .map_err(|e| eprintln!("[pakajo] search index unavailable: {e}"))
+                    .ok()
+                    .map(Arc::new)
+            }
+            _ => None,
+        };
 
         let group_index = Arc::new(Vec::new());
         let (alpm, installed_names) = match handle() {

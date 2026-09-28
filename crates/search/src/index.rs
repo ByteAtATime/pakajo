@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::SearchError;
 use crate::tiers::rank_bits;
 
 const POP_NORM_MAX: f64 = 100.0;
-const INDEX_MAGIC: [u8; 4] = *b"v003";
+const INDEX_MAGIC: [u8; 4] = *b"v004";
 
 fn next_prefix_bound(q: &[u8]) -> Option<Vec<u8>> {
     let last = q.len() - 1;
@@ -139,50 +140,12 @@ fn parse_keywords(kw: Option<String>) -> Vec<String> {
     }
 }
 
-pub fn index_path(sqlite_path: &Path) -> PathBuf {
-    sqlite_path.with_file_name("index.bin")
-}
-
-pub fn needs_rebuild(sqlite_path: &Path) -> bool {
-    let idx = index_path(sqlite_path);
-    let Ok(idx_meta) = std::fs::metadata(&idx) else {
-        return true;
-    };
-    let Ok(sqlite_meta) = std::fs::metadata(sqlite_path) else {
-        return true;
-    };
-    let Ok(idx_mod) = idx_meta.modified() else {
-        return true;
-    };
-    let Ok(sqlite_mod) = sqlite_meta.modified() else {
-        return true;
-    };
-    idx_mod < sqlite_mod
-}
-
 pub struct IndexRow {
     pub id: u32,
     pub name: String,
     pub source: String,
     pub popularity: Option<f64>,
     pub keywords: Option<String>,
-}
-
-fn scan_packages(conn: &rusqlite::Connection) -> anyhow::Result<Vec<IndexRow>> {
-    let mut stmt =
-        conn.prepare("SELECT rowid AS id, name, source, popularity, keywords FROM packages")?;
-    let rows = stmt.query_map([], |row| {
-        let id: i64 = row.get(0)?;
-        Ok(IndexRow {
-            id: id as u32,
-            name: row.get(1)?,
-            source: row.get(2)?,
-            popularity: row.get(3)?,
-            keywords: row.get(4)?,
-        })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<IndexRow>>>()
-        .map_err(anyhow::Error::from)
 }
 
 pub fn build_from_rows(rows: Vec<IndexRow>) -> PackageIndex {
@@ -687,57 +650,36 @@ impl PackageIndex {
         lo..hi
     }
 
-    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+    pub fn store(&self, path: &Path, fingerprint: u64) -> Result<(), SearchError> {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let payload =
+            bincode::serde::encode_to_vec((fingerprint, self), bincode::config::standard())
+                .map_err(|e| SearchError::Encode(e.to_string()))?;
         let mut bytes = INDEX_MAGIC.to_vec();
-        bytes.extend_from_slice(&bincode::serde::encode_to_vec(
-            self,
-            bincode::config::standard(),
-        )?);
+        bytes.extend_from_slice(&payload);
         std::fs::write(path, bytes)?;
         Ok(())
     }
 
-    pub fn load(path: &Path) -> anyhow::Result<PackageIndex> {
+    pub fn load(path: &Path) -> Result<(PackageIndex, u64), SearchError> {
         let bytes = std::fs::read(path)?;
         if bytes.len() < INDEX_MAGIC.len() || bytes[..INDEX_MAGIC.len()] != INDEX_MAGIC {
-            let _ = std::fs::remove_file(path);
-            anyhow::bail!("index magic mismatch");
+            return Err(SearchError::Corrupt);
         }
-        match bincode::serde::decode_from_slice::<PackageIndex, _>(
-            &bytes[INDEX_MAGIC.len()..],
-            bincode::config::standard(),
-        ) {
-            Ok((pkg, _)) => {
-                if !pkg.validate() {
-                    let _ = std::fs::remove_file(path);
-                    anyhow::bail!("index validation failed");
-                }
-                Ok(pkg)
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(path);
-                Err(anyhow::Error::from(e))
-            }
+        let ((fingerprint, index), _): ((u64, PackageIndex), _) =
+            bincode::serde::decode_from_slice(
+                &bytes[INDEX_MAGIC.len()..],
+                bincode::config::standard(),
+            )
+            .map_err(|_| SearchError::Corrupt)?;
+        if !index.validate() {
+            return Err(SearchError::Corrupt);
         }
-    }
-
-    pub fn load_or_build(sqlite_path: &Path) -> anyhow::Result<PackageIndex> {
-        let idx = index_path(sqlite_path);
-        if !needs_rebuild(sqlite_path)
-            && let Ok(pkg) = Self::load(&idx)
-        {
-            return Ok(pkg);
-        }
-        let rows = match rusqlite::Connection::open_with_flags(
-            sqlite_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ) {
-            Ok(conn) => scan_packages(&conn).unwrap_or_default(),
-            Err(_) => Vec::new(),
-        };
-        let pkg = build_from_rows(rows);
-        let _ = pkg.save(&idx);
-        Ok(pkg)
+        Ok((index, fingerprint))
     }
 
     fn validate(&self) -> bool {
@@ -915,9 +857,10 @@ mod tests {
             },
         ];
         let original = assemble(raws);
-        original.save(&path).expect("save");
+        original.store(&path, 7).expect("store");
 
-        let loaded = PackageIndex::load(&path).expect("load");
+        let (loaded, fingerprint) = PackageIndex::load(&path).expect("load");
+        assert_eq!(fingerprint, 7);
 
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded.name(0), "vim");
@@ -964,5 +907,18 @@ mod tests {
 
         assert!(loaded.exact_name_range(b"nope").is_empty());
         assert!(loaded.prefix_token_range(b"zz").is_empty());
+    }
+
+    #[test]
+    fn load_rejects_garbage_without_side_effects() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("index.bin");
+        std::fs::write(&path, b"not an index").expect("write garbage");
+        let err = match PackageIndex::load(&path) {
+            Ok(_) => panic!("garbage must fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, SearchError::Corrupt));
+        assert!(path.exists(), "load must not delete the cache file");
     }
 }

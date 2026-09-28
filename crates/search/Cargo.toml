@@ -5,10 +5,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
-anyhow = "1.0.103"
+thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 bincode = { version = "2", features = ["serde"] }
-rusqlite = { version = "0.40", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"
