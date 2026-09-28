@@ -70,60 +70,14 @@ impl super::PackageDb {
         rows.collect::<rusqlite::Result<std::collections::HashMap<u32, PackageRow>>>()
             .map_err(anyhow::Error::from)
     }
-
-    pub fn names_with_prefix(&self, prefix: &str, limit: usize) -> anyhow::Result<Vec<String>> {
-        let conn = self.read.lock().expect("read connection poisoned");
-        match prefix_upper_bound(prefix) {
-            Some(upper) => {
-                let mut stmt = conn.prepare(
-                    "SELECT name FROM packages WHERE name >= ?1 AND name < ?2 ORDER BY name LIMIT ?3",
-                )?;
-                let rows = stmt
-                    .query_map(rusqlite::params![prefix, upper, limit as i64], |row| {
-                        row.get::<_, String>(0)
-                    })?;
-                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-            }
-            None => {
-                let mut stmt = conn
-                    .prepare("SELECT name FROM packages WHERE name >= ?1 ORDER BY name LIMIT ?2")?;
-                let rows = stmt.query_map(rusqlite::params![prefix, limit as i64], |row| {
-                    row.get::<_, String>(0)
-                })?;
-                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-            }
-        }
-    }
 }
 
 fn store_error(e: rusqlite::Error) -> pakajo_search::SearchError {
     pakajo_search::SearchError::Store(Box::new(e))
 }
 
-fn prefix_upper_bound(prefix: &str) -> Option<String> {
-    let mut chars: Vec<char> = prefix.chars().collect();
-    while let Some(&last) = chars.last() {
-        let mut next = last as u32 + 1;
-        if (0xD800..=0xDFFF).contains(&next) {
-            next = 0xE000;
-        }
-        match char::from_u32(next) {
-            Some(c) => {
-                chars.pop();
-                chars.push(c);
-                return Some(chars.into_iter().collect());
-            }
-            None => {
-                chars.pop();
-            }
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::db::PackageDb;
 
     #[test]
@@ -166,14 +120,6 @@ mod tests {
     }
 
     #[test]
-    fn prefix_upper_bound_increments_last_char() {
-        assert_eq!(prefix_upper_bound("al"), Some("am".to_string()));
-        assert_eq!(prefix_upper_bound("z"), Some("{".to_string()));
-        assert_eq!(prefix_upper_bound(""), None);
-        assert_eq!(prefix_upper_bound("a\u{10FFFF}"), Some("b".to_string()));
-    }
-
-    #[test]
     fn packages_name_column_is_primary_key() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("aur-meta.sqlite");
@@ -201,53 +147,6 @@ mod tests {
         assert!(
             pk > 0,
             "name must be the primary key so prefix range scans hit the PK index"
-        );
-    }
-
-    #[test]
-    fn names_with_prefix_filters_and_limits() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("aur-meta.sqlite");
-        let index = PackageDb::open(&path).expect("open");
-
-        let seed = rusqlite::Connection::open(&path).expect("seed");
-        for name in ["alpha", "alpine", "al1", "al2", "al3", "al4", "a_b", "axb"] {
-            seed.execute(
-                "INSERT INTO packages (name) VALUES (?)",
-                rusqlite::params![name],
-            )
-            .expect("insert");
-        }
-        drop(seed);
-
-        assert_eq!(
-            index.names_with_prefix("al", 3).expect("query"),
-            vec!["al1".to_string(), "al2".to_string(), "al3".to_string()],
-            "ORDER BY name with LIMIT truncates after three rows"
-        );
-        assert_eq!(
-            index.names_with_prefix("al", 10).expect("query"),
-            vec![
-                "al1".to_string(),
-                "al2".to_string(),
-                "al3".to_string(),
-                "al4".to_string(),
-                "alpha".to_string(),
-                "alpine".to_string(),
-            ]
-        );
-        assert_eq!(
-            index.names_with_prefix("a_", 10).expect("query"),
-            vec!["a_b".to_string()],
-            "underscore is matched literally via range bounds"
-        );
-        assert_eq!(
-            index.names_with_prefix("ax", 10).expect("query"),
-            vec!["axb".to_string()]
-        );
-        assert!(
-            index.names_with_prefix("zz", 10).expect("query").is_empty(),
-            "no matches yields an empty list"
         );
     }
 }

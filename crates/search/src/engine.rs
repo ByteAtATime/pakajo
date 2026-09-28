@@ -189,6 +189,36 @@ impl SearchEngine {
         search_index_tiered(&snapshot, text, filter, installed)
     }
 
+    pub fn complete_prefix(&self, prefix: &str, limit: usize) -> Vec<String> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let snapshot = self
+            .state
+            .read()
+            .expect("index lock poisoned")
+            .index
+            .clone();
+        if prefix.is_empty() {
+            return snapshot
+                .names_sorted
+                .iter()
+                .take(limit)
+                .map(|&pi| snapshot.name(pi as usize).to_owned())
+                .collect();
+        }
+        let folded = prefix.to_lowercase();
+        snapshot
+            .prefix_name_range(folded.as_bytes())
+            .take(limit)
+            .map(|i| snapshot.name(snapshot.names_sorted[i] as usize).to_owned())
+            .collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.state.read().expect("index lock poisoned").index.len() == 0
+    }
+
     pub fn query(&self, text: &str) -> SearchQuery<'_> {
         SearchQuery {
             engine: self,
@@ -1800,5 +1830,156 @@ mod query_api_tests {
         assert!(names.contains(&"alpha"));
         assert!(names.contains(&"alphasonic"));
         assert!(!names.contains(&"alphabet"));
+    }
+}
+
+#[cfg(test)]
+mod complete_prefix_tests {
+    use super::*;
+    use crate::index::{IndexRow, RawPkg, assemble, tokenize};
+
+    fn completion_row(id: u32, name: &str) -> IndexRow {
+        IndexRow {
+            id,
+            name: name.to_string(),
+            source: "aur".to_string(),
+            popularity: None,
+            keywords: None,
+        }
+    }
+
+    fn completion_engine(names: &[&str]) -> SearchEngine {
+        SearchEngine::build(None, || {
+            Ok(names
+                .iter()
+                .enumerate()
+                .map(|(pos, name)| completion_row(pos as u32 + 1, name))
+                .collect())
+        })
+        .expect("build engine")
+    }
+
+    fn corpus() -> SearchEngine {
+        completion_engine(&[
+            "alpha",
+            "alpine",
+            "beta",
+            "firefox",
+            "firefox-bin",
+            "firefox-esr",
+            "gamma",
+        ])
+    }
+
+    #[test]
+    fn full_name_prefix_returns_name_and_extensions() {
+        assert_eq!(
+            corpus().complete_prefix("firefox", 10),
+            vec![
+                "firefox".to_string(),
+                "firefox-bin".to_string(),
+                "firefox-esr".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn between_neighbors_prefix_returns_empty() {
+        assert!(corpus().complete_prefix("az", 10).is_empty());
+    }
+
+    #[test]
+    fn beyond_last_name_prefix_returns_empty() {
+        assert!(corpus().complete_prefix("zzz", 10).is_empty());
+    }
+
+    #[test]
+    fn empty_prefix_returns_first_names_in_order() {
+        assert_eq!(
+            corpus().complete_prefix("", 3),
+            vec![
+                "alpha".to_string(),
+                "alpine".to_string(),
+                "beta".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn limit_truncates_match_set_in_order() {
+        let names: Vec<String> = (0..10).map(|pos| format!("testpkg-{pos:02}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        assert_eq!(
+            completion_engine(&refs).complete_prefix("testpkg-", 3),
+            vec![
+                "testpkg-00".to_string(),
+                "testpkg-01".to_string(),
+                "testpkg-02".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn zero_limit_returns_empty() {
+        assert!(corpus().complete_prefix("firefox", 0).is_empty());
+    }
+
+    #[test]
+    fn uppercase_prefix_folds_to_lowercase_rows() {
+        assert_eq!(
+            corpus().complete_prefix("FIRE", 10),
+            vec![
+                "firefox".to_string(),
+                "firefox-bin".to_string(),
+                "firefox-esr".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn folded_prefix_skips_mixed_case_row_sorted_before_lowercase() {
+        let index = assemble(vec![
+            RawPkg {
+                id: 1,
+                name: "FirefoX".to_string(),
+                tokens: tokenize("FirefoX"),
+                keywords: Vec::new(),
+                popularity: 0,
+                is_repo: false,
+            },
+            RawPkg {
+                id: 2,
+                name: "firefox".to_string(),
+                tokens: tokenize("firefox"),
+                keywords: Vec::new(),
+                popularity: 0,
+                is_repo: false,
+            },
+            RawPkg {
+                id: 3,
+                name: "firefox-bin".to_string(),
+                tokens: tokenize("firefox-bin"),
+                keywords: Vec::new(),
+                popularity: 0,
+                is_repo: false,
+            },
+        ]);
+        let ordered: Vec<&str> = index
+            .names_sorted
+            .iter()
+            .map(|&pi| index.name(pi as usize))
+            .collect();
+        assert_eq!(ordered, vec!["FirefoX", "firefox", "firefox-bin"]);
+        let matched: Vec<&str> = index
+            .prefix_name_range(b"fire")
+            .map(|i| index.name(index.names_sorted[i] as usize))
+            .collect();
+        assert_eq!(matched, vec!["firefox", "firefox-bin"]);
+    }
+
+    #[test]
+    fn is_empty_tracks_index_contents() {
+        assert!(completion_engine(&[]).is_empty());
+        assert!(!corpus().is_empty());
     }
 }

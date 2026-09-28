@@ -186,7 +186,7 @@ fn index_rows_matches_direct_select() {
 }
 
 #[test]
-fn engine_for_fails_loud_when_db_file_moved_away() {
+fn engine_for_fails_loud_when_store_unusable_after_move() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sqlite_path = dir.path().join("aur-meta.sqlite");
     let db = PackageDb::open(&sqlite_path).expect("open");
