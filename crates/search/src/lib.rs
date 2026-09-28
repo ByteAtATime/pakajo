@@ -6,7 +6,7 @@ pub mod engine;
 pub mod fuzzy;
 pub mod index;
 pub mod query;
-pub mod tiers;
+pub(crate) mod tiers;
 
 pub use index::IndexRow;
 

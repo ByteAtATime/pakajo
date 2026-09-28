@@ -1,10 +1,11 @@
+#[cfg(test)]
 use std::cmp::Ordering;
 
 use crate::index::PackageIndex;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Tier {
+pub(crate) enum Tier {
     ExactName = 0,
     ExactToken = 1,
     PrefixName = 2,
@@ -14,6 +15,7 @@ pub enum Tier {
     Fuzzy = 6,
 }
 
+#[cfg(test)]
 pub struct PkgView<'a> {
     pub name: &'a str,
     pub id: u32,
@@ -21,6 +23,7 @@ pub struct PkgView<'a> {
     pub is_repo: bool,
 }
 
+#[cfg(test)]
 pub struct Candidate<'a> {
     pub view: PkgView<'a>,
     pub tier: Tier,
@@ -62,6 +65,7 @@ pub fn tier_of_key(key: u64) -> Tier {
     }
 }
 
+#[cfg(test)]
 pub fn candidate_ordering(a: &Candidate<'_>, b: &Candidate<'_>) -> Ordering {
     a.tier
         .cmp(&b.tier)

@@ -28,14 +28,14 @@ const CHEAP_TIERS_ALL: &[Tier] = &[
 const EXPENSIVE_TIERS: &[Tier] = &[Tier::Substring, Tier::Keyword];
 
 #[cfg(test)]
-pub fn search_index(index: &PackageIndex, text: &str) -> Vec<u32> {
+pub(crate) fn search_index(index: &PackageIndex, text: &str) -> Vec<u32> {
     search_index_tiered(index, text, SearchFilter::All, &HashSet::new())
         .into_iter()
         .map(|(id, _)| id)
         .collect()
 }
 
-pub fn search_index_tiered(
+pub(crate) fn search_index_tiered(
     index: &PackageIndex,
     text: &str,
     filter: SearchFilter,
@@ -174,7 +174,7 @@ impl SearchEngine {
         self.state.read().expect("index lock poisoned").cached_fp
     }
 
-    pub fn search_tiered(
+    pub(crate) fn search_tiered(
         &self,
         text: &str,
         filter: SearchFilter,
@@ -1622,5 +1622,183 @@ mod multi_term_tests {
         assert!(ids.contains(&1));
         assert!(!ids.contains(&7));
         assert!(!ids.contains(&8));
+    }
+}
+
+#[cfg(test)]
+mod query_api_tests {
+    use super::*;
+    use crate::index::IndexRow;
+    use crate::{PackageMeta, Source};
+    use std::collections::HashMap;
+
+    fn index_row(id: u32, name: &str) -> IndexRow {
+        IndexRow {
+            id,
+            name: name.to_string(),
+            source: "aur".to_string(),
+            popularity: None,
+            keywords: None,
+        }
+    }
+
+    fn test_meta(name: &str) -> PackageMeta {
+        PackageMeta {
+            name: name.to_string(),
+            description: None,
+            source: Source::Aur,
+            repo: None,
+            version: None,
+            last_update: 0,
+            num_votes: 0,
+            popularity: 0.0,
+        }
+    }
+
+    fn engine_with(names: &[&str]) -> (SearchEngine, HashMap<u32, PackageMeta>) {
+        let rows = make_rows(names);
+        let metas: HashMap<u32, PackageMeta> = rows
+            .iter()
+            .map(|row| (row.id, test_meta(&row.name)))
+            .collect();
+        let engine = SearchEngine::build(None, || Ok(make_rows(names))).expect("build engine");
+        (engine, metas)
+    }
+
+    fn make_rows(names: &[&str]) -> Vec<IndexRow> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(pos, name)| index_row(pos as u32 + 1, name))
+            .collect()
+    }
+
+    fn full_hydrator(
+        metas: &HashMap<u32, PackageMeta>,
+    ) -> impl Fn(&[u32]) -> Result<HashMap<u32, PackageMeta>, SearchError> + '_ {
+        |ids| {
+            let mut out = HashMap::with_capacity(ids.len());
+            for id in ids {
+                if let Some(meta) = metas.get(id) {
+                    out.insert(*id, meta.clone());
+                }
+            }
+            Ok(out)
+        }
+    }
+
+    fn is_group(result: &SearchResult) -> bool {
+        result.source == Source::Group
+    }
+
+    #[test]
+    fn groups_surface_only_for_all_filter_with_nonempty_query() {
+        let (engine, metas) = engine_with(&["gnome-shell", "gnome-terminal"]);
+        let groups = vec![("gnome".to_string(), "extra".to_string())];
+
+        let all: Vec<SearchResult> = engine
+            .query("gnome")
+            .groups(&groups)
+            .execute(full_hydrator(&metas))
+            .expect("execute");
+        assert!(
+            all.iter()
+                .any(|result| is_group(result) && result.name == "gnome"),
+            "matching group must surface under the All filter"
+        );
+
+        let installed: HashSet<String> = ["gnome-shell".to_string()].into_iter().collect();
+        let filtered: Vec<SearchResult> = engine
+            .query("gnome")
+            .filter(SearchFilter::Installed)
+            .installed(&installed)
+            .groups(&groups)
+            .execute(full_hydrator(&metas))
+            .expect("execute");
+        assert!(
+            filtered.iter().all(|result| !is_group(result)),
+            "groups must stay hidden under the Installed filter"
+        );
+
+        let empty: Vec<SearchResult> = engine
+            .query("")
+            .groups(&groups)
+            .execute(full_hydrator(&metas))
+            .expect("execute");
+        assert!(
+            empty.iter().all(|result| !is_group(result)),
+            "groups must stay hidden for an empty query"
+        );
+    }
+
+    #[test]
+    fn installed_folding_ignores_name_case() {
+        let (engine, metas) = engine_with(&["vim"]);
+        let upper: HashSet<String> = ["VIM".to_string()].into_iter().collect();
+        let results: Vec<SearchResult> = engine
+            .query("vim")
+            .installed(&upper)
+            .execute(full_hydrator(&metas))
+            .expect("execute");
+        let vim = results
+            .iter()
+            .find(|result| result.name == "vim")
+            .expect("vim hit");
+        assert!(vim.installed, "VIM entry must mark vim installed");
+
+        let (engine, metas) = engine_with(&["VIM"]);
+        let lower: HashSet<String> = ["vim".to_string()].into_iter().collect();
+        let results: Vec<SearchResult> = engine
+            .query("vim")
+            .installed(&lower)
+            .execute(full_hydrator(&metas))
+            .expect("execute");
+        let vim = results
+            .iter()
+            .find(|result| result.name == "VIM")
+            .expect("VIM hit");
+        assert!(vim.installed, "vim entry must mark VIM installed");
+    }
+
+    #[test]
+    fn default_limit_returns_thirty_packages_plus_two_groups() {
+        let names: Vec<String> = (0..35).map(|pos| format!("testpkg-{pos:02}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let (engine, metas) = engine_with(&refs);
+        let groups = vec![
+            ("testpkg-extra-a".to_string(), "repo".to_string()),
+            ("testpkg-extra-b".to_string(), "repo".to_string()),
+        ];
+
+        let results: Vec<SearchResult> = engine
+            .query("testpkg")
+            .groups(&groups)
+            .execute(full_hydrator(&metas))
+            .expect("execute");
+
+        assert_eq!(results.len(), 32);
+        assert_eq!(results.iter().filter(|result| is_group(result)).count(), 2);
+        assert_eq!(
+            results.iter().filter(|result| !is_group(result)).count(),
+            30
+        );
+    }
+
+    #[test]
+    fn hydrator_miss_skips_rows_without_panic() {
+        let (engine, metas) = engine_with(&["alpha", "alphabet", "alphasonic"]);
+        let partial: HashMap<u32, PackageMeta> =
+            metas.into_iter().filter(|(id, _)| *id != 2).collect();
+
+        let results: Vec<SearchResult> = engine
+            .query("alpha")
+            .execute(full_hydrator(&partial))
+            .expect("execute");
+
+        let names: Vec<&str> = results.iter().map(|result| result.name.as_str()).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"alpha"));
+        assert!(names.contains(&"alphasonic"));
+        assert!(!names.contains(&"alphabet"));
     }
 }
