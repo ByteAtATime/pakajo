@@ -27,25 +27,32 @@ pub fn run_clean(remove: bool) -> anyhow::Result<()> {
                 Err(e) => eprintln!("warning: failed to remove {name}: {e}"),
             }
         } else {
-            let status = Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(["clean", "-fdx"])
-                .stdout(std::process::Stdio::null())
-                .status()
-                .with_context(|| format!("failed to spawn git for {name}"));
-            match status {
-                Ok(s) if s.success() => {
+            match clean_untracked(dir) {
+                Ok(()) => {
                     println!("cleaned {name}");
                     count += 1;
                 }
-                Ok(s) => eprintln!("warning: git clean failed for {name} (exit {})", s),
                 Err(e) => eprintln!("warning: {e}"),
             }
         }
     }
     let verb = if remove { "removed" } else { "cleaned" };
     println!("{verb} {count} clone(s)");
+    Ok(())
+}
+
+pub fn clean_untracked(dir: &Path) -> anyhow::Result<()> {
+    let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["clean", "-fdx"])
+        .stdout(std::process::Stdio::null())
+        .status()
+        .with_context(|| format!("failed to spawn git for {name}"))?;
+    if !status.success() {
+        anyhow::bail!("git clean failed for {name} (exit {status})");
+    }
     Ok(())
 }
 
@@ -63,10 +70,29 @@ fn collect_clone_dirs(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
+    use super::clean_untracked;
     use super::collect_clone_dirs;
     use std::fs;
+    use std::path::Path;
     use std::path::PathBuf;
+    use std::process::Command;
     use tempfile::TempDir;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .expect("git command runs");
+        assert!(status.success(), "git {args:?} failed in {}", dir.display());
+    }
+
+    fn init_repo(dir: &Path) {
+        git(dir, &["init", "-q"]);
+        git(dir, &["config", "user.email", "test@example.com"]);
+        git(dir, &["config", "user.name", "Test"]);
+    }
 
     fn touch(path: PathBuf) {
         if let Some(parent) = path.parent() {
@@ -104,5 +130,21 @@ mod tests {
         let root = TempDir::new().unwrap();
         let result = collect_clone_dirs(root.path()).unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn clean_untracked_removes_untracked_only() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path();
+        init_repo(path);
+        fs::write(path.join("tracked.txt"), "tracked").unwrap();
+        git(path, &["add", "-A"]);
+        git(path, &["commit", "-q", "-m", "init"]);
+        fs::write(path.join("pkg.fake.tar.zst"), "artifact").unwrap();
+
+        clean_untracked(path).unwrap();
+
+        assert!(!path.join("pkg.fake.tar.zst").exists());
+        assert!(path.join("tracked.txt").exists());
     }
 }
