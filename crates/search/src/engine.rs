@@ -10,7 +10,7 @@ use crate::SearchFilter;
 use crate::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE, at_most_two_missing};
 use crate::index::{IndexRow, PackageIndex, bigram_mask, build_from_rows, byte_mask, trigram_mask};
 use crate::query::{ParsedQuery, parse_query};
-use crate::tiers::{ALL_TIERS, Scored, Tier, pack_sort_key, tier_at, tier_of_key};
+use crate::tiers::{ALL_TIERS, Scored, Tier, pack_sort_key, tier_at};
 use crate::{PackageGroup, PackageMeta, SearchResult, Source};
 
 const RESULT_LIMIT: usize = 30;
@@ -343,14 +343,16 @@ fn scored_push(
     first_letter_match: bool,
 ) {
     out.push(Scored {
-        key: pack_sort_key(tier, distance, first_letter_match, index.rank_word(pkg)),
+        tier,
+        key: pack_sort_key(distance, first_letter_match, index.rank_word(pkg)),
         pkg: pkg as u32,
     });
 }
 
 fn scored_ordering(index: &PackageIndex, a: &Scored, b: &Scored) -> Ordering {
-    a.key
-        .cmp(&b.key)
+    a.tier
+        .cmp(&b.tier)
+        .then_with(|| a.key.cmp(&b.key))
         .then_with(|| index.name(a.pkg as usize).cmp(index.name(b.pkg as usize)))
         .then_with(|| {
             index
@@ -1092,7 +1094,7 @@ fn to_sorted_pairs(index: &PackageIndex, cands: Vec<Scored>) -> Vec<(u32, Tier)>
     cands.sort_by(|a, b| scored_ordering(index, a, b));
     cands
         .into_iter()
-        .map(|c| (index.row(c.pkg as usize).id, tier_of_key(c.key)))
+        .map(|c| (index.row(c.pkg as usize).id, c.tier))
         .collect()
 }
 
@@ -1173,11 +1175,7 @@ mod tests {
             &installed,
         );
         assert_eq!(ids_of(&index, &all_cheap), vec![1, 2, 5]);
-        assert!(
-            all_cheap
-                .iter()
-                .all(|c| tier_of_key(c.key) != Tier::Substring)
-        );
+        assert!(all_cheap.iter().all(|c| c.tier != Tier::Substring));
     }
 
     fn ids_of(index: &PackageIndex, cands: &[Scored]) -> Vec<u32> {

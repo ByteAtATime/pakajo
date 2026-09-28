@@ -32,6 +32,7 @@ pub struct Candidate<'a> {
 }
 
 pub(crate) struct Scored {
+    pub tier: Tier,
     pub key: u64,
     pub pkg: u32,
 }
@@ -54,24 +55,11 @@ pub(crate) fn rank_bits(name_len: u16, is_repo: bool, popularity: u16) -> u64 {
         | (u16::MAX - popularity) as u64
 }
 
-pub(crate) fn pack_sort_key(tier: Tier, distance: u8, first_letter_match: bool, rank: u64) -> u64 {
+pub(crate) fn pack_sort_key(distance: u8, first_letter_match: bool, rank: u64) -> u64 {
     let not_first = (!first_letter_match) as u64;
-    ((tier as u64) << 42)
-        | ((distance as u64) << 34)
+    ((distance as u64) << 34)
         | (rank & !(1 << FIRST_LETTER_SHIFT))
         | (not_first << FIRST_LETTER_SHIFT)
-}
-
-pub(crate) fn tier_of_key(key: u64) -> Tier {
-    match (key >> 42) & 7 {
-        0 => Tier::ExactName,
-        1 => Tier::ExactToken,
-        2 => Tier::PrefixName,
-        3 => Tier::PrefixToken,
-        4 => Tier::Substring,
-        5 => Tier::Keyword,
-        _ => Tier::Fuzzy,
-    }
 }
 
 #[cfg(test)]
