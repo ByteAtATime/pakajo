@@ -5,8 +5,6 @@ use index::PackageIndex;
 pub mod engine;
 pub mod fuzzy;
 pub mod index;
-pub mod query;
-pub(crate) mod tiers;
 
 pub use index::IndexRow;
 

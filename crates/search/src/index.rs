@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::SearchError;
-use crate::tiers::rank_bits;
+use crate::engine::rank_bits;
 
 const POP_NORM_MAX: f64 = 100.0;
 const INDEX_MAGIC: [u8; 4] = *b"v003";

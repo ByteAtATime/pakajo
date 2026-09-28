@@ -7,10 +7,230 @@ use std::sync::{Arc, RwLock};
 
 use crate::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE, at_most_two_missing};
 use crate::index::{IndexRow, PackageIndex, bigram_mask, build_from_rows, byte_mask, trigram_mask};
-use crate::query::{ParsedQuery, parse_query};
-use crate::tiers::{ALL_TIERS, Scored, Tier, pack_sort_key, tier_at};
 use crate::{PackageGroup, SearchResult, Source};
 use crate::{SearchError, SearchFilter};
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Tier {
+    ExactName = 0,
+    ExactToken = 1,
+    PrefixName = 2,
+    PrefixToken = 3,
+    Substring = 4,
+    Keyword = 5,
+    Fuzzy = 6,
+}
+
+pub(crate) struct Scored {
+    pub tier: Tier,
+    pub key: u64,
+    pub pkg: u32,
+}
+
+pub(crate) const ALL_TIERS: &[Tier] = &[
+    Tier::ExactName,
+    Tier::ExactToken,
+    Tier::PrefixName,
+    Tier::PrefixToken,
+    Tier::Substring,
+    Tier::Keyword,
+];
+
+const FIRST_LETTER_SHIFT: u32 = 33;
+
+pub fn rank_bits(name_len: u16, is_repo: bool, popularity: u16) -> u64 {
+    (1 << FIRST_LETTER_SHIFT)
+        | (name_len as u64) << 17
+        | ((!is_repo) as u64) << 16
+        | (u16::MAX - popularity) as u64
+}
+
+pub(crate) fn pack_sort_key(distance: u8, first_letter_match: bool, rank: u64) -> u64 {
+    let not_first = (!first_letter_match) as u64;
+    ((distance as u64) << 34)
+        | (rank & !(1 << FIRST_LETTER_SHIFT))
+        | (not_first << FIRST_LETTER_SHIFT)
+}
+
+pub(crate) fn tier_at(
+    index: &PackageIndex,
+    pi: usize,
+    q: &str,
+    allowed: &[Tier],
+    qmask: u64,
+    qbig: u64,
+) -> Option<Tier> {
+    let mut tokens = None;
+    for &tier in allowed {
+        match tier {
+            Tier::ExactName => {
+                if index.name(pi) == q {
+                    return Some(tier);
+                }
+            }
+            Tier::ExactToken | Tier::PrefixToken => {
+                let hits = *tokens.get_or_insert_with(|| token_hits(index, pi, q));
+                if (tier == Tier::ExactToken && hits.0) || (tier == Tier::PrefixToken && hits.1) {
+                    return Some(tier);
+                }
+            }
+            Tier::PrefixName => {
+                if index.name(pi).starts_with(q) {
+                    return Some(tier);
+                }
+            }
+            Tier::Substring => {
+                let r = index.row(pi);
+                if r.name_len as usize >= q.len()
+                    && (qmask & !r.name_mask) == 0
+                    && (qbig & !r.name_bigrams) == 0
+                    && index.name(pi).contains(q)
+                {
+                    return Some(tier);
+                }
+            }
+            Tier::Keyword => {
+                let r = index.row(pi);
+                if index.max_kw_len(pi) as usize >= q.len()
+                    && (qmask & !r.kw_mask) == 0
+                    && (qbig & !r.kw_bigrams) == 0
+                    && (0..index.kws_len(pi)).any(|k| index.keyword(pi, k).contains(q))
+                {
+                    return Some(tier);
+                }
+            }
+            Tier::Fuzzy => {}
+        }
+    }
+    None
+}
+
+fn token_hits(index: &PackageIndex, pi: usize, q: &str) -> (bool, bool) {
+    let mut exact = false;
+    let mut prefix = false;
+    for k in 0..index.tokens_len(pi) {
+        let token = index.token(pi, k);
+        exact |= token == q;
+        prefix |= token.starts_with(q);
+    }
+    (exact, prefix)
+}
+
+#[cfg(test)]
+#[cfg(test)]
+mod query_tests {
+    use super::*;
+    use crate::index::{RawPkg, assemble, bigram_mask, byte_mask};
+
+    const ALL_CONCRETE: &[Tier] = &[
+        Tier::ExactName,
+        Tier::ExactToken,
+        Tier::PrefixName,
+        Tier::PrefixToken,
+        Tier::Substring,
+        Tier::Keyword,
+    ];
+
+    fn sample_index() -> PackageIndex {
+        let raws = vec![RawPkg {
+            id: 1,
+            name: "google-chrome".to_string(),
+            tokens: vec!["google".to_string(), "chrome".to_string()],
+            keywords: vec!["browser".to_string(), "web".to_string()],
+            popularity: 100,
+            is_repo: false,
+        }];
+        assemble(raws)
+    }
+
+    #[test]
+    fn tier_at_matches_each_concrete_tier() {
+        let index = sample_index();
+        assert_eq!(
+            tier_at(
+                &index,
+                0,
+                "google-chrome",
+                ALL_CONCRETE,
+                byte_mask(b"google-chrome"),
+                bigram_mask(b"google-chrome")
+            ),
+            Some(Tier::ExactName)
+        );
+        assert_eq!(
+            tier_at(
+                &index,
+                0,
+                "chrome",
+                ALL_CONCRETE,
+                byte_mask(b"chrome"),
+                bigram_mask(b"chrome")
+            ),
+            Some(Tier::ExactToken)
+        );
+        assert_eq!(
+            tier_at(
+                &index,
+                0,
+                "chrom",
+                ALL_CONCRETE,
+                byte_mask(b"chrom"),
+                bigram_mask(b"chrom")
+            ),
+            Some(Tier::PrefixToken)
+        );
+        assert_eq!(
+            tier_at(
+                &index,
+                0,
+                "xyz",
+                ALL_CONCRETE,
+                byte_mask(b"xyz"),
+                bigram_mask(b"xyz")
+            ),
+            None
+        );
+        assert_eq!(
+            tier_at(
+                &index,
+                0,
+                "hrome",
+                ALL_CONCRETE,
+                byte_mask(b"hrome"),
+                bigram_mask(b"hrome")
+            ),
+            Some(Tier::Substring)
+        );
+    }
+
+    #[test]
+    fn tier_at_keyword_respects_qmask() {
+        let index = sample_index();
+        assert_eq!(
+            tier_at(
+                &index,
+                0,
+                "brows",
+                ALL_CONCRETE,
+                byte_mask(b"brows"),
+                bigram_mask(b"brows")
+            ),
+            Some(Tier::Keyword)
+        );
+        assert_eq!(
+            tier_at(
+                &index,
+                0,
+                "brows",
+                ALL_CONCRETE,
+                byte_mask(b"browsz"),
+                bigram_mask(b"browsz")
+            ),
+            None
+        );
+    }
+}
 
 const RESULT_LIMIT: usize = 30;
 const FUZZY_GATE: usize = 5;
@@ -31,6 +251,100 @@ pub(crate) fn search_index(index: &PackageIndex, text: &str) -> Vec<u32> {
         .into_iter()
         .map(|(id, _)| id)
         .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParsedQuery {
+    Short(String),
+    Quoted(String),
+    Normal(String),
+}
+
+impl ParsedQuery {
+    pub fn text(&self) -> &str {
+        match self {
+            ParsedQuery::Short(s) | ParsedQuery::Quoted(s) | ParsedQuery::Normal(s) => s,
+        }
+    }
+}
+
+pub fn parse_query(text: &str) -> Option<ParsedQuery> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+        let inner = rest.trim();
+        if inner.is_empty() {
+            return None;
+        }
+        return Some(ParsedQuery::Quoted(inner.to_lowercase()));
+    }
+    let q = trimmed.to_lowercase();
+    let len = trimmed.chars().count();
+    if len <= 2 {
+        Some(ParsedQuery::Short(q))
+    } else {
+        Some(ParsedQuery::Normal(q))
+    }
+}
+
+#[cfg(test)]
+#[cfg(test)]
+mod tiers_tests {
+    use super::*;
+
+    #[test]
+    fn whitespace_only_returns_none() {
+        assert_eq!(parse_query("   "), None);
+    }
+
+    #[test]
+    fn empty_quoted_returns_none() {
+        assert_eq!(parse_query("\"\""), None);
+    }
+
+    #[test]
+    fn quoted_preserves_inner_spaces() {
+        assert_eq!(
+            parse_query("\"google chrome\""),
+            Some(ParsedQuery::Quoted("google chrome".into()))
+        );
+    }
+
+    #[test]
+    fn quoted_strips_quotes_and_lowercases() {
+        assert_eq!(
+            parse_query("\"Vim\""),
+            Some(ParsedQuery::Quoted("vim".into()))
+        );
+    }
+
+    #[test]
+    fn two_char_non_alphanumeric_is_short() {
+        assert_eq!(parse_query("c+"), Some(ParsedQuery::Short("c+".into())));
+    }
+
+    #[test]
+    fn three_char_is_normal() {
+        assert_eq!(parse_query("abc"), Some(ParsedQuery::Normal("abc".into())));
+    }
+
+    #[test]
+    fn normal_trims_and_lowercases() {
+        assert_eq!(
+            parse_query("  Vim  "),
+            Some(ParsedQuery::Normal("vim".into()))
+        );
+    }
+
+    #[test]
+    fn unbalanced_quote_falls_through_to_normal() {
+        assert_eq!(
+            parse_query("\"ab"),
+            Some(ParsedQuery::Normal("\"ab".into()))
+        );
+    }
 }
 
 pub(crate) fn search_index_tiered(
@@ -987,7 +1301,8 @@ fn to_sorted_pairs(index: &PackageIndex, cands: Vec<Scored>) -> Vec<(u32, Tier)>
 }
 
 #[cfg(test)]
-mod tests {
+#[cfg(test)]
+mod legacy_tests {
     use super::*;
     use crate::index::{RawPkg, assemble, tokenize};
     use std::collections::HashMap;
