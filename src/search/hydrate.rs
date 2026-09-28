@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use crate::db::PackageRow;
+use crate::db::{PackageDb, PackageRow};
 use crate::package::PackageSource;
 
 use super::SearchResult;
@@ -29,6 +29,51 @@ pub fn row_to_result(row: &PackageRow, installed: &HashSet<String>) -> SearchRes
 pub fn apply_installed_to_results(results: &mut [SearchResult], installed: &HashSet<String>) {
     for result in results.iter_mut() {
         result.installed = installed.contains(&result.name);
+    }
+}
+
+pub fn hydrate_metas(
+    db: &PackageDb,
+    ids: &[u32],
+) -> Result<HashMap<u32, pakajo_search::PackageMeta>, pakajo_search::SearchError> {
+    let rows = match db.hydrate_by_ids(ids) {
+        Ok(rows) => rows,
+        Err(e) => match e.downcast::<rusqlite::Error>() {
+            Ok(store) => return Err(pakajo_search::SearchError::Store(Box::new(store))),
+            Err(e) => return Err(pakajo_search::SearchError::Store(e.into_boxed_dyn_error())),
+        },
+    };
+    let mut metas = HashMap::with_capacity(rows.len());
+    for &id in ids {
+        match rows.get(&id) {
+            Some(row) => {
+                metas.insert(id, row_to_meta(row));
+            }
+            None => {
+                eprintln!("warning: search result id {id} missing from package database, skipping");
+            }
+        }
+    }
+    Ok(metas)
+}
+
+fn row_to_meta(row: &PackageRow) -> pakajo_search::PackageMeta {
+    let source = match row.source.as_str() {
+        "aur" => pakajo_search::Source::Aur,
+        _ => pakajo_search::Source::Repo,
+    };
+    pakajo_search::PackageMeta {
+        name: row.name.clone(),
+        description: row
+            .description
+            .clone()
+            .map(|d| crate::color::strip_controls(&d).into_owned()),
+        source,
+        repo: row.repo.clone(),
+        version: Some(row.version.clone()),
+        last_update: row.last_update.unwrap_or(0),
+        num_votes: row.num_votes.unwrap_or(0),
+        popularity: row.popularity.unwrap_or(0.0),
     }
 }
 

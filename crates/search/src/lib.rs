@@ -43,3 +43,41 @@ impl SearchFilter {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    Repo,
+    Aur,
+    Group,
+}
+
+#[derive(Clone, Debug)]
+pub struct PackageMeta {
+    pub name: String,
+    pub description: Option<String>,
+    pub source: Source,
+    pub repo: Option<String>,
+    pub version: Option<String>,
+    pub last_update: i64,
+    pub num_votes: i64,
+    pub popularity: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct PackageGroup {
+    pub name: String,
+    pub repo: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct SearchResult {
+    pub name: String,
+    pub source: Source,
+    pub description: Option<String>,
+    pub version: Option<String>,
+    pub repo: Option<String>,
+    pub installed: bool,
+    pub num_votes: i64,
+    pub popularity: f64,
+    pub last_update: i64,
+}

@@ -1,5 +1,4 @@
-use crate::package::PackageSource;
-use crate::search::SearchResult;
+use pakajo_search::Source;
 
 pub fn run_aur_sync() -> anyhow::Result<()> {
     let handle = crate::pacman::handle()?;
@@ -43,14 +42,11 @@ pub fn run_search(query: &str) -> anyhow::Result<()> {
     let engine = crate::search::engine_for(&local, &crate::search::cache_path(&sqlite_path))?;
     let snapshot = crate::pacman::snapshot::get()?;
     let installed: std::collections::HashSet<String> = snapshot.installed.into_iter().collect();
-    let results = crate::search::dispatch_search(
-        &engine,
-        &local,
-        &installed,
-        query,
-        &snapshot.groups,
-        crate::search::SearchFilter::All,
-    );
+    let results = engine
+        .query(query)
+        .installed(&installed)
+        .groups(&snapshot.groups)
+        .execute(|ids| crate::search::hydrate_metas(&local, ids))?;
     print_search_results(&results);
     Ok(())
 }
@@ -86,7 +82,7 @@ fn refresh_index_if_stale(local: &crate::db::PackageDb) {
     }
 }
 
-fn print_search_results(rows: &[SearchResult]) {
+fn print_search_results(rows: &[pakajo_search::SearchResult]) {
     if rows.is_empty() {
         return;
     }
@@ -94,25 +90,35 @@ fn print_search_results(rows: &[SearchResult]) {
     for row in rows {
         let repo_raw = row.repo.as_deref().unwrap_or("-");
         let repo_color = match row.source {
-            PackageSource::Repo => crate::color::COLON,
-            PackageSource::Aur => crate::color::MAGENTA,
-            PackageSource::Group => crate::color::CYAN,
+            Source::Repo => crate::color::COLON,
+            Source::Aur => crate::color::MAGENTA,
+            Source::Group => crate::color::CYAN,
         };
         let repo = crate::color::paint(color, repo_color, repo_raw);
         let name = crate::color::paint(color, crate::color::BOLD, &row.name);
-        let version = crate::color::paint(color, crate::color::GREEN, &row.version);
+        let version = crate::color::paint(
+            color,
+            crate::color::GREEN,
+            row.version.as_deref().unwrap_or(""),
+        );
 
         let mut tokens: Vec<String> = Vec::new();
-        if let Some(v) = row.num_votes {
-            let code = if v >= 10 {
+        if row.source == Source::Aur {
+            let code = if row.num_votes >= 10 {
                 crate::color::GREEN
             } else {
                 crate::color::GRAY
             };
-            tokens.push(crate::color::paint(color, code, &format!("+{v}")));
-            if let Some(p) = row.popularity {
-                tokens.push(crate::color::paint(color, code, &format!("~{p:.2}")));
-            }
+            tokens.push(crate::color::paint(
+                color,
+                code,
+                &format!("+{}", row.num_votes),
+            ));
+            tokens.push(crate::color::paint(
+                color,
+                code,
+                &format!("~{:.2}", row.popularity),
+            ));
         }
         if row.installed {
             tokens.push(crate::color::paint(

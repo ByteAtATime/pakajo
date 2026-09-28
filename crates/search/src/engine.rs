@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -11,6 +11,7 @@ use crate::fuzzy::{FuzzyMatcher, MAX_EDIT_DISTANCE, at_most_two_missing};
 use crate::index::{IndexRow, PackageIndex, bigram_mask, build_from_rows, byte_mask, trigram_mask};
 use crate::query::{ParsedQuery, parse_query};
 use crate::tiers::{Scored, Tier, pack_sort_key, tier_at, tier_of_key};
+use crate::{PackageGroup, PackageMeta, SearchResult, Source};
 
 const RESULT_LIMIT: usize = 30;
 const FUZZY_GATE: usize = 5;
@@ -186,6 +187,120 @@ impl SearchEngine {
             .index
             .clone();
         search_index_tiered(&snapshot, text, filter, installed)
+    }
+
+    pub fn query(&self, text: &str) -> SearchQuery<'_> {
+        SearchQuery {
+            engine: self,
+            text: text.to_owned(),
+            filter: SearchFilter::All,
+            installed: HashSet::new(),
+            groups: Vec::new(),
+            limit: RESULT_LIMIT,
+        }
+    }
+}
+
+pub struct SearchQuery<'a> {
+    engine: &'a SearchEngine,
+    text: String,
+    filter: SearchFilter,
+    installed: HashSet<String>,
+    groups: Vec<PackageGroup>,
+    limit: usize,
+}
+
+impl<'a> SearchQuery<'a> {
+    pub fn filter(mut self, filter: SearchFilter) -> Self {
+        self.filter = filter;
+        self
+    }
+
+    pub fn installed(mut self, installed: &HashSet<String>) -> Self {
+        self.installed = installed.iter().map(|name| name.to_lowercase()).collect();
+        self
+    }
+
+    pub fn groups(mut self, groups: &[(String, String)]) -> Self {
+        self.groups = groups
+            .iter()
+            .map(|(name, repo)| PackageGroup {
+                name: name.clone(),
+                repo: repo.clone(),
+            })
+            .collect();
+        self
+    }
+
+    pub fn limit(mut self, limit: usize) -> Self {
+        self.limit = limit;
+        self
+    }
+
+    pub fn execute<H>(self, hydrate: H) -> Result<Vec<SearchResult>, SearchError>
+    where
+        H: Fn(&[u32]) -> Result<HashMap<u32, PackageMeta>, SearchError>,
+    {
+        let mut pairs = self
+            .engine
+            .search_tiered(&self.text, self.filter, &self.installed);
+        pairs.truncate(self.limit);
+        let ids: Vec<u32> = pairs.iter().map(|(id, _)| *id).collect();
+        let metas = hydrate(&ids)?;
+        let mut entries: Vec<(Tier, SearchResult)> = Vec::with_capacity(pairs.len());
+        for (id, tier) in &pairs {
+            if let Some(meta) = metas.get(id) {
+                entries.push((
+                    *tier,
+                    SearchResult {
+                        name: meta.name.clone(),
+                        source: meta.source,
+                        description: meta.description.clone(),
+                        version: meta.version.clone(),
+                        repo: meta.repo.clone(),
+                        installed: self.installed.contains(&meta.name.to_lowercase()),
+                        num_votes: meta.num_votes,
+                        popularity: meta.popularity,
+                        last_update: meta.last_update,
+                    },
+                ));
+            }
+        }
+        let query = self.text.to_lowercase();
+        if !query.is_empty() && self.filter == SearchFilter::All {
+            for group in &self.groups {
+                if let Some(tier) = group_name_tier(&group.name.to_lowercase(), &query) {
+                    entries.push((
+                        tier,
+                        SearchResult {
+                            name: group.name.clone(),
+                            source: Source::Group,
+                            description: Some("group".to_string()),
+                            version: Some(String::new()),
+                            repo: Some(group.repo.clone()),
+                            installed: false,
+                            num_votes: 0,
+                            popularity: 0.0,
+                            last_update: 0,
+                        },
+                    ));
+                }
+            }
+        }
+        entries.sort_by_key(|entry| entry.0);
+        Ok(entries.into_iter().map(|(_, result)| result).collect())
+    }
+}
+
+fn group_name_tier(name: &str, query: &str) -> Option<Tier> {
+    if name == query {
+        Some(Tier::ExactName)
+    } else if name.starts_with(query) {
+        Some(Tier::PrefixName)
+    } else if name.contains(query) {
+        Some(Tier::Substring)
+    } else {
+        None
     }
 }
 

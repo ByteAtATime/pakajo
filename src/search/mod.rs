@@ -15,7 +15,7 @@ pub mod tiers {
     pub use pakajo_search::tiers::Tier;
 }
 
-pub use hydrate::apply_installed_to_results;
+pub use hydrate::{apply_installed_to_results, hydrate_metas};
 pub use pakajo_search::SearchFilter;
 
 pub fn cache_path(sqlite: &Path) -> PathBuf {
