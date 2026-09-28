@@ -38,14 +38,15 @@ pub fn run_gendb() -> anyhow::Result<()> {
 pub fn run_search(query: &str) -> anyhow::Result<()> {
     let local = crate::db::PackageDb::open_default()?;
     refresh_index_if_stale(&local);
-    let engine = crate::db::engine_for(&local)?;
+    let search = crate::db::SearchSession::open(std::sync::Arc::new(local))?;
     let snapshot = crate::pacman::snapshot::get()?;
     let installed: std::collections::HashSet<String> = snapshot.installed.into_iter().collect();
-    let results = engine
-        .query(query)
-        .installed(&installed)
-        .groups(&snapshot.groups)
-        .execute(|ids| crate::db::hydrate_results(&local, ids))?;
+    let results = search.query(
+        query,
+        pakajo_search::SearchFilter::All,
+        &installed,
+        &snapshot.groups,
+    )?;
     print_search_results(&results);
     Ok(())
 }

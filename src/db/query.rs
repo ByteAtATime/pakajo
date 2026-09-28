@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use pakajo_search::engine::SearchEngine;
-use pakajo_search::{SearchError, SearchResult, Source};
+use pakajo_search::{SearchError, SearchFilter, SearchResult, Source};
 
 use super::PackageDb;
 
@@ -16,16 +17,59 @@ struct PackageRow {
     pub popularity: Option<f64>,
 }
 
-pub fn engine_for(db: &PackageDb) -> Result<SearchEngine, SearchError> {
-    let cache = db.index_cache_path();
-    let fingerprint = super::db_cache_fingerprint(db);
-    match SearchEngine::build(Some((cache.as_path(), fingerprint)), || db.index_rows()) {
-        Err(SearchError::Corrupt) => {
-            eprintln!("search cache corrupt, rebuilding");
-            let _ = std::fs::remove_file(&cache);
-            SearchEngine::build(Some((cache.as_path(), fingerprint)), || db.index_rows())
-        }
-        other => other,
+pub struct SearchSession {
+    engine: Arc<SearchEngine>,
+    db: Arc<PackageDb>,
+}
+
+impl SearchSession {
+    pub fn open(db: Arc<PackageDb>) -> Result<Self, SearchError> {
+        let cache = db.index_cache_path();
+        let fingerprint = super::db_cache_fingerprint(&db);
+        let build =
+            || SearchEngine::build(Some((cache.as_path(), fingerprint)), || db.index_rows());
+        let engine = match build() {
+            Err(SearchError::Corrupt) => {
+                eprintln!("search cache corrupt, rebuilding");
+                let _ = std::fs::remove_file(&cache);
+                build()?
+            }
+            other => other?,
+        };
+        Ok(Self {
+            engine: Arc::new(engine),
+            db,
+        })
+    }
+
+    pub fn query(
+        &self,
+        text: &str,
+        filter: SearchFilter,
+        installed: &HashSet<String>,
+        groups: &[(String, String)],
+    ) -> Result<Vec<SearchResult>, SearchError> {
+        self.engine
+            .query(text)
+            .filter(filter)
+            .installed(installed)
+            .groups(groups)
+            .execute(|ids| hydrate_results(&self.db, ids))
+    }
+
+    pub fn complete_prefix(&self, prefix: &str, limit: usize) -> Vec<String> {
+        self.engine.complete_prefix(prefix, limit)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.engine.is_empty()
+    }
+
+    pub fn rebuild(&self) -> Result<(), SearchError> {
+        self.engine
+            .rebuild(super::db_cache_fingerprint(&self.db), || {
+                self.db.index_rows()
+            })
     }
 }
 

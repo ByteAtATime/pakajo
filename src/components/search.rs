@@ -12,9 +12,8 @@ use cosmic::widget::rectangle_tracker::{RectangleTracker, RectangleUpdate};
 use cosmic::widget::{Column, Row, button, container, scrollable, search_input, space, text};
 use pakajo::dashboard::DashboardSnapshot;
 
-use pakajo::db::PackageDb;
+use pakajo::db::SearchSession;
 use pakajo_search::SearchFilter;
-use pakajo_search::engine::SearchEngine;
 
 use crate::Element;
 use crate::PakajoCtx;
@@ -133,15 +132,14 @@ impl SearchPane {
 
     fn begin_search(&mut self, ctx: &PakajoCtx) -> Task<crate::Message> {
         self.state = SearchState::Searching;
-        let engine = ctx.search_engine.clone();
-        let db = ctx.db.clone();
+        let search = ctx.search.clone();
         let installed = ctx.installed_names.clone();
         let group_index = ctx.group_index.clone();
         let text = self.query.clone();
         let filter = self.filter;
         let seq = self.seq;
         Task::perform(
-            async move { execute_search_for(engine, db, group_index, installed, text, filter) },
+            async move { execute_search_for(search, group_index, installed, text, filter) },
             move |results| {
                 crate::Message::Search(SearchMessage::ResultsReady { seq, results }).into()
             },
@@ -313,23 +311,16 @@ pub enum SearchMessage {
 }
 
 pub fn execute_search_for(
-    search_engine: Option<Arc<SearchEngine>>,
-    db: Option<Arc<PackageDb>>,
+    search: Option<Arc<SearchSession>>,
     group_index: Arc<Vec<(String, String)>>,
     installed: Arc<HashSet<String>>,
     text: String,
     filter: SearchFilter,
 ) -> Vec<pakajo_search::SearchResult> {
-    let (Some(engine), Some(local)) = (search_engine.as_ref(), db.as_ref()) else {
+    let Some(search) = search.as_ref() else {
         return Vec::new();
     };
-    match engine
-        .query(&text)
-        .filter(filter)
-        .installed(&installed)
-        .groups(&group_index)
-        .execute(|ids| pakajo::db::hydrate_results(local, ids))
-    {
+    match search.query(&text, filter, &installed, &group_index) {
         Ok(results) => results,
         Err(e) => {
             let err: anyhow::Error = e.into();

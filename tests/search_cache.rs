@@ -1,6 +1,8 @@
-use pakajo::db::{PackageDb, db_cache_fingerprint, engine_for, hydrate_results};
-use pakajo_search::engine::SearchEngine;
+use pakajo::db::{PackageDb, SearchSession, db_cache_fingerprint};
+
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 fn seed_package(conn: &rusqlite::Connection, name: &str, source: &str) {
@@ -13,10 +15,18 @@ fn seed_package(conn: &rusqlite::Connection, name: &str, source: &str) {
     .expect("seed package");
 }
 
-fn result_names(db: &PackageDb, engine: &SearchEngine, query: &str) -> Vec<String> {
-    engine
-        .query(query)
-        .execute(|ids| hydrate_results(db, ids))
+fn session(db: &Arc<PackageDb>) -> Result<SearchSession, pakajo_search::SearchError> {
+    SearchSession::open(db.clone())
+}
+
+fn result_names(search: &SearchSession, query: &str) -> Vec<String> {
+    search
+        .query(
+            query,
+            pakajo_search::SearchFilter::All,
+            &HashSet::new(),
+            &[],
+        )
         .expect("execute")
         .into_iter()
         .map(|result| result.name)
@@ -27,14 +37,14 @@ fn result_names(db: &PackageDb, engine: &SearchEngine, query: &str) -> Vec<Strin
 fn engine_for_returns_ranked_ids() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sqlite_path = dir.path().join("aur-meta.sqlite");
-    let db = PackageDb::open(&sqlite_path).expect("open");
+    let db = Arc::new(PackageDb::open(&sqlite_path).expect("open"));
     let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
     seed_package(&conn, "google-chrome", "aur");
     seed_package(&conn, "chromium", "repo");
 
-    let engine = engine_for(&db).expect("engine");
+    let search = session(&db).expect("session");
 
-    let names = result_names(&db, &engine, "chrome");
+    let names = result_names(&search, "chrome");
     assert!(!names.is_empty(), "chrome query must return results");
     assert_eq!(names.into_iter().next().expect("top hit"), "google-chrome");
 }
@@ -43,18 +53,16 @@ fn engine_for_returns_ranked_ids() {
 fn rebuild_is_noop_when_fingerprint_unchanged() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sqlite_path = dir.path().join("aur-meta.sqlite");
-    let db = PackageDb::open(&sqlite_path).expect("open");
+    let db = Arc::new(PackageDb::open(&sqlite_path).expect("open"));
     let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
     seed_package(&conn, "google-chrome", "aur");
 
-    let engine = engine_for(&db).expect("engine");
-    let before = result_names(&db, &engine, "chrome");
+    let search = session(&db).expect("session");
+    let before = result_names(&search, "chrome");
 
-    engine
-        .rebuild(db_cache_fingerprint(&db), || db.index_rows())
-        .expect("rebuild on unchanged db");
+    search.rebuild().expect("rebuild on unchanged db");
 
-    let after = result_names(&db, &engine, "chrome");
+    let after = result_names(&search, "chrome");
     assert_eq!(before, after, "unchanged db must not be rebuilt");
 }
 
@@ -62,13 +70,13 @@ fn rebuild_is_noop_when_fingerprint_unchanged() {
 fn rebuild_picks_up_new_rows() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sqlite_path = dir.path().join("aur-meta.sqlite");
-    let db = PackageDb::open(&sqlite_path).expect("open");
+    let db = Arc::new(PackageDb::open(&sqlite_path).expect("open"));
     let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
     seed_package(&conn, "google-chrome", "aur");
 
-    let engine = engine_for(&db).expect("engine");
+    let search = session(&db).expect("session");
     assert!(
-        result_names(&db, &engine, "firefox").is_empty(),
+        result_names(&search, "firefox").is_empty(),
         "firefox absent before rebuild"
     );
 
@@ -76,11 +84,9 @@ fn rebuild_picks_up_new_rows() {
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
         .expect("checkpoint");
 
-    engine
-        .rebuild(db_cache_fingerprint(&db), || db.index_rows())
-        .expect("rebuild after insert");
+    search.rebuild().expect("rebuild after insert");
 
-    let names = result_names(&db, &engine, "firefox");
+    let names = result_names(&search, "firefox");
     assert!(!names.is_empty(), "firefox must appear after rebuild");
     assert_eq!(names.into_iter().next().expect("top hit"), "firefox");
 }
@@ -89,17 +95,17 @@ fn rebuild_picks_up_new_rows() {
 fn corrupt_cache_is_rebuilt_from_rows() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sqlite_path = dir.path().join("aur-meta.sqlite");
-    let db = PackageDb::open(&sqlite_path).expect("open");
+    let db = Arc::new(PackageDb::open(&sqlite_path).expect("open"));
     let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
     seed_package(&conn, "firefox", "aur");
 
     let cache = db.index_cache_path();
-    engine_for(&db).expect("initial build");
+    session(&db).expect("initial build");
     std::fs::write(&cache, b"not an index").expect("corrupt cache");
 
-    let engine = engine_for(&db).expect("recovery build");
-    let names = result_names(&db, &engine, "firefox");
-    assert!(!names.is_empty(), "recovered engine must serve rows");
+    let search = session(&db).expect("recovery build");
+    let names = result_names(&search, "firefox");
+    assert!(!names.is_empty(), "a recovered session must serve rows");
     assert_eq!(names.into_iter().next().expect("top hit"), "firefox");
 }
 
@@ -107,15 +113,15 @@ fn corrupt_cache_is_rebuilt_from_rows() {
 fn provider_failure_surfaces_as_store_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sqlite_path = dir.path().join("aur-meta.sqlite");
-    let db = PackageDb::open(&sqlite_path).expect("open");
+    let db = Arc::new(PackageDb::open(&sqlite_path).expect("open"));
     let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
     seed_package(&conn, "firefox", "aur");
 
-    let engine = engine_for(&db).expect("engine");
+    let search = session(&db).expect("session");
 
     conn.execute_batch("DROP TABLE packages").expect("drop");
 
-    let build_err = match engine_for(&db) {
+    let build_err = match session(&db) {
         Ok(_) => panic!("dropped table must fail the build"),
         Err(err) => err,
     };
@@ -123,7 +129,7 @@ fn provider_failure_surfaces_as_store_error() {
         matches!(build_err, pakajo_search::SearchError::Store(_)),
         "provider failure must surface as a Store error"
     );
-    let rebuild_err = match engine.rebuild(db_cache_fingerprint(&db), || db.index_rows()) {
+    let rebuild_err = match search.rebuild() {
         Ok(()) => panic!("dropped table must fail the rebuild"),
         Err(err) => err,
     };
@@ -137,7 +143,7 @@ fn provider_failure_surfaces_as_store_error() {
 fn index_rows_matches_direct_select() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sqlite_path = dir.path().join("aur-meta.sqlite");
-    let db = PackageDb::open(&sqlite_path).expect("open");
+    let db = Arc::new(PackageDb::open(&sqlite_path).expect("open"));
     let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
     for (name, source, popularity, keywords) in [
         ("alpha", "aur", Some(12.5f64), Some("editor terminal")),
@@ -188,7 +194,7 @@ fn index_rows_matches_direct_select() {
 fn engine_for_fails_loud_when_store_unusable_after_move() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sqlite_path = dir.path().join("aur-meta.sqlite");
-    let db = PackageDb::open(&sqlite_path).expect("open");
+    let db = Arc::new(PackageDb::open(&sqlite_path).expect("open"));
     let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
     seed_package(&conn, "firefox", "aur");
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -197,8 +203,8 @@ fn engine_for_fails_loud_when_store_unusable_after_move() {
     std::fs::rename(&sqlite_path, dir.path().join("aur-meta.sqlite.moved")).expect("move db away");
     conn.execute_batch("DROP TABLE packages").expect("drop");
 
-    match engine_for(&db) {
-        Ok(_) => panic!("moved-away db must fail loudly, never yield an empty engine"),
+    match session(&db) {
+        Ok(_) => panic!("moved-away db must fail loudly, never yield an empty session"),
         Err(err) => assert!(
             matches!(err, pakajo_search::SearchError::Store(_)),
             "moved-away db must surface a Store error, got {err:?}"
@@ -210,7 +216,7 @@ fn engine_for_fails_loud_when_store_unusable_after_move() {
 fn fingerprint_changes_on_size_only_change() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sqlite_path = dir.path().join("aur-meta.sqlite");
-    let db = PackageDb::open(&sqlite_path).expect("open");
+    let db = Arc::new(PackageDb::open(&sqlite_path).expect("open"));
     let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
     let pinned = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
 
@@ -236,7 +242,7 @@ fn fingerprint_changes_on_size_only_change() {
 fn fingerprint_sees_uncheckpointed_wal_write() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sqlite_path = dir.path().join("aur-meta.sqlite");
-    let db = PackageDb::open(&sqlite_path).expect("open");
+    let db = Arc::new(PackageDb::open(&sqlite_path).expect("open"));
     let conn = rusqlite::Connection::open(&sqlite_path).expect("seed conn");
 
     seed_package(&conn, "alpha", "aur");

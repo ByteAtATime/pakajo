@@ -15,9 +15,8 @@ use cosmic::{
 use pakajo::aur::AurClient;
 use pakajo::cli;
 use pakajo::dashboard::DashboardMessage;
-use pakajo::db::{PackageDb, engine_for};
+use pakajo::db::{PackageDb, SearchSession};
 use pakajo::pacman::handle;
-use pakajo_search::engine::SearchEngine;
 
 use background::begin_aur_sync_in_background;
 use components::dashboard::DashboardState;
@@ -63,7 +62,7 @@ fn main() -> iced::Result {
 }
 
 pub struct PakajoCtx {
-    pub(crate) search_engine: Option<Arc<SearchEngine>>,
+    pub(crate) search: Option<Arc<SearchSession>>,
     pub(crate) db: Option<Arc<PackageDb>>,
     pub(crate) alpm: Option<alpm::Alpm>,
     pub(crate) aur_client: Option<Arc<AurClient>>,
@@ -107,10 +106,10 @@ impl Application for PakajoApp {
             .map_err(|e| eprintln!("local index unavailable, falling back to live search: {e:#}"))
             .ok()
             .map(Arc::new);
-        let search_engine = db
+        let search = db
             .as_ref()
             .and_then(|db| {
-                engine_for(db)
+                SearchSession::open(db.clone())
                     .map_err(|e| eprintln!("[pakajo] search index unavailable: {e}"))
                     .ok()
             })
@@ -131,7 +130,7 @@ impl Application for PakajoApp {
         let aur_client = Some(Arc::new(AurClient::new()));
 
         let ctx = PakajoCtx {
-            search_engine,
+            search,
             db,
             alpm,
             aur_client,
@@ -140,7 +139,7 @@ impl Application for PakajoApp {
             group_index,
         };
         if let Some(index) = &ctx.db {
-            begin_aur_sync_in_background(index.clone(), ctx.search_engine.clone());
+            begin_aur_sync_in_background(index.clone(), ctx.search.clone());
         }
 
         let mut app = PakajoApp {

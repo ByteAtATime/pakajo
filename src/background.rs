@@ -7,13 +7,13 @@ use futures::StreamExt as _;
 
 use cosmic::iced::Subscription;
 use cosmic::iced::stream::channel;
+use pakajo::db::SearchSession;
 use pakajo::db::{AUR_SYNC_MIN_INTERVAL, PackageDb, RefreshOutcome};
 use pakajo::pacman::handle;
-use pakajo_search::engine::SearchEngine;
 
 pub const LOCK_DEBOUNCE: Duration = Duration::from_millis(300);
 
-pub fn begin_aur_sync_in_background(db: Arc<PackageDb>, search_engine: Option<Arc<SearchEngine>>) {
+pub fn begin_aur_sync_in_background(db: Arc<PackageDb>, search: Option<Arc<SearchSession>>) {
     std::thread::spawn(move || {
         let reniced = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) };
         if reniced != 0 {
@@ -53,9 +53,8 @@ pub fn begin_aur_sync_in_background(db: Arc<PackageDb>, search_engine: Option<Ar
                 eprintln!(
                     "[pakajo] indexed {aur_count} aur + {repo_count} repo packages (skipped {skipped})"
                 );
-                if let Some(engine) = search_engine.as_ref()
-                    && let Err(e) =
-                        engine.rebuild(pakajo::db::db_cache_fingerprint(&db), || db.index_rows())
+                if let Some(search) = search.as_ref()
+                    && let Err(e) = search.rebuild()
                 {
                     eprintln!("[pakajo] search index rebuild failed: {e}");
                 }

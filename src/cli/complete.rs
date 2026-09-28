@@ -1,4 +1,4 @@
-use crate::db::engine_for;
+use crate::db::SearchSession;
 
 const NAME_LIMIT: usize = 500;
 
@@ -62,10 +62,10 @@ fn print_available(prefix: &str) -> anyhow::Result<()> {
 
 fn indexed_names_with_prefix(prefix: &str) -> Option<Vec<String>> {
     let db = crate::db::PackageDb::open_default().ok()?;
-    match engine_for(&db) {
+    match SearchSession::open(std::sync::Arc::new(db)) {
         Err(_) => None,
-        Ok(engine) if engine.is_empty() => None,
-        Ok(engine) => Some(engine.complete_prefix(prefix, NAME_LIMIT)),
+        Ok(search) if search.is_empty() => None,
+        Ok(search) => Some(search.complete_prefix(prefix, NAME_LIMIT)),
     }
 }
 
@@ -88,7 +88,7 @@ fn repo_names_with_prefix(prefix: &str) -> anyhow::Result<Vec<String>> {
 mod tests {
     use super::{indexed_names_with_prefix, run};
     use crate::db::PackageDb;
-    use crate::db::engine_for;
+    use crate::db::SearchSession;
 
     const PARITY_NAMES: &[&str] = &[
         "alpha",
@@ -142,7 +142,7 @@ mod tests {
         seed_names(&sqlite_path, PARITY_NAMES);
         drop(db);
         let db = PackageDb::open(&sqlite_path).expect("reopen");
-        let engine = engine_for(&db).expect("engine");
+        let search = SearchSession::open(std::sync::Arc::new(db)).expect("engine");
 
         for (prefix, limit) in [
             ("al", 3),
@@ -154,13 +154,13 @@ mod tests {
             ("", 4),
         ] {
             assert_eq!(
-                engine.complete_prefix(prefix, limit),
+                search.complete_prefix(prefix, limit),
                 sql_prefix_names(&sqlite_path, prefix, limit),
                 "engine and SQL must agree for prefix {prefix:?} limit {limit}"
             );
         }
         assert_eq!(
-            engine.complete_prefix("al", 3),
+            search.complete_prefix("al", 3),
             vec!["al1".to_string(), "al2".to_string(), "al3".to_string(),]
         );
     }
