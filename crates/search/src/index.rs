@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::search::tiers::rank_bits;
+use crate::tiers::rank_bits;
 
 const POP_NORM_MAX: f64 = 100.0;
 const INDEX_MAGIC: [u8; 4] = *b"v003";

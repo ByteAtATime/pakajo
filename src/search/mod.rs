@@ -6,14 +6,22 @@ use crate::package::PackageSource;
 use engine::SearchEngine;
 use tiers::Tier;
 
-pub mod engine;
-pub mod fuzzy;
+pub mod engine {
+    pub use pakajo_search::engine::SearchEngine;
+}
 pub mod hydrate;
-pub mod index;
-pub mod query;
-pub mod tiers;
+pub mod index {
+    pub use pakajo_search::index::index_path;
+}
+pub mod tiers {
+    pub use pakajo_search::tiers::Tier;
+}
 
 pub use hydrate::apply_installed_to_results;
+pub use pakajo_search::SearchFilter;
+
+#[cfg(test)]
+mod engine_tests;
 
 #[derive(Clone, Debug)]
 pub struct SearchResult {
@@ -26,31 +34,6 @@ pub struct SearchResult {
     pub num_votes: Option<i64>,
     pub popularity: Option<f64>,
     pub last_update: Option<i64>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SearchFilter {
-    #[default]
-    All,
-    Official,
-    Aur,
-    Installed,
-}
-
-impl SearchFilter {
-    pub fn row_matches(
-        self,
-        index: &index::PackageIndex,
-        pi: usize,
-        installed: &HashSet<String>,
-    ) -> bool {
-        match self {
-            SearchFilter::All => true,
-            SearchFilter::Official => index.row(pi).is_repo,
-            SearchFilter::Aur => !index.row(pi).is_repo,
-            SearchFilter::Installed => installed.contains(index.name(pi)),
-        }
-    }
 }
 
 pub fn dispatch_search(

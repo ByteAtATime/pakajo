@@ -4134,6 +4134,7 @@ dependencies = [
  "libcosmic",
  "nix",
  "pacmanconf",
+ "pakajo-search",
  "raur",
  "regex",
  "rusqlite",
@@ -4148,6 +4149,17 @@ dependencies = [
  "two-face",
  "ureq",
  "wait-timeout",
+]
+
+[[package]]
+name = "pakajo-search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode 2.0.1",
+ "rusqlite",
+ "serde",
+ "tempfile",
 ]
 
 [[package]]

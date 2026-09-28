@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use crate::search::index::PackageIndex;
+use crate::index::PackageIndex;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -139,7 +139,7 @@ pub fn tier_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::index::{RawPkg, assemble, bigram_mask, byte_mask};
+    use crate::index::{RawPkg, assemble, bigram_mask, byte_mask};
 
     const ALL_CONCRETE: &[Tier] = &[
         Tier::ExactName,

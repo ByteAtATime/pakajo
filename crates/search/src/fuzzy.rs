@@ -1,4 +1,4 @@
-use crate::search::index::byte_mask;
+use crate::index::byte_mask;
 
 pub const MAX_EDIT_DISTANCE: usize = 2;
 
