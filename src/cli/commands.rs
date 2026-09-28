@@ -45,7 +45,7 @@ pub fn run_search(query: &str) -> anyhow::Result<()> {
         .query(query)
         .installed(&installed)
         .groups(&snapshot.groups)
-        .execute(|ids| crate::db::hydrate_metas(&local, ids))?;
+        .execute(|ids| crate::db::hydrate_results(&local, ids))?;
     print_search_results(&results);
     Ok(())
 }

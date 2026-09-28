@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use pakajo_search::engine::SearchEngine;
-use pakajo_search::{PackageMeta, SearchError, SearchResult, Source};
+use pakajo_search::{SearchError, SearchResult, Source};
 
 use super::PackageDb;
 
@@ -30,10 +30,10 @@ pub fn engine_for(db: &PackageDb) -> Result<SearchEngine, SearchError> {
     }
 }
 
-pub fn hydrate_metas(
+pub fn hydrate_results(
     db: &PackageDb,
     ids: &[u32],
-) -> Result<HashMap<u32, PackageMeta>, SearchError> {
+) -> Result<HashMap<u32, SearchResult>, SearchError> {
     let rows = match db.hydrate_by_ids(ids) {
         Ok(rows) => rows,
         Err(e) => match e.downcast::<rusqlite::Error>() {
@@ -45,7 +45,7 @@ pub fn hydrate_metas(
     for &id in ids {
         match rows.get(&id) {
             Some(row) => {
-                metas.insert(id, row_to_meta(row));
+                metas.insert(id, row_to_result(row));
             }
             None => {
                 eprintln!("warning: search result id {id} missing from package database, skipping");
@@ -61,8 +61,8 @@ pub fn apply_installed_to_results(results: &mut [SearchResult], installed: &Hash
     }
 }
 
-fn row_to_meta(row: &PackageRow) -> PackageMeta {
-    PackageMeta {
+fn row_to_result(row: &PackageRow) -> SearchResult {
+    SearchResult {
         name: row.name.clone(),
         description: row
             .description
@@ -75,6 +75,7 @@ fn row_to_meta(row: &PackageRow) -> PackageMeta {
         },
         repo: row.repo.clone(),
         version: Some(row.version.clone()),
+        installed: false,
         last_update: row.last_update.unwrap_or(0),
         num_votes: row.num_votes.unwrap_or(0),
         popularity: row.popularity.unwrap_or(0.0),

@@ -1,4 +1,4 @@
-use pakajo::db::{PackageDb, db_cache_fingerprint, engine_for, hydrate_metas};
+use pakajo::db::{PackageDb, db_cache_fingerprint, engine_for, hydrate_results};
 use pakajo_search::engine::SearchEngine;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
@@ -16,7 +16,7 @@ fn seed_package(conn: &rusqlite::Connection, name: &str, source: &str) {
 fn result_names(db: &PackageDb, engine: &SearchEngine, query: &str) -> Vec<String> {
     engine
         .query(query)
-        .execute(|ids| hydrate_metas(db, ids))
+        .execute(|ids| hydrate_results(db, ids))
         .expect("execute")
         .into_iter()
         .map(|result| result.name)

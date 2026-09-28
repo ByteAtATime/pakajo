@@ -328,7 +328,7 @@ pub fn execute_search_for(
         .filter(filter)
         .installed(&installed)
         .groups(&group_index)
-        .execute(|ids| pakajo::db::hydrate_metas(local, ids))
+        .execute(|ids| pakajo::db::hydrate_results(local, ids))
     {
         Ok(results) => results,
         Err(e) => {
