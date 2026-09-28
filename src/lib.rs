@@ -21,7 +21,6 @@ pub mod pkgbuild;
 pub mod progress;
 pub mod question;
 pub mod resolve;
-pub mod search;
 pub mod srcinfo_io;
 pub mod stub_pkg;
 pub mod tx;

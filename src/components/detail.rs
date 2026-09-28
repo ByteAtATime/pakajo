@@ -1023,7 +1023,7 @@ impl DetailPane {
                                         .send(
                                             crate::Message::Detail(DetailMessage::DetailFailed {
                                                 seq,
-                                                message: pakajo::search::friendly_search_error(&e),
+                                                message: pakajo::aur::friendly_search_error(&e),
                                             })
                                             .into(),
                                         )

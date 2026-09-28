@@ -143,6 +143,17 @@ impl Default for AurClient {
     }
 }
 
+pub fn friendly_search_error(err: &anyhow::Error) -> String {
+    let msg = format!("{err:#}");
+    if msg.contains("Too many package results") {
+        "Too many results! Please narrow your search".to_string()
+    } else {
+        msg.strip_prefix("AUR RPC error: ")
+            .unwrap_or(&msg)
+            .to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

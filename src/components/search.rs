@@ -13,8 +13,8 @@ use cosmic::widget::{Column, Row, button, container, scrollable, search_input, s
 use pakajo::dashboard::DashboardSnapshot;
 
 use pakajo::db::PackageDb;
-use pakajo::search::SearchFilter;
-use pakajo::search::engine::SearchEngine;
+use pakajo_search::SearchFilter;
+use pakajo_search::engine::SearchEngine;
 
 use crate::Element;
 use crate::PakajoCtx;
@@ -328,14 +328,14 @@ pub fn execute_search_for(
         .filter(filter)
         .installed(&installed)
         .groups(&group_index)
-        .execute(|ids| pakajo::search::hydrate_metas(local, ids))
+        .execute(|ids| pakajo::db::hydrate_metas(local, ids))
     {
         Ok(results) => results,
         Err(e) => {
             let err: anyhow::Error = e.into();
             eprintln!(
                 "[pakajo] search failed: {}",
-                pakajo::search::friendly_search_error(&err)
+                pakajo::aur::friendly_search_error(&err)
             );
             Vec::new()
         }

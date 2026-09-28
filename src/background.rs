@@ -9,7 +9,7 @@ use cosmic::iced::Subscription;
 use cosmic::iced::stream::channel;
 use pakajo::db::{AUR_SYNC_MIN_INTERVAL, PackageDb, RefreshOutcome};
 use pakajo::pacman::handle;
-use pakajo::search::engine::SearchEngine;
+use pakajo_search::engine::SearchEngine;
 
 pub const LOCK_DEBOUNCE: Duration = Duration::from_millis(300);
 

@@ -17,7 +17,7 @@ use pakajo::cli;
 use pakajo::dashboard::DashboardMessage;
 use pakajo::db::PackageDb;
 use pakajo::pacman::handle;
-use pakajo::search::engine::SearchEngine;
+use pakajo_search::engine::SearchEngine;
 
 use background::begin_aur_sync_in_background;
 use components::dashboard::DashboardState;
@@ -115,12 +115,10 @@ impl Application for PakajoApp {
             })
             .map(Arc::new);
         let search_engine = match (&db, &sqlite_path) {
-            (Some(db), Some(path)) => {
-                pakajo::search::engine_for(db, &pakajo::search::cache_path(path))
-                    .map_err(|e| eprintln!("[pakajo] search index unavailable: {e}"))
-                    .ok()
-                    .map(Arc::new)
-            }
+            (Some(db), Some(path)) => pakajo::db::engine_for(db, &pakajo::db::cache_path(path))
+                .map_err(|e| eprintln!("[pakajo] search index unavailable: {e}"))
+                .ok()
+                .map(Arc::new),
             _ => None,
         };
 
@@ -351,10 +349,7 @@ impl PakajoApp {
         if let Some(alpm) = &self.ctx.alpm {
             self.ctx.installed_names = Arc::new(pakajo::package::installed_names(alpm));
         }
-        pakajo::search::apply_installed_to_results(
-            &mut self.search.results,
-            &self.ctx.installed_names,
-        );
+        pakajo::db::apply_installed_to_results(&mut self.search.results, &self.ctx.installed_names);
         self.detail.refresh_installed(&self.ctx);
     }
 

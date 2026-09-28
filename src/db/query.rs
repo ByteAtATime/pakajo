@@ -1,3 +1,11 @@
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use pakajo_search::engine::SearchEngine;
+use pakajo_search::{PackageMeta, SearchError, SearchResult, Source};
+
+use super::PackageDb;
+
 pub struct PackageRow {
     pub name: String,
     pub description: Option<String>,
@@ -8,6 +16,73 @@ pub struct PackageRow {
     pub num_votes: Option<i64>,
     pub popularity: Option<f64>,
     pub package_base: Option<String>,
+}
+
+pub fn cache_path(sqlite: &Path) -> PathBuf {
+    sqlite.with_file_name("index.bin")
+}
+
+pub fn engine_for(db: &PackageDb, cache: &Path) -> Result<SearchEngine, SearchError> {
+    let fingerprint = super::db_cache_fingerprint(db);
+    match SearchEngine::build(Some((cache, fingerprint)), || db.index_rows()) {
+        Err(SearchError::Corrupt) => {
+            eprintln!("search cache corrupt, rebuilding");
+            let _ = std::fs::remove_file(cache);
+            SearchEngine::build(Some((cache, fingerprint)), || db.index_rows())
+        }
+        other => other,
+    }
+}
+
+pub fn hydrate_metas(
+    db: &PackageDb,
+    ids: &[u32],
+) -> Result<HashMap<u32, PackageMeta>, SearchError> {
+    let rows = match db.hydrate_by_ids(ids) {
+        Ok(rows) => rows,
+        Err(e) => match e.downcast::<rusqlite::Error>() {
+            Ok(store) => return Err(SearchError::Store(Box::new(store))),
+            Err(e) => return Err(SearchError::Store(e.into_boxed_dyn_error())),
+        },
+    };
+    let mut metas = HashMap::with_capacity(rows.len());
+    for &id in ids {
+        match rows.get(&id) {
+            Some(row) => {
+                metas.insert(id, row_to_meta(row));
+            }
+            None => {
+                eprintln!("warning: search result id {id} missing from package database, skipping");
+            }
+        }
+    }
+    Ok(metas)
+}
+
+pub fn apply_installed_to_results(results: &mut [SearchResult], installed: &HashSet<String>) {
+    for result in results.iter_mut() {
+        result.installed = installed.contains(&result.name);
+    }
+}
+
+fn row_to_meta(row: &PackageRow) -> PackageMeta {
+    PackageMeta {
+        name: row.name.clone(),
+        description: row
+            .description
+            .clone()
+            .map(|d| crate::color::strip_controls(&d).into_owned()),
+        source: if row.source == "repo" {
+            Source::Repo
+        } else {
+            Source::Aur
+        },
+        repo: row.repo.clone(),
+        version: Some(row.version.clone()),
+        last_update: row.last_update.unwrap_or(0),
+        num_votes: row.num_votes.unwrap_or(0),
+        popularity: row.popularity.unwrap_or(0.0),
+    }
 }
 
 fn row_to_package(row: &rusqlite::Row<'_>) -> rusqlite::Result<PackageRow> {

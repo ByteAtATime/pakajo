@@ -39,14 +39,14 @@ pub fn run_search(query: &str) -> anyhow::Result<()> {
     let sqlite_path = crate::db::PackageDb::db_path()?;
     let local = crate::db::PackageDb::open(&sqlite_path)?;
     refresh_index_if_stale(&local);
-    let engine = crate::search::engine_for(&local, &crate::search::cache_path(&sqlite_path))?;
+    let engine = crate::db::engine_for(&local, &crate::db::cache_path(&sqlite_path))?;
     let snapshot = crate::pacman::snapshot::get()?;
     let installed: std::collections::HashSet<String> = snapshot.installed.into_iter().collect();
     let results = engine
         .query(query)
         .installed(&installed)
         .groups(&snapshot.groups)
-        .execute(|ids| crate::search::hydrate_metas(&local, ids))?;
+        .execute(|ids| crate::db::hydrate_metas(&local, ids))?;
     print_search_results(&results);
     Ok(())
 }

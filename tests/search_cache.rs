@@ -1,5 +1,5 @@
-use crate::db::{PackageDb, db_cache_fingerprint};
-use crate::search::{cache_path, engine::SearchEngine, engine_for, hydrate_metas};
+use pakajo::db::{PackageDb, cache_path, db_cache_fingerprint, engine_for, hydrate_metas};
+use pakajo_search::engine::SearchEngine;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 

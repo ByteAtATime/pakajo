@@ -1,4 +1,4 @@
-use crate::search::{cache_path, engine_for};
+use crate::db::{cache_path, engine_for};
 
 const NAME_LIMIT: usize = 500;
 
@@ -89,7 +89,7 @@ fn repo_names_with_prefix(prefix: &str) -> anyhow::Result<Vec<String>> {
 mod tests {
     use super::{indexed_names_with_prefix, run};
     use crate::db::PackageDb;
-    use crate::search::{cache_path, engine_for};
+    use crate::db::{cache_path, engine_for};
 
     const PARITY_NAMES: &[&str] = &[
         "alpha",

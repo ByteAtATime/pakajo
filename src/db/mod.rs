@@ -212,7 +212,7 @@ pub mod query;
 pub mod sync;
 
 pub use fetch::{AUR_META_URL, DecompressedDump, FetchOutcome, fetch};
-pub use query::PackageRow;
+pub use query::{PackageRow, apply_installed_to_results, cache_path, engine_for, hydrate_metas};
 pub use sync::RefreshOutcome;
 
 #[cfg(test)]
