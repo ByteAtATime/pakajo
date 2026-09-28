@@ -1,4 +1,3 @@
-use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const AUR_SYNC_MIN_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
@@ -48,6 +47,17 @@ impl PackageDb {
     }
 }
 
+fn hash_file_stats(entries: &[(u128, u64)]) -> u64 {
+    let mut hash = 14695981039346656037u64;
+    for (nanos, len) in entries {
+        for byte in nanos.to_le_bytes().iter().chain(len.to_le_bytes().iter()) {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(1099511628211u64);
+        }
+    }
+    hash
+}
+
 pub fn db_cache_fingerprint(db: &PackageDb) -> u64 {
     let Some(main) = main_db_path(db) else {
         return u64::MAX;
@@ -59,7 +69,7 @@ pub fn db_cache_fingerprint(db: &PackageDb) -> u64 {
         name.push(suffix);
         siblings.push(std::path::PathBuf::from(name));
     }
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut stats = Vec::with_capacity(3);
     for path in siblings {
         let meta = match std::fs::metadata(&path) {
             Ok(meta) => meta,
@@ -74,10 +84,9 @@ pub fn db_cache_fingerprint(db: &PackageDb) -> u64 {
             Ok(age) => age.as_nanos(),
             Err(_) => return u64::MAX,
         };
-        nanos.hash(&mut hasher);
-        meta.len().hash(&mut hasher);
+        stats.push((nanos, meta.len()));
     }
-    hasher.finish()
+    hash_file_stats(&stats)
 }
 
 fn main_db_path(db: &PackageDb) -> Option<std::path::PathBuf> {
@@ -209,6 +218,15 @@ pub use sync::RefreshOutcome;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hash_file_stats_matches_independent_vector() {
+        let entries = [
+            (1700000000000000000u128, 12345u64),
+            (987654321u128, 67890u64),
+        ];
+        assert_eq!(hash_file_stats(&entries), 11988688413877841901u64);
+    }
 
     #[test]
     fn meta_round_trip_upserts() {
