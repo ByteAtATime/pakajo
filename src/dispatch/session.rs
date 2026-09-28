@@ -13,6 +13,7 @@ pub struct PhasePlan {
     pub as_deps: bool,
     pub reinstall: bool,
     pub no_check: bool,
+    pub keep_cache: bool,
     pub repo_verb: &'static str,
     pub approvals_payload: Option<String>,
     pub decider: Box<dyn Decider + Send>,
@@ -131,6 +132,7 @@ pub fn run_phases(plan: PhasePlan, tx: &mut futures::channel::mpsc::Sender<Strea
         as_deps: plan.as_deps,
         reinstall: plan.reinstall,
         no_check: plan.no_check,
+        keep_cache: plan.keep_cache,
         interactive: plan.interactive,
     };
     match forward(

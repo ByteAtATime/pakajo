@@ -14,6 +14,7 @@ use crate::events::InstallEvent;
 pub struct SysupgradeRequest {
     pub no_refresh: bool,
     pub repo_only: bool,
+    pub keep_cache: bool,
     pub ignores: Vec<String>,
     pub decider: Box<dyn Decider + Send>,
     pub aur_targets: Option<Vec<String>>,
@@ -206,6 +207,7 @@ fn run_after_repo(
             as_deps: false,
             reinstall: false,
             no_check: false,
+            keep_cache: request.keep_cache,
             repo_verb: "upgraded",
             approvals_payload: request.approvals,
             decider: request.decider,
@@ -278,6 +280,7 @@ mod tests {
         SysupgradeRequest {
             no_refresh: true,
             repo_only: true,
+            keep_cache: true,
             ignores: Vec::new(),
             decider: crate::dispatch::seal::proceed_decider(),
             aur_targets: Some(Vec::new()),

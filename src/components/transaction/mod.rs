@@ -115,6 +115,12 @@ fn proceed_only_seal() -> String {
     }
 }
 
+fn keep_build_cache() -> bool {
+    pakajo::config::load_or_create()
+        .map(|c| c.build.keep_cache)
+        .unwrap_or(true)
+}
+
 fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::Message> {
     Task::stream(channel(
         256,
@@ -359,6 +365,7 @@ impl Transaction {
             as_deps: false,
             reinstall: false,
             no_check: false,
+            keep_cache: true,
             ignores: vec![],
             decider: pakajo::dispatch::seal::proceed_decider(),
             approvals: None,
@@ -744,6 +751,7 @@ impl Transaction {
             as_deps: false,
             reinstall: false,
             no_check: false,
+            keep_cache: keep_build_cache(),
             ignores: vec![],
             decider,
             approvals: Some(approvals),
@@ -774,6 +782,7 @@ impl Transaction {
         let request = pakajo::dispatch::SysupgradeRequest {
             no_refresh: false,
             repo_only: false,
+            keep_cache: keep_build_cache(),
             ignores: Vec::new(),
             decider,
             aur_targets: Some(self.model.aur_names.clone()),

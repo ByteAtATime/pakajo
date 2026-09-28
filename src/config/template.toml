@@ -7,3 +7,7 @@
 # WARNING: Disabling this allows unreviewed commands to run on your system;
 # for your own safety, you probably shouldn't enable this!
 # skip_review = false
+
+[build]
+# When false, AUR build files are cleaned after installing.
+# keep_cache = true

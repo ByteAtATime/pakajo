@@ -342,6 +342,7 @@ impl BuildOperation {
                     no_check: self.no_check,
                     as_deps: self.as_deps,
                     reinstall: self.reinstall,
+                    keep_cache: self.keep_cache,
                     approvals: approvals.as_deref(),
                     tty,
                     interactive: self.interactive,

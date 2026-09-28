@@ -86,6 +86,7 @@ fn upgrade_subcommand(args: UpgradeArgs, config: &crate::config::Config) -> i32 
     let request = crate::dispatch::SysupgradeRequest {
         no_refresh: args.no_refresh,
         repo_only: args.repo_only,
+        keep_cache: config.build.keep_cache,
         ignores: args.ignores.clone(),
         decider: match decider_for(
             tty,
@@ -130,6 +131,7 @@ fn install_subcommand(args: InstallArgs, config: &crate::config::Config) -> i32 
         as_deps: args.as_deps,
         reinstall: args.reinstall,
         no_check: false,
+        keep_cache: config.build.keep_cache,
         ignores: vec![],
         decider: match decider_for(
             tty,

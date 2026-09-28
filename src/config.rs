@@ -10,6 +10,7 @@ const TEMPLATE: &str = include_str!("config/template.toml");
 pub struct Config {
     pub cli: CliConfig,
     pub aur: AurConfig,
+    pub build: BuildConfig,
 }
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -25,10 +26,30 @@ pub struct AurConfig {
     pub skip_review: bool,
 }
 
+fn default_keep_cache() -> bool {
+    true
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BuildConfig {
+    #[serde(default = "default_keep_cache")]
+    pub keep_cache: bool,
+}
+
+impl Default for BuildConfig {
+    fn default() -> Self {
+        Self {
+            keep_cache: default_keep_cache(),
+        }
+    }
+}
+
 fn allowed_keys(section: &str) -> Option<&'static [&'static str]> {
     match section {
         "cli" => Some(&["pager"]),
         "aur" => Some(&["skip_review"]),
+        "build" => Some(&["keep_cache"]),
         _ => None,
     }
 }
@@ -179,6 +200,32 @@ mod tests {
         let (config, warnings) = parse_config("[aur]\nskip_reviw = true\n").expect("typo parses");
         assert_eq!(config, Config::default());
         assert!(warnings.iter().any(|w| w.contains("skip_reviw")));
+    }
+
+    #[test]
+    fn build_keep_cache_false_parses() {
+        let (config, warnings) = parse_config("[build]\nkeep_cache = false\n").expect("parses");
+        assert!(!config.build.keep_cache);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn default_keep_cache_is_true() {
+        assert!(Config::default().build.keep_cache);
+    }
+
+    #[test]
+    fn typo_build_key_warns() {
+        let (config, warnings) = parse_config("[build]\nkeep_cach = false\n").expect("typo parses");
+        assert!(config.build.keep_cache);
+        assert!(warnings.iter().any(|w| w.contains("keep_cach")));
+    }
+
+    #[test]
+    fn empty_build_section_defaults_true() {
+        let (config, warnings) = parse_config("[build]\n").expect("parses");
+        assert!(config.build.keep_cache);
+        assert!(warnings.is_empty());
     }
 
     #[test]

@@ -39,6 +39,7 @@ pub struct BuildOperation {
     pub as_deps: bool,
     pub reinstall: bool,
     pub no_check: bool,
+    pub keep_cache: bool,
     pub interactive: bool,
 }
 

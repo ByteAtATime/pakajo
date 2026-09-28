@@ -18,6 +18,7 @@ pub struct BuildParams<'a> {
     pub no_check: bool,
     pub as_deps: bool,
     pub reinstall: bool,
+    pub keep_cache: bool,
     pub approvals: Option<&'a str>,
     pub tty: bool,
     pub interactive: bool,
@@ -105,11 +106,31 @@ fn install_aur_base<S: InstallSink + ?Sized>(
         version: first.version.clone(),
         ..Default::default()
     };
+    let result = build_and_install_base(&dir, &info, members, params, arch, sink);
+    if !params.keep_cache {
+        match crate::clean::clean_untracked(&dir) {
+            Ok(()) => println!("cleaned build cache for {pkgbase}"),
+            Err(error) => {
+                eprintln!("warning: failed to clean build cache for {pkgbase}: {error:#}")
+            }
+        }
+    }
+    result
+}
+
+fn build_and_install_base<S: InstallSink + ?Sized>(
+    dir: &Path,
+    info: &AurInfo,
+    members: &[Member],
+    params: &BuildParams<'_>,
+    arch: Option<&str>,
+    sink: &mut S,
+) -> anyhow::Result<()> {
     sink.event(InstallEvent::BuildStarted {
         package: info.name.clone(),
     });
     let package = info.name.clone();
-    let built = build_base(&dir, &info.name, params.no_check, |line| {
+    let built = build_base(dir, &info.name, params.no_check, |line| {
         sink.event(InstallEvent::BuildOutput {
             package: package.clone(),
             line,
@@ -121,7 +142,7 @@ fn install_aur_base<S: InstallSink + ?Sized>(
         version: built.version,
     });
     if let Some(arch) = arch
-        && let Err(error) = crate::devel::refresh_baseline(&dir, arch)
+        && let Err(error) = crate::devel::refresh_baseline(dir, arch)
     {
         eprintln!(
             "warning: devel baseline refresh failed for {}: {error:#}",

@@ -319,6 +319,7 @@ mod tests {
             as_deps: false,
             reinstall: false,
             no_check: false,
+            keep_cache: true,
             ignores: Vec::new(),
             decider: proceed_decider(),
             approvals: None,
