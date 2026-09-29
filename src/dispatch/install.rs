@@ -66,12 +66,28 @@ pub(crate) fn run_install_preview_with(
     request: &InstallRequest,
     source: Box<dyn AnswerSource>,
 ) -> anyhow::Result<InstallPreview> {
+    run_install_preview_with_resolver(handle, request, source, |names, no_check| {
+        resolve_combined_plan(names, no_check)
+    })
+}
+
+fn run_install_preview_with_resolver(
+    handle: &mut alpm::Alpm,
+    request: &InstallRequest,
+    source: Box<dyn AnswerSource>,
+    resolve: impl FnOnce(&[String], bool) -> anyhow::Result<Option<Plan>>,
+) -> anyhow::Result<InstallPreview> {
     let expanded = expand_install_groups(handle, &request.targets, request.tty);
     let (files, names) = peel_file_targets(&expanded);
-    let plan = resolve_combined_plan(&names, request.no_check)?;
+    let plan = resolve(&names, request.no_check)?;
     let (_stub_dir, stubs) = build_stubs(plan.as_ref())?;
+    let stubbed = stub_member_names(plan.as_ref());
     let mut targets = files;
-    targets.extend(repo_target_names(plan.as_ref())?);
+    for name in names {
+        if !targets.contains(&name) && !stubbed.contains(&name) {
+            targets.push(name);
+        }
+    }
     let spec = RunSpec {
         kind: RunKind::Sync,
         targets,
@@ -89,21 +105,6 @@ pub(crate) fn run_install_preview_with(
     Ok(InstallPreview { review })
 }
 
-fn repo_target_names(plan: Option<&Plan>) -> anyhow::Result<Vec<String>> {
-    let Some(plan) = plan else {
-        return Ok(Vec::new());
-    };
-    plan.repo_installs
-        .iter()
-        .map(|row| {
-            if row.db.is_empty() {
-                anyhow::bail!("resolver produced no database for package {}", row.name);
-            }
-            Ok(format!("{}/{}={}", row.db, row.name, row.version))
-        })
-        .collect()
-}
-
 fn merge_plan_conflicts(mut review: Review, plan: Option<&Plan>) -> Review {
     let Some(plan) = plan else {
         return review;
@@ -118,6 +119,21 @@ fn merge_plan_conflicts(mut review: Review, plan: Option<&Plan>) -> Review {
         }
     }
     review
+}
+
+fn stub_member_names(plan: Option<&Plan>) -> Vec<String> {
+    let Some(plan) = plan else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for (_, members) in plan.aur_builds() {
+        for member in members {
+            if !names.contains(&member.name) {
+                names.push(member.name.clone());
+            }
+        }
+    }
+    names
 }
 
 pub(crate) fn build_stubs(
@@ -406,8 +422,11 @@ mod tests {
     use crate::dispatch::seal::{
         JSON_SEAL_REQUIRED, json_seal_missing, non_interactive_seal_missing,
     };
+    use crate::question::model::{Answer, ProviderCandidate};
+    use crate::question::source::SourceDecision;
     use crate::resolve::{Conflict, Conflicting};
     use crate::tx::driver::Finish;
+    use crate::tx::fixtures::{Pkg, drive_sync, fixture};
 
     fn conflicting_report() -> ConflictReport {
         ConflictReport {
@@ -497,41 +516,6 @@ mod tests {
         );
         let empty = Review::default();
         assert!(merge_plan_conflicts(empty, None).part1.is_empty());
-    }
-
-    #[test]
-    fn repo_target_names_pins_database_and_rejects_empty_rows() {
-        let plan = Plan {
-            repo_installs: vec![crate::resolve::RepoInstall {
-                name: "neovim".to_string(),
-                version: "0.10.0-1".to_string(),
-                db: "extra".to_string(),
-                make: false,
-                target: true,
-            }],
-            ..Default::default()
-        };
-        assert_eq!(
-            repo_target_names(Some(&plan)).unwrap(),
-            vec!["extra/neovim=0.10.0-1".to_string()]
-        );
-        assert!(repo_target_names(None).unwrap().is_empty());
-        let plan = Plan {
-            repo_installs: vec![crate::resolve::RepoInstall {
-                name: "neovim".to_string(),
-                version: "0.10.0-1".to_string(),
-                db: String::new(),
-                make: false,
-                target: true,
-            }],
-            ..Default::default()
-        };
-        let error = repo_target_names(Some(&plan)).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("resolver produced no database for package neovim")
-        );
     }
 
     fn engine_handle() -> (tempfile::TempDir, alpm::Alpm) {
@@ -625,10 +609,6 @@ mod tests {
             None
         );
     }
-
-    use crate::question::model::Answer;
-    use crate::question::source::SourceDecision;
-    use crate::tx::fixtures::{Pkg, drive_sync, fixture};
 
     fn preapproved() -> Box<dyn AnswerSource> {
         crate::tx::prompt::with_authorized_proceed(Box::new(ExploreDefaults), true)
@@ -737,5 +717,227 @@ mod tests {
                 .any(|(depend, count)| depend == "sdl" && *count >= 2),
             "expected a SelectProvider for \"sdl\" with >=2 candidates; got {captured:?}"
         );
+    }
+
+    fn preview_request(targets: &[&str]) -> InstallRequest {
+        InstallRequest {
+            targets: targets.iter().map(|name| name.to_string()).collect(),
+            as_deps: false,
+            reinstall: false,
+            no_check: false,
+            keep_cache: true,
+            ignores: Vec::new(),
+            decider: crate::dispatch::seal::proceed_decider(),
+            approvals: None,
+            tty: false,
+            json: false,
+        }
+    }
+
+    fn review_summary(preview: &InstallPreview) -> Vec<String> {
+        let mut summary: Vec<String> = preview
+            .review
+            .part2
+            .packages
+            .iter()
+            .map(|package| package.name.clone())
+            .collect();
+        summary.sort();
+        summary
+    }
+
+    fn provider_wiring_fixture() -> (tempfile::TempDir, alpm::Alpm) {
+        crate::tx::fixtures::fixture_full(
+            &[(
+                "core",
+                vec![
+                    Pkg::make("app", "1.0-1", &["virt"], &[], &[]),
+                    Pkg {
+                        provides: vec!["virt"],
+                        ..Pkg::plain("provider-one")
+                    },
+                    Pkg {
+                        provides: vec!["virt"],
+                        ..Pkg::plain("provider-two")
+                    },
+                ],
+            )],
+            &[],
+        )
+    }
+
+    fn native_preview(
+        handle: &mut alpm::Alpm,
+        request: &InstallRequest,
+        source: Box<dyn AnswerSource>,
+        expected_names: &[&str],
+        plan: Plan,
+    ) -> (Vec<Question>, Vec<String>) {
+        let preview =
+            run_install_preview_with_resolver(handle, request, source, |names, no_check| {
+                let expected: Vec<String> =
+                    expected_names.iter().map(|name| name.to_string()).collect();
+                assert_eq!(names, expected.as_slice());
+                assert!(!no_check);
+                Ok(Some(plan))
+            })
+            .unwrap();
+        let summary = review_summary(&preview);
+        (preview.review.part1, summary)
+    }
+
+    fn expected_provider_question() -> Question {
+        Question::SelectProvider {
+            depend: "virt".to_string(),
+            candidates: vec![
+                ProviderCandidate {
+                    name: "provider-one".to_string(),
+                    repo: Some("core".to_string()),
+                    version: Some("1.0-1".to_string()),
+                },
+                ProviderCandidate {
+                    name: "provider-two".to_string(),
+                    repo: Some("core".to_string()),
+                    version: Some("1.0-1".to_string()),
+                },
+            ],
+        }
+    }
+
+    struct SecondChoice;
+
+    impl AnswerSource for SecondChoice {
+        fn answer(&self, question: &Question) -> SourceDecision {
+            let Question::SelectProvider { candidates, .. } = question else {
+                return ExploreDefaults.answer(question);
+            };
+            let Some(second) = candidates.get(1) else {
+                return ExploreDefaults.answer(question);
+            };
+            SourceDecision::Answer(Answer::SelectProvider {
+                name: second.name.clone(),
+                repo: second.repo.clone(),
+            })
+        }
+    }
+
+    fn repo_dependency_plan(chosen: String) -> Plan {
+        Plan {
+            repo_installs: vec![
+                crate::resolve::RepoInstall {
+                    name: "app".to_string(),
+                    version: "1.0-1".to_string(),
+                    db: "core".to_string(),
+                    make: false,
+                    target: true,
+                },
+                crate::resolve::RepoInstall {
+                    name: chosen,
+                    version: "1.0-1".to_string(),
+                    db: "core".to_string(),
+                    make: false,
+                    target: false,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dep_provider_question_asked_natively_in_preview() {
+        let (_dir, mut handle) = provider_wiring_fixture();
+        let request = preview_request(&["app"]);
+        let expected = expected_provider_question();
+        let (part1, summary) = native_preview(
+            &mut handle,
+            &request,
+            Box::new(ExploreDefaults),
+            &["app"],
+            repo_dependency_plan("provider-one".to_string()),
+        );
+        assert!(part1.contains(&expected));
+        assert_eq!(summary, vec!["app".to_string(), "provider-one".to_string()]);
+        let (_flipped_dir, mut flipped_handle) = provider_wiring_fixture();
+        let (flipped_part1, flipped_summary) = native_preview(
+            &mut flipped_handle,
+            &request,
+            Box::new(SecondChoice),
+            &["app"],
+            repo_dependency_plan("provider-two".to_string()),
+        );
+        assert!(flipped_part1.contains(&expected));
+        assert_eq!(
+            flipped_summary,
+            vec!["app".to_string(), "provider-two".to_string()]
+        );
+    }
+
+    fn aur_preview_summary(
+        handle: &mut alpm::Alpm,
+        request: &InstallRequest,
+        expected_names: &[&str],
+        plan: Plan,
+    ) -> anyhow::Result<Vec<String>> {
+        let preview = run_install_preview_with_resolver(
+            handle,
+            request,
+            Box::new(ExploreDefaults),
+            |names, no_check| {
+                let expected: Vec<String> =
+                    expected_names.iter().map(|name| name.to_string()).collect();
+                assert_eq!(names, expected.as_slice());
+                assert!(!no_check);
+                Ok(Some(plan))
+            },
+        )?;
+        Ok(review_summary(&preview))
+    }
+
+    fn aur_case(targets: &[&str], repo: &[&str], aur: &[&str]) -> Vec<String> {
+        let (_dir, mut handle) =
+            crate::tx::fixtures::fixture_full(&[("core", vec![Pkg::plain("app")])], &[]);
+        let request = preview_request(targets);
+        aur_preview_summary(&mut handle, &request, targets, aur_build_plan(repo, aur)).unwrap()
+    }
+
+    #[test]
+    fn aur_targets_stay_stubbed_in_preview() {
+        assert_eq!(
+            aur_case(&["aurhelper"], &[], &["aurhelper"]),
+            vec!["aurhelper".to_string()]
+        );
+        assert_eq!(
+            aur_case(&["app", "aurhelper"], &["app"], &["aurhelper"]),
+            vec!["app".to_string(), "aurhelper".to_string()]
+        );
+    }
+
+    fn aur_build_plan(repo_names: &[&str], aur_names: &[&str]) -> Plan {
+        Plan {
+            repo_installs: repo_names
+                .iter()
+                .map(|name| crate::resolve::RepoInstall {
+                    name: name.to_string(),
+                    version: "1.0-1".to_string(),
+                    db: "core".to_string(),
+                    make: false,
+                    target: true,
+                })
+                .collect(),
+            bases: aur_names
+                .iter()
+                .map(|name| crate::resolve::Base::Aur {
+                    base: name.to_string(),
+                    build: true,
+                    members: vec![crate::resolve::Member {
+                        name: name.to_string(),
+                        version: "1.0-1".to_string(),
+                        make: false,
+                        target: true,
+                    }],
+                })
+                .collect(),
+            ..Default::default()
+        }
     }
 }
