@@ -10,7 +10,9 @@ use crate::dispatch::exec::ChildOutcome;
 use crate::dispatch::protocol::Decider;
 use crate::events::{InstallEvent, InstallSink, PkgbuildReviewEntry};
 use crate::pkgbuild::PkgbuildInfo;
-use crate::resolve::{Decisions, Member, Plan, RepoInstall};
+use crate::question::approvals::SealedApprovals;
+use crate::question::model::{Answer, QuestionKey};
+use crate::resolve::{Ask, Decisions, Member, Plan, RepoInstall};
 
 pub struct BuildParams<'a> {
     pub targets: &'a [String],
@@ -29,7 +31,13 @@ pub fn install_aur<S: InstallSink + ?Sized>(
     sink: &mut S,
     decider: &dyn Decider,
 ) -> anyhow::Result<()> {
-    let (alpm, plan) = resolve_and_report(params.targets, params.no_check, sink, params.tty)?;
+    let (alpm, plan) = resolve_and_report(
+        params.targets,
+        params.no_check,
+        sink,
+        params.tty,
+        params.approvals,
+    )?;
     reject_root_build(&plan)?;
     crate::resolve::check_plan_gates(&plan)?;
     confirm_conflicts(&plan, decider, params.tty)?;
@@ -232,23 +240,73 @@ fn install_repo_packages<S: InstallSink + ?Sized>(
     )
 }
 
+struct SealedAsk {
+    sealed: SealedApprovals,
+}
+
+impl Ask for SealedAsk {
+    fn choose_provider(&mut self, depend: &str, candidates: &[String]) -> usize {
+        if candidates.is_empty() {
+            return 0;
+        }
+        let key = QuestionKey::SelectProvider {
+            depend: depend.to_string(),
+        };
+        let Ok(index) = self
+            .sealed
+            .answers
+            .binary_search_by(|(stored, _)| stored.cmp(&key))
+        else {
+            return 0;
+        };
+        let Answer::SelectProvider { name, .. } = &self.sealed.answers[index].1 else {
+            return 0;
+        };
+        candidates.iter().position(|c| c == name).unwrap_or(0)
+    }
+
+    fn choose_group_members(
+        &mut self,
+        _group: &str,
+        members: &[crate::resolve::GroupMember],
+    ) -> Vec<usize> {
+        (0..members.len()).collect()
+    }
+}
+
+fn decisions_for(tty: bool, sealed: Option<SealedApprovals>) -> Decisions {
+    if tty {
+        return Decisions::Ask(Box::new(CliAsk));
+    }
+    let Some(sealed) = sealed else {
+        return Decisions::Default;
+    };
+    Decisions::Ask(Box::new(SealedAsk { sealed }))
+}
+
+fn decode_approvals(approvals: Option<&str>) -> anyhow::Result<Option<SealedApprovals>> {
+    approvals
+        .map(|payload| {
+            crate::dispatch::seal::decode_seal(payload).context("failed to decode approvals seal")
+        })
+        .transpose()
+}
+
 fn resolve_and_report<S: InstallSink + ?Sized>(
     targets: &[String],
     no_check: bool,
     sink: &mut S,
     tty: bool,
+    approvals: Option<&str>,
 ) -> anyhow::Result<(alpm::Alpm, Plan)> {
+    let sealed = decode_approvals(approvals)?;
     for target in targets {
         sink.event(InstallEvent::ResolvingAurDependencies {
             target: target.to_string(),
         });
     }
     let alpm = crate::pacman::handle()?;
-    let decisions = if tty {
-        Decisions::Ask(Box::new(CliAsk))
-    } else {
-        Decisions::Default
-    };
+    let decisions = decisions_for(tty, sealed);
     let plan = crate::resolve::resolve_plan_raw(targets, no_check, decisions)?;
     for row in &plan.repo_installs {
         sink.event(InstallEvent::AurDepResolved {
@@ -361,6 +419,7 @@ fn run_install_child<S: InstallSink + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::question::model::Question;
 
     fn member(name: &str, target: bool) -> Member {
         Member {
@@ -437,5 +496,164 @@ mod tests {
                 .expect("seal writes");
             assert_eq!(sealed_proceed(&sealed), proceed);
         }
+    }
+
+    fn provider_sealed(name: &str) -> SealedApprovals {
+        crate::question::approvals::seal(
+            &[Question::SelectProvider {
+                depend: "dep".to_string(),
+                candidates: vec![
+                    crate::question::model::ProviderCandidate {
+                        name: "alpha".to_string(),
+                        repo: Some("extra".to_string()),
+                        version: None,
+                    },
+                    crate::question::model::ProviderCandidate {
+                        name: "beta".to_string(),
+                        repo: Some("extra".to_string()),
+                        version: None,
+                    },
+                ],
+            }],
+            &[Answer::SelectProvider {
+                name: name.to_string(),
+                repo: None,
+            }],
+            true,
+        )
+        .expect("seal succeeds")
+    }
+
+    fn group_members() -> Vec<crate::resolve::GroupMember> {
+        ["a", "b"]
+            .iter()
+            .map(|name| crate::resolve::GroupMember {
+                name: name.to_string(),
+                version: "1.0-1".to_string(),
+                db: "extra".to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sealed_provider_replays_second_candidate() {
+        let mut ask = SealedAsk {
+            sealed: provider_sealed("beta"),
+        };
+        assert_eq!(
+            ask.choose_provider("dep", &["alpha".to_string(), "beta".to_string()]),
+            1
+        );
+    }
+
+    #[test]
+    fn sealed_provider_replays_despite_answer_repo() {
+        let mut ask = SealedAsk {
+            sealed: SealedApprovals {
+                answers: vec![(
+                    crate::question::model::QuestionKey::SelectProvider {
+                        depend: "dep".to_string(),
+                    },
+                    Answer::SelectProvider {
+                        name: "beta".to_string(),
+                        repo: Some("core".to_string()),
+                    },
+                )],
+                proceed: true,
+                deps: Vec::new(),
+            },
+        };
+        assert_eq!(
+            ask.choose_provider("dep", &["alpha".to_string(), "beta".to_string()]),
+            1
+        );
+    }
+
+    #[test]
+    fn missing_sealed_answer_falls_back_to_first() {
+        let mut ask = SealedAsk {
+            sealed: SealedApprovals {
+                answers: Vec::new(),
+                proceed: true,
+                deps: Vec::new(),
+            },
+        };
+        assert_eq!(
+            ask.choose_provider("dep", &["alpha".to_string(), "beta".to_string()]),
+            0
+        );
+    }
+
+    #[test]
+    fn empty_candidates_select_first_slot() {
+        let mut ask = SealedAsk {
+            sealed: provider_sealed("beta"),
+        };
+        assert_eq!(ask.choose_provider("dep", &[]), 0);
+    }
+
+    #[test]
+    fn absent_sealed_name_falls_back_to_first() {
+        let mut ask = SealedAsk {
+            sealed: SealedApprovals {
+                answers: vec![(
+                    crate::question::model::QuestionKey::SelectProvider {
+                        depend: "dep".to_string(),
+                    },
+                    Answer::SelectProvider {
+                        name: "gamma".to_string(),
+                        repo: None,
+                    },
+                )],
+                proceed: true,
+                deps: Vec::new(),
+            },
+        };
+        assert_eq!(
+            ask.choose_provider("dep", &["alpha".to_string(), "beta".to_string()]),
+            0
+        );
+    }
+
+    #[test]
+    fn sealed_groups_select_every_member() {
+        let mut ask = SealedAsk {
+            sealed: SealedApprovals {
+                answers: Vec::new(),
+                proceed: true,
+                deps: Vec::new(),
+            },
+        };
+        let members = group_members();
+        assert_eq!(ask.choose_group_members("tools", &members), vec![0, 1]);
+    }
+
+    #[test]
+    fn corrupt_approvals_seal_fails_loud() {
+        let error = decode_approvals(Some("<garbage>")).expect_err("garbage seal rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("failed to decode approvals seal")
+        );
+        assert!(
+            decode_approvals(None)
+                .expect("absent seal decodes")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn decisions_wire_tty_seal_and_default() {
+        assert!(matches!(decisions_for(true, None), Decisions::Ask(_)));
+        assert!(matches!(
+            decisions_for(true, Some(provider_sealed("beta"))),
+            Decisions::Ask(_)
+        ));
+        assert!(matches!(decisions_for(false, None), Decisions::Default));
+        assert!(matches!(
+            decisions_for(false, Some(provider_sealed("beta"))),
+            Decisions::Ask(_)
+        ));
     }
 }
