@@ -789,10 +789,39 @@ fn section_header<'a>(title: String) -> Element<'a> {
         .into()
 }
 
+struct CommentViewer;
+
+impl<'a> markdown::Viewer<'a, crate::Message, cosmic::Theme, cosmic::Renderer> for CommentViewer {
+    fn on_link_click(url: markdown::Uri) -> crate::Message {
+        crate::Message::OpenUrl(url)
+    }
+
+    fn code_block(
+        &self,
+        _settings: markdown::Settings,
+        _language: Option<&'a str>,
+        code: &'a str,
+        _lines: &'a [markdown::Text],
+    ) -> Element<'a> {
+        let mut lines = Column::new().spacing(2);
+        for line in code.lines() {
+            lines = lines.push(text::monotext(line));
+        }
+        container(lines)
+            .width(Length::Fill)
+            .padding([8.0, 10.0])
+            .class(cosmic::theme::Container::Secondary)
+            .into()
+    }
+}
+
 fn markdown_body<'a>(body: &'a markdown::Content) -> Element<'a> {
     let style = markdown::Style::from_palette(iced_palette(&cosmic::theme::active()));
-    markdown::view(body.items(), markdown::Settings::with_text_size(14, style))
-        .map(crate::Message::OpenUrl)
+    markdown::view_with(
+        body.items(),
+        markdown::Settings::with_text_size(14, style),
+        &CommentViewer,
+    )
 }
 
 fn comment_card<'a>(comment: &'a CommentView) -> Element<'a> {

@@ -115,34 +115,40 @@ fn comment_posted(header: scraper::ElementRef<'_>, date_selector: &scraper::Sele
     String::new()
 }
 
-fn comment_body(body: scraper::ElementRef<'_>, block_selector: &scraper::Selector) -> String {
-    let blocks: Vec<String> = body
-        .select(block_selector)
-        .map(|block| block.text().collect::<String>())
-        .collect();
-    let raw = if blocks.is_empty() {
-        body.text().collect::<String>()
-    } else {
-        blocks.join("\n")
-    };
-    let mut lines = Vec::new();
-    let mut blank = false;
-    for line in raw.lines() {
-        let trimmed = strip_controls(line.trim()).into_owned();
-        if trimmed.is_empty() {
-            if !lines.is_empty() && !blank {
-                lines.push(String::new());
+fn comment_body(body: scraper::ElementRef<'_>) -> String {
+    match html_to_markdown(&body.inner_html()) {
+        Ok(markdown) => tidy_markdown(&markdown),
+        Err(_) => String::new(),
+    }
+}
+
+fn html_to_markdown(html: &str) -> std::io::Result<String> {
+    htmd::HtmlToMarkdown::builder()
+        .options(htmd::options::Options {
+            br_style: htmd::options::BrStyle::Backslash,
+            ..htmd::options::Options::default()
+        })
+        .build()
+        .convert(html)
+}
+
+fn tidy_markdown(markdown: &str) -> String {
+    let mut tidy = String::with_capacity(markdown.len());
+    let mut blank = true;
+    for line in markdown.lines() {
+        let line = strip_controls(line.trim_end());
+        if line.is_empty() {
+            if blank {
+                continue;
             }
             blank = true;
         } else {
-            lines.push(trimmed);
             blank = false;
         }
+        tidy.push_str(&line);
+        tidy.push('\n');
     }
-    while lines.last().is_some_and(|line| line.is_empty()) {
-        lines.pop();
-    }
-    lines.join("\n")
+    tidy.trim_end().to_string()
 }
 
 pub fn parse_comments(html: &str) -> Vec<AurComment> {
@@ -159,9 +165,6 @@ pub fn parse_comments(html: &str) -> Vec<AurComment> {
         return Vec::new();
     };
     let Ok(date_selector) = scraper::Selector::parse("a.date") else {
-        return Vec::new();
-    };
-    let Ok(block_selector) = scraper::Selector::parse("p, pre, li, blockquote") else {
         return Vec::new();
     };
     let document = scraper::Html::parse_document(html);
@@ -184,7 +187,7 @@ pub fn parse_comments(html: &str) -> Vec<AurComment> {
             comments.push(AurComment {
                 author: comment_author(header, &date_selector),
                 posted: comment_posted(header, &date_selector),
-                body: comment_body(body, &block_selector),
+                body: comment_body(body),
                 pinned,
             });
         }
@@ -413,7 +416,7 @@ mod tests {
         assert!(comments[0].pinned);
         assert_eq!(
             comments[0].body,
-            "When reporting this package as outdated make sure there is indeed a new version for Linux Desktop. You can have a look at the \"Stable updates\" tag in Release blog for this.\nYou can also run this command to obtain the version string for the latest chrome version:\n$ curl -sSf https://dl.google.com/linux/chrome/deb/dists/stable/main/binary-amd64/Packages | \\\ngrep -A1 \"Package: google-chrome-stable\" | \\\nawk '/Version/{print $2}' | \\\ncut -d '-' -f1\n\nDo not report updates for ChromeOS, Android or other platforms stable versions as updates here."
+            "When reporting this package as outdated make sure there is indeed a new version for Linux Desktop. You can have a look at the [\"Stable updates\" tag in Release blog](https://chromereleases.googleblog.com/search/label/Stable%20updates) for this.\n\nYou can also run this command to obtain the version string for the latest chrome version:\n\n```\n$ curl -sSf https://dl.google.com/linux/chrome/deb/dists/stable/main/binary-amd64/Packages | \\\n     grep -A1 \"Package: google-chrome-stable\" | \\\n     awk '/Version/{print $2}' | \\\n     cut -d '-' -f1\n```\n\nDo **not** report updates for ChromeOS, Android or other platforms stable versions as updates here."
         );
 
         assert_eq!(comments[1].author, "tioguda");
@@ -421,7 +424,7 @@ mod tests {
         assert!(!comments[1].pinned);
         assert_eq!(
             comments[1].body,
-            "@ZappyBoy comment out the gtk-modules line in the file specified here, this will fix your problem.\nEdit: Actually, appmenu-gtk-module-git fixes the gtk-modules issues."
+            "@ZappyBoy comment out the `gtk-modules` line in the file specified [here](https://support.google.com/chrome/thread/462198462?hl=en&msgid=466341177), this will fix your problem.\n\nEdit: Actually, `appmenu-gtk-module-git` fixes the gtk-modules issues."
         );
 
         assert_eq!(comments[2].author, "gromit");
@@ -440,6 +443,16 @@ mod tests {
     }
 
     #[test]
+    fn comment_body_keeps_block_structure() {
+        let html = "<div class=\"comments package-comments\"><div class=\"comments-header\"><h3><span class=\"text\">Latest Comments</span></h3></div><h4 class=\"comment-header\">alice commented on <a class=\"date\">2026-01-02 03:04 (UTC)</a></h4><div class=\"article-content\"><div><ul><li>first</li><li>second</li></ul><blockquote><p>quoted</p></blockquote><p>one<br>two</p></div></div></div>";
+        let comments = parse_comments(html);
+        assert_eq!(
+            comments[0].body,
+            "*   first\n*   second\n\n> quoted\n\none\\\ntwo"
+        );
+    }
+
+    #[test]
     fn comment_body_strips_terminal_escapes() {
         let hostile = "\u{1b}]52;c;QVRUQUNL\u{7} hello \u{1b}[?25l world";
         assert!(drives_terminal(hostile));
@@ -450,7 +463,7 @@ mod tests {
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].author, "alice");
         assert!(!comments[0].pinned);
-        assert_eq!(comments[0].body, "]52;c;QVRUQUNL hello [?25l world");
+        assert_eq!(comments[0].body, "\\]52;c;QVRUQUNL hello \\[?25l world");
         assert!(!drives_terminal(&comments[0].body));
     }
 
