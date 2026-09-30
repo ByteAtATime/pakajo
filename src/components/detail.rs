@@ -9,6 +9,8 @@ use cosmic::widget::{
 use futures::SinkExt as _;
 use pakajo::package::{self, Package, PackageSource};
 use pakajo::utils::{format_bytes, group_thousands};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::Element;
@@ -27,9 +29,12 @@ pub(crate) fn selectable_optdeps(pkg: &Package, selection: &[String]) -> OptDepS
 use crate::PakajoCtx;
 use crate::components::icons;
 use crate::components::search::SearchMessage;
-use crate::components::theme::{accent_color, destructive_color, muted_mono, muted_text as muted};
+use crate::components::theme::{
+    accent_color, destructive_color, iced_palette, muted_mono, muted_text as muted, pill,
+};
 use crate::components::transaction::{OptDepSelection, TransactionMessage, TransactionRequest};
 use cosmic::widget::divider;
+use cosmic::widget::markdown;
 
 pub const DETAIL_DEBOUNCE: Duration = Duration::from_millis(250);
 
@@ -57,15 +62,62 @@ pub struct GroupMember {
     pub installed: bool,
 }
 
+#[derive(Debug, Default)]
+pub enum CommentsData {
+    #[default]
+    Idle,
+    Loading,
+    Ready(Vec<CommentView>),
+    Failed(String),
+}
+
+#[derive(Debug)]
+pub struct CommentView {
+    pub author: String,
+    pub posted: String,
+    pub pinned: bool,
+    pub body: markdown::Content,
+}
+
+fn comment_view(comment: pakajo::aur::AurComment) -> CommentView {
+    CommentView {
+        author: comment.author,
+        posted: comment.posted,
+        pinned: comment.pinned,
+        body: markdown::Content::parse(&comment.body),
+    }
+}
+
 #[derive(Clone)]
 pub enum DetailMessage {
-    Load { name: String, source: PackageSource },
+    Load {
+        name: String,
+        source: PackageSource,
+    },
     StartInstall,
     StartBatchInstall,
     StartRemove,
-    DetailReady { seq: u64, pkg: Box<Package> },
-    DetailFailed { seq: u64, message: String },
-    ShowLoading { seq: u64 },
+    DetailReady {
+        seq: u64,
+        pkg: Box<Package>,
+    },
+    DetailFailed {
+        seq: u64,
+        message: String,
+    },
+    CommentsReady {
+        seq: u64,
+        name: String,
+        comments: Vec<pakajo::aur::AurComment>,
+    },
+    CommentsFailed {
+        seq: u64,
+        name: String,
+        error: String,
+    },
+    ShowLoading {
+        seq: u64,
+    },
     ToggleOptDep(String),
     OptDepHover(Option<String>),
 }
@@ -89,6 +141,17 @@ impl std::fmt::Debug for DetailMessage {
                 .field("seq", seq)
                 .field("message", message)
                 .finish(),
+            Self::CommentsReady { seq, name, .. } => f
+                .debug_struct("CommentsReady")
+                .field("seq", seq)
+                .field("name", name)
+                .finish(),
+            Self::CommentsFailed { seq, name, error } => f
+                .debug_struct("CommentsFailed")
+                .field("seq", seq)
+                .field("name", name)
+                .field("error", error)
+                .finish(),
             Self::ShowLoading { seq } => f.debug_struct("ShowLoading").field("seq", seq).finish(),
             Self::ToggleOptDep(name) => f.debug_struct("ToggleOptDep").field("name", name).finish(),
             Self::OptDepHover(name) => f.debug_struct("OptDepHover").field("name", name).finish(),
@@ -103,6 +166,7 @@ pub fn detail_view<'a>(
     selection: &'a [String],
     disabled: bool,
     hovered: Option<&'a str>,
+    comments: &'a CommentsData,
 ) -> Element<'a> {
     let content: Element<'a> = match detail {
         DetailData::None => container(muted("Select a package"))
@@ -126,7 +190,16 @@ pub fn detail_view<'a>(
             .into(),
         DetailData::Group { name, members } => render_group(name, members),
         DetailData::Ready { pkg, installed } => render_package(
-            pkg, *installed, checking, pending, selection, disabled, hovered,
+            pkg,
+            *installed,
+            PackageView {
+                checking,
+                pending,
+                selection,
+                disabled,
+                hovered,
+                comments,
+            },
         ),
     };
 
@@ -182,27 +255,31 @@ fn render_group<'a>(name: &'a str, members: &'a [GroupMember]) -> Element<'a> {
         .into()
 }
 
-fn render_package<'a>(
-    pkg: &'a Package,
-    installed: bool,
+#[derive(Clone, Copy)]
+struct PackageView<'a> {
     checking: Option<&'a str>,
     pending: bool,
     selection: &'a [String],
     disabled: bool,
     hovered: Option<&'a str>,
-) -> Element<'a> {
-    let selected = selectable_optdeps(pkg, selection).len();
-    let header = render_header(pkg, installed, checking, pending, selected);
+    comments: &'a CommentsData,
+}
+
+fn render_package<'a>(pkg: &'a Package, installed: bool, view: PackageView<'a>) -> Element<'a> {
+    let selected = selectable_optdeps(pkg, view.selection).len();
+    let header = render_header(pkg, installed, view.checking, view.pending, selected);
     let details = render_details(pkg);
     let dependencies = render_dependencies(pkg);
-    let opt_dependencies = render_opt_dependencies(pkg, selection, disabled, hovered, installed);
+    let opt_dependencies =
+        render_opt_dependencies(pkg, view.selection, view.disabled, view.hovered, installed);
 
     let col = Column::new()
         .spacing(20)
         .push(header)
         .push(details)
         .push(dependencies)
-        .push_maybe((!pkg.opt_dependencies.is_empty()).then_some(opt_dependencies));
+        .push_maybe((!pkg.opt_dependencies.is_empty()).then_some(opt_dependencies))
+        .push_maybe(render_comments(view.comments));
 
     container(col)
         .padding([
@@ -712,6 +789,63 @@ fn section_header<'a>(title: String) -> Element<'a> {
         .into()
 }
 
+fn markdown_body<'a>(body: &'a markdown::Content) -> Element<'a> {
+    let style = markdown::Style::from_palette(iced_palette(&cosmic::theme::active()));
+    markdown::view(body.items(), markdown::Settings::with_text_size(14, style))
+        .map(crate::Message::OpenUrl)
+}
+
+fn comment_card<'a>(comment: &'a CommentView) -> Element<'a> {
+    let header = Row::new()
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .push_maybe(comment.pinned.then(|| pill("Pinned", accent_color)))
+        .push(text(comment.author.clone()).class(cosmic::theme::Text::Accent))
+        .push(muted(comment.posted.clone()));
+    container(
+        Column::new()
+            .spacing(8)
+            .push(header)
+            .push(markdown_body(&comment.body)),
+    )
+    .padding([10.0, 14.0])
+    .width(Length::Fill)
+    .style(|theme: &cosmic::Theme| card_style(theme))
+    .into()
+}
+
+fn render_comments<'a>(comments: &'a CommentsData) -> Option<Element<'a>> {
+    match comments {
+        CommentsData::Idle | CommentsData::Loading => None,
+        CommentsData::Failed(error) => Some(
+            Column::new()
+                .spacing(8)
+                .push(section_header("Comments".to_string()))
+                .push(muted(error.clone()))
+                .into(),
+        ),
+        CommentsData::Ready(list) => {
+            if list.is_empty() {
+                return None;
+            }
+            let mut col = Column::new()
+                .spacing(8)
+                .push(section_header(format!("Comments ({})", list.len())));
+            let (pinned, rest): (Vec<_>, Vec<_>) = list.iter().partition(|comment| comment.pinned);
+            for comment in &pinned {
+                col = col.push(comment_card(comment));
+            }
+            if !pinned.is_empty() && !rest.is_empty() {
+                col = col.push(container(divider::horizontal::default()).padding([12.0, 0.0]));
+            }
+            for comment in &rest {
+                col = col.push(comment_card(comment));
+            }
+            Some(col.into())
+        }
+    }
+}
+
 fn card_style(theme: &cosmic::Theme) -> container::Style {
     let cosmic = theme.cosmic();
     let bg = Color::from(cosmic.background(false).small_widget);
@@ -757,6 +891,9 @@ pub struct DetailPane {
     pub(crate) selected_optdeps: Vec<String>,
     pub(crate) pkg_name: Option<String>,
     pub(crate) optdep_hover: Option<String>,
+    pub(crate) comments: CommentsData,
+    pub(crate) comments_for: Option<String>,
+    latest: Arc<AtomicU64>,
 }
 
 impl DetailPane {
@@ -810,6 +947,25 @@ impl DetailPane {
                 if seq == self.seq {
                     self.pending = None;
                     self.data = DetailData::Error(message);
+                    self.comments = CommentsData::Idle;
+                    self.comments_for = None;
+                }
+                Task::none()
+            }
+            DetailMessage::CommentsReady {
+                seq,
+                name,
+                comments,
+            } => {
+                if seq == self.seq && self.comments_for.as_deref() == Some(name.as_str()) {
+                    self.comments =
+                        CommentsData::Ready(comments.into_iter().map(comment_view).collect());
+                }
+                Task::none()
+            }
+            DetailMessage::CommentsFailed { seq, name, error } => {
+                if seq == self.seq && self.comments_for.as_deref() == Some(name.as_str()) {
+                    self.comments = CommentsData::Failed(error);
                 }
                 Task::none()
             }
@@ -899,11 +1055,14 @@ impl DetailPane {
         self.seq = self.seq.wrapping_add(1);
         self.pending = None;
         let seq = self.seq;
+        self.latest.store(seq, Ordering::Relaxed);
         if matches!(self.data, DetailData::None) {
             self.data = DetailData::Pending;
         }
         match source {
             PackageSource::Repo => {
+                self.comments = CommentsData::Idle;
+                self.comments_for = None;
                 let resolved = ctx
                     .alpm
                     .as_ref()
@@ -915,6 +1074,8 @@ impl DetailPane {
                 Task::none()
             }
             PackageSource::Group => {
+                self.comments = CommentsData::Idle;
+                self.comments_for = None;
                 let installed_names = ctx.installed_names.clone();
                 let resolved = ctx.alpm.as_ref().and_then(|alpm| {
                     package::find_groups(alpm, &name)
@@ -940,10 +1101,19 @@ impl DetailPane {
             }
             PackageSource::Aur => {
                 let Some(aur_client) = ctx.aur_client.clone() else {
+                    self.comments = CommentsData::Idle;
+                    self.comments_for = None;
                     self.data = DetailData::Error("aur unavailable".to_string());
                     return Task::none();
                 };
                 let db = ctx.db.clone();
+                let latest = self.latest.clone();
+                let fetch_comments = self.comments_for.as_deref() != Some(name.as_str())
+                    || !matches!(self.comments, CommentsData::Ready(_));
+                if fetch_comments {
+                    self.comments_for = Some(name.clone());
+                    self.comments = CommentsData::Loading;
+                }
                 self.pending = Some(seq);
                 Task::batch([
                     Task::stream(channel(
@@ -951,9 +1121,21 @@ impl DetailPane {
                         move |mut tx: futures::channel::mpsc::Sender<
                             cosmic::Action<crate::Message>,
                         >| async move {
-                            let had_cache = match db.as_ref() {
-                                Some(index) => match index.detail(&name) {
+                            let mut comments_spawned = false;
+                            if let Some(index) = db.as_ref() {
+                                match index.detail(&name) {
                                     Ok(Some(info)) => {
+                                        if fetch_comments {
+                                            spawn_comments_fetch(
+                                                aur_client.clone(),
+                                                info.package_base.clone(),
+                                                seq,
+                                                name.clone(),
+                                                latest.clone(),
+                                                tx.clone(),
+                                            );
+                                            comments_spawned = true;
+                                        }
                                         let _ = tx
                                             .send(
                                                 crate::Message::Detail(
@@ -965,23 +1147,22 @@ impl DetailPane {
                                                 .into(),
                                             )
                                             .await;
-                                        true
                                     }
-                                    Ok(None) => false,
+                                    Ok(None) => {}
                                     Err(e) => {
                                         eprintln!("[pakajo] detail cache read failed: {e:#}");
-                                        false
                                     }
-                                },
-                                None => false,
-                            };
+                                }
+                            }
                             let (otx, orx) = futures::channel::oneshot::channel();
                             let name_net = name.clone();
                             let index_net = db.clone();
                             let fetch_client = aur_client.clone();
+                            let latest_info = latest.clone();
                             std::thread::spawn(move || {
-                                if had_cache {
-                                    std::thread::sleep(DETAIL_DEBOUNCE);
+                                std::thread::sleep(DETAIL_DEBOUNCE);
+                                if latest_info.load(Ordering::Relaxed) != seq {
+                                    return;
                                 }
                                 let fetched = fetch_client.info(&name_net);
                                 if let Ok(Some(ref info)) = fetched
@@ -998,19 +1179,16 @@ impl DetailPane {
                             };
                             match fetched {
                                 Ok(Some(info)) => {
-                                    let base = info.package_base.clone();
-                                    let comments_client = aur_client.clone();
-                                    std::thread::spawn(move || {
-                                        match comments_client.comments(&base) {
-                                            Ok(comments) => eprintln!(
-                                                "[pakajo] {} comments fetched for {base}",
-                                                comments.len()
-                                            ),
-                                            Err(e) => eprintln!(
-                                                "[pakajo] comments fetch failed for {base}: {e:#}"
-                                            ),
-                                        }
-                                    });
+                                    if fetch_comments && !comments_spawned {
+                                        spawn_comments_fetch(
+                                            aur_client.clone(),
+                                            info.package_base.clone(),
+                                            seq,
+                                            name.clone(),
+                                            latest.clone(),
+                                            tx.clone(),
+                                        );
+                                    }
                                     let _ = tx
                                         .send(
                                             crate::Message::Detail(DetailMessage::DetailReady {
@@ -1079,6 +1257,35 @@ impl DetailPane {
             installed,
         };
     }
+}
+
+fn spawn_comments_fetch(
+    client: std::sync::Arc<pakajo::aur::AurClient>,
+    base: String,
+    seq: u64,
+    name: String,
+    latest: Arc<AtomicU64>,
+    mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>,
+) {
+    std::thread::spawn(move || {
+        std::thread::sleep(DETAIL_DEBOUNCE);
+        if latest.load(Ordering::Relaxed) != seq {
+            return;
+        }
+        let message = match client.comments(&base) {
+            Ok(comments) => DetailMessage::CommentsReady {
+                seq,
+                name,
+                comments,
+            },
+            Err(e) => DetailMessage::CommentsFailed {
+                seq,
+                name,
+                error: e.to_string(),
+            },
+        };
+        let _ = tx.try_send(crate::Message::Detail(message).into());
+    });
 }
 
 fn show_loading_after_debounce(seq: u64) -> Task<crate::Message> {

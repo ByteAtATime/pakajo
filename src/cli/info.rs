@@ -506,6 +506,7 @@ mod tests {
         pkg.kind = PackageKind::Aur(AurData {
             num_votes: 12500,
             popularity: 82.5,
+            package_base: "test-pkg".into(),
             submitted: Some(1442236800),
             last_modified: None,
             flagged: Some(1785715200),

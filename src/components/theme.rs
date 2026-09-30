@@ -84,6 +84,18 @@ pub(crate) fn destructive_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().destructive.base)
 }
 
+pub(crate) fn iced_palette(theme: &cosmic::Theme) -> cosmic::iced::theme::Palette {
+    let background = theme.cosmic().background(false);
+    cosmic::iced::theme::Palette {
+        background: Color::from(background.base),
+        text: Color::from(background.on),
+        primary: accent_color(theme),
+        success: success_color(theme),
+        warning: warning_color(theme),
+        danger: destructive_color(theme),
+    }
+}
+
 pub(crate) fn warning_color(theme: &cosmic::Theme) -> Color {
     Color::from(theme.cosmic().warning.base)
 }

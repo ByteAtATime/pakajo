@@ -83,6 +83,7 @@ impl RepoData {
 pub struct AurData {
     pub num_votes: u64,
     pub popularity: f64,
+    pub package_base: String,
     pub submitted: Option<i64>,
     pub last_modified: Option<i64>,
     pub flagged: Option<i64>,
@@ -263,6 +264,7 @@ impl From<AurInfo> for Package {
             kind: PackageKind::Aur(AurData {
                 num_votes: info.num_votes,
                 popularity: info.popularity,
+                package_base: info.package_base,
                 submitted: normalized_epoch(info.first_submitted),
                 last_modified: normalized_epoch(info.last_modified),
                 flagged: info.out_of_date.and_then(normalized_epoch),
@@ -457,6 +459,7 @@ mod tests {
         };
         assert_eq!(data.num_votes, 10);
         assert_eq!(data.popularity, 5.0);
+        assert_eq!(data.package_base, "foo");
         assert_eq!(pkg.upstream_url.as_deref(), Some("https://example.com"));
         assert_eq!(pkg.dependencies, vec!["libc"]);
         assert_eq!(pkg.licenses, vec!["MIT"]);

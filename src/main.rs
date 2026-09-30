@@ -294,6 +294,7 @@ impl PakajoApp {
             &self.detail.selected_optdeps,
             self.tx.is_active(),
             self.detail.optdep_hover.as_deref(),
+            &self.detail.comments,
         );
         self.search.view(self.dashboard.snapshot.as_ref(), detail)
     }
