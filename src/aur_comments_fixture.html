@@ -1,0 +1,161 @@
+<div class="comments package-comments">
+        <div class="comments-header">
+            <h3>
+                <span class="text">Pinned Comments</span>
+                <span class="arrow"></span>
+            </h3>
+        </div>
+        
+            
+
+
+
+
+
+
+
+	<h4 id="comment-910450" class="comment-header">
+		
+		
+		gromit commented on <a href="#comment-910450" class="date">2023-04-15 08:22 (UTC)</a>
+		
+			
+			<span class="edited">
+				(edited on 2023-05-08 21:42 (UTC) by <a href="/account/gromit">gromit</a>)
+			</span>
+        
+
+        
+
+
+    
+
+    
+
+    
+
+    </h4>
+
+    
+
+
+
+<div id="comment-910450-content" class="article-content">
+    <div>
+        
+            <p>When reporting this package as outdated make sure there is indeed a new version for Linux Desktop. You can have a look at the <a href="https://chromereleases.googleblog.com/search/label/Stable%20updates">"Stable updates" tag in Release blog</a> for this.</p>
+<p>You can also run this command to obtain the version string for the latest chrome version:</p>
+<pre><code>$ curl -sSf https://dl.google.com/linux/chrome/deb/dists/stable/main/binary-amd64/Packages | \
+     grep -A1 &quot;Package: google-chrome-stable&quot; | \
+     awk '/Version/{print $2}' | \
+     cut -d '-' -f1
+</code></pre>
+<p>Do <strong>not</strong> report updates for ChromeOS, Android or other platforms stable versions as updates here.</p>
+        
+    </div>
+</div>
+
+
+        
+    </div>
+
+
+
+    <div class="comments package-comments">
+        <div class="comments-header">
+            <h3>
+                <span class="text">Latest Comments</span>
+                <span class="arrow"></span>
+            </h3>
+            
+            
+
+            
+            <p class="comments-header-nav">
+                  <span class="page">1</span>&nbsp<a class="page" href="?PP=250&O=250">2</a>&nbsp<a class="page" href="?PP=250&O=500">3</a>&nbsp<a class="page" href="?PP=250&O=750">4</a>&nbsp<a class="page" href="?PP=250&O=1000">5</a>&nbsp<a class="page" href="?PP=250&O=1250">6</a>&nbsp<a class="page" href="?PP=250&O=1500">7</a> <a class="page" href="?PP=250&O=250">Next ›</a> <a class="page" href="?PP=250&O=1500">Last »</a>
+            </p>
+            
+        </div>
+        
+            
+
+
+
+
+
+
+
+	<h4 id="comment-1086183" class="comment-header">
+		
+		
+		tioguda commented on <a href="#comment-1086183" class="date">2026-09-23 09:29 (UTC)</a>
+		
+			
+			<span class="edited">
+				(edited on 2026-09-27 19:15 (UTC) by <a href="/account/tioguda">tioguda</a>)
+			</span>
+        
+
+        
+
+
+    
+
+    
+
+    
+
+    </h4>
+
+    
+
+
+
+<div id="comment-1086183-content" class="article-content">
+    <div>
+        
+            <p>@ZappyBoy comment out the <code>gtk-modules</code> line in the file specified <a href="https://support.google.com/chrome/thread/462198462?hl=en&amp;msgid=466341177">here</a>, this will fix your problem.</p>
+<p>Edit: Actually, <code>appmenu-gtk-module-git</code> fixes the gtk-modules issues.</p>
+        
+    </div>
+</div>
+
+
+        
+            
+
+
+
+
+
+
+
+	<h4 id="comment-1086171" class="comment-header">
+		
+		
+		gromit commented on <a href="#comment-1086171" class="date">2026-09-23 08:45 (UTC)</a>
+		
+
+        
+
+
+    
+
+    
+
+    
+
+    </h4>
+
+    
+
+
+
+<div id="comment-1086171-content" class="article-content">
+    <div>
+        
+            <p>@ZappyBoy it does not crash on my machine :o</p>
+        
+    </div>
+</div>
+</div>

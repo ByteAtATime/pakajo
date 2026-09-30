@@ -6,6 +6,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::color::strip_controls;
 
 const AUR_RPC_URL: &str = "https://aur.archlinux.org/rpc/v5";
+const AUR_WEB_URL: &str = "https://aur.archlinux.org";
+const COMMENTS_PER_PAGE: usize = 250;
+const MAX_COMMENT_PAGES: usize = 40;
 const MAX_BATCH: usize = 200;
 
 fn de_text<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
@@ -77,6 +80,118 @@ pub struct AurInfo {
     pub co_maintainers: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AurComment {
+    pub author: String,
+    pub posted: String,
+    pub body: String,
+    pub pinned: bool,
+}
+
+fn clean_header_text(raw: &str) -> String {
+    let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    strip_controls(&normalized).into_owned()
+}
+
+fn comment_author(header: scraper::ElementRef<'_>, date_selector: &scraper::Selector) -> String {
+    let full = header.text().collect::<String>();
+    if let Some((author, _)) = full.split_once(" commented on ") {
+        return clean_header_text(author);
+    }
+    if let Some(link) = header.select(date_selector).next() {
+        return clean_header_text(&link.text().collect::<String>());
+    }
+    clean_header_text(&full)
+}
+
+fn comment_posted(header: scraper::ElementRef<'_>, date_selector: &scraper::Selector) -> String {
+    if let Some(link) = header.select(date_selector).next() {
+        return clean_header_text(&link.text().collect::<String>());
+    }
+    let full = header.text().collect::<String>();
+    if let Some((_, posted)) = full.split_once(" on ") {
+        return clean_header_text(posted);
+    }
+    String::new()
+}
+
+fn comment_body(body: scraper::ElementRef<'_>, block_selector: &scraper::Selector) -> String {
+    let blocks: Vec<String> = body
+        .select(block_selector)
+        .map(|block| block.text().collect::<String>())
+        .collect();
+    let raw = if blocks.is_empty() {
+        body.text().collect::<String>()
+    } else {
+        blocks.join("\n")
+    };
+    let mut lines = Vec::new();
+    let mut blank = false;
+    for line in raw.lines() {
+        let trimmed = strip_controls(line.trim()).into_owned();
+        if trimmed.is_empty() {
+            if !lines.is_empty() && !blank {
+                lines.push(String::new());
+            }
+            blank = true;
+        } else {
+            lines.push(trimmed);
+            blank = false;
+        }
+    }
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+pub fn parse_comments(html: &str) -> Vec<AurComment> {
+    let Ok(section_selector) = scraper::Selector::parse("div.comments.package-comments") else {
+        return Vec::new();
+    };
+    let Ok(heading_selector) = scraper::Selector::parse("h3 span.text") else {
+        return Vec::new();
+    };
+    let Ok(header_selector) = scraper::Selector::parse("h4.comment-header") else {
+        return Vec::new();
+    };
+    let Ok(body_selector) = scraper::Selector::parse("div.article-content") else {
+        return Vec::new();
+    };
+    let Ok(date_selector) = scraper::Selector::parse("a.date") else {
+        return Vec::new();
+    };
+    let Ok(block_selector) = scraper::Selector::parse("p, pre, li, blockquote") else {
+        return Vec::new();
+    };
+    let document = scraper::Html::parse_document(html);
+    let mut comments = Vec::new();
+    for section in document.select(&section_selector) {
+        let pinned = section
+            .select(&heading_selector)
+            .next()
+            .is_some_and(|heading| {
+                heading
+                    .text()
+                    .collect::<String>()
+                    .trim_start()
+                    .starts_with("Pinned")
+            });
+        let headers: Vec<_> = section.select(&header_selector).collect();
+        let bodies: Vec<_> = section.select(&body_selector).collect();
+        debug_assert_eq!(headers.len(), bodies.len());
+        for (header, body) in headers.into_iter().zip(bodies) {
+            comments.push(AurComment {
+                author: comment_author(header, &date_selector),
+                posted: comment_posted(header, &date_selector),
+                body: comment_body(body, &block_selector),
+                pinned,
+            });
+        }
+    }
+    comments
+}
+
 pub struct AurClient {
     agent: ureq::Agent,
 }
@@ -134,6 +249,49 @@ impl AurClient {
 
     pub(crate) fn search_by(&self, name: &str, by: &str) -> anyhow::Result<Vec<AurInfo>> {
         self.rpc_search(&self.agent, name, by)
+    }
+
+    pub fn comments(&self, package_base: &str) -> anyhow::Result<Vec<AurComment>> {
+        if package_base.is_empty()
+            || package_base
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '/' | '?' | '#'))
+        {
+            anyhow::bail!("invalid package base: {package_base}");
+        }
+        let mut all = Vec::new();
+        for page in 0..MAX_COMMENT_PAGES {
+            let offset = page * COMMENTS_PER_PAGE;
+            let url =
+                format!("{AUR_WEB_URL}/packages/{package_base}?PP={COMMENTS_PER_PAGE}&O={offset}");
+            let mut response = self
+                .agent
+                .get(&url)
+                .call()
+                .with_context(|| format!("failed to fetch comments for {package_base}"))?;
+            let html = response
+                .body_mut()
+                .read_to_string()
+                .with_context(|| format!("failed to fetch comments for {package_base}"))?;
+            let parsed = parse_comments(&html);
+            if parsed.is_empty() {
+                break;
+            }
+            let fresh = if page == 0 {
+                parsed.len()
+            } else {
+                parsed.iter().filter(|comment| !comment.pinned).count()
+            };
+            if page == 0 {
+                all.extend(parsed);
+            } else {
+                all.extend(parsed.into_iter().filter(|comment| !comment.pinned));
+            }
+            if fresh < COMMENTS_PER_PAGE {
+                break;
+            }
+        }
+        Ok(all)
     }
 }
 
@@ -242,6 +400,94 @@ mod tests {
         let pkg = &parsed.results[0];
         assert_eq!(pkg.name, "google-chrome");
         assert_eq!(pkg.submitter, None);
+    }
+
+    #[test]
+    fn parses_comment_fixture() {
+        let html = include_str!("aur_comments_fixture.html");
+        let comments = parse_comments(html);
+        assert_eq!(comments.len(), 3);
+
+        assert_eq!(comments[0].author, "gromit");
+        assert_eq!(comments[0].posted, "2023-04-15 08:22 (UTC)");
+        assert!(comments[0].pinned);
+        assert_eq!(
+            comments[0].body,
+            "When reporting this package as outdated make sure there is indeed a new version for Linux Desktop. You can have a look at the \"Stable updates\" tag in Release blog for this.\nYou can also run this command to obtain the version string for the latest chrome version:\n$ curl -sSf https://dl.google.com/linux/chrome/deb/dists/stable/main/binary-amd64/Packages | \\\ngrep -A1 \"Package: google-chrome-stable\" | \\\nawk '/Version/{print $2}' | \\\ncut -d '-' -f1\n\nDo not report updates for ChromeOS, Android or other platforms stable versions as updates here."
+        );
+
+        assert_eq!(comments[1].author, "tioguda");
+        assert_eq!(comments[1].posted, "2026-09-23 09:29 (UTC)");
+        assert!(!comments[1].pinned);
+        assert_eq!(
+            comments[1].body,
+            "@ZappyBoy comment out the gtk-modules line in the file specified here, this will fix your problem.\nEdit: Actually, appmenu-gtk-module-git fixes the gtk-modules issues."
+        );
+
+        assert_eq!(comments[2].author, "gromit");
+        assert_eq!(comments[2].posted, "2026-09-23 08:45 (UTC)");
+        assert!(!comments[2].pinned);
+        assert_eq!(
+            comments[2].body,
+            "@ZappyBoy it does not crash on my machine :o"
+        );
+    }
+
+    #[test]
+    fn parse_comments_empty_page() {
+        let html = "<html><body><div><p>package not found</p></div></body></html>";
+        assert_eq!(parse_comments(html), Vec::new());
+    }
+
+    #[test]
+    fn comment_body_strips_terminal_escapes() {
+        let hostile = "\u{1b}]52;c;QVRUQUNL\u{7} hello \u{1b}[?25l world";
+        assert!(drives_terminal(hostile));
+        let html = format!(
+            "<div class=\"comments package-comments\"><div class=\"comments-header\"><h3><span class=\"text\">Latest Comments</span></h3></div><h4 class=\"comment-header\">alice commented on <a class=\"date\">2026-01-02 03:04 (UTC)</a></h4><div class=\"article-content\"><div><p>{hostile}</p></div></div></div>"
+        );
+        let comments = parse_comments(&html);
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].author, "alice");
+        assert!(!comments[0].pinned);
+        assert_eq!(comments[0].body, "]52;c;QVRUQUNL hello [?25l world");
+        assert!(!drives_terminal(&comments[0].body));
+    }
+
+    #[test]
+    fn comment_header_strips_terminal_escapes() {
+        let hostile_author = "\u{1b}[8mHIDDEN\u{1b}[28m mallory";
+        let hostile_date = "2026-01-02 03:04 \u{1b}]52;c;QVRUQUNL\u{7}(UTC)";
+        assert!(drives_terminal(hostile_author));
+        assert!(drives_terminal(hostile_date));
+        let html = format!(
+            "<div class=\"comments package-comments\"><div class=\"comments-header\"><h3><span class=\"text\">Latest Comments</span></h3></div><h4 class=\"comment-header\">{hostile_author} commented on <a class=\"date\">{hostile_date}</a></h4><div class=\"article-content\"><div><p>hi</p></div></div></div>"
+        );
+        let comments = parse_comments(&html);
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].author, "[8mHIDDEN[28m mallory");
+        assert_eq!(comments[0].posted, "2026-01-02 03:04 ]52;c;QVRUQUNL(UTC)");
+        assert!(!drives_terminal(&comments[0].author));
+        assert!(!drives_terminal(&comments[0].posted));
+    }
+
+    #[test]
+    fn comments_rejects_invalid_package_base() {
+        let client = AurClient::new();
+        for base in ["", "foo/bar", "foo?x=1", "foo#frag", "foo\u{7}bar"] {
+            assert!(client.comments(base).is_err(), "accepted: {base:?}");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn live_comments() {
+        let client = AurClient::new();
+        let comments = client
+            .comments("google-chrome")
+            .expect("AUR comments should succeed");
+        assert!(!comments.is_empty());
+        assert!(comments.iter().all(|c| !c.author.is_empty()));
     }
 
     #[test]

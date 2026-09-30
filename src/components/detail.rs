@@ -978,11 +978,12 @@ impl DetailPane {
                             let (otx, orx) = futures::channel::oneshot::channel();
                             let name_net = name.clone();
                             let index_net = db.clone();
+                            let fetch_client = aur_client.clone();
                             std::thread::spawn(move || {
                                 if had_cache {
                                     std::thread::sleep(DETAIL_DEBOUNCE);
                                 }
-                                let fetched = aur_client.info(&name_net);
+                                let fetched = fetch_client.info(&name_net);
                                 if let Ok(Some(ref info)) = fetched
                                     && let Some(index) = index_net.as_ref()
                                     && let Err(e) = index.put_detail(info)
@@ -997,6 +998,19 @@ impl DetailPane {
                             };
                             match fetched {
                                 Ok(Some(info)) => {
+                                    let base = info.package_base.clone();
+                                    let comments_client = aur_client.clone();
+                                    std::thread::spawn(move || {
+                                        match comments_client.comments(&base) {
+                                            Ok(comments) => eprintln!(
+                                                "[pakajo] {} comments fetched for {base}",
+                                                comments.len()
+                                            ),
+                                            Err(e) => eprintln!(
+                                                "[pakajo] comments fetch failed for {base}: {e:#}"
+                                            ),
+                                        }
+                                    });
                                     let _ = tx
                                         .send(
                                             crate::Message::Detail(DetailMessage::DetailReady {
