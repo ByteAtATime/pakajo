@@ -140,7 +140,7 @@ impl Step {
 
     fn body(&self) -> &'static str {
         match self {
-            Step::Welcome => "something something package manager gui",
+            Step::Welcome => "A simple, modern package manager for Arch Linux.",
             Step::Safety => "aur scawy [fear]",
             Step::Setup => "some setting here or smth",
         }
