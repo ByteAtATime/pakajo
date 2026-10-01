@@ -40,6 +40,7 @@ libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "dc1cf9f00cbe29
 syntect = "5"
 two-face = { version = "0.4", default-features = false, features = ["syntect-default-fancy"] }
 toml = "0.9"
+toml_edit = "0.25"
 pakajo-search = { path = "crates/search" }
 htmd = "0.5"
 

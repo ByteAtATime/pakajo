@@ -11,6 +11,7 @@ pub struct Config {
     pub cli: CliConfig,
     pub aur: AurConfig,
     pub build: BuildConfig,
+    pub gui: GuiConfig,
 }
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -24,6 +25,13 @@ pub struct CliConfig {
 #[serde(default)]
 pub struct AurConfig {
     pub skip_review: bool,
+}
+
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GuiConfig {
+    #[serde(default)]
+    pub onboarded: bool,
 }
 
 fn default_keep_cache() -> bool {
@@ -50,6 +58,7 @@ fn allowed_keys(section: &str) -> Option<&'static [&'static str]> {
         "cli" => Some(&["pager"]),
         "aur" => Some(&["skip_review"]),
         "build" => Some(&["keep_cache"]),
+        "gui" => Some(&["onboarded"]),
         _ => None,
     }
 }
@@ -133,6 +142,36 @@ pub fn load_or_create() -> anyhow::Result<Config> {
         }
     };
     load_or_create_at(&path)
+}
+
+pub fn complete_onboarding_at(path: &Path, keep_cache: Option<bool>) -> anyhow::Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => TEMPLATE.to_string(),
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    let mut doc = text
+        .parse::<toml_edit::DocumentMut>()
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    parse_config(&text).with_context(|| format!("failed to parse {}", path.display()))?;
+    doc["gui"]["onboarded"] = toml_edit::value(true);
+    if let Some(v) = keep_cache {
+        doc["build"]["keep_cache"] = toml_edit::value(v);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+    }
+    std::fs::write(path, doc.to_string())
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+pub fn complete_onboarding(keep_cache: Option<bool>) -> anyhow::Result<()> {
+    let path = config_path().with_context(|| "cannot determine config location")?;
+    complete_onboarding_at(&path, keep_cache)
 }
 
 #[cfg(test)]
@@ -277,6 +316,113 @@ mod tests {
         std::fs::write(&path, body).expect("write");
         let config = load_or_create_at(&path).expect("parses");
         assert_eq!(config.cli.pager, "most");
+        let after = std::fs::read_to_string(&path).expect("read back");
+        assert_eq!(after, body);
+    }
+
+    #[test]
+    fn gui_onboarded_parses_with_default_false() {
+        let (config, warnings) = parse_config("[gui]\nonboarded = true\n").expect("parses");
+        assert!(config.gui.onboarded);
+        assert!(warnings.is_empty());
+        let (config, warnings) = parse_config("").expect("empty parses");
+        assert!(!config.gui.onboarded);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn complete_onboarding_preserves_comments_and_unknown_sections() {
+        let root = TempDir(std::env::temp_dir().join(format!(
+            "pakajo-config-onboard-preserve-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        )));
+        std::fs::create_dir_all(&root.0).expect("mkdir");
+        let path = root.0.join("config.toml");
+        let body = "# keep this comment\n[aur]\nskip_review = true\n[mystery]\nfoo = 1\n";
+        std::fs::write(&path, body).expect("write");
+        complete_onboarding_at(&path, None).expect("completes");
+        let after = std::fs::read_to_string(&path).expect("read back");
+        assert!(after.contains("onboarded = true"));
+        assert!(after.contains("# keep this comment"));
+        assert!(after.contains("mystery"));
+        let (config, _) = parse_config(&after).expect("reparses");
+        assert!(config.gui.onboarded);
+        assert!(config.aur.skip_review);
+    }
+
+    #[test]
+    fn complete_onboarding_writes_keep_cache() {
+        let root = TempDir(std::env::temp_dir().join(format!(
+            "pakajo-config-onboard-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        )));
+        std::fs::create_dir_all(&root.0).expect("mkdir");
+        let path = root.0.join("config.toml");
+        std::fs::write(&path, "[build]\nkeep_cache = true\n").expect("write");
+        complete_onboarding_at(&path, Some(false)).expect("completes");
+        let after = std::fs::read_to_string(&path).expect("read back");
+        assert!(after.contains("keep_cache = false"));
+        assert!(after.contains("onboarded = true"));
+    }
+
+    #[test]
+    fn complete_onboarding_without_keep_cache_leaves_build_untouched() {
+        let root = TempDir(std::env::temp_dir().join(format!(
+            "pakajo-config-onboard-nocache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        )));
+        std::fs::create_dir_all(&root.0).expect("mkdir");
+        let path = root.0.join("config.toml");
+        std::fs::write(&path, "[build]\nkeep_cache = true\n").expect("write");
+        complete_onboarding_at(&path, None).expect("completes");
+        let after = std::fs::read_to_string(&path).expect("read back");
+        assert!(after.contains("keep_cache = true"));
+    }
+
+    #[test]
+    fn complete_onboarding_missing_file_writes_template() {
+        let root = TempDir(std::env::temp_dir().join(format!(
+            "pakajo-config-onboard-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        )));
+        let path = root.0.join("pakajo").join("config.toml");
+        complete_onboarding_at(&path, None).expect("completes");
+        let after = std::fs::read_to_string(&path).expect("read back");
+        assert!(after.contains("# Pager used when reviewing PKGBUILDs."));
+        assert!(after.contains("onboarded = true"));
+    }
+
+    #[test]
+    fn complete_onboarding_corrupt_file_errors_without_modifying() {
+        let root = TempDir(std::env::temp_dir().join(format!(
+            "pakajo-config-onboard-corrupt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        )));
+        std::fs::create_dir_all(&root.0).expect("mkdir");
+        let path = root.0.join("config.toml");
+        let body = "[cli]\npager = 3\n";
+        std::fs::write(&path, body).expect("write");
+        assert!(complete_onboarding_at(&path, None).is_err());
         let after = std::fs::read_to_string(&path).expect("read back");
         assert_eq!(after, body);
     }

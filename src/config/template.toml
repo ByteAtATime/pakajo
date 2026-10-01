@@ -11,3 +11,7 @@
 [build]
 # When false, AUR build files are cleaned after installing.
 # keep_cache = true
+
+[gui]
+# Set to true automatically after finishing the GUI onboarding wizard; set to false to see the onboarding again.
+# onboarded = true

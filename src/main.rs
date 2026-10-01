@@ -102,6 +102,17 @@ impl Application for PakajoApp {
         core.window.content_container = false;
         core.window.sharp_corners = true;
         core.window.use_template = false;
+        let onboarding_pending = pakajo::config::load_or_create()
+            .map(|config| !config.gui.onboarded)
+            .unwrap_or(false);
+        eprintln!(
+            "[pakajo] onboarding {}",
+            if onboarding_pending {
+                "pending"
+            } else {
+                "complete"
+            }
+        );
         let db = PackageDb::open_default()
             .map_err(|e| eprintln!("local index unavailable, falling back to live search: {e:#}"))
             .ok()
