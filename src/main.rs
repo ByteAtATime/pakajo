@@ -104,12 +104,12 @@ impl Application for PakajoApp {
         core.window.content_container = false;
         core.window.sharp_corners = true;
         core.window.use_template = false;
-        let onboarding = pakajo::config::load_or_create()
-            .ok()
-            .filter(|config| !config.gui.onboarded)
-            .map(|_| OnboardingPane {
+        let onboarding = match pakajo::config::load_or_create() {
+            Ok(config) if !config.gui.onboarded => Some(OnboardingPane {
                 step: Step::Welcome,
-            });
+            }),
+            _ => None,
+        };
         let db = PackageDb::open_default()
             .map_err(|e| eprintln!("local index unavailable, falling back to live search: {e:#}"))
             .ok()
@@ -182,7 +182,6 @@ impl Application for PakajoApp {
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
-        let focus = self.ensure_search_focus();
         let task = match message {
             Message::Search(m) => {
                 let active = self.page == Page::Search
@@ -227,16 +226,23 @@ impl Application for PakajoApp {
                 };
                 Task::batch([dashboard, updates])
             }
-            Message::Onboarding(m) => {
-                if matches!(m, OnboardingMessage::Finish) {
+            Message::Onboarding(m) => match m {
+                OnboardingMessage::Next | OnboardingMessage::Back => {
+                    if let Some(pane) = self.onboarding.as_mut() {
+                        pane.update(m);
+                    }
+                    Task::none()
+                }
+                OnboardingMessage::Skip | OnboardingMessage::Finish => {
                     if let Err(e) = pakajo::config::complete_onboarding(None) {
                         eprintln!("[pakajo] failed to complete onboarding: {e:#}");
                     }
                     self.onboarding = None;
+                    Task::none()
                 }
-                Task::none()
-            }
+            },
         };
+        let focus = self.ensure_search_focus();
         Task::batch([focus, task])
     }
 
@@ -277,10 +283,7 @@ impl Application for PakajoApp {
 
     fn view(&self) -> Element<'_> {
         if let Some(onboarding) = &self.onboarding {
-            return container(onboarding.view())
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into();
+            return onboarding.view();
         }
         let content: Element<'_> = if let Some(t) = self.tx.overlay() {
             container(t.view())
