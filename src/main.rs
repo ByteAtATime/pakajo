@@ -22,6 +22,7 @@ use background::begin_aur_sync_in_background;
 use components::dashboard::DashboardState;
 use components::detail::{DetailMessage, DetailPane, detail_view};
 use components::footer;
+use components::onboarding::{OnboardingMessage, OnboardingPane, Step};
 use components::search::{ListRect, SearchMessage, SearchPane, search_input_id};
 use components::sysupgrade::SysupgradeMessage;
 use components::transaction::{Action, TransactionMessage, TxPane};
@@ -81,6 +82,7 @@ pub struct PakajoApp {
     pub(crate) updates: UpdatesPane,
     pub(crate) page: Page,
     search_focus_pending: bool,
+    pub(crate) onboarding: Option<OnboardingPane>,
 }
 
 impl Application for PakajoApp {
@@ -102,17 +104,12 @@ impl Application for PakajoApp {
         core.window.content_container = false;
         core.window.sharp_corners = true;
         core.window.use_template = false;
-        let onboarding_pending = pakajo::config::load_or_create()
-            .map(|config| !config.gui.onboarded)
-            .unwrap_or(false);
-        eprintln!(
-            "[pakajo] onboarding {}",
-            if onboarding_pending {
-                "pending"
-            } else {
-                "complete"
-            }
-        );
+        let onboarding = pakajo::config::load_or_create()
+            .ok()
+            .filter(|config| !config.gui.onboarded)
+            .map(|_| OnboardingPane {
+                step: Step::Welcome,
+            });
         let db = PackageDb::open_default()
             .map_err(|e| eprintln!("local index unavailable, falling back to live search: {e:#}"))
             .ok()
@@ -166,6 +163,7 @@ impl Application for PakajoApp {
             updates: UpdatesPane::default(),
             page: Page::Search,
             search_focus_pending: true,
+            onboarding,
         };
         let task = app.updates.restore_cache();
         let groups_task = Task::perform(
@@ -187,7 +185,9 @@ impl Application for PakajoApp {
         let focus = self.ensure_search_focus();
         let task = match message {
             Message::Search(m) => {
-                let active = self.page == Page::Search && self.tx.overlay().is_none();
+                let active = self.page == Page::Search
+                    && self.tx.overlay().is_none()
+                    && self.onboarding.is_none();
                 self.search.update(m, &mut self.ctx, active)
             }
             Message::Dashboard(m) => self.dashboard.update(m, &mut self.ctx),
@@ -227,6 +227,15 @@ impl Application for PakajoApp {
                 };
                 Task::batch([dashboard, updates])
             }
+            Message::Onboarding(m) => {
+                if matches!(m, OnboardingMessage::Finish) {
+                    if let Err(e) = pakajo::config::complete_onboarding(None) {
+                        eprintln!("[pakajo] failed to complete onboarding: {e:#}");
+                    }
+                    self.onboarding = None;
+                }
+                Task::none()
+            }
         };
         Task::batch([focus, task])
     }
@@ -239,8 +248,10 @@ impl Application for PakajoApp {
         } else {
             Subscription::none()
         };
-        Subscription::batch([
-            event::listen_with(|event, _status, _id| match event {
+        let onboarding = self.onboarding.is_some();
+        let mut subs = Vec::new();
+        if !onboarding {
+            subs.push(event::listen_with(|event, _status, _id| match event {
                 Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) => match key {
                     keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
                         Some(Message::Search(SearchMessage::SelectDelta(-1)))
@@ -251,15 +262,26 @@ impl Application for PakajoApp {
                     _ => None,
                 },
                 _ => None,
-            }),
-            background::db_lock_watcher_subscription(),
-            rectangle_tracker::subscription::<ListRect, ListRect>(ListRect::Viewport)
-                .map(|(_, update)| Message::Search(SearchMessage::Rects(update))),
-            tick,
-        ])
+            }));
+        }
+        subs.push(background::db_lock_watcher_subscription());
+        if !onboarding {
+            subs.push(
+                rectangle_tracker::subscription::<ListRect, ListRect>(ListRect::Viewport)
+                    .map(|(_, update)| Message::Search(SearchMessage::Rects(update))),
+            );
+        }
+        subs.push(tick);
+        Subscription::batch(subs)
     }
 
     fn view(&self) -> Element<'_> {
+        if let Some(onboarding) = &self.onboarding {
+            return container(onboarding.view())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+        }
         let content: Element<'_> = if let Some(t) = self.tx.overlay() {
             container(t.view())
                 .width(Length::Fill)
@@ -369,6 +391,7 @@ impl PakajoApp {
         if !self.search_focus_pending
             || !matches!(self.page, Page::Search)
             || self.tx.overlay().is_some()
+            || self.onboarding.is_some()
         {
             return Task::none();
         }
@@ -390,6 +413,7 @@ pub enum Message {
     Updates(UpdatesMessage),
     Sysupgrade(SysupgradeMessage),
     Navigate(Page),
+    Onboarding(OnboardingMessage),
     OpenTransaction,
     OpenUrl(String),
     DbLockReleased,
