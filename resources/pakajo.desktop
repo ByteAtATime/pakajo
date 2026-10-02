@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Pakajo
+Comment=Search, install and update Arch Linux packages
+Exec=pakajo
+Terminal=false
+Categories=System;PackageManager;
+Keywords=arch;aur;pacman;package;install;update;
+Icon=com.pakajo.Pakajo
+StartupWMClass=com.pakajo.Pakajo
+SingleMainWindow=true
