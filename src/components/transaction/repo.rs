@@ -1,4 +1,5 @@
-use super::aur::{build_section, failure_note};
+use super::aur::build_section;
+use super::failure::failure_card;
 use super::finalize::finalize_section;
 use super::install::install_section;
 use super::resolve::prepare_section;
@@ -6,7 +7,6 @@ use super::shared::{counter_suffix, download_view, percent};
 use super::state::{StageState, TransactionModel, TransactionStatus};
 use super::stepper::{Section, sections_view};
 use crate::Element;
-use cosmic::widget::Column;
 use pakajo::progress::{AurStage, InstallKind, RepoStage, RepoState};
 
 pub(super) fn view(model: &TransactionModel) -> Element<'_> {
@@ -21,7 +21,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
     let mut sections = Vec::new();
     for (i, stage) in model.stages.iter().enumerate() {
         let state = model.stage_state(i);
-        let mut section = match *stage {
+        let section = match *stage {
             RepoStage::Validate => continue,
             RepoStage::Resolve => {
                 prepare_section(&model.repo_state, prepare_state(model)).with_toggle_index(1)
@@ -34,16 +34,6 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
                 finalize_section(&model.repo_state.finalize, state).with_toggle_index(i)
             }
         };
-        if section.state == StageState::Failed
-            && !model.build_owns_failure()
-            && let Some(message) = model.failure_message()
-        {
-            let note = failure_note(message);
-            section.content = Some(match section.content {
-                Some(existing) => Column::new().spacing(10).push(note).push(existing).into(),
-                None => note,
-            });
-        }
         let expanded = if *stage == RepoStage::Resolve {
             model.expanded.contains(&1)
         } else {
@@ -53,21 +43,15 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
     }
     if model.is_sysupgrade() && !model.aur.build_order.is_empty() {
         let build_index = model.stages.len();
-        let mut section = build_section(model, model.aur_stage_state(AurStage::Build))
+        let section = build_section(model, model.aur_stage_state(AurStage::Build))
             .with_toggle_index(build_index);
-        if section.state == StageState::Failed
-            && let Some(message) = model.failure_message()
-        {
-            let note = failure_note(message);
-            section.content = Some(match section.content {
-                Some(existing) => Column::new().spacing(10).push(note).push(existing).into(),
-                None => note,
-            });
-        }
         sections.push((section, model.expanded.contains(&build_index)));
     }
     let finished = matches!(model.status, TransactionStatus::Done(_));
-    sections_view(title, sections, finished, model.is_sysupgrade())
+    let failure = model
+        .failure()
+        .map(|failure| failure_card(&model.name, model.kind, failure));
+    sections_view(title, failure, sections, finished, model.is_sysupgrade())
 }
 
 fn prepare_state(model: &TransactionModel) -> StageState {

@@ -25,6 +25,10 @@ mod state;
 
 pub(crate) use state::{FailureKind, TransactionModel, TransactionStatus};
 
+mod failure;
+
+use failure::failure_report;
+
 mod stepper;
 
 mod aur;
@@ -87,6 +91,7 @@ pub enum TransactionMessage {
     CancelRemoval,
     AnswerChannel(AnswerWriter),
     AnswerImportKey(bool),
+    CopyFailureReport,
     Close,
 }
 
@@ -563,6 +568,12 @@ impl Transaction {
                 self.model.answer_import_key(yes);
                 Action::None
             }
+            TransactionMessage::CopyFailureReport => match self.model.failure() {
+                Some(failure) => {
+                    Action::Run(cosmic::iced::clipboard::write(failure_report(failure)))
+                }
+                None => Action::None,
+            },
             TransactionMessage::Close => {
                 if self.model.is_sysupgrade() {
                     Action::Finished
@@ -1186,7 +1197,9 @@ mod tests {
         assert!(
             transaction
                 .model
-                .failure_message()
+                .failure()
+                .map(failure_report)
+                .as_deref()
                 .is_some_and(|message| message.contains("review did not stabilize"))
         );
         let review = transaction
@@ -1213,11 +1226,32 @@ mod tests {
             ),
         ))));
         assert_eq!(
-            transaction.model.failure_message(),
+            transaction.model.failure().map(failure_report).as_deref(),
             Some(
                 "error: failed to prepare transaction (could not satisfy dependencies)\n:: removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin"
             )
         );
+    }
+
+    #[test]
+    fn copy_failure_report_without_failure_is_noop() {
+        let mut transaction = new_transaction(InstallKind::Install);
+        assert!(matches!(
+            transaction.update(TransactionMessage::CopyFailureReport),
+            Action::None
+        ));
+    }
+
+    #[test]
+    fn copy_failure_report_with_failure_issues_clipboard_task() {
+        let mut transaction = new_transaction(InstallKind::Install);
+        transaction
+            .model
+            .set_failure(state::FailureKind::Message("makepkg failed".to_string()));
+        assert!(matches!(
+            transaction.update(TransactionMessage::CopyFailureReport),
+            Action::Run(_)
+        ));
     }
 
     #[test]
@@ -1226,7 +1260,10 @@ mod tests {
         transaction.update(TransactionMessage::Explored(Err(ReviewError::Other(
             REVIEW_LOOP_ENDED.to_string(),
         ))));
-        assert_eq!(transaction.model.failure_message(), Some(REVIEW_LOOP_ENDED));
+        assert_eq!(
+            transaction.model.failure().map(failure_report).as_deref(),
+            Some(REVIEW_LOOP_ENDED)
+        );
         let review = transaction
             .model
             .install_review

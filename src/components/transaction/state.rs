@@ -65,7 +65,6 @@ pub(crate) enum StageState {
 #[derive(Clone, Debug)]
 pub(crate) struct TransactionFailure {
     pub(crate) kind: FailureKind,
-    report: String,
 }
 
 #[derive(Clone, Debug)]
@@ -147,20 +146,12 @@ impl TransactionModel {
         let incoming = kind.rank();
         let current = self.failure.as_ref().map_or(0, |f| f.kind.rank());
         if incoming > current {
-            let report = match &kind {
-                FailureKind::Prepare { reason, details } => {
-                    pakajo::tx::convert::PrepareFailure::new(reason.clone(), details.clone())
-                        .report(false)
-                }
-                FailureKind::Question { key, reason } => format!("{key:?}: {reason}"),
-                FailureKind::Message(message) => message.clone(),
-            };
-            self.failure = Some(TransactionFailure { kind, report });
+            self.failure = Some(TransactionFailure { kind });
         }
     }
 
-    pub(crate) fn failure_message(&self) -> Option<&str> {
-        self.failure.as_ref().map(|failure| failure.report.as_str())
+    pub(crate) fn failure(&self) -> Option<&FailureKind> {
+        self.failure.as_ref().map(|failure| &failure.kind)
     }
 
     pub(crate) fn apply_event(&mut self, ev: &InstallEvent) {
@@ -544,6 +535,7 @@ fn install_fraction(state: &InstallState, expected: usize) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::failure::failure_report;
     use super::*;
     use pakajo::events::{DownloadResult, LogLevel, PackageOp, ProgressPhase};
     use pakajo::question::model::QuestionKey;
@@ -726,7 +718,10 @@ mod tests {
         model.apply_event(&cloning("yay"));
         model.apply_event(&build_started("yay"));
         model.finish(ChildOutcome::Failed("makepkg failed".to_string()));
-        assert_eq!(model.failure_message(), Some("makepkg failed"));
+        assert_eq!(
+            model.failure().map(failure_report).as_deref(),
+            Some("makepkg failed")
+        );
         assert_state(&model, AurStage::Resolve, StageState::Done);
         assert_state(&model, AurStage::Build, StageState::Failed);
         assert_state(&model, AurStage::Install, StageState::Pending);
@@ -756,7 +751,10 @@ mod tests {
         model.apply_event(&cloning("bar"));
         model.apply_event(&build_started("bar"));
         model.finish(ChildOutcome::Failed("makepkg failed".to_string()));
-        assert_eq!(model.failure_message(), Some("makepkg failed"));
+        assert_eq!(
+            model.failure().map(failure_report).as_deref(),
+            Some("makepkg failed")
+        );
         assert_eq!(model.stage_state(4), StageState::Done);
         assert_state(&model, AurStage::Build, StageState::Failed);
         assert!(model.build_owns_failure());
@@ -855,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn fail_closed_event_records_failure_note() {
+    fn fail_closed_event_records_question_failure() {
         let mut model = TransactionModel::new(
             "firefox".to_string(),
             PackageSource::Repo,
@@ -865,9 +863,15 @@ mod tests {
             key: QuestionKey::Proceed,
             reason: "denied in test".to_string(),
         });
-        assert_eq!(model.failure_message(), Some("Proceed: denied in test"));
+        assert_eq!(
+            model.failure().map(failure_report).as_deref(),
+            Some("Proceed with transaction: denied in test")
+        );
         model.finish(ChildOutcome::Failed("install failed".to_string()));
-        assert_eq!(model.failure_message(), Some("Proceed: denied in test"));
+        assert_eq!(
+            model.failure().map(failure_report).as_deref(),
+            Some("Proceed with transaction: denied in test")
+        );
     }
 
     fn fresh_model() -> TransactionModel {
@@ -905,7 +909,7 @@ mod tests {
         for kind in [message_kind(), question_kind(), prepare_kind()] {
             let mut model = fresh_model();
             model.set_failure(kind);
-            assert!(model.failure_message().is_some());
+            assert!(model.failure().map(failure_report).as_deref().is_some());
         }
     }
 
@@ -916,7 +920,9 @@ mod tests {
         model.set_failure(prepare_kind());
         assert!(
             model
-                .failure_message()
+                .failure()
+                .map(failure_report)
+                .as_deref()
                 .is_some_and(|message| message.contains("failed to prepare transaction"))
         );
     }
@@ -925,9 +931,20 @@ mod tests {
     fn prepare_then_question_stays() {
         let mut model = fresh_model();
         model.set_failure(prepare_kind());
-        let before = model.failure_message().map(str::to_owned);
+        let before = model
+            .failure()
+            .map(failure_report)
+            .as_deref()
+            .map(str::to_owned);
         model.set_failure(question_kind());
-        assert_eq!(model.failure_message().map(str::to_owned), before);
+        assert_eq!(
+            model
+                .failure()
+                .map(failure_report)
+                .as_deref()
+                .map(str::to_owned),
+            before
+        );
     }
 
     #[test]
@@ -935,7 +952,10 @@ mod tests {
         let mut model = fresh_model();
         model.set_failure(message_kind());
         model.set_failure(question_kind());
-        assert_eq!(model.failure_message(), Some("Proceed: denied in test"));
+        assert_eq!(
+            model.failure().map(failure_report).as_deref(),
+            Some("Proceed with transaction: denied in test")
+        );
     }
 
     #[test]
@@ -943,7 +963,10 @@ mod tests {
         let mut model = fresh_model();
         model.set_failure(question_kind());
         model.set_failure(message_kind());
-        assert_eq!(model.failure_message(), Some("Proceed: denied in test"));
+        assert_eq!(
+            model.failure().map(failure_report).as_deref(),
+            Some("Proceed with transaction: denied in test")
+        );
     }
 
     #[test]
@@ -951,7 +974,10 @@ mod tests {
         let mut model = fresh_model();
         model.set_failure(message_kind());
         model.set_failure(FailureKind::Message("later message".to_string()));
-        assert_eq!(model.failure_message(), Some("plain message"));
+        assert_eq!(
+            model.failure().map(failure_report).as_deref(),
+            Some("plain message")
+        );
     }
 
     fn test_writer() -> AnswerWriter {

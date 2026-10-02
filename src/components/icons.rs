@@ -51,3 +51,5 @@ icon!(chevron_right, "chevron-right.svg");
 icon!(x, "x.svg");
 icon!(search, "search.svg");
 icon!(download, "download.svg");
+icon!(copy, "copy.svg");
+icon!(package, "package.svg");

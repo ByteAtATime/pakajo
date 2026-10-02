@@ -11,11 +11,12 @@ use pakajo::progress::{
 use pakajo::utils::format_elapsed;
 
 use super::TransactionMessage;
+use super::failure::failure_card;
 use super::finalize::{finalize_log, finalize_section};
 use super::install::{install_section, install_view};
 use super::shared::{
-    ResolvedEntry, counter_suffix, destructive_color, download_view, mono_text, muted, percent,
-    resolve_empty_view, resolve_package_row, single_summary, summary_text, tinted,
+    ResolvedEntry, counter_suffix, download_view, mono_text, muted, percent, resolve_empty_view,
+    resolve_package_row, single_summary, summary_text,
 };
 use super::state::{StageState, TransactionModel, TransactionStatus};
 use super::stepper::{Section, sections_view, toggle_button};
@@ -45,27 +46,21 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
                 _ => {}
             }
         }
-        let mut section = match *stage {
+        let section = match *stage {
             AurStage::Deps => deps_section(model, state),
             AurStage::Resolve => resolve_section(model, state),
             AurStage::Build => build_section(model, state),
             AurStage::Install => aur_install_section(model, state),
             AurStage::Finalize => finalize_section(&model.aur.finalize, state),
         };
-        if state == StageState::Failed
-            && let Some(message) = model.failure_message()
-        {
-            let note = failure_note(message);
-            section.content = Some(match section.content {
-                Some(existing) => Column::new().spacing(10).push(note).push(existing).into(),
-                None => note,
-            });
-        }
         let section = section.with_toggle_index(i);
         sections.push((section, model.expanded.contains(&i)));
     }
     let finished = matches!(model.status, TransactionStatus::Done(_));
-    sections_view(title, sections, finished, model.is_sysupgrade())
+    let failure = model
+        .failure()
+        .map(|failure| failure_card(&model.name, model.kind, failure));
+    sections_view(title, failure, sections, finished, model.is_sysupgrade())
 }
 
 fn resolve_section(model: &TransactionModel, state: StageState) -> Section<'_> {
@@ -347,8 +342,4 @@ fn aur_install_section(model: &TransactionModel, state: StageState) -> Section<'
         section.content = Some(install_view(&model.aur.install, false));
     }
     section
-}
-
-pub(super) fn failure_note(message: &str) -> Element<'static> {
-    tinted(text::monotext(message.to_string()), destructive_color)
 }

@@ -23,14 +23,14 @@ pub(super) fn close_button() -> Element<'static> {
         .class(cosmic::theme::Button::Custom {
             active: Box::new(|_, _| button::Style::new()),
             disabled: Box::new(|_| button::Style::new()),
-            hovered: Box::new(|_, theme| close_button_style(theme, false)),
-            pressed: Box::new(|_, theme| close_button_style(theme, true)),
+            hovered: Box::new(|_, theme| ghost_icon_style(theme, false)),
+            pressed: Box::new(|_, theme| ghost_icon_style(theme, true)),
         })
         .on_press(crate::Message::Transaction(TransactionMessage::Close))
         .into()
 }
 
-fn close_button_style(theme: &cosmic::Theme, pressed: bool) -> button::Style {
+pub(super) fn ghost_icon_style(theme: &cosmic::Theme, pressed: bool) -> button::Style {
     let component = &theme.cosmic().background(false).component;
     let tint = if pressed {
         component.pressed
@@ -73,15 +73,20 @@ impl<'a> Section<'a> {
     }
 }
 
-pub(super) fn sections_view(
+pub(super) fn sections_view<'a>(
     title: String,
-    sections: Vec<(Section<'_>, bool)>,
+    failure: Option<Element<'a>>,
+    sections: Vec<(Section<'a>, bool)>,
     finished: bool,
     is_sysupgrade: bool,
-) -> Element<'_> {
+) -> Element<'a> {
     let count = sections.len();
     let states: Vec<StageState> = sections.iter().map(|(s, _)| s.state).collect();
-    let mut panels = Column::new();
+    let has_failure = failure.is_some();
+    let mut panels = Column::new().push_maybe(failure);
+    if has_failure {
+        panels = panels.push(space::vertical().height(24.0));
+    }
     for (i, (section, expanded)) in sections.into_iter().enumerate() {
         let prev_state = if i > 0 { Some(states[i - 1]) } else { None };
         let toggle_index = section.toggle_index;
