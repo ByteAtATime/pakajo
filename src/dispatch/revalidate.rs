@@ -1,5 +1,6 @@
 use std::sync::mpsc::{Receiver, Sender};
 
+use crate::dispatch::ReviewError;
 use crate::dispatch::install::{InstallRequest, run_install_preview, run_install_preview_with};
 use crate::dispatch::remove::run_remove_preview;
 use crate::dispatch::sysupgrade::upgrade_review;
@@ -45,7 +46,7 @@ fn upgrade_run(
     assessed: crate::dispatch::sysupgrade::UpgradeReview,
     origin: ReviewOrigin,
     source: &dyn crate::question::source::AnswerSource,
-) -> anyhow::Result<RevalidationRun> {
+) -> Result<RevalidationRun, ReviewError> {
     let answers = derive_answers(&assessed.review.part1, source)?;
     Ok(RevalidationRun {
         origin,
@@ -60,7 +61,7 @@ pub fn run_step(
     handle: &mut alpm::Alpm,
     plan: &ReviewPlan,
     step: ReviewStep,
-) -> anyhow::Result<RevalidationRun> {
+) -> Result<RevalidationRun, ReviewError> {
     match plan {
         ReviewPlan::Install(request) => match step {
             ReviewStep::Defaults => {
@@ -140,9 +141,10 @@ pub struct ReviewLoop {
 }
 
 impl ReviewLoop {
-    pub fn spawn(plan: ReviewPlan) -> (Self, Receiver<Result<RevalidationRun, String>>) {
+    pub fn spawn(plan: ReviewPlan) -> (Self, Receiver<Result<RevalidationRun, ReviewError>>) {
         let (step_tx, step_rx) = std::sync::mpsc::channel::<ReviewStep>();
-        let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<RevalidationRun, String>>();
+        let (result_tx, result_rx) =
+            std::sync::mpsc::channel::<Result<RevalidationRun, ReviewError>>();
         std::thread::Builder::new()
             .name("review-loop".to_string())
             .spawn(move || drive_reviews(plan, step_rx, result_tx))
@@ -168,7 +170,7 @@ fn apply_upgrade_ignores(handle: &mut alpm::Alpm, ignores: &[String]) -> anyhow:
 fn drive_reviews(
     plan: ReviewPlan,
     steps: Receiver<ReviewStep>,
-    results: Sender<Result<RevalidationRun, String>>,
+    results: Sender<Result<RevalidationRun, ReviewError>>,
 ) {
     if matches!(plan, ReviewPlan::Upgrade { .. }) {
         serve_reviews_fresh(&plan, steps, results);
@@ -183,7 +185,7 @@ fn drive_reviews(
 fn serve_reviews_fresh(
     plan: &ReviewPlan,
     steps: Receiver<ReviewStep>,
-    results: Sender<Result<RevalidationRun, String>>,
+    results: Sender<Result<RevalidationRun, ReviewError>>,
 ) {
     while let Ok(step) = steps.recv() {
         let run = open_fresh_run(plan, step);
@@ -193,19 +195,16 @@ fn serve_reviews_fresh(
     }
 }
 
-fn open_fresh_run(plan: &ReviewPlan, step: ReviewStep) -> Result<RevalidationRun, String> {
-    (|| {
-        let config = crate::pacman::config()?;
-        let mut handle = crate::pacman::handle_rootless_with_config(&config)?;
-        run_step(&mut handle, plan, step)
-    })()
-    .map_err(|error| format!("{error:#}"))
+fn open_fresh_run(plan: &ReviewPlan, step: ReviewStep) -> Result<RevalidationRun, ReviewError> {
+    let config = crate::pacman::config().map_err(ReviewError::from)?;
+    let mut handle =
+        crate::pacman::handle_rootless_with_config(&config).map_err(ReviewError::from)?;
+    run_step(&mut handle, plan, step)
 }
 
-fn prime_handle(plan: &ReviewPlan) -> Result<alpm::Alpm, String> {
-    let config = crate::pacman::config().map_err(|error| format!("{error:#}"))?;
-    let mut handle =
-        crate::pacman::handle_with_config(&config).map_err(|error| format!("{error:#}"))?;
+fn prime_handle(plan: &ReviewPlan) -> Result<alpm::Alpm, ReviewError> {
+    let config = crate::pacman::config().map_err(ReviewError::from)?;
+    let mut handle = crate::pacman::handle_with_config(&config).map_err(ReviewError::from)?;
     if let ReviewPlan::Install(request) = plan {
         crate::upgrade::apply_ignores(&mut handle, &config, &request.ignores);
     }
@@ -216,10 +215,10 @@ fn serve_reviews(
     plan: &ReviewPlan,
     handle: &mut alpm::Alpm,
     steps: Receiver<ReviewStep>,
-    results: Sender<Result<RevalidationRun, String>>,
+    results: Sender<Result<RevalidationRun, ReviewError>>,
 ) {
     while let Ok(step) = steps.recv() {
-        let run = run_step(handle, plan, step).map_err(|error| format!("{error:#}"));
+        let run = run_step(handle, plan, step);
         if results.send(run).is_err() {
             break;
         }
@@ -228,8 +227,8 @@ fn serve_reviews(
 
 fn fail_closed(
     steps: Receiver<ReviewStep>,
-    results: Sender<Result<RevalidationRun, String>>,
-    message: String,
+    results: Sender<Result<RevalidationRun, ReviewError>>,
+    message: ReviewError,
 ) {
     while steps.recv().is_ok() {
         if results.send(Err(message.clone())).is_err() {
@@ -639,6 +638,39 @@ mod tests {
             rerun.is_err(),
             "sealed remove without the HoldPkgs answer must fail closed, got {:?}",
             rerun.map(|run| run.answers)
+        );
+    }
+
+    #[test]
+    fn remove_breaking_dep_stays_typed_through_run_step() {
+        use crate::tx::convert::UnsatisfiedDep;
+
+        let backend = LocalEntry {
+            name: "shelly-flatpak-backend-bin",
+            depends: &["shelly-bin=1.0-1"],
+            groups: &[],
+        };
+        let (_dir, mut handle) = local_handle(&[local_entry("shelly-bin"), backend]);
+        let plan = remove_plan(&["shelly-bin"], &[]);
+        let error = run_step(&mut handle, &plan, ReviewStep::Defaults)
+            .expect_err("breaking remove must fail prepare");
+        let crate::dispatch::ReviewError::Prepare(failure) = error else {
+            panic!("expected a typed prepare failure, got {error:?}");
+        };
+        assert_eq!(
+            failure.unsatisfied(),
+            &[UnsatisfiedDep {
+                cause: Some("shelly-bin".to_string()),
+                depend: "shelly-bin=1.0-1".to_string(),
+                target: "shelly-flatpak-backend-bin".to_string(),
+            }]
+        );
+        assert_eq!(
+            failure.details(),
+            vec![
+                "removing shelly-bin breaks dependency 'shelly-bin=1.0-1' required by shelly-flatpak-backend-bin"
+                    .to_string()
+            ]
         );
     }
 

@@ -53,7 +53,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
             AurStage::Finalize => finalize_section(&model.aur.finalize, state),
         };
         if state == StageState::Failed
-            && let Some(message) = model.failure_message.as_deref()
+            && let Some(message) = model.failure_message()
         {
             let note = failure_note(message);
             section.content = Some(match section.content {

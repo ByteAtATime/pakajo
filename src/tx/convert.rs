@@ -1,6 +1,7 @@
 use alpm::DownloadResult as AlpmDownloadResult;
 use alpm::LogLevel as AlpmLogLevel;
 use alpm::Progress as AlpmProgress;
+use serde::{Deserialize, Serialize};
 
 use crate::events::{
     DownloadResult, InstallEvent, LogLevel, PackageOp, ProgressPhase, SummaryPackage,
@@ -239,18 +240,37 @@ pub(crate) fn convert_log_level(level: AlpmLogLevel) -> Option<LogLevel> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnsatisfiedDep {
+    pub cause: Option<String>,
+    pub depend: String,
+    pub target: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct PrepareFailure {
     reason: String,
-    details: Vec<String>,
+    unsatisfied: Vec<UnsatisfiedDep>,
 }
 
 impl PrepareFailure {
-    pub fn new(reason: impl Into<String>, details: Vec<String>) -> Self {
+    pub fn new(reason: impl Into<String>, details: Vec<UnsatisfiedDep>) -> Self {
         Self {
             reason: reason.into(),
-            details,
+            unsatisfied: details,
         }
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    pub fn unsatisfied(&self) -> &[UnsatisfiedDep] {
+        &self.unsatisfied
+    }
+
+    pub fn details(&self) -> Vec<String> {
+        self.unsatisfied.iter().map(render_unsatisfied).collect()
     }
 
     pub fn report(&self, colored: bool) -> String {
@@ -260,7 +280,11 @@ impl PrepareFailure {
             self.reason
         );
         std::iter::once(header)
-            .chain(self.details.iter().map(|d| crate::color::colon(colored, d)))
+            .chain(
+                self.unsatisfied
+                    .iter()
+                    .map(|d| crate::color::colon(colored, &render_unsatisfied(d))),
+            )
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -274,47 +298,63 @@ impl std::fmt::Display for PrepareFailure {
 
 impl std::error::Error for PrepareFailure {}
 
-fn unsatisfied_detail(miss: &alpm::DepMissing) -> String {
-    match miss.causing_pkg() {
+fn unsatisfied_dep(miss: &alpm::DepMissing) -> UnsatisfiedDep {
+    UnsatisfiedDep {
+        cause: miss.causing_pkg().map(str::to_string),
+        depend: miss.depend().to_string(),
+        target: miss.target().to_string(),
+    }
+}
+
+fn render_unsatisfied(dep: &UnsatisfiedDep) -> String {
+    match &dep.cause {
         Some(cause) => format!(
             "removing {cause} breaks dependency '{}' required by {}",
-            miss.depend(),
-            miss.target()
+            dep.depend, dep.target
         ),
         None => format!(
             "unable to satisfy dependency '{}' required by {}",
-            miss.depend(),
-            miss.target()
+            dep.depend, dep.target
         ),
     }
 }
 
 pub(crate) fn extract_prepare_failure(err: alpm::PrepareError) -> PrepareFailure {
     let reason = err.error().to_string();
-    let details = match err.data() {
+    let unsatisfied = match err.data() {
         Some(alpm::PrepareData::UnsatisfiedDeps(list)) => {
-            list.iter().map(unsatisfied_detail).collect()
+            list.iter().map(unsatisfied_dep).collect()
         }
         _ => Vec::new(),
     };
-    PrepareFailure::new(reason, details)
+    PrepareFailure::new(reason, unsatisfied)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn failure(reason: &str, details: &[&str]) -> PrepareFailure {
-        PrepareFailure::new(reason, details.iter().map(|d| (*d).to_string()).collect())
+    fn dep(cause: Option<&str>, depend: &str, target: &str) -> UnsatisfiedDep {
+        UnsatisfiedDep {
+            cause: cause.map(str::to_string),
+            depend: depend.to_string(),
+            target: target.to_string(),
+        }
+    }
+
+    fn failure(reason: &str, details: Vec<UnsatisfiedDep>) -> PrepareFailure {
+        PrepareFailure::new(reason.to_string(), details)
     }
 
     #[test]
     fn removal_break_reports_reason_then_detail() {
         let broke = failure(
             "could not satisfy dependencies",
-            &[
-                "removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin",
-            ],
+            vec![dep(
+                Some("shelly-bin"),
+                "shelly-bin=3.1.6-1",
+                "shelly-flatpak-backend-bin",
+            )],
         );
         assert_eq!(
             broke.report(false),
@@ -326,9 +366,9 @@ mod tests {
     fn every_missing_dep_gets_its_own_detail_line() {
         let many = failure(
             "could not satisfy dependencies",
-            &[
-                "removing glibc breaks dependency 'libfoo>=2' required by sl",
-                "unable to satisfy dependency 'libbar' required by vlc",
+            vec![
+                dep(Some("glibc"), "libfoo>=2", "sl"),
+                dep(None, "libbar", "vlc"),
             ],
         );
         assert_eq!(
@@ -339,7 +379,7 @@ mod tests {
 
     #[test]
     fn reason_only_failure_has_no_detail_lines() {
-        let broken = failure("database not found", &[]);
+        let broken = failure("database not found", Vec::new());
         assert_eq!(
             broken.report(false),
             "error: failed to prepare transaction (database not found)"
@@ -350,11 +390,39 @@ mod tests {
     fn colored_report_paints_without_changing_text() {
         let broke = failure(
             "could not satisfy dependencies",
-            &["removing glibc breaks dependency 'libfoo' required by sl"],
+            vec![dep(Some("glibc"), "libfoo", "sl")],
         );
         let plain = broke.report(false);
         let painted = broke.report(true);
         assert_ne!(plain, painted);
         assert_eq!(crate::color::ansi_strip(&painted), plain);
+    }
+
+    #[test]
+    fn shelly_fixture_carries_typed_fields() {
+        let broke = failure(
+            "could not satisfy dependencies",
+            vec![dep(
+                Some("shelly-bin"),
+                "shelly-bin=3.1.6-1",
+                "shelly-flatpak-backend-bin",
+            )],
+        );
+        assert_eq!(broke.reason(), "could not satisfy dependencies");
+        assert_eq!(
+            broke.unsatisfied(),
+            &[UnsatisfiedDep {
+                cause: Some("shelly-bin".to_string()),
+                depend: "shelly-bin=3.1.6-1".to_string(),
+                target: "shelly-flatpak-backend-bin".to_string(),
+            }]
+        );
+        assert_eq!(
+            broke.details(),
+            vec![
+                "removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin"
+                    .to_string()
+            ]
+        );
     }
 }

@@ -1,7 +1,7 @@
-use anyhow::Context as _;
 use futures::SinkExt as _;
 use futures::StreamExt as _;
 
+use crate::dispatch::error::ReviewError;
 use crate::dispatch::exec::{ChildOutcome, DispatchStream, StreamItem, send_done};
 use crate::dispatch::operation::{ChildOperation, PrivilegedOperation};
 use crate::dispatch::seal::{JSON_SEAL_REQUIRED, json_seal_missing, non_interactive_seal_missing};
@@ -51,7 +51,7 @@ pub(crate) fn run_remove_preview(
     targets: &[String],
     holds: &[String],
     source: Box<dyn crate::question::source::AnswerSource>,
-) -> anyhow::Result<crate::question::review::Review> {
+) -> Result<crate::question::review::Review, ReviewError> {
     let spec = crate::tx::driver::RunSpec {
         kind: crate::tx::driver::RunKind::Remove(crate::tx::driver::RemoveSpec {
             flags: alpm::TransFlag::NONE,
@@ -64,8 +64,14 @@ pub(crate) fn run_remove_preview(
         reinstall: false,
         dep_names: Vec::new(),
     };
-    let outcome = crate::tx::driver::run(handle, &spec, source, Box::new(DiscardSink))?;
-    outcome.review.context("remove preview produced no review")
+    let outcome = crate::tx::driver::run(handle, &spec, source, Box::new(DiscardSink))
+        .map_err(ReviewError::from)?;
+    if let crate::tx::driver::Finish::PrepareFailed(failure) = outcome.finish {
+        return Err(ReviewError::Prepare(failure));
+    }
+    outcome
+        .review
+        .ok_or_else(|| ReviewError::Other("remove preview produced no review".to_string()))
 }
 
 fn seal_approvals(

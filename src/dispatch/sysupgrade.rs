@@ -55,15 +55,16 @@ pub(crate) struct UpgradeReview {
 pub(crate) fn upgrade_review(
     handle: &mut alpm::Alpm,
     source: Box<dyn crate::question::source::AnswerSource>,
-) -> anyhow::Result<UpgradeReview> {
+) -> Result<UpgradeReview, crate::dispatch::ReviewError> {
     let aur = preview_aur_candidates(handle);
-    let outcome = crate::tx::compose::preview_with(handle, upgrade_run_spec(), source)?;
-    if let crate::tx::driver::Finish::PrepareFailed(failure) = &outcome.finish {
-        anyhow::bail!("{failure}");
+    let outcome = crate::tx::compose::preview_with(handle, upgrade_run_spec(), source)
+        .map_err(crate::dispatch::ReviewError::from)?;
+    if let crate::tx::driver::Finish::PrepareFailed(failure) = outcome.finish {
+        return Err(crate::dispatch::ReviewError::Prepare(failure));
     }
-    let review = outcome
-        .review
-        .ok_or_else(|| anyhow::anyhow!("upgrade explore run produced no review"))?;
+    let review = outcome.review.ok_or_else(|| {
+        crate::dispatch::ReviewError::Other("upgrade explore run produced no review".to_string())
+    })?;
     Ok(UpgradeReview { review, aur })
 }
 

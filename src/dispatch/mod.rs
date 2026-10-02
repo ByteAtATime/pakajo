@@ -1,9 +1,11 @@
 pub mod approvals;
 pub(crate) mod aur;
 pub mod child;
+mod error;
 pub mod exec;
 pub mod operation;
 pub mod protocol;
+pub use error::ReviewError;
 mod remove;
 pub mod seal;
 pub use remove::{RemoveRequest, remove};

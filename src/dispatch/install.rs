@@ -57,7 +57,7 @@ pub fn install(request: InstallRequest) -> DispatchStream {
 pub(crate) fn run_install_preview(
     handle: &mut alpm::Alpm,
     request: &InstallRequest,
-) -> anyhow::Result<InstallPreview> {
+) -> Result<InstallPreview, crate::dispatch::ReviewError> {
     run_install_preview_with(handle, request, Box::new(ExploreDefaults))
 }
 
@@ -65,7 +65,7 @@ pub(crate) fn run_install_preview_with(
     handle: &mut alpm::Alpm,
     request: &InstallRequest,
     source: Box<dyn AnswerSource>,
-) -> anyhow::Result<InstallPreview> {
+) -> Result<InstallPreview, crate::dispatch::ReviewError> {
     run_install_preview_with_resolver(handle, request, source, |names, no_check| {
         resolve_combined_plan(names, no_check)
     })
@@ -76,7 +76,7 @@ fn run_install_preview_with_resolver(
     request: &InstallRequest,
     source: Box<dyn AnswerSource>,
     resolve: impl FnOnce(&[String], bool) -> anyhow::Result<Option<Plan>>,
-) -> anyhow::Result<InstallPreview> {
+) -> Result<InstallPreview, crate::dispatch::ReviewError> {
     let expanded = expand_install_groups(handle, &request.targets, request.tty);
     let (files, names) = peel_file_targets(&expanded);
     let plan = resolve(&names, request.no_check)?;
@@ -97,10 +97,14 @@ fn run_install_preview_with_resolver(
         reinstall: request.reinstall,
         dep_names: Vec::new(),
     };
-    let outcome = crate::tx::compose::preview_with(handle, spec, source)?;
-    let review = outcome
-        .review
-        .context("install preview produced no review")?;
+    let outcome = crate::tx::compose::preview_with(handle, spec, source)
+        .map_err(crate::dispatch::ReviewError::from)?;
+    if let crate::tx::driver::Finish::PrepareFailed(failure) = outcome.finish {
+        return Err(crate::dispatch::ReviewError::Prepare(failure));
+    }
+    let review = outcome.review.ok_or_else(|| {
+        crate::dispatch::ReviewError::Other("install preview produced no review".to_string())
+    })?;
     let review = merge_plan_conflicts(review, plan.as_ref());
     Ok(InstallPreview { review })
 }

@@ -36,7 +36,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
         };
         if section.state == StageState::Failed
             && !model.build_owns_failure()
-            && let Some(message) = model.failure_message.as_deref()
+            && let Some(message) = model.failure_message()
         {
             let note = failure_note(message);
             section.content = Some(match section.content {
@@ -56,7 +56,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
         let mut section = build_section(model, model.aur_stage_state(AurStage::Build))
             .with_toggle_index(build_index);
         if section.state == StageState::Failed
-            && let Some(message) = model.failure_message.as_deref()
+            && let Some(message) = model.failure_message()
         {
             let note = failure_note(message);
             section.content = Some(match section.content {

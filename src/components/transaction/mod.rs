@@ -4,6 +4,7 @@ use cosmic::widget::Column;
 use cosmic::widget::{button, container, dialog, text};
 use futures::StreamExt as _;
 
+use pakajo::dispatch::ReviewError;
 use pakajo::dispatch::exec::{AnswerWriter, ChildOutcome, StreamItem};
 use pakajo::dispatch::revalidate::{
     RevalidationRun, ReviewLoop, ReviewOrigin, ReviewPlan, ReviewStep,
@@ -22,7 +23,7 @@ const REVIEW_LOOP_ENDED: &str = "review loop ended";
 
 mod state;
 
-pub(crate) use state::{TransactionModel, TransactionStatus};
+pub(crate) use state::{FailureKind, TransactionModel, TransactionStatus};
 
 mod stepper;
 
@@ -71,7 +72,7 @@ pub enum TransactionMessage {
     Begin(TransactionRequest),
     InstallEvent(InstallEvent),
     InstallDone(ChildOutcome),
-    Explored(Result<RevalidationRun, String>),
+    Explored(Result<RevalidationRun, ReviewError>),
     ToggleStage(usize),
     ToggleBuildCard(String),
     Tick(std::time::Instant),
@@ -155,14 +156,14 @@ fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::M
 }
 
 fn review_stream(
-    rx: std::sync::mpsc::Receiver<Result<RevalidationRun, String>>,
+    rx: std::sync::mpsc::Receiver<Result<RevalidationRun, ReviewError>>,
 ) -> Task<crate::Message> {
     Task::stream(channel(
         256,
         move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
             use futures::{SinkExt as _, StreamExt as _};
             let (bridge, mut forward) =
-                futures::channel::mpsc::unbounded::<Result<RevalidationRun, String>>();
+                futures::channel::mpsc::unbounded::<Result<RevalidationRun, ReviewError>>();
             std::thread::spawn(move || {
                 while let Ok(result) = rx.recv() {
                     if bridge.unbounded_send(result).is_err() {
@@ -178,7 +179,7 @@ fn review_stream(
             let _ = tx
                 .send(
                     crate::Message::Transaction(TransactionMessage::Explored(Err(
-                        REVIEW_LOOP_ENDED.to_string(),
+                        ReviewError::Other(REVIEW_LOOP_ENDED.to_string()),
                     )))
                     .into(),
                 )
@@ -426,11 +427,19 @@ impl Transaction {
             }
             TransactionMessage::Explored(result) => match result {
                 Err(e) => {
-                    if e == REVIEW_LOOP_ENDED && !self.approving() {
+                    if matches!(&e, ReviewError::Other(message) if message == REVIEW_LOOP_ENDED)
+                        && !self.approving()
+                    {
                         return Action::None;
                     }
                     eprintln!("[pakajo] review failed: {e}");
-                    self.model.failure_message = Some(e);
+                    self.model.set_failure(match e {
+                        ReviewError::Prepare(failure) => FailureKind::Prepare {
+                            reason: failure.reason().to_owned(),
+                            details: failure.unsatisfied().to_vec(),
+                        },
+                        ReviewError::Other(message) => FailureKind::Message(message),
+                    });
                     self.model.pending_approvals = None;
                     if let Some(review) = self.model.install_review.as_mut() {
                         review.approving = false;
@@ -498,7 +507,8 @@ impl Transaction {
                 if let Some(review_loop) = self.review_loop.as_ref()
                     && !review_loop.send(ReviewStep::Sealed(sealed))
                 {
-                    self.model.failure_message = Some(REVIEW_LOOP_ENDED.to_string());
+                    self.model
+                        .set_failure(FailureKind::Message(REVIEW_LOOP_ENDED.to_string()));
                     self.model.pending_approvals = None;
                     if let Some(review) = self.model.install_review.as_mut() {
                         review.approving = false;
@@ -577,7 +587,7 @@ impl Transaction {
 
     fn fail_seal(&mut self, mut review: InstallReview, message: String) -> Action {
         eprintln!("[pakajo] seal encoding failed: {message}");
-        self.model.failure_message = Some(message);
+        self.model.set_failure(FailureKind::Message(message));
         review.approving = false;
         self.model.install_review = Some(review);
         Action::None
@@ -644,8 +654,9 @@ impl Transaction {
                     Some(payload) => self.proceed_after_conflicts(Some(payload)),
                     None => {
                         eprintln!("[pakajo] revalidation converged without pending approvals");
-                        self.model.failure_message =
-                            Some("revalidation converged without pending approvals".to_string());
+                        self.model.set_failure(FailureKind::Message(
+                            "revalidation converged without pending approvals".to_string(),
+                        ));
                         Action::None
                     }
                 }
@@ -677,7 +688,7 @@ impl Transaction {
                 if self.model.unstables >= 2 {
                     let message = "review did not stabilize".to_string();
                     eprintln!("[pakajo] {message}");
-                    self.model.failure_message = Some(message);
+                    self.model.set_failure(FailureKind::Message(message));
                     self.model.review_notice = Some("review did not stabilize".to_string());
                     if let Some(review) = self.model.install_review.as_mut() {
                         review.approving = false;
@@ -1175,8 +1186,7 @@ mod tests {
         assert!(
             transaction
                 .model
-                .failure_message
-                .as_deref()
+                .failure_message()
                 .is_some_and(|message| message.contains("review did not stabilize"))
         );
         let review = transaction
@@ -1188,15 +1198,35 @@ mod tests {
     }
 
     #[test]
+    fn explored_prepare_failure_composes_typed_report() {
+        use pakajo::tx::convert::{PrepareFailure, UnsatisfiedDep};
+
+        let mut transaction = new_transaction(InstallKind::Install);
+        transaction.update(TransactionMessage::Explored(Err(ReviewError::Prepare(
+            PrepareFailure::new(
+                s("could not satisfy dependencies"),
+                vec![UnsatisfiedDep {
+                    cause: Some(s("shelly-bin")),
+                    depend: s("shelly-bin=3.1.6-1"),
+                    target: s("shelly-flatpak-backend-bin"),
+                }],
+            ),
+        ))));
+        assert_eq!(
+            transaction.model.failure_message(),
+            Some(
+                "error: failed to prepare transaction (could not satisfy dependencies)\n:: removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin"
+            )
+        );
+    }
+
+    #[test]
     fn sentinel_while_approving_fails_closed() {
         let mut transaction = approving_transaction(Some(s("sealed-payload")), 0);
-        transaction.update(TransactionMessage::Explored(Err(
-            REVIEW_LOOP_ENDED.to_string()
-        )));
-        assert_eq!(
-            transaction.model.failure_message.as_deref(),
-            Some(REVIEW_LOOP_ENDED)
-        );
+        transaction.update(TransactionMessage::Explored(Err(ReviewError::Other(
+            REVIEW_LOOP_ENDED.to_string(),
+        ))));
+        assert_eq!(transaction.model.failure_message(), Some(REVIEW_LOOP_ENDED));
         let review = transaction
             .model
             .install_review

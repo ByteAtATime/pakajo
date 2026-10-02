@@ -510,11 +510,11 @@ mod tests {
             summary: crate::events::TransactionSummary::default(),
             finish: Finish::PrepareFailed(crate::tx::convert::PrepareFailure::new(
                 "could not satisfy dependencies",
-                vec![
-                    "removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' \
-                      required by shelly-flatpak-backend-bin"
-                        .to_string(),
-                ],
+                vec![crate::tx::convert::UnsatisfiedDep {
+                    cause: Some("shelly-bin".to_string()),
+                    depend: "shelly-bin=3.1.6-1".to_string(),
+                    target: "shelly-flatpak-backend-bin".to_string(),
+                }],
             )),
             review: None,
         };
