@@ -101,6 +101,7 @@ pub(crate) enum Action {
     Finished,
     ViewClosed,
     InstallSucceeded,
+    Failed,
 }
 
 fn sealed_decider(
@@ -422,12 +423,19 @@ impl Transaction {
             }
             TransactionMessage::InstallDone(outcome) => {
                 eprintln!("[pakajo] install outcome: {outcome:?}");
-                let succeeded = matches!(outcome, ChildOutcome::Success);
-                self.model.finish(outcome);
-                if succeeded {
-                    Action::InstallSucceeded
-                } else {
-                    Action::None
+                match outcome {
+                    ChildOutcome::Success => {
+                        self.model.finish(outcome);
+                        Action::InstallSucceeded
+                    }
+                    ChildOutcome::Failed(_) | ChildOutcome::NotFound(_) => {
+                        self.model.finish(outcome);
+                        Action::Failed
+                    }
+                    ChildOutcome::Stopped { .. } | ChildOutcome::Dismissed => {
+                        self.model.finish(outcome);
+                        Action::None
+                    }
                 }
             }
             TransactionMessage::Explored(result) => match result {
@@ -440,10 +448,14 @@ impl Transaction {
                                 .set_failure(FailureKind::Message(REVIEW_LOOP_ENDED.to_string()));
                             self.model.install_review = None;
                             self.model.end_failed();
+                            return Action::Failed;
                         }
                         return Action::None;
                     }
                     eprintln!("[pakajo] review failed: {e}");
+                    if !self.is_active() {
+                        return Action::None;
+                    }
                     self.model.set_failure(match e {
                         ReviewError::Prepare(failure) => FailureKind::Prepare {
                             reason: failure.reason().to_owned(),
@@ -454,7 +466,7 @@ impl Transaction {
                     self.model.pending_approvals = None;
                     self.model.install_review = None;
                     self.model.end_failed();
-                    Action::None
+                    Action::Failed
                 }
                 Ok(run) => {
                     if run.origin == ReviewOrigin::Revalidation {
@@ -522,6 +534,7 @@ impl Transaction {
                     self.model.pending_approvals = None;
                     self.model.install_review = None;
                     self.model.end_failed();
+                    return Action::Failed;
                 }
                 Action::None
             }
@@ -597,7 +610,7 @@ impl Transaction {
 
     fn fail_launch(&mut self, error: String) -> Action {
         self.model.finish(ChildOutcome::Failed(error));
-        Action::None
+        Action::Failed
     }
 
     fn fail_seal(&mut self, review: InstallReview, message: String) -> Action {
@@ -606,7 +619,7 @@ impl Transaction {
         drop(review);
         self.model.install_review = None;
         self.model.end_failed();
-        Action::None
+        Action::Failed
     }
 
     fn accept_initial(&mut self, run: RevalidationRun) -> Action {
@@ -641,6 +654,9 @@ impl Transaction {
     }
 
     fn apply_revalidation(&mut self, run: RevalidationRun) -> Action {
+        if !self.is_active() {
+            return Action::None;
+        }
         let outcome = match (
             self.model.install_review.as_ref(),
             self.model.summary.as_ref(),
@@ -660,7 +676,7 @@ impl Transaction {
                 ));
                 self.model.install_review = None;
                 self.model.end_failed();
-                return Action::None;
+                return Action::Failed;
             }
         };
         match converge(self.model.revalidations, &outcome) {
@@ -680,7 +696,7 @@ impl Transaction {
                         ));
                         self.model.install_review = None;
                         self.model.end_failed();
-                        Action::None
+                        Action::Failed
                     }
                 }
             }
@@ -715,7 +731,7 @@ impl Transaction {
                     self.model.review_notice = Some("review did not stabilize".to_string());
                     self.model.install_review = None;
                     self.model.end_failed();
-                    return Action::None;
+                    return Action::Failed;
                 }
                 self.model.review_notice = Some("review did not stabilize".to_string());
                 eprintln!("[pakajo] review did not stabilize");
@@ -1204,7 +1220,8 @@ mod tests {
     fn second_consecutive_unstable_fails_closed_and_clears_review() {
         let mut transaction = approving_transaction(Some(s("sealed-payload")), 2);
         transaction.model.unstables = 1;
-        transaction.update(TransactionMessage::Explored(Ok(drifted_run())));
+        let action = transaction.update(TransactionMessage::Explored(Ok(drifted_run())));
+        assert!(matches!(action, Action::Failed));
         assert!(
             transaction
                 .model
@@ -1226,7 +1243,7 @@ mod tests {
         use pakajo::tx::convert::{PrepareFailure, UnsatisfiedDep};
 
         let mut transaction = new_transaction(InstallKind::Install);
-        transaction.update(TransactionMessage::Explored(Err(ReviewError::Prepare(
+        let action = transaction.update(TransactionMessage::Explored(Err(ReviewError::Prepare(
             PrepareFailure::new(
                 s("could not satisfy dependencies"),
                 vec![UnsatisfiedDep {
@@ -1236,6 +1253,7 @@ mod tests {
                 }],
             ),
         ))));
+        assert!(matches!(action, Action::Failed));
         assert_eq!(
             transaction.model.failure().map(failure_report).as_deref(),
             Some(
@@ -1268,9 +1286,10 @@ mod tests {
     #[test]
     fn sentinel_while_approving_fails_closed_and_clears_review() {
         let mut transaction = approving_transaction(Some(s("sealed-payload")), 0);
-        transaction.update(TransactionMessage::Explored(Err(ReviewError::Other(
+        let action = transaction.update(TransactionMessage::Explored(Err(ReviewError::Other(
             REVIEW_LOOP_ENDED.to_string(),
         ))));
+        assert!(matches!(action, Action::Failed));
         assert_eq!(
             transaction.model.failure().map(failure_report).as_deref(),
             Some(REVIEW_LOOP_ENDED)
@@ -1281,6 +1300,77 @@ mod tests {
             TransactionStatus::Done(ChildOutcome::Failed(_))
         ));
         assert!(!transaction.is_active());
+    }
+
+    fn done_transaction() -> Transaction {
+        let mut transaction = new_transaction(InstallKind::Install);
+        transaction.update(TransactionMessage::InstallDone(ChildOutcome::Success));
+        transaction
+    }
+
+    #[test]
+    fn stale_explored_error_after_done_success_is_swallowed() {
+        let mut transaction = done_transaction();
+        let action = transaction.update(TransactionMessage::Explored(Err(ReviewError::Other(s(
+            "late review failure",
+        )))));
+        assert!(matches!(action, Action::None));
+        assert!(transaction.model.failure().is_none());
+        assert!(matches!(
+            transaction.model.status,
+            TransactionStatus::Done(ChildOutcome::Success)
+        ));
+    }
+
+    #[test]
+    fn stale_revalidation_without_review_after_done_success_is_swallowed() {
+        let mut transaction = done_transaction();
+        let action = transaction.update(TransactionMessage::Explored(Ok(settled_run(
+            vec![ignore_question("glibc")],
+            vec![ignore_answer("glibc")],
+        ))));
+        assert!(matches!(action, Action::None));
+        assert!(transaction.model.failure().is_none());
+        assert!(matches!(
+            transaction.model.status,
+            TransactionStatus::Done(ChildOutcome::Success)
+        ));
+    }
+
+    #[test]
+    fn install_done_maps_outcomes_to_actions() {
+        let mut transaction = new_transaction(InstallKind::Install);
+        let action = transaction.update(TransactionMessage::InstallDone(ChildOutcome::Success));
+        assert!(matches!(action, Action::InstallSucceeded));
+
+        for outcome in [
+            ChildOutcome::Failed(s("makepkg failed")),
+            ChildOutcome::NotFound(s("pacman not found")),
+        ] {
+            let mut transaction = new_transaction(InstallKind::Install);
+            let action = transaction.update(TransactionMessage::InstallDone(outcome));
+            assert!(matches!(action, Action::Failed));
+            assert!(transaction.model.failure().is_some());
+        }
+
+        for outcome in [
+            ChildOutcome::Stopped { idle: true },
+            ChildOutcome::Stopped { idle: false },
+            ChildOutcome::Dismissed,
+        ] {
+            let mut transaction = new_transaction(InstallKind::Install);
+            let action = transaction.update(TransactionMessage::InstallDone(outcome));
+            assert!(matches!(action, Action::None));
+        }
+    }
+
+    #[test]
+    fn invalid_seal_payload_fails_closed() {
+        let mut transaction = new_transaction(InstallKind::Install);
+        transaction.model.pending_approvals = Some(s("not-a-seal"));
+        let action = transaction.update(TransactionMessage::ApprovePkgbuild);
+        assert!(matches!(action, Action::Failed));
+        assert!(transaction.model.failure().is_some());
     }
 
     #[test]

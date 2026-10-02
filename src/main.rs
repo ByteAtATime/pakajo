@@ -390,6 +390,10 @@ impl PakajoApp {
                         let dashboard = self.dashboard.refresh();
                         Task::batch([dashboard, refresh])
                     }
+                    Action::Failed => {
+                        self.tx.open();
+                        Task::none()
+                    }
                 }
             }
         }
