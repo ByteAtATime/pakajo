@@ -215,6 +215,18 @@ impl TransactionModel {
         self.answer_channel = None;
     }
 
+    pub(crate) fn end_failed(&mut self) -> bool {
+        if matches!(
+            self.status,
+            TransactionStatus::Checking | TransactionStatus::Running
+        ) {
+            self.finish(ChildOutcome::Failed(String::from("failed before launch")));
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn adopt_aur_candidates(&mut self, candidates: Vec<AurUpgradeCandidate>) {
         self.aur_names = candidates.into_iter().map(|c| c.name).collect();
     }
@@ -874,6 +886,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn finish_not_found_records_message_failure() {
+        let mut model = fresh_model();
+        model.finish(ChildOutcome::NotFound("pacman not found".to_string()));
+        assert_eq!(
+            model.failure().map(failure_report).as_deref(),
+            Some("pacman not found")
+        );
+        assert!(matches!(
+            model.status,
+            TransactionStatus::Done(ChildOutcome::NotFound(_))
+        ));
+    }
+
     fn fresh_model() -> TransactionModel {
         TransactionModel::new(
             "firefox".to_string(),
@@ -906,49 +932,31 @@ mod tests {
 
     #[test]
     fn fresh_model_accepts_any_failure_kind() {
-        for kind in [message_kind(), question_kind(), prepare_kind()] {
+        for (kind, expected) in [
+            (
+                message_kind(),
+                "plain message".to_string(),
+            ),
+            (
+                question_kind(),
+                "Proceed with transaction: denied in test".to_string(),
+            ),
+            (
+                prepare_kind(),
+                "error: failed to prepare transaction (could not satisfy dependencies)\n:: removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin".to_string(),
+            ),
+        ] {
             let mut model = fresh_model();
             model.set_failure(kind);
-            assert!(model.failure().map(failure_report).as_deref().is_some());
+            assert_eq!(
+                model.failure().map(failure_report).as_deref(),
+                Some(expected.as_str())
+            );
         }
     }
 
     #[test]
-    fn question_then_prepare_replaces() {
-        let mut model = fresh_model();
-        model.set_failure(question_kind());
-        model.set_failure(prepare_kind());
-        assert!(
-            model
-                .failure()
-                .map(failure_report)
-                .as_deref()
-                .is_some_and(|message| message.contains("failed to prepare transaction"))
-        );
-    }
-
-    #[test]
-    fn prepare_then_question_stays() {
-        let mut model = fresh_model();
-        model.set_failure(prepare_kind());
-        let before = model
-            .failure()
-            .map(failure_report)
-            .as_deref()
-            .map(str::to_owned);
-        model.set_failure(question_kind());
-        assert_eq!(
-            model
-                .failure()
-                .map(failure_report)
-                .as_deref()
-                .map(str::to_owned),
-            before
-        );
-    }
-
-    #[test]
-    fn message_then_question_replaces() {
+    fn higher_rank_replaces() {
         let mut model = fresh_model();
         model.set_failure(message_kind());
         model.set_failure(question_kind());
@@ -956,10 +964,28 @@ mod tests {
             model.failure().map(failure_report).as_deref(),
             Some("Proceed with transaction: denied in test")
         );
+        let mut model = fresh_model();
+        model.set_failure(question_kind());
+        model.set_failure(prepare_kind());
+        assert_eq!(
+            model.failure().map(failure_report).as_deref(),
+            Some(
+                "error: failed to prepare transaction (could not satisfy dependencies)\n:: removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin"
+            )
+        );
     }
 
     #[test]
-    fn question_then_message_stays() {
+    fn lower_or_equal_rank_never_replaces() {
+        let mut model = fresh_model();
+        model.set_failure(prepare_kind());
+        model.set_failure(question_kind());
+        assert_eq!(
+            model.failure().map(failure_report).as_deref(),
+            Some(
+                "error: failed to prepare transaction (could not satisfy dependencies)\n:: removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin"
+            )
+        );
         let mut model = fresh_model();
         model.set_failure(question_kind());
         model.set_failure(message_kind());
@@ -967,16 +993,67 @@ mod tests {
             model.failure().map(failure_report).as_deref(),
             Some("Proceed with transaction: denied in test")
         );
-    }
-
-    #[test]
-    fn message_then_message_stays_on_equal_rank() {
         let mut model = fresh_model();
         model.set_failure(message_kind());
         model.set_failure(FailureKind::Message("later message".to_string()));
         assert_eq!(
             model.failure().map(failure_report).as_deref(),
             Some("plain message")
+        );
+    }
+
+    #[test]
+    fn end_failed_from_pre_launch_ends_done_failed() {
+        for running in [false, true] {
+            let mut model = fresh_model();
+            if running {
+                model.status = TransactionStatus::Running;
+            }
+            assert!(model.end_failed());
+            assert!(matches!(
+                model.status,
+                TransactionStatus::Done(ChildOutcome::Failed(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn end_failed_from_done_success_is_noop() {
+        let mut model = fresh_model();
+        model.set_failure(message_kind());
+        model.finish(ChildOutcome::Success);
+        assert!(!model.end_failed());
+        assert!(matches!(
+            model.status,
+            TransactionStatus::Done(ChildOutcome::Success)
+        ));
+        assert_eq!(
+            model.failure().map(failure_report).as_deref(),
+            Some("plain message")
+        );
+    }
+
+    #[test]
+    fn end_failed_keeps_message_failure_verbatim() {
+        let mut model = fresh_model();
+        model.set_failure(message_kind());
+        assert!(model.end_failed());
+        assert_eq!(
+            model.failure().map(failure_report).as_deref(),
+            Some("plain message")
+        );
+    }
+
+    #[test]
+    fn end_failed_keeps_prepare_failure_verbatim() {
+        let mut model = fresh_model();
+        model.set_failure(prepare_kind());
+        assert!(model.end_failed());
+        assert_eq!(
+            model.failure().map(failure_report).as_deref(),
+            Some(
+                "error: failed to prepare transaction (could not satisfy dependencies)\n:: removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin"
+            )
         );
     }
 
@@ -1088,15 +1165,11 @@ mod tests {
     }
 
     #[test]
-    fn deps_stage_active_after_download_event() {
+    fn deps_stage_active_once_bucket_fills() {
         let mut model = aur_model();
         model.apply_event(&retrieving(1));
         assert_state(&model, AurStage::Deps, StageState::Active);
         assert!(model.deps_section_visible());
-    }
-
-    #[test]
-    fn deps_stage_active_after_install_event() {
         let mut model = aur_model();
         model.apply_event(&installed("dep1"));
         assert_state(&model, AurStage::Deps, StageState::Active);

@@ -19,7 +19,7 @@ use pakajo::question::revalidate::{Verdict, converge, revalidate};
 use crate::Element;
 use crate::PakajoCtx;
 
-const REVIEW_LOOP_ENDED: &str = "review loop ended";
+const REVIEW_LOOP_ENDED: &str = "review ended unexpectedly";
 
 mod state;
 
@@ -435,6 +435,12 @@ impl Transaction {
                     if matches!(&e, ReviewError::Other(message) if message == REVIEW_LOOP_ENDED)
                         && !self.approving()
                     {
+                        if self.is_active() {
+                            self.model
+                                .set_failure(FailureKind::Message(REVIEW_LOOP_ENDED.to_string()));
+                            self.model.install_review = None;
+                            self.model.end_failed();
+                        }
                         return Action::None;
                     }
                     eprintln!("[pakajo] review failed: {e}");
@@ -446,9 +452,8 @@ impl Transaction {
                         ReviewError::Other(message) => FailureKind::Message(message),
                     });
                     self.model.pending_approvals = None;
-                    if let Some(review) = self.model.install_review.as_mut() {
-                        review.approving = false;
-                    }
+                    self.model.install_review = None;
+                    self.model.end_failed();
                     Action::None
                 }
                 Ok(run) => {
@@ -515,9 +520,8 @@ impl Transaction {
                     self.model
                         .set_failure(FailureKind::Message(REVIEW_LOOP_ENDED.to_string()));
                     self.model.pending_approvals = None;
-                    if let Some(review) = self.model.install_review.as_mut() {
-                        review.approving = false;
-                    }
+                    self.model.install_review = None;
+                    self.model.end_failed();
                 }
                 Action::None
             }
@@ -596,11 +600,12 @@ impl Transaction {
         Action::None
     }
 
-    fn fail_seal(&mut self, mut review: InstallReview, message: String) -> Action {
+    fn fail_seal(&mut self, review: InstallReview, message: String) -> Action {
         eprintln!("[pakajo] seal encoding failed: {message}");
         self.model.set_failure(FailureKind::Message(message));
-        review.approving = false;
-        self.model.install_review = Some(review);
+        drop(review);
+        self.model.install_review = None;
+        self.model.end_failed();
         Action::None
     }
 
@@ -650,6 +655,11 @@ impl Transaction {
             ),
             _ => {
                 eprintln!("[pakajo] revalidation without review or summary");
+                self.model.set_failure(FailureKind::Message(
+                    "revalidation ended without a review".to_string(),
+                ));
+                self.model.install_review = None;
+                self.model.end_failed();
                 return Action::None;
             }
         };
@@ -668,6 +678,8 @@ impl Transaction {
                         self.model.set_failure(FailureKind::Message(
                             "revalidation converged without pending approvals".to_string(),
                         ));
+                        self.model.install_review = None;
+                        self.model.end_failed();
                         Action::None
                     }
                 }
@@ -701,9 +713,8 @@ impl Transaction {
                     eprintln!("[pakajo] {message}");
                     self.model.set_failure(FailureKind::Message(message));
                     self.model.review_notice = Some("review did not stabilize".to_string());
-                    if let Some(review) = self.model.install_review.as_mut() {
-                        review.approving = false;
-                    }
+                    self.model.install_review = None;
+                    self.model.end_failed();
                     return Action::None;
                 }
                 self.model.review_notice = Some("review did not stabilize".to_string());
@@ -1190,7 +1201,7 @@ mod tests {
     }
 
     #[test]
-    fn second_consecutive_unstable_fails_closed() {
+    fn second_consecutive_unstable_fails_closed_and_clears_review() {
         let mut transaction = approving_transaction(Some(s("sealed-payload")), 2);
         transaction.model.unstables = 1;
         transaction.update(TransactionMessage::Explored(Ok(drifted_run())));
@@ -1202,12 +1213,12 @@ mod tests {
                 .as_deref()
                 .is_some_and(|message| message.contains("review did not stabilize"))
         );
-        let review = transaction
-            .model
-            .install_review
-            .as_ref()
-            .expect("review kept");
-        assert!(!review.approving);
+        assert!(transaction.model.install_review.is_none());
+        assert!(matches!(
+            transaction.model.status,
+            TransactionStatus::Done(ChildOutcome::Failed(_))
+        ));
+        assert!(!transaction.is_active());
     }
 
     #[test]
@@ -1255,7 +1266,7 @@ mod tests {
     }
 
     #[test]
-    fn sentinel_while_approving_fails_closed() {
+    fn sentinel_while_approving_fails_closed_and_clears_review() {
         let mut transaction = approving_transaction(Some(s("sealed-payload")), 0);
         transaction.update(TransactionMessage::Explored(Err(ReviewError::Other(
             REVIEW_LOOP_ENDED.to_string(),
@@ -1264,12 +1275,12 @@ mod tests {
             transaction.model.failure().map(failure_report).as_deref(),
             Some(REVIEW_LOOP_ENDED)
         );
-        let review = transaction
-            .model
-            .install_review
-            .as_ref()
-            .expect("review kept");
-        assert!(!review.approving);
+        assert!(transaction.model.install_review.is_none());
+        assert!(matches!(
+            transaction.model.status,
+            TransactionStatus::Done(ChildOutcome::Failed(_))
+        ));
+        assert!(!transaction.is_active());
     }
 
     #[test]
