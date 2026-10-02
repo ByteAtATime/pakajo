@@ -64,9 +64,9 @@ pub fn repo_phase_from_result(result: anyhow::Result<crate::tx::driver::RunOutco
         crate::tx::driver::Finish::Committed => RepoPhase::Committed,
         crate::tx::driver::Finish::Stopped if outcome.summary.is_empty() => RepoPhase::Idle,
         crate::tx::driver::Finish::Stopped => RepoPhase::Declined,
-        crate::tx::driver::Finish::PrepareFailed(failure) => RepoPhase::Failed(
-            ChildOutcome::Failed(format!("failed to prepare transaction: {failure}")),
-        ),
+        crate::tx::driver::Finish::PrepareFailed(failure) => {
+            RepoPhase::Failed(ChildOutcome::Failed(failure.to_string()))
+        }
     }
 }
 

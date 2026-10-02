@@ -240,105 +240,121 @@ pub(crate) fn convert_log_level(level: AlpmLogLevel) -> Option<LogLevel> {
 }
 
 #[derive(Debug, Clone)]
-pub enum PrepareFailure {
-    Unsatisfied(Vec<UnsatisfiedDep>),
-    Other(String),
+pub struct PrepareFailure {
+    reason: String,
+    details: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct UnsatisfiedDep {
-    pub depend: String,
-    pub target: String,
-    pub causing_pkg: Option<String>,
+impl PrepareFailure {
+    pub fn new(reason: impl Into<String>, details: Vec<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            details,
+        }
+    }
+
+    pub fn report(&self, colored: bool) -> String {
+        let header = format!(
+            "{} failed to prepare transaction ({})",
+            crate::color::paint(colored, crate::color::RED, "error:"),
+            self.reason
+        );
+        std::iter::once(header)
+            .chain(self.details.iter().map(|d| crate::color::colon(colored, d)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 impl std::fmt::Display for PrepareFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Other(message) => write!(f, "{message}"),
-            Self::Unsatisfied(missing) => {
-                let mut first = true;
-                for dep in missing {
-                    if !first {
-                        writeln!(f)?;
-                    }
-                    first = false;
-                    match dep.causing_pkg.as_deref() {
-                        Some(cause) => write!(
-                            f,
-                            "removing {cause} breaks dependency '{}' required by {}",
-                            dep.depend, dep.target
-                        )?,
-                        None => write!(
-                            f,
-                            "unable to satisfy dependency '{}' required by {}",
-                            dep.depend, dep.target
-                        )?,
-                    }
-                }
-                Ok(())
-            }
-        }
+        f.write_str(&self.report(false))
+    }
+}
+
+impl std::error::Error for PrepareFailure {}
+
+fn unsatisfied_detail(miss: &alpm::DepMissing) -> String {
+    match miss.causing_pkg() {
+        Some(cause) => format!(
+            "removing {cause} breaks dependency '{}' required by {}",
+            miss.depend(),
+            miss.target()
+        ),
+        None => format!(
+            "unable to satisfy dependency '{}' required by {}",
+            miss.depend(),
+            miss.target()
+        ),
     }
 }
 
 pub(crate) fn extract_prepare_failure(err: alpm::PrepareError) -> PrepareFailure {
-    match err.data() {
-        Some(alpm::PrepareData::UnsatisfiedDeps(list)) => PrepareFailure::Unsatisfied(
-            list.iter()
-                .map(|d| UnsatisfiedDep {
-                    depend: d.depend().name().to_string(),
-                    target: d.target().to_string(),
-                    causing_pkg: d.causing_pkg().map(str::to_string),
-                })
-                .collect(),
-        ),
-        Some(other) => PrepareFailure::Other(format!("{other:?}")),
-        None => PrepareFailure::Other(format!("{}", err.error())),
-    }
+    let reason = err.error().to_string();
+    let details = match err.data() {
+        Some(alpm::PrepareData::UnsatisfiedDeps(list)) => {
+            list.iter().map(unsatisfied_detail).collect()
+        }
+        _ => Vec::new(),
+    };
+    PrepareFailure::new(reason, details)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn failure(reason: &str, details: &[&str]) -> PrepareFailure {
+        PrepareFailure::new(reason, details.iter().map(|d| (*d).to_string()).collect())
+    }
+
     #[test]
-    fn prepare_failure_display_renders_each_miss() {
-        let caused = PrepareFailure::Unsatisfied(vec![UnsatisfiedDep {
-            depend: "libfoo".to_string(),
-            target: "sl".to_string(),
-            causing_pkg: Some("glibc".to_string()),
-        }]);
-        assert_eq!(
-            caused.to_string(),
-            "removing glibc breaks dependency 'libfoo' required by sl"
+    fn removal_break_reports_reason_then_detail() {
+        let broke = failure(
+            "could not satisfy dependencies",
+            &[
+                "removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin",
+            ],
         );
-        let uncaused = PrepareFailure::Unsatisfied(vec![UnsatisfiedDep {
-            depend: "libfoo".to_string(),
-            target: "sl".to_string(),
-            causing_pkg: None,
-        }]);
         assert_eq!(
-            uncaused.to_string(),
-            "unable to satisfy dependency 'libfoo' required by sl"
+            broke.report(false),
+            "error: failed to prepare transaction (could not satisfy dependencies)\n:: removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin"
         );
-        let both = PrepareFailure::Unsatisfied(vec![
-            UnsatisfiedDep {
-                depend: "libfoo".to_string(),
-                target: "sl".to_string(),
-                causing_pkg: Some("glibc".to_string()),
-            },
-            UnsatisfiedDep {
-                depend: "libbar".to_string(),
-                target: "vlc".to_string(),
-                causing_pkg: None,
-            },
-        ]);
+    }
+
+    #[test]
+    fn every_missing_dep_gets_its_own_detail_line() {
+        let many = failure(
+            "could not satisfy dependencies",
+            &[
+                "removing glibc breaks dependency 'libfoo>=2' required by sl",
+                "unable to satisfy dependency 'libbar' required by vlc",
+            ],
+        );
         assert_eq!(
-            both.to_string(),
-            "removing glibc breaks dependency 'libfoo' required by sl\nunable to satisfy dependency 'libbar' required by vlc"
+            many.report(false),
+            "error: failed to prepare transaction (could not satisfy dependencies)\n:: removing glibc breaks dependency 'libfoo>=2' required by sl\n:: unable to satisfy dependency 'libbar' required by vlc"
         );
-        let other = PrepareFailure::Other("database not found".to_string());
-        assert_eq!(other.to_string(), "database not found");
+    }
+
+    #[test]
+    fn reason_only_failure_has_no_detail_lines() {
+        let broken = failure("database not found", &[]);
+        assert_eq!(
+            broken.report(false),
+            "error: failed to prepare transaction (database not found)"
+        );
+    }
+
+    #[test]
+    fn colored_report_paints_without_changing_text() {
+        let broke = failure(
+            "could not satisfy dependencies",
+            &["removing glibc breaks dependency 'libfoo' required by sl"],
+        );
+        let plain = broke.report(false);
+        let painted = broke.report(true);
+        assert_ne!(plain, painted);
+        assert_eq!(crate::color::ansi_strip(&painted), plain);
     }
 }

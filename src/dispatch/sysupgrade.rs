@@ -59,7 +59,7 @@ pub(crate) fn upgrade_review(
     let aur = preview_aur_candidates(handle);
     let outcome = crate::tx::compose::preview_with(handle, upgrade_run_spec(), source)?;
     if let crate::tx::driver::Finish::PrepareFailed(failure) = &outcome.finish {
-        anyhow::bail!("upgrade preview failed to prepare: {failure}");
+        anyhow::bail!("{failure}");
     }
     let review = outcome
         .review

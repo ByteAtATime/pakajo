@@ -39,7 +39,7 @@ fn stdin_input() -> std::rc::Rc<std::cell::RefCell<std::io::BufReader<std::io::S
 
 fn finish_transaction(outcome: crate::tx::driver::RunOutcome) -> anyhow::Result<i32> {
     if let crate::tx::driver::Finish::PrepareFailed(failure) = outcome.finish {
-        anyhow::bail!("failed to prepare transaction: {failure}")
+        return Err(anyhow::Error::new(failure));
     }
     Ok(0)
 }
@@ -49,9 +49,7 @@ fn upgrade_outcome_code(outcome: crate::tx::driver::RunOutcome) -> anyhow::Resul
         crate::tx::driver::Finish::Committed => Ok(0),
         crate::tx::driver::Finish::Stopped if outcome.summary.is_empty() => Ok(3),
         crate::tx::driver::Finish::Stopped => Ok(4),
-        crate::tx::driver::Finish::PrepareFailed(failure) => {
-            anyhow::bail!("failed to prepare transaction: {failure}")
-        }
+        crate::tx::driver::Finish::PrepareFailed(failure) => Err(anyhow::Error::new(failure)),
     }
 }
 
@@ -80,9 +78,16 @@ pub fn code_from(result: anyhow::Result<i32>) -> i32 {
     match result {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("{e:#}");
+            eprintln!("{}", report_error(&e));
             1
         }
+    }
+}
+
+fn report_error(error: &anyhow::Error) -> String {
+    match error.downcast_ref::<crate::tx::convert::PrepareFailure>() {
+        Some(failure) => failure.report(crate::color::stderr_color()),
+        None => format!("{error:#}"),
     }
 }
 
@@ -481,8 +486,9 @@ mod tests {
         assert_eq!(upgrade_outcome_code(declined).expect("declined"), 4);
         let failed = RunOutcome {
             summary: TransactionSummary::default(),
-            finish: Finish::PrepareFailed(crate::tx::convert::PrepareFailure::Other(
-                "broken".to_string(),
+            finish: Finish::PrepareFailed(crate::tx::convert::PrepareFailure::new(
+                "broken",
+                Vec::new(),
             )),
             review: None,
         };
@@ -502,16 +508,20 @@ mod tests {
         }
         let outcome = RunOutcome {
             summary: crate::events::TransactionSummary::default(),
-            finish: Finish::PrepareFailed(crate::tx::convert::PrepareFailure::Other(
-                "broken".to_string(),
+            finish: Finish::PrepareFailed(crate::tx::convert::PrepareFailure::new(
+                "could not satisfy dependencies",
+                vec![
+                    "removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' \
+                      required by shelly-flatpak-backend-bin"
+                        .to_string(),
+                ],
             )),
             review: None,
         };
         let error = finish_transaction(outcome).expect_err("prepare failure errors");
-        assert!(
-            error
-                .to_string()
-                .contains("failed to prepare transaction: broken")
+        assert_eq!(
+            report_error(&error),
+            "error: failed to prepare transaction (could not satisfy dependencies)\n:: removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin"
         );
     }
 }

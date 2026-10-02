@@ -995,11 +995,13 @@ mod tests {
     fn unsatisfiable_dep_reports_prepare_failure() {
         let mut h = Harness::fixture(&[Pkg::make("needy", "1.0-1", &["ghost>=9"], &[], &[])]);
         let outcome = h.outcome(&install(&["needy"], false), stop());
-        let Finish::PrepareFailed(PrepareFailure::Unsatisfied(missing)) = outcome.finish else {
+        let Finish::PrepareFailed(failure) = outcome.finish else {
             panic!("expected an unsatisfied prepare failure");
         };
-        assert_eq!(missing.len(), 1);
-        assert_eq!(missing[0].depend, "ghost");
+        assert_eq!(
+            failure.report(false),
+            "error: failed to prepare transaction (could not satisfy dependencies)\n:: unable to satisfy dependency 'ghost>=9' required by needy"
+        );
     }
 
     #[test]
