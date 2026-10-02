@@ -13,7 +13,19 @@ use pakajo::pacman::handle;
 
 pub const LOCK_DEBOUNCE: Duration = Duration::from_millis(300);
 
-pub fn begin_aur_sync_in_background(db: Arc<PackageDb>, search: Option<Arc<SearchSession>>) {
+#[derive(Clone, Debug)]
+pub enum IndexSyncOutcome {
+    Skipped,
+    NotModified,
+    Updated,
+    Failed(String),
+}
+
+pub fn aur_sync_task(
+    db: Arc<PackageDb>,
+    search: Option<Arc<SearchSession>>,
+) -> cosmic::app::Task<crate::Message> {
+    let (tx, rx) = futures::channel::oneshot::channel::<IndexSyncOutcome>();
     std::thread::spawn(move || {
         let reniced = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) };
         if reniced != 0 {
@@ -30,6 +42,7 @@ pub fn begin_aur_sync_in_background(db: Arc<PackageDb>, search: Option<Arc<Searc
                 "[pakajo] skipping aur sync (last refresh {}h ago)",
                 age.as_secs() / 3600
             );
+            let _ = tx.send(IndexSyncOutcome::Skipped);
             return;
         }
 
@@ -37,6 +50,7 @@ pub fn begin_aur_sync_in_background(db: Arc<PackageDb>, search: Option<Arc<Searc
             Ok(h) => h,
             Err(e) => {
                 eprintln!("[pakajo] aur background sync failed to init alpm: {e:#}");
+                let _ = tx.send(IndexSyncOutcome::Failed(format!("{e:#}")));
                 return;
             }
         };
@@ -44,6 +58,7 @@ pub fn begin_aur_sync_in_background(db: Arc<PackageDb>, search: Option<Arc<Searc
         match db.refresh(&handle) {
             Ok(RefreshOutcome::NotModified) => {
                 eprintln!("[pakajo] aur index up to date");
+                let _ = tx.send(IndexSyncOutcome::NotModified);
             }
             Ok(RefreshOutcome::Updated {
                 aur_count,
@@ -58,12 +73,25 @@ pub fn begin_aur_sync_in_background(db: Arc<PackageDb>, search: Option<Arc<Searc
                 {
                     eprintln!("[pakajo] search index rebuild failed: {e}");
                 }
+                let _ = tx.send(IndexSyncOutcome::Updated);
             }
             Err(e) => {
                 eprintln!("[pakajo] aur background sync failed: {e:#}");
+                let _ = tx.send(IndexSyncOutcome::Failed(format!("{e:#}")));
             }
         }
     });
+    cosmic::app::Task::perform(
+        async move {
+            rx.await.unwrap_or_else(|_| {
+                IndexSyncOutcome::Failed("aur sync worker exited without reporting".to_string())
+            })
+        },
+        |outcome| {
+            crate::Message::Loading(crate::components::loading::LoadingMessage::Synced(outcome))
+                .into()
+        },
+    )
 }
 
 struct DbLockWatcher;

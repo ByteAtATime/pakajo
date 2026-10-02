@@ -3,6 +3,7 @@ pub mod dashboard;
 pub mod detail;
 pub(crate) mod footer;
 pub mod icons;
+pub mod loading;
 pub mod onboarding;
 pub mod search;
 pub mod sysupgrade;
