@@ -15,6 +15,18 @@ macro_rules! icon {
     };
 }
 
+macro_rules! svg_icon {
+    ($name:ident, $file:literal) => {
+        pub fn $name() -> svg::Handle {
+            const BYTES: &[u8] =
+                include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons/", $file));
+            svg::Handle::from_memory(BYTES)
+        }
+    };
+}
+
+svg_icon!(arrow_right_svg, "arrow-right.svg");
+
 icon!(history, "history.svg");
 icon!(scale, "scale.svg");
 icon!(user, "user.svg");

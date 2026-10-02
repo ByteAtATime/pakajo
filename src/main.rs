@@ -22,7 +22,7 @@ use background::begin_aur_sync_in_background;
 use components::dashboard::DashboardState;
 use components::detail::{DetailMessage, DetailPane, detail_view};
 use components::footer;
-use components::onboarding::{OnboardingMessage, OnboardingPane, Step};
+use components::onboarding::{OnboardingMessage, OnboardingPane};
 use components::search::{ListRect, SearchMessage, SearchPane, search_input_id};
 use components::sysupgrade::SysupgradeMessage;
 use components::transaction::{Action, TransactionMessage, TxPane};
@@ -105,9 +105,9 @@ impl Application for PakajoApp {
         core.window.sharp_corners = true;
         core.window.use_template = false;
         let onboarding = match pakajo::config::load_or_create() {
-            Ok(config) if !config.gui.onboarded => Some(OnboardingPane {
-                step: Step::Welcome,
-            }),
+            Ok(config) if !config.gui.onboarded => {
+                Some(OnboardingPane::new(config.build.keep_cache))
+            }
             _ => None,
         };
         let db = PackageDb::open_default()
@@ -226,21 +226,23 @@ impl Application for PakajoApp {
                 };
                 Task::batch([dashboard, updates])
             }
-            Message::Onboarding(m) => match m {
-                OnboardingMessage::Next | OnboardingMessage::Back => {
-                    if let Some(pane) = self.onboarding.as_mut() {
-                        pane.update(m);
+            Message::Onboarding(m) => {
+                match m {
+                    OnboardingMessage::Skip | OnboardingMessage::Finish => {
+                        let keep_cache = self.onboarding.as_ref().map(|pane| pane.keep_cache);
+                        if let Err(e) = pakajo::config::complete_onboarding(keep_cache) {
+                            eprintln!("[pakajo] failed to complete onboarding: {e:#}");
+                        }
+                        self.onboarding = None;
                     }
-                    Task::none()
-                }
-                OnboardingMessage::Skip | OnboardingMessage::Finish => {
-                    if let Err(e) = pakajo::config::complete_onboarding(None) {
-                        eprintln!("[pakajo] failed to complete onboarding: {e:#}");
+                    _ => {
+                        if let Some(pane) = self.onboarding.as_mut() {
+                            pane.update(m);
+                        }
                     }
-                    self.onboarding = None;
-                    Task::none()
                 }
-            },
+                Task::none()
+            }
         };
         let focus = self.ensure_search_focus();
         Task::batch([focus, task])
