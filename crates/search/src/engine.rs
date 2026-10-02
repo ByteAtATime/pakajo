@@ -1017,11 +1017,36 @@ struct FusedCtx<'a> {
     installed: &'a HashSet<String>,
 }
 
-fn prefilter_words(index: &PackageIndex, qmask: u64, out: &mut Vec<u64>) {
+fn prefilter_words(index: &PackageIndex, query: &Query, out: &mut Vec<u64>) {
     word_map(index, out, |w| {
-        at_most_two_absent(qmask, |b| !index.name_char_word(w, b))
-            | all_present(qmask, |b| index.kw_char_word(w, b))
+        fuzzy_gate_words(index, query, w)
+            | name_substring_words(index, query, w)
+            | keyword_substring_words(index, query, w)
     });
+}
+
+fn fuzzy_gate_words(index: &PackageIndex, query: &Query, w: usize) -> u64 {
+    let name_masks = index.name_mask_word(w);
+    let mut kept = 0u64;
+    let mut rest = at_most_two_absent(query.chars, |b| !index.name_char_word(w, b));
+    while rest != 0 {
+        let i = rest.trailing_zeros() as usize;
+        if at_most_two_missing(name_masks[i] & !query.chars) {
+            kept |= 1u64 << i;
+        }
+        rest &= rest - 1;
+    }
+    kept
+}
+
+fn name_substring_words(index: &PackageIndex, query: &Query, w: usize) -> u64 {
+    all_present(query.chars, |b| index.name_char_word(w, b))
+        & all_present(query.bigrams, |b| index.name_bigram_word(w, b))
+}
+
+fn keyword_substring_words(index: &PackageIndex, query: &Query, w: usize) -> u64 {
+    all_present(query.chars, |b| index.kw_char_word(w, b))
+        & all_present(query.bigrams, |b| index.kw_bigram_word(w, b))
 }
 
 fn at_most_two_absent(qmask: u64, absent: impl Fn(usize) -> u64) -> u64 {
@@ -1201,7 +1226,7 @@ fn fused_expensive_fuzzy_pass(
     {
         let words = &mut scratch.words;
         if ctx.query.chars.count_ones() >= MIN_PREFILTER_CHARS {
-            prefilter_words(index, ctx.query.chars, words);
+            prefilter_words(index, &ctx.query, words);
         } else {
             full_words(index, words);
         }
@@ -1613,24 +1638,27 @@ mod legacy_tests {
         let index = index_with(raws);
 
         for q in ["alpha", "node", "alphaq", "alphabet", "ndej", "zz"] {
-            let qmask = byte_mask(q.as_bytes());
-            if qmask.count_ones() < 3 {
+            let query = Query::of(q);
+            if query.chars.count_ones() < MIN_PREFILTER_CHARS {
                 continue;
             }
             let mut words: Vec<u64> = Vec::new();
-            prefilter_words(&index, qmask, &mut words);
+            prefilter_words(&index, &query, &mut words);
             for i in 0..index.len() {
                 let r = index.row(i);
-                let name_missing = qmask & !r.name_mask;
-                let name_arm = at_most_two_missing(name_missing);
-                let kw_arm = qmask & r.kw_mask == qmask;
+                let fuzzy_gate = at_most_two_missing(query.chars & !r.name_mask)
+                    && (r.name_mask & !query.chars).count_ones() as usize <= MAX_EDIT_DISTANCE;
+                let name_substring = query.chars & r.name_mask == query.chars
+                    && query.bigrams & r.name_bigrams == query.bigrams;
+                let kw_substring = query.chars & r.kw_mask == query.chars
+                    && query.bigrams & r.kw_bigrams == query.bigrams;
                 let set = words[i / 64] >> (i % 64) & 1 == 1;
                 if set {
                     continue;
                 }
                 assert!(
-                    !name_arm && !kw_arm,
-                    "query {q} row {i} passes the gates but the prefilter dropped it"
+                    !fuzzy_gate && !name_substring && !kw_substring,
+                    "query {q} row {i} passes a gate but the prefilter dropped it"
                 );
             }
         }
@@ -1638,15 +1666,20 @@ mod legacy_tests {
 
     #[test]
     fn prefilter_keeps_a_row_missing_two_of_three_query_chars() {
-        let index = index_with(vec![pkg(1, "abcde", false, 0)]);
-        let qmask = byte_mask(b"axy");
-        assert!(at_most_two_missing(qmask & !index.row(0).name_mask));
+        let index = index_with(vec![pkg(1, "ab", false, 0)]);
+        let query = Query::of("axy");
+        let r = index.row(0);
+        assert!(at_most_two_missing(query.chars & !r.name_mask));
+        assert!(
+            (r.name_mask & !query.chars).count_ones() as usize <= MAX_EDIT_DISTANCE,
+            "the fixture must stay inside the fuzzy gate"
+        );
         let mut words: Vec<u64> = Vec::new();
-        prefilter_words(&index, qmask, &mut words);
+        prefilter_words(&index, &query, &mut words);
         assert_eq!(
             words[0] & 1,
             1,
-            "a row within edit distance 2 must survive the prefilter"
+            "a row the fuzzy gate accepts must survive the prefilter"
         );
     }
 

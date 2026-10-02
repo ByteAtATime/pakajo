@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::SearchError;
@@ -53,6 +54,8 @@ pub struct PackageIndex {
     pub(crate) rows: Vec<PkgRow>,
     pub(crate) rank_bits: Box<[u64]>,
     pub(crate) max_kw_lens: Box<[u16]>,
+    #[serde(skip, default = "OnceLock::new")]
+    name_masks: OnceLock<Box<[u64]>>,
     pub(crate) arena: Box<str>,
     pub(crate) token_ids: Box<[u32]>,
     pub(crate) kw_ids: Box<[u32]>,
@@ -385,6 +388,12 @@ fn word_of(row: usize) -> usize {
     row / 64
 }
 
+fn build_name_masks(rows: &[PkgRow]) -> Vec<u64> {
+    let mut masks: Vec<u64> = rows.iter().map(|r| r.name_mask).collect();
+    masks.resize(row_words(rows.len()) * 64, 0);
+    masks
+}
+
 struct TokenScan {
     ascii_ids: Vec<u32>,
     ascii_masks: Vec<u64>,
@@ -455,6 +464,7 @@ pub(crate) fn assemble(raws: Vec<RawPkg>) -> PackageIndex {
     let mut index = PackageIndex {
         rank_bits: build_rank_bits(&rows).into_boxed_slice(),
         max_kw_lens: build_max_kw_lens(&raws).into_boxed_slice(),
+        name_masks: OnceLock::new(),
         rows,
         arena: arena.into_boxed_str(),
         token_ids: token_ids.into_boxed_slice(),
@@ -513,6 +523,15 @@ impl PackageIndex {
 
     pub(crate) fn row_words(&self) -> usize {
         row_words(self.rows.len())
+    }
+
+    fn name_masks(&self) -> &[u64] {
+        self.name_masks
+            .get_or_init(|| build_name_masks(&self.rows).into_boxed_slice())
+    }
+
+    pub(crate) fn name_mask_word(&self, word: usize) -> &[u64] {
+        &self.name_masks()[word * 64..word * 64 + 64]
     }
 
     fn slice(&self, off: u32, len: u16) -> &str {
