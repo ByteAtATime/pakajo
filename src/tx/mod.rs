@@ -9,3 +9,4 @@ pub mod questions;
 #[cfg(test)]
 mod snapshots;
 pub mod targets;
+pub mod throttle;

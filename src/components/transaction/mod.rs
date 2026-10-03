@@ -15,6 +15,7 @@ use pakajo::pkgbuild::{PkgbuildDiff, mark_seen, prepare_pkgbuild_diffs};
 use pakajo::progress::InstallKind;
 use pakajo::question::model::Question;
 use pakajo::question::revalidate::{Verdict, converge, revalidate};
+use pakajo::tx::throttle::DownloadThrottle;
 
 use crate::Element;
 use crate::PakajoCtx;
@@ -199,10 +200,17 @@ fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::M
         move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
             use futures::SinkExt as _;
             let mut done_seen = false;
+            let mut throttle = DownloadThrottle::new();
+            let epoch = std::time::Instant::now();
             while let Some(item) = rx.next().await {
                 let done = matches!(item, StreamItem::Done(_));
                 let message = match item {
-                    StreamItem::Event(ev) => TransactionMessage::InstallEvent(ev),
+                    StreamItem::Event(ev) => {
+                        if !throttle.admit(&ev, epoch.elapsed().as_millis() as u64) {
+                            continue;
+                        }
+                        TransactionMessage::InstallEvent(ev)
+                    }
                     StreamItem::AnswerChannel(writer) => TransactionMessage::AnswerChannel(writer),
                     StreamItem::Done(outcome) => TransactionMessage::InstallDone(outcome),
                 };
