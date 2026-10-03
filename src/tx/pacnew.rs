@@ -2,10 +2,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::MergeOrigin;
 
+#[cfg(test)]
+mod diff;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MergeKind {
     Pacnew,
     Pacsave,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingMerge {
+    pub kind: MergeKind,
+    pub file: String,
+    pub from_noupgrade: bool,
+    pub origin: Option<MergeOrigin>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
