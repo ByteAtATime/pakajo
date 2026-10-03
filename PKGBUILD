@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc='AUR helper and package manager front-end for Arch Linux, with a terminal CLI and a COSMIC GUI'
 arch=('x86_64')
 url='https://github.com/ByteAtATime/pakajo'
-license=('unknown')
+license=('GPL-3.0-only')
 _tag=v0.1.0
 source=("git+https://github.com/ByteAtATime/pakajo.git#tag=${_tag}")
 sha256sums=('SKIP')

@@ -6,6 +6,7 @@ members = ["crates/search"]
 name = "pakajo"
 version = "0.1.0"
 edition = "2024"
+license = "GPL-3.0-only"
 
 [dependencies]
 alpm = "5.0.2"
