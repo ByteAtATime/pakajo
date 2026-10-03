@@ -22,6 +22,12 @@ use crate::PakajoCtx;
 
 const REVIEW_LOOP_ENDED: &str = "review ended unexpectedly";
 
+static NEXT_TRANSACTION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_transaction_id() -> u64 {
+    NEXT_TRANSACTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 mod state;
 
 pub(crate) use state::{FailureKind, TransactionModel, TransactionStatus};
@@ -76,6 +82,10 @@ pub enum TransactionRequest {
 
 #[derive(Clone, Debug)]
 pub enum TransactionMessage {
+    Streamed {
+        id: u64,
+        message: Box<TransactionMessage>,
+    },
     Begin(TransactionRequest),
     InstallEvent(InstallEvent),
     InstallDone(ChildOutcome),
@@ -108,23 +118,23 @@ pub(crate) enum Action {
     Failed,
 }
 
-fn launch_install(request: pakajo::dispatch::InstallRequest) -> Action {
-    Action::Run(stream_items(pakajo::dispatch::install(request)))
+fn launch_install(id: u64, request: pakajo::dispatch::InstallRequest) -> Action {
+    Action::Run(stream_items(id, pakajo::dispatch::install(request)))
 }
 
-fn launch_remove(request: pakajo::dispatch::RemoveRequest) -> Action {
-    Action::Run(stream_items(pakajo::dispatch::remove(request)))
+fn launch_remove(id: u64, request: pakajo::dispatch::RemoveRequest) -> Action {
+    Action::Run(stream_items(id, pakajo::dispatch::remove(request)))
 }
 
-fn launch_sysupgrade(request: pakajo::dispatch::SysupgradeRequest) -> Action {
-    Action::Run(stream_items(pakajo::dispatch::sysupgrade(request)))
+fn launch_sysupgrade(id: u64, request: pakajo::dispatch::SysupgradeRequest) -> Action {
+    Action::Run(stream_items(id, pakajo::dispatch::sysupgrade(request)))
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct Launcher {
-    install: fn(pakajo::dispatch::InstallRequest) -> Action,
-    remove: fn(pakajo::dispatch::RemoveRequest) -> Action,
-    sysupgrade: fn(pakajo::dispatch::SysupgradeRequest) -> Action,
+    install: fn(u64, pakajo::dispatch::InstallRequest) -> Action,
+    remove: fn(u64, pakajo::dispatch::RemoveRequest) -> Action,
+    sysupgrade: fn(u64, pakajo::dispatch::SysupgradeRequest) -> Action,
 }
 
 impl Default for Launcher {
@@ -156,18 +166,18 @@ fn closed_stream() -> pakajo::dispatch::exec::DispatchStream {
 }
 
 #[cfg(test)]
-fn closed_install(_: pakajo::dispatch::InstallRequest) -> Action {
-    Action::Run(stream_items(closed_stream()))
+fn closed_install(id: u64, _: pakajo::dispatch::InstallRequest) -> Action {
+    Action::Run(stream_items(id, closed_stream()))
 }
 
 #[cfg(test)]
-fn closed_remove(_: pakajo::dispatch::RemoveRequest) -> Action {
-    Action::Run(stream_items(closed_stream()))
+fn closed_remove(id: u64, _: pakajo::dispatch::RemoveRequest) -> Action {
+    Action::Run(stream_items(id, closed_stream()))
 }
 
 #[cfg(test)]
-fn closed_sysupgrade(_: pakajo::dispatch::SysupgradeRequest) -> Action {
-    Action::Run(stream_items(closed_stream()))
+fn closed_sysupgrade(id: u64, _: pakajo::dispatch::SysupgradeRequest) -> Action {
+    Action::Run(stream_items(id, closed_stream()))
 }
 
 fn sealed_decider(
@@ -194,7 +204,7 @@ fn keep_build_cache() -> bool {
         .unwrap_or(true)
 }
 
-fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::Message> {
+fn stream_items(id: u64, mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::Message> {
     Task::stream(channel(
         256,
         move |mut tx: futures::channel::mpsc::Sender<cosmic::Action<crate::Message>>| async move {
@@ -214,27 +224,31 @@ fn stream_items(mut rx: pakajo::dispatch::exec::DispatchStream) -> Task<crate::M
                     StreamItem::AnswerChannel(writer) => TransactionMessage::AnswerChannel(writer),
                     StreamItem::Done(outcome) => TransactionMessage::InstallDone(outcome),
                 };
-                let _ = tx.send(crate::Message::Transaction(message).into()).await;
+                let wrapped = TransactionMessage::Streamed {
+                    id,
+                    message: Box::new(message),
+                };
+                let _ = tx.send(crate::Message::Transaction(wrapped).into()).await;
                 if done {
                     done_seen = true;
                     break;
                 }
             }
             if !done_seen {
-                let _ = tx
-                    .send(
-                        crate::Message::Transaction(TransactionMessage::InstallDone(
-                            ChildOutcome::Failed("stream ended".into()),
-                        ))
-                        .into(),
-                    )
-                    .await;
+                let wrapped = TransactionMessage::Streamed {
+                    id,
+                    message: Box::new(TransactionMessage::InstallDone(ChildOutcome::Failed(
+                        "stream ended".into(),
+                    ))),
+                };
+                let _ = tx.send(crate::Message::Transaction(wrapped).into()).await;
             }
         },
     ))
 }
 
 fn review_stream(
+    id: u64,
     rx: std::sync::mpsc::Receiver<Result<RevalidationRun, ReviewError>>,
 ) -> Task<crate::Message> {
     Task::stream(channel(
@@ -251,18 +265,19 @@ fn review_stream(
                 }
             });
             while let Some(result) = forward.next().await {
-                let _ = tx
-                    .send(crate::Message::Transaction(TransactionMessage::Explored(result)).into())
-                    .await;
+                let wrapped = TransactionMessage::Streamed {
+                    id,
+                    message: Box::new(TransactionMessage::Explored(result)),
+                };
+                let _ = tx.send(crate::Message::Transaction(wrapped).into()).await;
             }
-            let _ = tx
-                .send(
-                    crate::Message::Transaction(TransactionMessage::Explored(Err(
-                        ReviewError::Other(REVIEW_LOOP_ENDED.to_string()),
-                    )))
-                    .into(),
-                )
-                .await;
+            let wrapped = TransactionMessage::Streamed {
+                id,
+                message: Box::new(TransactionMessage::Explored(Err(ReviewError::Other(
+                    REVIEW_LOOP_ENDED.to_string(),
+                )))),
+            };
+            let _ = tx.send(crate::Message::Transaction(wrapped).into()).await;
         },
     ))
 }
@@ -420,6 +435,7 @@ impl TxPane {
 }
 
 pub(crate) struct Transaction {
+    id: u64,
     model: TransactionModel,
     review_loop: Option<ReviewLoop>,
     launcher: Launcher,
@@ -455,13 +471,15 @@ impl Transaction {
         };
         let (review_loop, rx) = ReviewLoop::spawn(ReviewPlan::Install(Box::new(request)));
         review_loop.send(ReviewStep::Defaults);
+        let id = next_transaction_id();
         (
             Self {
+                id,
                 model,
                 review_loop: Some(review_loop),
                 launcher: Launcher::default(),
             },
-            review_stream(rx),
+            review_stream(id, rx),
         )
     }
 
@@ -480,18 +498,26 @@ impl Transaction {
             .unwrap_or_default();
         let (review_loop, rx) = ReviewLoop::spawn(ReviewPlan::Remove { targets, holds });
         review_loop.send(ReviewStep::Defaults);
+        let id = next_transaction_id();
         (
             Self {
+                id,
                 model,
                 review_loop: Some(review_loop),
                 launcher: Launcher::default(),
             },
-            review_stream(rx),
+            review_stream(id, rx),
         )
     }
 
     pub(crate) fn update(&mut self, message: TransactionMessage) -> Action {
         match message {
+            TransactionMessage::Streamed { id, message } => {
+                if id != self.id {
+                    return Action::None;
+                }
+                self.update(*message)
+            }
             TransactionMessage::Begin(_) => Action::None,
             TransactionMessage::InstallEvent(ev) => {
                 self.model.apply_event(&ev);
@@ -888,7 +914,7 @@ impl Transaction {
             tty: false,
             json: false,
         };
-        (self.launcher.install)(request)
+        (self.launcher.install)(self.id, request)
     }
 
     fn launch_remove_subprocess(&mut self, approvals: String) -> Action {
@@ -900,7 +926,7 @@ impl Transaction {
             json: false,
             approvals: Some(approvals),
         };
-        (self.launcher.remove)(request)
+        (self.launcher.remove)(self.id, request)
     }
 
     fn launch_sysupgrade_subprocess(&mut self, approvals: String) -> Action {
@@ -921,7 +947,7 @@ impl Transaction {
             json: false,
             print_nothing_to_do: false,
         };
-        (self.launcher.sysupgrade)(request)
+        (self.launcher.sysupgrade)(self.id, request)
     }
 
     pub(crate) fn start_sysupgrade() -> (Self, Task<crate::Message>) {
@@ -935,13 +961,15 @@ impl Transaction {
             ignores: Vec::new(),
         });
         review_loop.send(ReviewStep::Defaults);
+        let id = next_transaction_id();
         (
             Self {
+                id,
                 model,
                 review_loop: Some(review_loop),
                 launcher: Launcher::default(),
             },
-            review_stream(rx),
+            review_stream(id, rx),
         )
     }
 
@@ -1107,6 +1135,7 @@ mod tests {
             _ => s("firefox"),
         };
         Transaction {
+            id: next_transaction_id(),
             model: TransactionModel::batch(name.clone(), vec![name], Vec::new(), kind),
             review_loop: None,
             launcher: Launcher::closed(),
@@ -1204,14 +1233,14 @@ mod tests {
             tty: false,
             json: false,
         };
-        assert!(matches!((launcher.install)(install), Action::Run(_)));
+        assert!(matches!((launcher.install)(1, install), Action::Run(_)));
         let remove = pakajo::dispatch::RemoveRequest {
             targets: vec![s("firefox")],
             tty: false,
             json: false,
             approvals: None,
         };
-        assert!(matches!((launcher.remove)(remove), Action::Run(_)));
+        assert!(matches!((launcher.remove)(1, remove), Action::Run(_)));
         let sysupgrade = pakajo::dispatch::SysupgradeRequest {
             no_refresh: false,
             repo_only: false,
@@ -1224,7 +1253,10 @@ mod tests {
             json: false,
             print_nothing_to_do: false,
         };
-        assert!(matches!((launcher.sysupgrade)(sysupgrade), Action::Run(_)));
+        assert!(matches!(
+            (launcher.sysupgrade)(1, sysupgrade),
+            Action::Run(_)
+        ));
 
         let mut stream = closed_stream();
         let item = futures::executor::block_on(stream.next());
@@ -1786,5 +1818,61 @@ mod tests {
             merge_read_echo(child, stdout),
             "{\"file\":\"/etc/x.conf\",\"action\":\"KeepCurrent\"}\n"
         );
+    }
+
+    #[test]
+    fn stale_stream_sentinel_is_dropped_by_id() {
+        let old = new_transaction(InstallKind::Install);
+        let mut transaction = new_transaction(InstallKind::Install);
+        let stale = TransactionMessage::Streamed {
+            id: old.id,
+            message: Box::new(TransactionMessage::Explored(Err(ReviewError::Other(
+                REVIEW_LOOP_ENDED.to_string(),
+            )))),
+        };
+        let action = transaction.update(stale);
+        assert!(matches!(action, Action::None));
+        assert!(transaction.is_active());
+        assert!(transaction.model.failure().is_none());
+        assert!(matches!(
+            transaction.model.status,
+            TransactionStatus::Checking
+        ));
+    }
+
+    #[test]
+    fn matching_stream_sentinel_still_fails() {
+        let mut transaction = new_transaction(InstallKind::Install);
+        let wrapped = TransactionMessage::Streamed {
+            id: transaction.id,
+            message: Box::new(TransactionMessage::Explored(Err(ReviewError::Other(
+                REVIEW_LOOP_ENDED.to_string(),
+            )))),
+        };
+        let action = transaction.update(wrapped);
+        assert!(matches!(action, Action::Failed));
+        assert_eq!(
+            transaction.model.failure().map(failure_report).as_deref(),
+            Some(REVIEW_LOOP_ENDED)
+        );
+    }
+
+    #[test]
+    fn pane_replacement_drops_old_stream_messages() {
+        let old = new_transaction(InstallKind::Install);
+        let mut pane = TxPane {
+            transaction: Some(new_transaction(InstallKind::Install)),
+            show: false,
+        };
+        let action = pane.forward(TransactionMessage::Streamed {
+            id: old.id,
+            message: Box::new(TransactionMessage::InstallDone(ChildOutcome::Failed(
+                "old stream died".into(),
+            ))),
+        });
+        assert!(matches!(action, Action::None));
+        let transaction = pane.transaction.as_ref().expect("transaction present");
+        assert!(transaction.is_active());
+        assert!(transaction.model.failure().is_none());
     }
 }

@@ -113,6 +113,7 @@ mod removal_tests {
 
     fn removal_transaction() -> Transaction {
         Transaction {
+            id: super::super::next_transaction_id(),
             model: TransactionModel::batch(
                 "firefox".to_string(),
                 vec!["firefox".to_string()],
