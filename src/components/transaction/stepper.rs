@@ -3,7 +3,7 @@ use super::shared::{accent_color, destructive_color, muted, muted_color, on_colo
 use super::state::StageState;
 use crate::Element;
 use crate::components::icons;
-use cosmic::iced::alignment::{Horizontal, Vertical};
+use cosmic::iced::alignment::{Alignment, Horizontal, Vertical};
 use cosmic::iced::border::Radius;
 use cosmic::iced::widget::{Stack, progress_bar};
 use cosmic::iced::{Background, Border, Color, Length};
@@ -104,15 +104,25 @@ pub(super) fn sections_view<'a>(
         .push(text::title3(title))
         .push(space::horizontal());
     let header = header.push_maybe((finished || !is_sysupgrade).then(close_button));
-    let body = scrollable(container(panels).padding([16.0, 20.0, 24.0, 20.0]))
-        .width(Length::Fill)
-        .height(Length::Fill);
+    let body = container(centered(
+        scrollable(container(panels).padding([16.0, 20.0, 24.0, 20.0]))
+            .width(Length::Fill)
+            .height(Length::Fill),
+    ))
+    .height(Length::Fill);
     Column::new()
         .width(Length::Fill)
         .height(Length::Fill)
-        .push(header)
+        .push(centered(header))
         .push(divider::horizontal::default())
         .push(body)
+        .into()
+}
+
+fn centered<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
+    container(container(content).max_width(CONTENT_MAX_WIDTH))
+        .width(Length::Fill)
+        .align_x(Alignment::Center)
         .into()
 }
 
@@ -181,6 +191,7 @@ pub(super) fn stage_row(
         .into()
 }
 
+const CONTENT_MAX_WIDTH: f32 = 1000.0;
 const GLYPH_GUTTER_WIDTH: f32 = 18.0;
 const TITLE_LINE_HEIGHT: f32 = 30.0;
 const CONNECTOR_WIDTH: f32 = 2.0;
