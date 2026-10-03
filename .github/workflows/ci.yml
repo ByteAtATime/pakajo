@@ -44,6 +44,24 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Import signing key
+        shell: bash
+        env:
+          GPG_PRIVATE_KEY_BASE64: ${{ secrets.GPG_PRIVATE_KEY_BASE64 }}
+        run: |
+          useradd --create-home --shell /bin/bash builder
+          install -d -m700 -o builder -g builder /home/builder/.gnupg
+
+          printf '%s' "$GPG_PRIVATE_KEY_BASE64" | base64 -d \
+            | runuser -u builder -- env HOME=/home/builder \
+                gpg --batch --quiet --import
+
+          keyid=$(runuser -u builder -- env HOME=/home/builder \
+            gpg --batch --list-secret-keys --with-colons \
+            | awk -F: '/^fpr:/ { print $10; exit }')
+          test -n "$keyid"
+          printf 'GPGKEY=%s\n' "$keyid" >> "$GITHUB_ENV"
+
       - uses: actions/cache@v6
         with:
           path: |
@@ -58,7 +76,6 @@ jobs:
         shell: bash
         run: |
           pkgbuild=/home/builder/pkgbuild
-          useradd --create-home --shell /bin/bash builder
           install -d -o builder -g builder "$pkgbuild"
           install -m644 PKGBUILD "$pkgbuild/PKGBUILD"
 
@@ -78,6 +95,7 @@ jobs:
           OPTIONS=(strip docs !libtool !staticlibs emptydirs zipman purge)
           COMPRESSZST=(zstd -c -T0 -19 -)
           EOF
+          printf 'GPGKEY=%s\n' "$GPGKEY" >> "$pkgbuild/makepkg.conf"
           chown builder:builder "$pkgbuild/PKGBUILD" "$pkgbuild/makepkg.conf"
 
           runuser -u builder -- env -C "$pkgbuild" \
@@ -85,17 +103,21 @@ jobs:
             CARGO_HOME=/home/builder/.cargo \
             RUSTUP_HOME=/usr/local/rustup \
             PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin \
-            makepkg --config makepkg.conf --noconfirm --nodeps --cleanbuild
+            makepkg --config makepkg.conf --noconfirm --nodeps --cleanbuild --sign
 
           pkg=$(runuser -u builder -- env -C "$pkgbuild" makepkg --config makepkg.conf --packagelist)
           test -n "$pkg"
+          test -f "$pkg.sig"
+          runuser -u builder -- env HOME=/home/builder gpg --verify "$pkg.sig" "$pkg"
 
           mkdir -p dist
-          mv "$pkg" dist/
+          mv "$pkg" "$pkg.sig" dist/
           runuser -u builder -- env -C "$pkgbuild" makepkg --printsrcinfo > dist/.SRCINFO
-          sha256sum dist/pakajo-*.pkg.tar.zst > dist/SHA256SUMS.txt
+          runuser -u builder -- env HOME=/home/builder \
+            gpg --batch --armor --export "$GPGKEY" > dist/pakajo.asc
+          sha256sum dist/pakajo-*.pkg.tar.zst dist/pakajo-*.pkg.tar.zst.sig > dist/sha256sums
 
-          cat dist/SHA256SUMS.txt
+          cat dist/sha256sums
           pacman -Qip dist/pakajo-*.pkg.tar.zst
           pacman -Qlp dist/pakajo-*.pkg.tar.zst
 
@@ -133,7 +155,9 @@ jobs:
         with:
           files: |
             dist/*.pkg.tar.zst
-            dist/SHA256SUMS.txt
+            dist/*.pkg.tar.zst.sig
+            dist/pakajo.asc
+            dist/sha256sums
             dist/.SRCINFO
           fail_on_unmatched_files: true
           generate_release_notes: true
