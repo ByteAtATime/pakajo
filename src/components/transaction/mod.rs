@@ -749,8 +749,8 @@ impl Transaction {
             return Action::None;
         }
         if !review::install_needs_review(&run.questions) {
-            eprintln!("[pakajo] no questions, starting transaction");
-            return self.finalize_transaction();
+            eprintln!("[pakajo] no questions, checking for pkgbuild diffs");
+            return self.proceed_after_conflicts(None);
         }
         eprintln!(
             "[pakajo] review required ({} questions)",
