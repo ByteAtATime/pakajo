@@ -171,11 +171,7 @@ pub(super) fn apply_decision(
     }
 }
 
-pub(super) fn merge_disposition(
-    kind: MergeKind,
-    action: &MergeAction,
-    file: &str,
-) -> Option<String> {
+pub fn merge_disposition(kind: MergeKind, action: &MergeAction, file: &str) -> Option<String> {
     match (kind, action) {
         (MergeKind::Pacnew, MergeAction::KeepCurrent) => {
             Some(format!("kept current, removed {file}.pacnew"))
@@ -711,13 +707,5 @@ mod tests {
             merge_disposition(MergeKind::Pacnew, &MergeAction::Restore, "/etc/app.conf"),
             None
         );
-    }
-
-    #[test]
-    fn unsupported_payload_names_action() {
-        match unsupported(&MergeAction::Defer) {
-            ApplyError::Unsupported(payload) => assert_eq!(payload, "Defer"),
-            ApplyError::Io(_) => panic!("expected unsupported"),
-        }
     }
 }

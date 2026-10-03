@@ -147,6 +147,7 @@ fn runtime_emit(question: Question) {
 fn child_source_sink<E>(
     wire: &ChildWire,
     channel: Option<E>,
+    input: Option<std::rc::Rc<std::cell::RefCell<std::io::BufReader<std::io::Stdin>>>>,
 ) -> (
     Box<dyn crate::question::source::AnswerSource>,
     Box<dyn InstallSink>,
@@ -168,12 +169,63 @@ where
     }
     let inner = silent_inner(wire.sealed.clone());
     match channel {
-        Some(emit) => (
-            crate::tx::prompt::stdin_channel_source(inner, emit),
-            Box::new(JsonSink::new()),
-        ),
+        Some(emit) => {
+            let reader = input.unwrap_or_else(stdin_input);
+            (
+                crate::tx::prompt::stdin_channel_source(inner, reader, emit),
+                Box::new(JsonSink::new()),
+            )
+        }
         None => (inner, Box::new(JsonSink::new())),
     }
+}
+
+fn silent_input(
+    wire: &ChildWire,
+) -> Option<std::rc::Rc<std::cell::RefCell<std::io::BufReader<std::io::Stdin>>>> {
+    if wire.is_silent() {
+        return Some(stdin_input());
+    }
+    None
+}
+
+fn recording_sink(
+    sink: Box<dyn InstallSink>,
+    input: &Option<std::rc::Rc<std::cell::RefCell<std::io::BufReader<std::io::Stdin>>>>,
+) -> (
+    Box<dyn InstallSink>,
+    std::rc::Rc<std::cell::RefCell<Vec<crate::tx::pacnew::PendingMerge>>>,
+) {
+    let pending = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    if input.is_some() {
+        return (
+            Box::new(crate::tx::pacnew::MergeRecorder::new(
+                sink,
+                std::rc::Rc::clone(&pending),
+            )),
+            pending,
+        );
+    }
+    (sink, pending)
+}
+
+fn committed(outcome: &crate::tx::driver::RunOutcome) -> bool {
+    matches!(outcome.finish, crate::tx::driver::Finish::Committed)
+}
+
+fn maybe_run_merge_phase(
+    input: &Option<std::rc::Rc<std::cell::RefCell<std::io::BufReader<std::io::Stdin>>>>,
+    pending: &std::rc::Rc<std::cell::RefCell<Vec<crate::tx::pacnew::PendingMerge>>>,
+    outcome: &crate::tx::driver::RunOutcome,
+) {
+    let Some(input) = input.as_ref() else {
+        return;
+    };
+    if !committed(outcome) {
+        return;
+    }
+    let mut sink = JsonSink::new();
+    crate::tx::pacnew::run_merge_phase(&mut sink, input, pending);
 }
 
 pub(crate) fn run_upgrade_repo_direct(
@@ -205,7 +257,7 @@ pub(crate) fn run_upgrade_repo_direct(
         interactive,
         tty,
     };
-    let (source, sink) = child_source_sink(&wire, Some(runtime_emit));
+    let (source, sink) = child_source_sink(&wire, Some(runtime_emit), None);
     crate::upgrade::run_upgrade_repo(no_refresh, ignores, source, sink)
 }
 
@@ -240,8 +292,11 @@ impl ChildOperation {
                     interactive: *interactive,
                     tty: privs::stdin_is_tty(),
                 };
-                let (source, sink) = child_source_sink(&wire, None::<fn(Question)>);
+                let (source, sink) = child_source_sink(&wire, None::<fn(Question)>, None);
+                let input = silent_input(&wire);
+                let (sink, pending) = recording_sink(sink, &input);
                 let outcome = crate::tx::driver::run(&mut handle, &spec, source, sink)?;
+                maybe_run_merge_phase(&input, &pending, &outcome);
                 finish_transaction(outcome)
             }
             ChildOperation::Install {
@@ -294,8 +349,15 @@ impl ChildOperation {
                     interactive: *interactive,
                     tty: privs::stdin_is_tty(),
                 };
-                let (source, sink) = child_source_sink(&wire, Some(runtime_emit));
+                let input = silent_input(&wire);
+                let (source, sink) = child_source_sink(
+                    &wire,
+                    Some(runtime_emit),
+                    input.as_ref().map(std::rc::Rc::clone),
+                );
+                let (sink, pending) = recording_sink(sink, &input);
                 let outcome = crate::tx::driver::run(&mut handle, &spec, source, sink)?;
+                maybe_run_merge_phase(&input, &pending, &outcome);
                 finish_transaction(outcome)
             }
             ChildOperation::UpgradeRepo {
@@ -325,8 +387,15 @@ impl ChildOperation {
                     interactive: *interactive,
                     tty,
                 };
-                let (source, sink) = child_source_sink(&wire, Some(runtime_emit));
+                let input = silent_input(&wire);
+                let (source, sink) = child_source_sink(
+                    &wire,
+                    Some(runtime_emit),
+                    input.as_ref().map(std::rc::Rc::clone),
+                );
+                let (sink, pending) = recording_sink(sink, &input);
                 let outcome = crate::upgrade::run_upgrade_repo(*no_refresh, ignores, source, sink)?;
+                maybe_run_merge_phase(&input, &pending, &outcome);
                 upgrade_outcome_code(outcome)
             }
         }
@@ -413,7 +482,7 @@ mod tests {
             interactive: false,
             tty: true,
         };
-        let (source, _) = child_source_sink(&wire, Some(runtime_emit));
+        let (source, _) = child_source_sink(&wire, Some(runtime_emit), None);
         assert!(
             matches!(
                 source.answer(&question),
@@ -441,7 +510,7 @@ mod tests {
             interactive: false,
             tty: true,
         };
-        let (source, _) = child_source_sink(&wire, Some(runtime_emit));
+        let (source, _) = child_source_sink(&wire, Some(runtime_emit), None);
         assert!(
             matches!(source.answer(&question), SourceDecision::Abort(_)),
             "unsealed upgrade answers nothing"
@@ -523,5 +592,80 @@ mod tests {
             report_error(&error, false),
             "error: failed to prepare transaction (could not satisfy dependencies)\n:: removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin"
         );
+    }
+
+    fn run_outcome(finish: crate::tx::driver::Finish) -> crate::tx::driver::RunOutcome {
+        crate::tx::driver::RunOutcome {
+            summary: crate::events::TransactionSummary::default(),
+            finish,
+            review: None,
+        }
+    }
+
+    #[test]
+    fn merge_phase_is_gated_on_commit() {
+        assert!(committed(&run_outcome(
+            crate::tx::driver::Finish::Committed
+        )));
+        assert!(!committed(&run_outcome(crate::tx::driver::Finish::Stopped)));
+        assert!(
+            !committed(&run_outcome(crate::tx::driver::Finish::PrepareFailed(
+                crate::tx::convert::PrepareFailure::new("broken", Vec::new())
+            ))),
+            "prepare failure skips the merge phase"
+        );
+    }
+
+    #[test]
+    fn silent_input_exists_only_for_silent_wires() {
+        let silent = ChildWire {
+            sealed: None,
+            authorized: false,
+            stream: true,
+            interactive: false,
+            tty: true,
+        };
+        assert!(silent_input(&silent).is_some());
+        let loud = ChildWire {
+            sealed: None,
+            authorized: false,
+            stream: false,
+            interactive: false,
+            tty: false,
+        };
+        assert!(silent_input(&loud).is_none());
+    }
+
+    #[test]
+    fn recording_sink_collects_only_with_shared_input() {
+        use crate::events::{InstallEvent, InstallSink};
+        struct CountSink {
+            seen: usize,
+        }
+        impl InstallSink for CountSink {
+            fn event(&mut self, _event: InstallEvent) {
+                self.seen += 1;
+            }
+        }
+        let event = InstallEvent::PacnewCreated {
+            from_noupgrade: false,
+            file: "/etc/x.conf".to_string(),
+            origin: None,
+        };
+        let (mut wrapped, pending) = recording_sink(
+            Box::new(CountSink { seen: 0 }),
+            &silent_input(&ChildWire {
+                sealed: None,
+                authorized: false,
+                stream: true,
+                interactive: false,
+                tty: true,
+            }),
+        );
+        wrapped.event(event.clone());
+        assert_eq!(pending.borrow().len(), 1);
+        let (mut plain, idle) = recording_sink(Box::new(CountSink { seen: 0 }), &None);
+        plain.event(event);
+        assert!(idle.borrow().is_empty());
     }
 }

@@ -23,6 +23,9 @@ pub(super) struct Hunk {
 
 fn diff_no_index(current: &Path, candidate: &Path) -> String {
     let Ok(output) = Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("diff")
         .arg("--no-index")
         .arg("--unified=0")

@@ -442,14 +442,14 @@ fn parse_channel_answer(line: &str) -> bool {
     matches!(line.trim().to_lowercase().as_str(), "yes" | "y")
 }
 
-pub fn stdin_channel_source(
+pub fn stdin_channel_source<R: BufRead + 'static>(
     inner: Box<dyn AnswerSource>,
+    input: Rc<RefCell<R>>,
     emit: impl Fn(Question) + 'static,
 ) -> Box<dyn AnswerSource> {
-    let input = Rc::new(RefCell::new(std::io::BufReader::new(std::io::stdin())));
     Box::new(crate::question::source::RuntimeSource::new(
         inner,
-        ChannelImportPrompter::new(Rc::clone(&input), emit),
+        ChannelImportPrompter::new(input, emit),
     ))
 }
 

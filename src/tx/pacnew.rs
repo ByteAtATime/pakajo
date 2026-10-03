@@ -2,10 +2,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::MergeOrigin;
 
-#[cfg(test)]
 mod apply;
-#[cfg(test)]
 mod diff;
+mod phase;
+
+pub use apply::merge_disposition;
+pub use phase::{MergeRecorder, run_merge_phase};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MergeKind {
@@ -78,7 +80,7 @@ fn normalize_to_defer(action: MergeAction) -> MergeAction {
     action
 }
 
-pub fn parse_decision_line(line: &str, offered_file: &str) -> MergeAction {
+fn parse_decision_line(line: &str, offered_file: &str) -> MergeAction {
     let Ok(decision) = serde_json::from_str::<MergeDecision>(line) else {
         return MergeAction::Defer;
     };

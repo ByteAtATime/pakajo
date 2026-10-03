@@ -56,14 +56,18 @@ impl AnswerWriter {
         }
     }
 
-    pub fn answer(&self, yes: bool) {
-        let line = if yes { "yes\n" } else { "no\n" };
+    pub fn write_line(&self, line: &str) {
         let mut writer = self
             .writer
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _ = writer.write_all(line.as_bytes());
         let _ = writer.flush();
+    }
+
+    pub fn answer(&self, yes: bool) {
+        let line = if yes { "yes\n" } else { "no\n" };
+        self.write_line(line);
     }
 }
 
@@ -78,10 +82,15 @@ impl PromptDecliner {
     }
 
     fn on_event(&self, event: &InstallEvent) {
-        if matches!(event, InstallEvent::RuntimePrompt { .. })
-            && let Some(writer) = self.writer.as_ref()
-        {
-            writer.answer(false);
+        let Some(writer) = self.writer.as_ref() else {
+            return;
+        };
+        match event {
+            InstallEvent::RuntimePrompt { .. } => writer.answer(false),
+            InstallEvent::MergeOffered { file, .. } => {
+                writer.write_line(&crate::tx::pacnew::MergeDecision::defer(file).to_line());
+            }
+            _ => {}
         }
     }
 }
@@ -479,5 +488,67 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn echo_child() -> (Child, AnswerWriter) {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn cat");
+        let writer = AnswerWriter::from_stdin(child.stdin.take().expect("piped stdin"));
+        (child, writer)
+    }
+
+    fn read_echoed(child: &mut Child) -> String {
+        use std::io::Read as _;
+        let mut output = String::new();
+        child
+            .stdout
+            .take()
+            .expect("piped stdout")
+            .read_to_string(&mut output)
+            .expect("read echo");
+        child.wait().expect("wait cat");
+        output
+    }
+
+    #[test]
+    fn decliner_defers_merge_offers() {
+        let (mut child, writer) = echo_child();
+        let mut decliner = PromptDecliner::default();
+        decliner.channel(writer.clone());
+        decliner.on_event(&InstallEvent::MergeOffered {
+            kind: crate::tx::pacnew::MergeKind::Pacnew,
+            file: "/etc/x.conf".to_string(),
+            from_noupgrade: false,
+            origin: None,
+            index: 1,
+            total: 1,
+            hunks: Vec::new(),
+        });
+        drop(writer);
+        drop(decliner);
+        assert_eq!(
+            read_echoed(&mut child),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"Defer\"}\n"
+        );
+    }
+
+    #[test]
+    fn decliner_declines_runtime_prompts() {
+        let (mut child, writer) = echo_child();
+        let mut decliner = PromptDecliner::default();
+        decliner.channel(writer.clone());
+        decliner.on_event(&InstallEvent::RuntimePrompt {
+            question: crate::question::model::Question::ImportKey {
+                fingerprint: "ABCDEF".to_string(),
+                uid: "Packager <pack@example.com>".to_string(),
+            },
+        });
+        drop(writer);
+        drop(decliner);
+        assert_eq!(read_echoed(&mut child), "no\n");
     }
 }

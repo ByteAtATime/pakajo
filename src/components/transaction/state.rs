@@ -166,6 +166,11 @@ impl TransactionModel {
         {
             self.pending_import_key = Some(question.clone());
         }
+        if let InstallEvent::MergeOffered { file, .. } = ev
+            && let Some(channel) = self.answer_channel.as_ref()
+        {
+            channel.write_line(&pakajo::tx::pacnew::MergeDecision::defer(file).to_line());
+        }
         let now = Instant::now();
         if self.is_aur() {
             apply_aur_counters(&mut self.aur, ev, now);
@@ -1055,6 +1060,67 @@ mod tests {
                 "error: failed to prepare transaction (could not satisfy dependencies)\n:: removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin"
             )
         );
+    }
+
+    fn merge_offer(file: &str) -> InstallEvent {
+        InstallEvent::MergeOffered {
+            kind: pakajo::tx::pacnew::MergeKind::Pacnew,
+            file: file.to_string(),
+            from_noupgrade: false,
+            origin: None,
+            index: 1,
+            total: 1,
+            hunks: Vec::new(),
+        }
+    }
+
+    fn echo_writer() -> (std::process::Child, std::process::ChildStdout, AnswerWriter) {
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn cat");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let writer = AnswerWriter::from_stdin(child.stdin.take().expect("piped stdin"));
+        (child, stdout, writer)
+    }
+
+    fn read_echo(mut child: std::process::Child, stdout: std::process::ChildStdout) -> String {
+        use std::io::Read as _;
+        let mut output = String::new();
+        std::io::BufReader::new(stdout)
+            .read_to_string(&mut output)
+            .expect("read echo");
+        child.wait().expect("wait cat");
+        output
+    }
+
+    #[test]
+    fn merge_offer_auto_defers_through_answer_channel() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = TransactionModel::new(
+            "firefox".to_string(),
+            PackageSource::Repo,
+            InstallKind::Install,
+        );
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer("/etc/x.conf"));
+        drop(model);
+        assert_eq!(
+            read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"Defer\"}\n"
+        );
+    }
+
+    #[test]
+    fn merge_offer_without_channel_writes_nothing() {
+        let mut model = TransactionModel::new(
+            "firefox".to_string(),
+            PackageSource::Repo,
+            InstallKind::Install,
+        );
+        model.apply_event(&merge_offer("/etc/x.conf"));
+        assert!(model.answer_channel.is_none());
     }
 
     fn test_writer() -> AnswerWriter {

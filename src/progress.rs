@@ -265,6 +265,20 @@ fn apply_finalize(state: &mut FinalizeState, ev: &InstallEvent) {
                 file: Some(file.clone()),
             });
         }
+        InstallEvent::MergeResolved { kind, file, action } => {
+            let Some(disposition) = crate::tx::pacnew::merge_disposition(*kind, action, file)
+            else {
+                return;
+            };
+            let Some(slot) = state
+                .alerts
+                .iter_mut()
+                .find(|alert| alert.file.as_deref() == Some(file.as_str()))
+            else {
+                return;
+            };
+            slot.text = disposition;
+        }
         InstallEvent::HookRun {
             position,
             total,
@@ -615,8 +629,12 @@ mod tests {
             },
         );
         assert_eq!(
-            state.finalize.alerts[0].file,
-            Some("/etc/x.conf".to_string())
+            state.finalize.alerts,
+            vec![Alert {
+                level: LogLevel::Warning,
+                text: "/etc/x.conf saved as /etc/x.conf.pacsave".to_string(),
+                file: Some("/etc/x.conf".to_string()),
+            }]
         );
     }
 
@@ -660,6 +678,110 @@ mod tests {
         };
         assert_eq!(event_stage(&offered), None);
         assert_eq!(event_stage_aur(&offered), None);
+    }
+
+    fn pacnew_created(file: &str) -> InstallEvent {
+        InstallEvent::PacnewCreated {
+            from_noupgrade: false,
+            file: file.to_string(),
+            origin: None,
+        }
+    }
+
+    fn merge_resolved(
+        kind: crate::tx::pacnew::MergeKind,
+        file: &str,
+        action: crate::tx::pacnew::MergeAction,
+    ) -> InstallEvent {
+        InstallEvent::MergeResolved {
+            kind,
+            file: file.to_string(),
+            action,
+        }
+    }
+
+    #[test]
+    fn merge_resolved_take_new_rewrites_keyed_alert() {
+        let mut state = RepoState::default();
+        apply_repo_event(&mut state, &pacnew_created("/etc/x.conf"));
+        apply_repo_event(
+            &mut state,
+            &merge_resolved(
+                crate::tx::pacnew::MergeKind::Pacnew,
+                "/etc/x.conf",
+                crate::tx::pacnew::MergeAction::TakeNew,
+            ),
+        );
+        assert_eq!(
+            state.finalize.alerts,
+            vec![Alert {
+                level: LogLevel::Warning,
+                text: "installed new, removed /etc/x.conf.pacnew".to_string(),
+                file: Some("/etc/x.conf".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn merge_resolved_merge_rewrites_keyed_alert() {
+        let mut state = RepoState::default();
+        apply_repo_event(&mut state, &pacnew_created("/etc/x.conf"));
+        apply_repo_event(
+            &mut state,
+            &merge_resolved(
+                crate::tx::pacnew::MergeKind::Pacnew,
+                "/etc/x.conf",
+                crate::tx::pacnew::MergeAction::Merge { hunks: vec![0] },
+            ),
+        );
+        assert_eq!(
+            state.finalize.alerts,
+            vec![Alert {
+                level: LogLevel::Warning,
+                text: "merged, removed /etc/x.conf.pacnew".to_string(),
+                file: Some("/etc/x.conf".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn merge_resolved_for_unknown_file_leaves_alert_unchanged() {
+        let mut state = RepoState::default();
+        apply_repo_event(&mut state, &pacnew_created("/etc/x.conf"));
+        let before = state.finalize.alerts.clone();
+        apply_repo_event(
+            &mut state,
+            &merge_resolved(
+                crate::tx::pacnew::MergeKind::Pacnew,
+                "/etc/other.conf",
+                crate::tx::pacnew::MergeAction::TakeNew,
+            ),
+        );
+        assert_eq!(state.finalize.alerts, before);
+        assert_eq!(
+            state.finalize.alerts,
+            vec![Alert {
+                level: LogLevel::Warning,
+                text: "/etc/x.conf installed as /etc/x.conf.pacnew".to_string(),
+                file: Some("/etc/x.conf".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn merge_resolved_without_disposition_leaves_alert_unchanged() {
+        let mut state = RepoState::default();
+        apply_repo_event(&mut state, &pacnew_created("/etc/x.conf"));
+        let before = state.finalize.alerts.clone();
+        apply_repo_event(
+            &mut state,
+            &merge_resolved(
+                crate::tx::pacnew::MergeKind::Pacnew,
+                "/etc/x.conf",
+                crate::tx::pacnew::MergeAction::Restore,
+            ),
+        );
+        assert_eq!(state.finalize.alerts, before);
     }
 
     fn aur_dep(package: &str) -> InstallEvent {
