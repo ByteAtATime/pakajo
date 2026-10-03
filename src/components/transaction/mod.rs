@@ -44,7 +44,9 @@ mod resolve;
 mod shared;
 
 pub(crate) mod diff;
+mod pacnew;
 mod pkgbuild;
+use pacnew::{MergeMessage, merge_dialog};
 use pkgbuild::{PkgbuildMessage, PkgbuildModel};
 
 pub(crate) mod removal;
@@ -92,6 +94,7 @@ pub enum TransactionMessage {
     AnswerChannel(AnswerWriter),
     AnswerImportKey(bool),
     CopyFailureReport,
+    Merge(MergeMessage),
     Close,
 }
 
@@ -656,7 +659,12 @@ impl Transaction {
                 }
                 None => Action::None,
             },
+            TransactionMessage::Merge(m) => {
+                self.model.merge_decision(m);
+                Action::None
+            }
             TransactionMessage::Close => {
+                self.model.defer_pending_merge();
                 if self.model.is_sysupgrade() {
                     Action::Finished
                 } else {
@@ -939,6 +947,15 @@ impl Transaction {
     pub(crate) fn dialog(&self) -> Option<Element<'_>> {
         if let Some(prompt) = self.model.pending_import_key.as_ref() {
             return Some(dialog_backdrop(import_key_dialog(prompt), 32.0));
+        }
+        if let Some(view) = self.model.pending_merge.as_ref() {
+            let pressed = self.model.merge_pressed.clone();
+            return Some(dialog_backdrop(
+                merge_dialog(view, pressed, |m| {
+                    crate::Message::Transaction(TransactionMessage::Merge(m))
+                }),
+                32.0,
+            ));
         }
         let content = if let Some(r) = self.model.install_review.as_ref() {
             r.view(&self.model.name, self.model.kind)
@@ -1690,5 +1707,76 @@ mod tests {
             transaction.model.status,
             TransactionStatus::Running
         ));
+    }
+
+    fn merge_pipe() -> (
+        std::process::Child,
+        std::process::ChildStdout,
+        pakajo::dispatch::exec::AnswerWriter,
+    ) {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn cat");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let writer =
+            pakajo::dispatch::exec::AnswerWriter::from_stdin(child.stdin.take().expect("stdin"));
+        (child, stdout, writer)
+    }
+
+    fn merge_read_echo(
+        mut child: std::process::Child,
+        stdout: std::process::ChildStdout,
+    ) -> String {
+        use std::io::Read as _;
+        let mut output = String::new();
+        std::io::BufReader::new(stdout)
+            .read_to_string(&mut output)
+            .expect("read echo");
+        child.wait().expect("wait cat");
+        output
+    }
+
+    fn merge_offer(file: &str) -> InstallEvent {
+        InstallEvent::MergeOffered {
+            kind: pakajo::tx::pacnew::MergeKind::Pacnew,
+            file: file.to_string(),
+            from_noupgrade: false,
+            origin: None,
+            index: 1,
+            total: 1,
+            hunks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn close_defers_open_merge_offer() {
+        let (child, stdout, writer) = merge_pipe();
+        let mut transaction = new_transaction(InstallKind::Install);
+        transaction.update(TransactionMessage::AnswerChannel(writer));
+        transaction.update(TransactionMessage::InstallEvent(merge_offer("/etc/x.conf")));
+        transaction.update(TransactionMessage::Close);
+        drop(transaction);
+        assert_eq!(
+            merge_read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"Defer\"}\n"
+        );
+    }
+
+    #[test]
+    fn close_after_merge_press_writes_nothing_extra() {
+        let (child, stdout, writer) = merge_pipe();
+        let mut transaction = new_transaction(InstallKind::Install);
+        transaction.update(TransactionMessage::AnswerChannel(writer));
+        transaction.update(TransactionMessage::InstallEvent(merge_offer("/etc/x.conf")));
+        transaction.update(TransactionMessage::Merge(MergeMessage::KeepCurrent));
+        transaction.update(TransactionMessage::Close);
+        drop(transaction);
+        assert_eq!(
+            merge_read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"KeepCurrent\"}\n"
+        );
     }
 }

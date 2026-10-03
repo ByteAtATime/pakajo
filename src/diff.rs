@@ -197,9 +197,19 @@ pub fn shell_syntax() -> &'static SyntaxReference {
         .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text())
 }
 
+pub fn ini_syntax() -> &'static SyntaxReference {
+    SYNTAX_SET
+        .find_syntax_by_name("INI")
+        .or_else(|| SYNTAX_SET.find_syntax_by_extension("ini"))
+        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text())
+}
+
 pub fn syntax_for_file(name: &str) -> &'static SyntaxReference {
     if name == "PKGBUILD" || name.ends_with(".install") || name.ends_with(".sh") {
         return shell_syntax();
+    }
+    if name.ends_with(".conf") || name.ends_with(".cfg") {
+        return ini_syntax();
     }
     SYNTAX_SET
         .find_syntax_for_file(name)
@@ -349,14 +359,18 @@ pub fn highlight_fragmented(
     segments
 }
 
-pub fn rendered_lines(lines: &[DiffLine], is_new: bool, dark: bool) -> Vec<RenderedLine> {
+pub fn rendered_lines_seeded(
+    lines: &[DiffLine],
+    is_new: bool,
+    dark: bool,
+    syntax: &SyntaxReference,
+) -> Vec<RenderedLine> {
     let theme = THEME_SET.get(if dark {
         EmbeddedThemeName::Base16OceanDark
     } else {
         EmbeddedThemeName::InspiredGithub
     });
-    let plain = SYNTAX_SET.find_syntax_plain_text();
-    let mut highlighter = HighlightLines::new(plain, theme);
+    let mut highlighter = HighlightLines::new(syntax, theme);
     let emphasis = if is_new {
         vec![None; lines.len()]
     } else {
@@ -401,6 +415,11 @@ pub fn rendered_lines(lines: &[DiffLine], is_new: bool, dark: bool) -> Vec<Rende
             }),
         })
         .collect()
+}
+
+pub fn rendered_lines(lines: &[DiffLine], is_new: bool, dark: bool) -> Vec<RenderedLine> {
+    let plain = SYNTAX_SET.find_syntax_plain_text();
+    rendered_lines_seeded(lines, is_new, dark, plain)
 }
 
 #[cfg(test)]
@@ -650,6 +669,14 @@ mod tests {
     #[test]
     fn unknown_extension_falls_back_to_plain_text() {
         assert_eq!(syntax_for_file("notes.unknownextxyz").name, "Plain Text");
+    }
+
+    #[test]
+    fn conf_files_share_ini_syntax() {
+        let ini = ini_syntax().name.clone();
+        assert_ne!(ini, "Plain Text");
+        assert_eq!(ini, syntax_for_file("app.conf").name);
+        assert_eq!(ini, syntax_for_file("app.cfg").name);
     }
 
     fn diff_input(hunk: &str, body: &str) -> String {

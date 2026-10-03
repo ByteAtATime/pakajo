@@ -14,6 +14,7 @@ use pakajo::question::model::{Question, QuestionKey};
 use pakajo::tx::convert::UnsatisfiedDep;
 use pakajo::upgrade::AurUpgradeCandidate;
 
+use super::pacnew::{MergeMessage, MergeOffer, MergeView};
 use super::pkgbuild::PkgbuildModel;
 use super::removal::RemovalConfirmModel;
 use super::review::InstallReview;
@@ -49,6 +50,8 @@ pub(crate) struct TransactionModel {
     pub(super) failure: Option<TransactionFailure>,
     pub(super) answer_channel: Option<AnswerWriter>,
     pub(super) pending_import_key: Option<Question>,
+    pub(crate) pending_merge: Option<MergeView>,
+    pub(super) merge_pressed: Option<MergeMessage>,
     pub(super) revalidations: usize,
     pub(super) unstables: usize,
     pub(super) review_notice: Option<String>,
@@ -126,6 +129,8 @@ impl TransactionModel {
             failure: None,
             answer_channel: None,
             pending_import_key: None,
+            pending_merge: None,
+            merge_pressed: None,
             revalidations: 0,
             unstables: 0,
             review_notice: None,
@@ -166,10 +171,36 @@ impl TransactionModel {
         {
             self.pending_import_key = Some(question.clone());
         }
-        if let InstallEvent::MergeOffered { file, .. } = ev
-            && let Some(channel) = self.answer_channel.as_ref()
+        if let InstallEvent::MergeOffered {
+            kind,
+            file,
+            from_noupgrade,
+            origin,
+            index,
+            total,
+            hunks,
+        } = ev
+            && self.answer_channel.is_some()
         {
-            channel.write_line(&pakajo::tx::pacnew::MergeDecision::defer(file).to_line());
+            let offer = MergeOffer {
+                kind: *kind,
+                file: file.clone(),
+                from_noupgrade: *from_noupgrade,
+                hunks: hunks.clone(),
+                origin: origin.clone(),
+                index: *index,
+                total: *total,
+            };
+            self.pending_merge = Some(MergeView::parse(&offer, cosmic::theme::is_dark()));
+            self.merge_pressed = None;
+        }
+        if let InstallEvent::MergeResolved { file, .. } = ev
+            && let Some(view) = self.pending_merge.as_ref()
+            && view.file == *file
+            && view.index >= view.total
+        {
+            self.pending_merge = None;
+            self.merge_pressed = None;
         }
         let now = Instant::now();
         if self.is_aur() {
@@ -217,6 +248,8 @@ impl TransactionModel {
         }
         self.status = TransactionStatus::Done(outcome);
         self.pending_import_key = None;
+        self.pending_merge = None;
+        self.merge_pressed = None;
         self.answer_channel = None;
     }
 
@@ -246,6 +279,59 @@ impl TransactionModel {
             channel.answer(yes);
         }
         self.pending_import_key = None;
+    }
+
+    pub(crate) fn merge_decision(&mut self, msg: MergeMessage) {
+        if self.merge_pressed.is_some() {
+            return;
+        }
+        if let MergeMessage::ToggleHunk(index) = &msg {
+            if let Some(view) = self.pending_merge.as_mut() {
+                view.toggle_hunk(*index);
+            }
+            return;
+        }
+        let Some(view) = self.pending_merge.as_ref() else {
+            return;
+        };
+        let Some(channel) = self.answer_channel.as_ref() else {
+            return;
+        };
+        let action = match &msg {
+            MergeMessage::KeepCurrent => pakajo::tx::pacnew::MergeAction::KeepCurrent,
+            MergeMessage::Restore => pakajo::tx::pacnew::MergeAction::Restore,
+            MergeMessage::Delete => pakajo::tx::pacnew::MergeAction::Delete,
+            MergeMessage::Defer => pakajo::tx::pacnew::MergeAction::Defer,
+            MergeMessage::ApplyMerge => {
+                if !matches!(view.kind, pakajo::tx::pacnew::MergeKind::Pacnew) {
+                    return;
+                }
+                let hunks = view.checked_hunks();
+                if hunks.is_empty() {
+                    return;
+                }
+                pakajo::tx::pacnew::MergeAction::Merge { hunks }
+            }
+            MergeMessage::ToggleHunk(_) => return,
+        };
+        channel.write_line(
+            &pakajo::tx::pacnew::MergeDecision {
+                file: view.file.clone(),
+                action,
+            }
+            .to_line(),
+        );
+        self.merge_pressed = Some(msg);
+    }
+
+    pub(crate) fn defer_pending_merge(&mut self) {
+        if self.pending_merge.is_none() || self.merge_pressed.is_some() {
+            return;
+        }
+        if self.answer_channel.is_none() {
+            return;
+        }
+        self.merge_decision(MergeMessage::Defer);
     }
 
     pub(crate) fn build_owns_failure(&self) -> bool {
@@ -1074,6 +1160,58 @@ mod tests {
         }
     }
 
+    fn merge_hunk(seed: &str) -> pakajo::events::MergeHunk {
+        pakajo::events::MergeHunk {
+            old_start: 1,
+            old_len: 1,
+            new_start: 1,
+            new_len: 1,
+            before: Vec::new(),
+            after: Vec::new(),
+            lines: vec![pakajo::events::MergeLine::Added(seed.to_string())],
+        }
+    }
+
+    fn merge_offer_two_hunks(file: &str) -> InstallEvent {
+        InstallEvent::MergeOffered {
+            kind: pakajo::tx::pacnew::MergeKind::Pacnew,
+            file: file.to_string(),
+            from_noupgrade: false,
+            origin: None,
+            index: 1,
+            total: 1,
+            hunks: vec![merge_hunk("one"), merge_hunk("two")],
+        }
+    }
+
+    fn merge_offer_at(file: &str, index: usize, total: usize) -> InstallEvent {
+        InstallEvent::MergeOffered {
+            kind: pakajo::tx::pacnew::MergeKind::Pacnew,
+            file: file.to_string(),
+            from_noupgrade: false,
+            origin: None,
+            index,
+            total,
+            hunks: vec![merge_hunk("one"), merge_hunk("two")],
+        }
+    }
+
+    fn merge_resolved(file: &str, action: pakajo::tx::pacnew::MergeAction) -> InstallEvent {
+        InstallEvent::MergeResolved {
+            kind: pakajo::tx::pacnew::MergeKind::Pacnew,
+            file: file.to_string(),
+            action,
+        }
+    }
+
+    fn repo_model() -> TransactionModel {
+        TransactionModel::new(
+            "firefox".to_string(),
+            PackageSource::Repo,
+            InstallKind::Install,
+        )
+    }
+
     fn echo_writer() -> (std::process::Child, std::process::ChildStdout, AnswerWriter) {
         let mut child = Command::new("cat")
             .stdin(Stdio::piped())
@@ -1096,19 +1234,250 @@ mod tests {
     }
 
     #[test]
-    fn merge_offer_auto_defers_through_answer_channel() {
+    fn merge_offer_shows_dialog_without_answering() {
         let (child, stdout, writer) = echo_writer();
-        let mut model = TransactionModel::new(
-            "firefox".to_string(),
-            PackageSource::Repo,
-            InstallKind::Install,
-        );
+        let mut model = repo_model();
         model.set_answer_channel(writer);
         model.apply_event(&merge_offer("/etc/x.conf"));
+        assert_eq!(
+            model.pending_merge.as_ref().map(|view| view.file.as_str()),
+            Some("/etc/x.conf")
+        );
+        assert!(model.merge_pressed.is_none());
+        drop(model);
+        assert_eq!(read_echo(child, stdout), String::new());
+    }
+
+    #[test]
+    fn merge_keep_current_sends_decision_line() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer("/etc/x.conf"));
+        model.merge_decision(MergeMessage::KeepCurrent);
+        assert_eq!(model.merge_pressed, Some(MergeMessage::KeepCurrent));
+        assert!(model.pending_merge.is_some());
+        drop(model);
+        assert_eq!(
+            read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"KeepCurrent\"}\n"
+        );
+    }
+
+    #[test]
+    fn merge_restore_sends_decision_line() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer("/etc/x.conf"));
+        model.merge_decision(MergeMessage::Restore);
+        drop(model);
+        assert_eq!(
+            read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"Restore\"}\n"
+        );
+    }
+
+    #[test]
+    fn merge_delete_sends_decision_line() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer("/etc/x.conf"));
+        model.merge_decision(MergeMessage::Delete);
+        drop(model);
+        assert_eq!(
+            read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"Delete\"}\n"
+        );
+    }
+
+    #[test]
+    fn merge_defer_sends_decision_line() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer("/etc/x.conf"));
+        model.merge_decision(MergeMessage::Defer);
         drop(model);
         assert_eq!(
             read_echo(child, stdout),
             "{\"file\":\"/etc/x.conf\",\"action\":\"Defer\"}\n"
+        );
+    }
+
+    #[test]
+    fn merge_toggle_then_apply_sends_remaining_hunk() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer_two_hunks("/etc/x.conf"));
+        model.merge_decision(MergeMessage::ToggleHunk(0));
+        model.merge_decision(MergeMessage::ApplyMerge);
+        assert_eq!(model.merge_pressed, Some(MergeMessage::ApplyMerge));
+        drop(model);
+        assert_eq!(
+            read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":{\"Merge\":{\"hunks\":[1]}}}\n"
+        );
+    }
+
+    #[test]
+    fn merge_apply_with_no_checked_hunk_writes_nothing() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer_two_hunks("/etc/x.conf"));
+        model.merge_decision(MergeMessage::ToggleHunk(0));
+        model.merge_decision(MergeMessage::ToggleHunk(1));
+        model.merge_decision(MergeMessage::ApplyMerge);
+        assert!(model.merge_pressed.is_none());
+        drop(model);
+        assert_eq!(read_echo(child, stdout), String::new());
+    }
+
+    #[test]
+    fn merge_second_press_writes_single_line() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer("/etc/x.conf"));
+        model.merge_decision(MergeMessage::KeepCurrent);
+        model.merge_decision(MergeMessage::Delete);
+        assert_eq!(model.merge_pressed, Some(MergeMessage::KeepCurrent));
+        drop(model);
+        assert_eq!(
+            read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"KeepCurrent\"}\n"
+        );
+    }
+
+    #[test]
+    fn merge_matching_resolve_clears_dialog() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer("/etc/x.conf"));
+        model.merge_decision(MergeMessage::KeepCurrent);
+        assert!(model.pending_merge.is_some());
+        model.apply_event(&merge_resolved(
+            "/etc/x.conf",
+            pakajo::tx::pacnew::MergeAction::KeepCurrent,
+        ));
+        assert!(model.pending_merge.is_none());
+        assert!(model.merge_pressed.is_none());
+        drop(model);
+        assert_eq!(
+            read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"KeepCurrent\"}\n"
+        );
+    }
+
+    #[test]
+    fn merge_resolve_for_other_file_leaves_dialog() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer("/etc/x.conf"));
+        model.merge_decision(MergeMessage::KeepCurrent);
+        model.apply_event(&merge_resolved(
+            "/etc/other.conf",
+            pakajo::tx::pacnew::MergeAction::KeepCurrent,
+        ));
+        assert!(model.pending_merge.is_some());
+        assert_eq!(model.merge_pressed, Some(MergeMessage::KeepCurrent));
+        drop(model);
+        assert_eq!(
+            read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"KeepCurrent\"}\n"
+        );
+    }
+
+    #[test]
+    fn merge_mid_sequence_resolve_holds_dialog() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer_at("/etc/x.conf", 1, 2));
+        model.merge_decision(MergeMessage::KeepCurrent);
+        model.apply_event(&merge_resolved(
+            "/etc/x.conf",
+            pakajo::tx::pacnew::MergeAction::KeepCurrent,
+        ));
+        assert!(model.pending_merge.is_some());
+        assert_eq!(model.merge_pressed, Some(MergeMessage::KeepCurrent));
+        drop(model);
+        assert_eq!(
+            read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"KeepCurrent\"}\n"
+        );
+    }
+
+    #[test]
+    fn merge_next_offer_replaces_locked_dialog() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer("/etc/x.conf"));
+        model.merge_decision(MergeMessage::KeepCurrent);
+        model.apply_event(&merge_offer("/etc/other.conf"));
+        assert_eq!(
+            model.pending_merge.as_ref().map(|view| view.file.as_str()),
+            Some("/etc/other.conf")
+        );
+        assert!(model.merge_pressed.is_none());
+        drop(model);
+        assert_eq!(
+            read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"KeepCurrent\"}\n"
+        );
+    }
+
+    #[test]
+    fn merge_finish_clears_pending_dialog() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer("/etc/x.conf"));
+        model.merge_decision(MergeMessage::KeepCurrent);
+        model.finish(ChildOutcome::Failed("done".to_string()));
+        assert!(model.pending_merge.is_none());
+        assert!(model.merge_pressed.is_none());
+        drop(model);
+        assert_eq!(
+            read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"KeepCurrent\"}\n"
+        );
+    }
+
+    #[test]
+    fn merge_defer_pending_writes_defer_for_open_offer() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer("/etc/x.conf"));
+        model.defer_pending_merge();
+        assert_eq!(model.merge_pressed, Some(MergeMessage::Defer));
+        drop(model);
+        assert_eq!(
+            read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"Defer\"}\n"
+        );
+    }
+
+    #[test]
+    fn merge_defer_pending_after_press_writes_nothing_extra() {
+        let (child, stdout, writer) = echo_writer();
+        let mut model = repo_model();
+        model.set_answer_channel(writer);
+        model.apply_event(&merge_offer("/etc/x.conf"));
+        model.merge_decision(MergeMessage::KeepCurrent);
+        model.defer_pending_merge();
+        assert_eq!(model.merge_pressed, Some(MergeMessage::KeepCurrent));
+        drop(model);
+        assert_eq!(
+            read_echo(child, stdout),
+            "{\"file\":\"/etc/x.conf\",\"action\":\"KeepCurrent\"}\n"
         );
     }
 
@@ -1121,6 +1490,7 @@ mod tests {
         );
         model.apply_event(&merge_offer("/etc/x.conf"));
         assert!(model.answer_channel.is_none());
+        assert!(model.pending_merge.is_none());
     }
 
     fn test_writer() -> AnswerWriter {
