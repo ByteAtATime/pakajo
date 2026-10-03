@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    tags:
+      - "**[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # TODO: is this a good idea?
+  SNAPSHOT_DATE: "2025/12/13"
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base@sha256:69a7520c58d27f1b2ee52dd61f6496e632582616b89c7952865f56b44617772b
+    steps:
+      - name: Sync Arch Linux Archive snapshot
+        run: |
+          printf 'Server = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' "$SNAPSHOT_DATE" > /etc/pacman.d/mirrorlist
+          pacman --noconfirm -Syyuu --needed --disable-download-timeout
+          pacman --noconfirm -S --needed --disable-download-timeout \
+            base-devel git libxkbcommon namcap pacman wayland
+
+      - name: Assert libalpm.so.16
+        run: |
+          test -e /usr/lib/libalpm.so.16
+          pkg-config --atleast-version=16.0.0 libalpm
+          pacman -Qo /usr/lib/libalpm.so.16
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          export CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --no-modify-path --default-toolchain stable
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            /home/builder/.cargo/git
+            /home/builder/.cargo/registry
+            /usr/local/rustup
+          key: arch-${{ env.SNAPSHOT_DATE }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            arch-${{ env.SNAPSHOT_DATE }}-
+
+      - name: Build package
+        shell: bash
+        run: |
+          pkgbuild=/home/builder/pkgbuild
+          useradd --create-home --shell /bin/bash builder
+          install -d -o builder -g builder "$pkgbuild"
+          install -m644 PKGBUILD "$pkgbuild/PKGBUILD"
+
+          if [[ $GITHUB_REF_TYPE == tag ]]; then
+            version=${GITHUB_REF_NAME#v}
+            manifest=$(awk -F'"' '/^name = "pakajo"/{f=1} f && /^version = /{print $2; exit}' Cargo.toml)
+            test "$version" = "$manifest" || {
+              echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $manifest"
+              exit 1
+            }
+          else
+            sed -i "s|#tag=\${_tag}|#commit=$GITHUB_SHA|" "$pkgbuild/PKGBUILD"
+          fi
+
+          install -m644 /etc/makepkg.conf "$pkgbuild/makepkg.conf"
+          cat >> "$pkgbuild/makepkg.conf" <<'EOF'
+          OPTIONS=(strip docs !libtool !staticlibs emptydirs zipman purge)
+          COMPRESSZST=(zstd -c -T0 -19 -)
+          EOF
+          chown builder:builder "$pkgbuild/PKGBUILD" "$pkgbuild/makepkg.conf"
+
+          runuser -u builder -- env -C "$pkgbuild" \
+            HOME=/home/builder \
+            CARGO_HOME=/home/builder/.cargo \
+            RUSTUP_HOME=/usr/local/rustup \
+            PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin \
+            makepkg --config makepkg.conf --noconfirm --nodeps --cleanbuild
+
+          pkg=$(runuser -u builder -- env -C "$pkgbuild" makepkg --config makepkg.conf --packagelist)
+          test -n "$pkg"
+
+          mkdir -p dist
+          mv "$pkg" dist/
+          runuser -u builder -- env -C "$pkgbuild" makepkg --printsrcinfo > dist/.SRCINFO
+          sha256sum dist/pakajo-*.pkg.tar.zst > dist/SHA256SUMS.txt
+
+          cat dist/SHA256SUMS.txt
+          pacman -Qip dist/pakajo-*.pkg.tar.zst
+          pacman -Qlp dist/pakajo-*.pkg.tar.zst
+
+      - name: Lint package
+        shell: bash
+        run: |
+          annotate() {
+            sed -e 's/%/%25/g' -e 's/\r/%0D/g' \
+              | while IFS= read -r line; do echo "::warning title=namcap::$line"; done
+          }
+          namcap PKGBUILD 2>&1 | annotate || true
+          namcap dist/pakajo-*.pkg.tar.zst 2>&1 | annotate || true
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package
+          path: dist
+          if-no-files-found: error
+          include-hidden-files: true
+
+  release:
+    name: Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: package
+          path: dist
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/*.pkg.tar.zst
+            dist/SHA256SUMS.txt
+            dist/.SRCINFO
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
