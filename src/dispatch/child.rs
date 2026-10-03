@@ -78,15 +78,15 @@ pub fn code_from(result: anyhow::Result<i32>) -> i32 {
     match result {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("{}", report_error(&e));
+            eprintln!("{}", report_error(&e, crate::color::stderr_color()));
             1
         }
     }
 }
 
-fn report_error(error: &anyhow::Error) -> String {
+fn report_error(error: &anyhow::Error, colored: bool) -> String {
     match error.downcast_ref::<crate::tx::convert::PrepareFailure>() {
-        Some(failure) => failure.report(crate::color::stderr_color()),
+        Some(failure) => failure.report(colored),
         None => format!("{error:#}"),
     }
 }
@@ -520,7 +520,7 @@ mod tests {
         };
         let error = finish_transaction(outcome).expect_err("prepare failure errors");
         assert_eq!(
-            report_error(&error),
+            report_error(&error, false),
             "error: failed to prepare transaction (could not satisfy dependencies)\n:: removing shelly-bin breaks dependency 'shelly-bin=3.1.6-1' required by shelly-flatpak-backend-bin"
         );
     }
