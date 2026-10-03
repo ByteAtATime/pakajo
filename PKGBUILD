@@ -18,10 +18,8 @@ pkgver() {
 depends=(
   'bash'
   'coreutils'
-  'fontconfig'
   'git'
   'libglvnd'
-  'libinput'
   'libx11'
   'libxcursor'
   'libxkbcommon'
@@ -39,9 +37,9 @@ depends=(
 
 optdepends=(
   'bash-completion: bash tab completion'
-  'less: pager for review output, falls back to cat'
-  'libnotify: desktop notification on invalid config'
-  'xdg-utils: open AUR pages from the GUI'
+  'less: pager for review output'
+  'libnotify: desktop notifications'
+  'xdg-utils: open links'
 )
 
 makedepends=(
