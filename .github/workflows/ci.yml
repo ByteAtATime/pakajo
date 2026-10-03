@@ -74,6 +74,8 @@ jobs:
 
       - name: Build package
         shell: bash
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
           pkgbuild=/home/builder/pkgbuild
           install -d -o builder -g builder "$pkgbuild"
@@ -95,7 +97,6 @@ jobs:
           OPTIONS=(strip docs !libtool !staticlibs emptydirs zipman purge)
           COMPRESSZST=(zstd -c -T0 -19 -)
           EOF
-          printf 'GPGKEY=%s\n' "$GPGKEY" >> "$pkgbuild/makepkg.conf"
           chown builder:builder "$pkgbuild/PKGBUILD" "$pkgbuild/makepkg.conf"
 
           runuser -u builder -- env -C "$pkgbuild" \
@@ -103,11 +104,14 @@ jobs:
             CARGO_HOME=/home/builder/.cargo \
             RUSTUP_HOME=/usr/local/rustup \
             PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin \
-            makepkg --config makepkg.conf --noconfirm --nodeps --cleanbuild --sign
+            makepkg --config makepkg.conf --noconfirm --nodeps --cleanbuild
 
           pkg=$(runuser -u builder -- env -C "$pkgbuild" makepkg --config makepkg.conf --packagelist)
           test -n "$pkg"
-          test -f "$pkg.sig"
+
+          runuser -u builder -- env HOME=/home/builder \
+            gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+            --local-user "$GPGKEY" --detach-sign "$pkg"
           runuser -u builder -- env HOME=/home/builder gpg --verify "$pkg.sig" "$pkg"
 
           mkdir -p dist
