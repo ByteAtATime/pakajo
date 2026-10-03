@@ -120,6 +120,7 @@ mod removal_tests {
                 InstallKind::Remove,
             ),
             review_loop: None,
+            launcher: super::super::Launcher::closed(),
         }
     }
 

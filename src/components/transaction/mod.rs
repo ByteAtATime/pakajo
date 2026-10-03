@@ -104,6 +104,68 @@ pub(crate) enum Action {
     Failed,
 }
 
+fn launch_install(request: pakajo::dispatch::InstallRequest) -> Action {
+    Action::Run(stream_items(pakajo::dispatch::install(request)))
+}
+
+fn launch_remove(request: pakajo::dispatch::RemoveRequest) -> Action {
+    Action::Run(stream_items(pakajo::dispatch::remove(request)))
+}
+
+fn launch_sysupgrade(request: pakajo::dispatch::SysupgradeRequest) -> Action {
+    Action::Run(stream_items(pakajo::dispatch::sysupgrade(request)))
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Launcher {
+    install: fn(pakajo::dispatch::InstallRequest) -> Action,
+    remove: fn(pakajo::dispatch::RemoveRequest) -> Action,
+    sysupgrade: fn(pakajo::dispatch::SysupgradeRequest) -> Action,
+}
+
+impl Default for Launcher {
+    fn default() -> Self {
+        Self {
+            install: launch_install,
+            remove: launch_remove,
+            sysupgrade: launch_sysupgrade,
+        }
+    }
+}
+
+impl Launcher {
+    #[cfg(test)]
+    pub(crate) fn closed() -> Self {
+        Self {
+            install: closed_install,
+            remove: closed_remove,
+            sysupgrade: closed_sysupgrade,
+        }
+    }
+}
+
+#[cfg(test)]
+fn closed_stream() -> pakajo::dispatch::exec::DispatchStream {
+    let (tx, rx) = futures::channel::mpsc::channel(256);
+    drop(tx);
+    rx
+}
+
+#[cfg(test)]
+fn closed_install(_: pakajo::dispatch::InstallRequest) -> Action {
+    Action::Run(stream_items(closed_stream()))
+}
+
+#[cfg(test)]
+fn closed_remove(_: pakajo::dispatch::RemoveRequest) -> Action {
+    Action::Run(stream_items(closed_stream()))
+}
+
+#[cfg(test)]
+fn closed_sysupgrade(_: pakajo::dispatch::SysupgradeRequest) -> Action {
+    Action::Run(stream_items(closed_stream()))
+}
+
 fn sealed_decider(
     approvals: &str,
 ) -> Result<Box<dyn pakajo::dispatch::protocol::Decider + Send>, String> {
@@ -349,6 +411,7 @@ impl TxPane {
 pub(crate) struct Transaction {
     model: TransactionModel,
     review_loop: Option<ReviewLoop>,
+    launcher: Launcher,
 }
 
 impl Transaction {
@@ -385,6 +448,7 @@ impl Transaction {
             Self {
                 model,
                 review_loop: Some(review_loop),
+                launcher: Launcher::default(),
             },
             review_stream(rx),
         )
@@ -409,6 +473,7 @@ impl Transaction {
             Self {
                 model,
                 review_loop: Some(review_loop),
+                launcher: Launcher::default(),
             },
             review_stream(rx),
         )
@@ -807,7 +872,7 @@ impl Transaction {
             tty: false,
             json: false,
         };
-        Action::Run(stream_items(pakajo::dispatch::install(request)))
+        (self.launcher.install)(request)
     }
 
     fn launch_remove_subprocess(&mut self, approvals: String) -> Action {
@@ -819,7 +884,7 @@ impl Transaction {
             json: false,
             approvals: Some(approvals),
         };
-        Action::Run(stream_items(pakajo::dispatch::remove(request)))
+        (self.launcher.remove)(request)
     }
 
     fn launch_sysupgrade_subprocess(&mut self, approvals: String) -> Action {
@@ -840,7 +905,7 @@ impl Transaction {
             json: false,
             print_nothing_to_do: false,
         };
-        Action::Run(stream_items(pakajo::dispatch::sysupgrade(request)))
+        (self.launcher.sysupgrade)(request)
     }
 
     pub(crate) fn start_sysupgrade() -> (Self, Task<crate::Message>) {
@@ -858,6 +923,7 @@ impl Transaction {
             Self {
                 model,
                 review_loop: Some(review_loop),
+                launcher: Launcher::default(),
             },
             review_stream(rx),
         )
@@ -1018,6 +1084,7 @@ mod tests {
         Transaction {
             model: TransactionModel::batch(name.clone(), vec![name], Vec::new(), kind),
             review_loop: None,
+            launcher: Launcher::closed(),
         }
     }
 
@@ -1093,6 +1160,50 @@ mod tests {
             remote_version: s("2.0"),
             package_base: s(name),
         }
+    }
+
+    #[test]
+    fn closed_launcher_yields_no_stream_items() {
+        use futures::StreamExt as _;
+
+        let launcher = Launcher::closed();
+        let install = pakajo::dispatch::InstallRequest {
+            targets: vec![s("firefox")],
+            as_deps: false,
+            reinstall: false,
+            no_check: false,
+            keep_cache: true,
+            ignores: Vec::new(),
+            decider: pakajo::dispatch::seal::proceed_decider(),
+            approvals: None,
+            tty: false,
+            json: false,
+        };
+        assert!(matches!((launcher.install)(install), Action::Run(_)));
+        let remove = pakajo::dispatch::RemoveRequest {
+            targets: vec![s("firefox")],
+            tty: false,
+            json: false,
+            approvals: None,
+        };
+        assert!(matches!((launcher.remove)(remove), Action::Run(_)));
+        let sysupgrade = pakajo::dispatch::SysupgradeRequest {
+            no_refresh: false,
+            repo_only: false,
+            keep_cache: true,
+            ignores: Vec::new(),
+            decider: pakajo::dispatch::seal::proceed_decider(),
+            aur_targets: None,
+            approvals: None,
+            tty: false,
+            json: false,
+            print_nothing_to_do: false,
+        };
+        assert!(matches!((launcher.sysupgrade)(sysupgrade), Action::Run(_)));
+
+        let mut stream = closed_stream();
+        let item = futures::executor::block_on(stream.next());
+        assert!(item.is_none());
     }
 
     #[test]
