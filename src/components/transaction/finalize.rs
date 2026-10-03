@@ -19,7 +19,7 @@ pub(super) fn finalize_section(finalize: &FinalizeState, state: StageState) -> S
     let alerts = finalize
         .alerts
         .iter()
-        .filter(|(level, _)| !matches!(level, LogLevel::Debug))
+        .filter(|alert| !matches!(alert.level, LogLevel::Debug))
         .count();
     if alerts > 0 {
         section.summary = Some(muted(text(alert_summary(alerts))));
@@ -37,13 +37,16 @@ fn alert_summary(count: usize) -> String {
 
 pub(super) fn finalize_log(finalize: &FinalizeState) -> Element<'_> {
     let mut col = Column::new().spacing(2);
-    for (level, message) in &finalize.alerts {
-        let (prefix, color) = match level {
+    for alert in &finalize.alerts {
+        let (prefix, color) = match alert.level {
             LogLevel::Warning => ("warning:", warning_color as fn(&cosmic::Theme) -> Color),
             LogLevel::Error => ("error:", destructive_color as fn(&cosmic::Theme) -> Color),
             LogLevel::Debug => continue,
         };
-        col = col.push(tinted(text::monotext(format!("{prefix} {message}")), color));
+        col = col.push(tinted(
+            text::monotext(format!("{prefix} {}", alert.text)),
+            color,
+        ));
     }
     for line in &finalize.lines {
         col = col.push(text::monotext(line.clone()));

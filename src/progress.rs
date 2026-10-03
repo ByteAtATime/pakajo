@@ -63,10 +63,17 @@ pub struct InstallState {
     pub packages: HashMap<String, InstallPackage>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alert {
+    pub level: LogLevel,
+    pub text: String,
+    pub file: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FinalizeState {
     pub lines: Vec<String>,
-    pub alerts: Vec<(LogLevel, String)>,
+    pub alerts: Vec<Alert>,
 }
 
 impl FinalizeState {
@@ -236,20 +243,27 @@ fn apply_finalize(state: &mut FinalizeState, ev: &InstallEvent) {
                 .push(format!("{package} optionally requires {optdep}"));
         }
         InstallEvent::DatabaseMissing { dbname } => {
-            state.alerts.push((
-                LogLevel::Warning,
-                format!("database file for '{dbname}' does not exist (use '-Sy' to download)"),
-            ));
+            state.alerts.push(Alert {
+                level: LogLevel::Warning,
+                text: format!(
+                    "database file for '{dbname}' does not exist (use '-Sy' to download)"
+                ),
+                file: None,
+            });
         }
         InstallEvent::PacnewCreated { file, .. } => {
-            state
-                .alerts
-                .push((LogLevel::Warning, crate::utils::pacnew_warning(file)));
+            state.alerts.push(Alert {
+                level: LogLevel::Warning,
+                text: crate::utils::pacnew_warning(file),
+                file: Some(file.clone()),
+            });
         }
         InstallEvent::PacsaveCreated { file, .. } => {
-            state
-                .alerts
-                .push((LogLevel::Warning, crate::utils::pacsave_warning(file)));
+            state.alerts.push(Alert {
+                level: LogLevel::Warning,
+                text: crate::utils::pacsave_warning(file),
+                file: Some(file.clone()),
+            });
         }
         InstallEvent::HookRun {
             position,
@@ -269,7 +283,11 @@ fn apply_finalize(state: &mut FinalizeState, ev: &InstallEvent) {
         InstallEvent::Log { level, message } => {
             let trimmed = message.trim_end();
             if !trimmed.is_empty() && matches!(level, LogLevel::Warning | LogLevel::Error) {
-                state.alerts.push((*level, trimmed.to_string()));
+                state.alerts.push(Alert {
+                    level: *level,
+                    text: trimmed.to_string(),
+                    file: None,
+                });
             }
         }
         _ => {}
@@ -561,11 +579,52 @@ mod tests {
         );
         assert_eq!(
             state.finalize.alerts,
-            vec![(
-                LogLevel::Warning,
-                "/etc/pacman.conf installed as /etc/pacman.conf.pacnew".to_string()
-            )]
+            vec![Alert {
+                level: LogLevel::Warning,
+                text: "/etc/pacman.conf installed as /etc/pacman.conf.pacnew".to_string(),
+                file: Some("/etc/pacman.conf".to_string()),
+            }]
         );
+    }
+
+    #[test]
+    fn pacnew_alert_is_keyed_by_file_path() {
+        let mut state = RepoState::default();
+        apply_repo_event(
+            &mut state,
+            &InstallEvent::PacnewCreated {
+                from_noupgrade: false,
+                file: "/etc/x.conf".to_string(),
+                origin: None,
+            },
+        );
+        assert_eq!(
+            state.finalize.alerts[0].file,
+            Some("/etc/x.conf".to_string())
+        );
+    }
+
+    #[test]
+    fn pacsave_alert_is_keyed_by_file_path() {
+        let mut state = RepoState::default();
+        apply_repo_event(
+            &mut state,
+            &InstallEvent::PacsaveCreated {
+                file: "/etc/x.conf".to_string(),
+                origin: None,
+            },
+        );
+        assert_eq!(
+            state.finalize.alerts[0].file,
+            Some("/etc/x.conf".to_string())
+        );
+    }
+
+    #[test]
+    fn log_alert_carries_no_file_key() {
+        let mut state = RepoState::default();
+        apply_repo_event(&mut state, &log(LogLevel::Warning, "dep cycle\n"));
+        assert_eq!(state.finalize.alerts[0].file, None);
     }
 
     #[test]
@@ -811,8 +870,16 @@ mod tests {
         assert_eq!(
             state.finalize.alerts,
             [
-                (LogLevel::Warning, "dep cycle".to_string()),
-                (LogLevel::Error, "unknown key".to_string())
+                Alert {
+                    level: LogLevel::Warning,
+                    text: "dep cycle".to_string(),
+                    file: None,
+                },
+                Alert {
+                    level: LogLevel::Error,
+                    text: "unknown key".to_string(),
+                    file: None,
+                }
             ]
         );
         assert!(state.finalize.lines.is_empty());
