@@ -4,7 +4,7 @@ use alpm::Progress as AlpmProgress;
 use serde::{Deserialize, Serialize};
 
 use crate::events::{
-    DownloadResult, InstallEvent, LogLevel, PackageOp, ProgressPhase, SummaryPackage,
+    DownloadResult, InstallEvent, LogLevel, MergeOrigin, PackageOp, ProgressPhase, SummaryPackage,
     TransactionSummary,
 };
 
@@ -147,9 +147,11 @@ pub(crate) fn convert_event(any_event: alpm::AnyEvent) -> Option<InstallEvent> {
         alpm::Event::PacnewCreated(e) => Some(InstallEvent::PacnewCreated {
             from_noupgrade: e.from_noupgrade(),
             file: e.file().to_string(),
+            origin: MergeOrigin::of(e.oldpkg(), e.newpkg()),
         }),
         alpm::Event::PacsaveCreated(e) => Some(InstallEvent::PacsaveCreated {
             file: e.file().to_string(),
+            origin: MergeOrigin::of(e.oldpkg(), None),
         }),
     }
 }

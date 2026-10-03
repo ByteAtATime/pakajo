@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+use crate::tx::pacnew::{MergeAction, MergeKind};
+
+fn default_one() -> usize {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PkgbuildReviewEntry {
     pub name: String,
@@ -154,9 +160,30 @@ pub enum InstallEvent {
     PacnewCreated {
         from_noupgrade: bool,
         file: String,
+        #[serde(default)]
+        origin: Option<MergeOrigin>,
     },
     PacsaveCreated {
         file: String,
+        #[serde(default)]
+        origin: Option<MergeOrigin>,
+    },
+    MergeOffered {
+        kind: MergeKind,
+        file: String,
+        from_noupgrade: bool,
+        #[serde(default)]
+        origin: Option<MergeOrigin>,
+        #[serde(default = "default_one")]
+        index: usize,
+        #[serde(default = "default_one")]
+        total: usize,
+        hunks: Vec<MergeHunk>,
+    },
+    MergeResolved {
+        kind: MergeKind,
+        file: String,
+        action: MergeAction,
     },
     RuntimePrompt {
         question: crate::question::model::Question,
@@ -165,6 +192,30 @@ pub enum InstallEvent {
         key: crate::question::model::QuestionKey,
         reason: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeOrigin {
+    pub package: String,
+    pub old_version: Option<String>,
+    pub new_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeHunk {
+    pub old_start: usize,
+    pub old_len: usize,
+    pub new_start: usize,
+    pub new_len: usize,
+    pub before: Vec<String>,
+    pub after: Vec<String>,
+    pub lines: Vec<MergeLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MergeLine {
+    Added(String),
+    Removed(String),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -312,6 +363,82 @@ mod tests {
                         uid: "Packager <pack@example.com>".to_string(),
                     }
                 );
+            }
+            _ => panic!("wrong variant after round-trip"),
+        }
+    }
+
+    #[test]
+    fn pacnew_created_without_origin_deserializes_to_none() {
+        let back: InstallEvent = serde_json::from_str(
+            r#"{"PacnewCreated":{"from_noupgrade":false,"file":"/etc/pacman.conf"}}"#,
+        )
+        .expect("deserialize");
+        match back {
+            InstallEvent::PacnewCreated { origin, .. } => assert_eq!(origin, None),
+            _ => panic!("wrong variant after round-trip"),
+        }
+    }
+
+    #[test]
+    fn pacnew_created_with_origin_round_trips() {
+        let event = InstallEvent::PacnewCreated {
+            from_noupgrade: true,
+            file: "/etc/pacman.conf".to_string(),
+            origin: Some(MergeOrigin {
+                package: "pacman".to_string(),
+                old_version: Some("6.0-1".to_string()),
+                new_version: Some("7.0-1".to_string()),
+            }),
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        let back: InstallEvent = serde_json::from_str(&json).expect("deserialize");
+        match back {
+            InstallEvent::PacnewCreated {
+                from_noupgrade,
+                file,
+                origin,
+            } => {
+                assert!(from_noupgrade);
+                assert_eq!(file, "/etc/pacman.conf");
+                assert_eq!(
+                    origin,
+                    Some(MergeOrigin {
+                        package: "pacman".to_string(),
+                        old_version: Some("6.0-1".to_string()),
+                        new_version: Some("7.0-1".to_string()),
+                    })
+                );
+            }
+            _ => panic!("wrong variant after round-trip"),
+        }
+    }
+
+    #[test]
+    fn merge_offered_without_counts_defaults_to_first_of_one() {
+        let back: InstallEvent = serde_json::from_str(
+            r#"{"MergeOffered":{"kind":"Pacnew","file":"/etc/pacman.conf","from_noupgrade":false,"hunks":[]}}"#,
+        )
+        .expect("deserialize");
+        match back {
+            InstallEvent::MergeOffered { index, total, .. } => {
+                assert_eq!(index, 1);
+                assert_eq!(total, 1);
+            }
+            _ => panic!("wrong variant after round-trip"),
+        }
+    }
+
+    #[test]
+    fn merge_offered_with_counts_honors_explicit_values() {
+        let back: InstallEvent = serde_json::from_str(
+            r#"{"MergeOffered":{"kind":"Pacsave","file":"/etc/hosts","from_noupgrade":true,"index":2,"total":5,"hunks":[]}}"#,
+        )
+        .expect("deserialize");
+        match back {
+            InstallEvent::MergeOffered { index, total, .. } => {
+                assert_eq!(index, 2);
+                assert_eq!(total, 5);
             }
             _ => panic!("wrong variant after round-trip"),
         }

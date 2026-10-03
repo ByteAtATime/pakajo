@@ -166,10 +166,21 @@ pub fn event_stage(ev: &InstallEvent) -> Option<RepoStage> {
         | OptDepRemoval { .. }
         | DatabaseMissing { .. }
         | PacnewCreated { .. }
-        | PacsaveCreated { .. } => Some(Finalize),
-        ResolveDepsDone | CheckDepsDone | InterConflictsDone | FileConflictsDone
-        | IntegrityDone | LoadDone | DiskSpaceDone | KeyringDone | KeyDownloadStart
-        | KeyDownloadDone | SyncDatabases | StartSysupgrade => None,
+        | PacsaveCreated { .. }
+        | MergeResolved { .. } => Some(Finalize),
+        ResolveDepsDone
+        | CheckDepsDone
+        | InterConflictsDone
+        | FileConflictsDone
+        | IntegrityDone
+        | LoadDone
+        | DiskSpaceDone
+        | KeyringDone
+        | KeyDownloadStart
+        | KeyDownloadDone
+        | SyncDatabases
+        | StartSysupgrade
+        | MergeOffered { .. } => None,
         _ => None,
     }
 }
@@ -235,7 +246,7 @@ fn apply_finalize(state: &mut FinalizeState, ev: &InstallEvent) {
                 .alerts
                 .push((LogLevel::Warning, crate::utils::pacnew_warning(file)));
         }
-        InstallEvent::PacsaveCreated { file } => {
+        InstallEvent::PacsaveCreated { file, .. } => {
             state
                 .alerts
                 .push((LogLevel::Warning, crate::utils::pacsave_warning(file)));
@@ -393,6 +404,8 @@ fn event_stage_aur(ev: &InstallEvent) -> Option<AurStage> {
         HookStart { .. } | HookRun { .. } | ScriptletInfo { .. } | TransactionDone => {
             Some(Finalize)
         }
+        MergeResolved { .. } => Some(Finalize),
+        MergeOffered { .. } => None,
         _ if event_stage(ev).is_some() || matches!(ev, TransactionSummary(_)) => Some(Install),
         _ => None,
     }
@@ -543,6 +556,7 @@ mod tests {
             &InstallEvent::PacnewCreated {
                 from_noupgrade: false,
                 file: "/etc/pacman.conf".to_string(),
+                origin: None,
             },
         );
         assert_eq!(
@@ -552,6 +566,41 @@ mod tests {
                 "/etc/pacman.conf installed as /etc/pacman.conf.pacnew".to_string()
             )]
         );
+    }
+
+    #[test]
+    fn merge_resolved_routes_to_repo_finalize() {
+        let resolved = InstallEvent::MergeResolved {
+            kind: crate::tx::pacnew::MergeKind::Pacnew,
+            file: "/etc/pacman.conf".to_string(),
+            action: crate::tx::pacnew::MergeAction::KeepCurrent,
+        };
+        assert_eq!(event_stage(&resolved), Some(RepoStage::Finalize));
+    }
+
+    #[test]
+    fn merge_resolved_routes_to_aur_finalize() {
+        let resolved = InstallEvent::MergeResolved {
+            kind: crate::tx::pacnew::MergeKind::Pacsave,
+            file: "/etc/hosts".to_string(),
+            action: crate::tx::pacnew::MergeAction::Delete,
+        };
+        assert_eq!(event_stage_aur(&resolved), Some(AurStage::Finalize));
+    }
+
+    #[test]
+    fn merge_offered_has_no_stage_in_either_flow() {
+        let offered = InstallEvent::MergeOffered {
+            kind: crate::tx::pacnew::MergeKind::Pacnew,
+            file: "/etc/pacman.conf".to_string(),
+            from_noupgrade: false,
+            origin: None,
+            index: 1,
+            total: 1,
+            hunks: Vec::new(),
+        };
+        assert_eq!(event_stage(&offered), None);
+        assert_eq!(event_stage_aur(&offered), None);
     }
 
     fn aur_dep(package: &str) -> InstallEvent {

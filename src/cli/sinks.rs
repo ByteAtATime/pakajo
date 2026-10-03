@@ -610,7 +610,7 @@ impl ConsoleSink {
             InstallEvent::PacnewCreated { file, .. } => {
                 self.warn(&crate::utils::pacnew_warning(file))
             }
-            InstallEvent::PacsaveCreated { file } => {
+            InstallEvent::PacsaveCreated { file, .. } => {
                 self.warn(&crate::utils::pacsave_warning(file))
             }
             InstallEvent::FailClosed { reason, .. } => self.fail(reason),
@@ -725,9 +725,10 @@ impl InstallSink for EscalatedSink {
             InstallEvent::PacnewCreated { file, .. } => {
                 stream.warning(colored, &crate::utils::pacnew_warning(&file))
             }
-            InstallEvent::PacsaveCreated { file } => {
+            InstallEvent::PacsaveCreated { file, .. } => {
                 stream.warning(colored, &crate::utils::pacsave_warning(&file))
             }
+            InstallEvent::MergeOffered { .. } | InstallEvent::MergeResolved { .. } => {}
             other => {
                 if let Ok(line) = serde_json::to_string(&other) {
                     println!("{line}");
