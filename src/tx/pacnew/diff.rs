@@ -8,17 +8,17 @@ use crate::events::{InstallEvent, MergeHunk, MergeLine};
 use super::{MergeKind, PendingMerge};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct HunkMeta {
-    old_start: usize,
-    old_len: usize,
-    new_start: usize,
-    new_len: usize,
+pub(super) struct HunkMeta {
+    pub(super) old_start: usize,
+    pub(super) old_len: usize,
+    pub(super) new_start: usize,
+    pub(super) new_len: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Hunk {
-    meta: HunkMeta,
-    lines: Vec<DiffLine>,
+pub(super) struct Hunk {
+    pub(super) meta: HunkMeta,
+    pub(super) lines: Vec<DiffLine>,
 }
 
 fn diff_no_index(current: &Path, candidate: &Path) -> String {
@@ -109,7 +109,7 @@ fn flank(old_lines: &[String], meta: &HunkMeta) -> (Vec<String>, Vec<String>) {
     )
 }
 
-fn candidate_path(file: &str, kind: &MergeKind) -> String {
+pub(super) fn candidate_path(file: &str, kind: &MergeKind) -> String {
     match kind {
         MergeKind::Pacnew => format!("{file}.pacnew"),
         MergeKind::Pacsave => format!("{file}.pacsave"),
@@ -136,7 +136,7 @@ fn into_merge_hunk(hunk: &Hunk, before: Vec<String>, after: Vec<String>) -> Merg
     }
 }
 
-fn parsed_hunks(current: &Path, candidate: &Path) -> Vec<Hunk> {
+pub(super) fn parsed_hunks(current: &Path, candidate: &Path) -> Vec<Hunk> {
     group_hunks(&parse_unified_diff(&diff_no_index(current, candidate)))
 }
 

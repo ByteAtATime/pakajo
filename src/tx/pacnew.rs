@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use crate::events::MergeOrigin;
 
 #[cfg(test)]
+mod apply;
+#[cfg(test)]
 mod diff;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
