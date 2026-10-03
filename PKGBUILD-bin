@@ -1,0 +1,56 @@
+# Maintainer: ByteAtATime <byteatatime@proton.me>
+pkgname=pakajo-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='A fast, modern GUI package manager for Arch Linux (prebuilt binary)'
+arch=('x86_64')
+url='https://github.com/ByteAtATime/pakajo'
+license=('GPL-3.0-only')
+provides=("pakajo=$pkgver")
+conflicts=('pakajo')
+options=('!strip' '!debug')
+
+source=("https://github.com/ByteAtATime/pakajo/releases/download/v$pkgver/pakajo-v$pkgver-$arch.tar.zst")
+sha256sums=('db3195a7e699c46e6a51facd4ce7d22b49a2a3bd779dde7d72fd884e9cfb88b3')
+
+depends=(
+  'bash'
+  'coreutils'
+  'git'
+  'libglvnd'
+  'libx11'
+  'libxcursor'
+  'libxkbcommon'
+  'libxi'
+  'libxrandr'
+  'mesa'
+  'pacman>=7.0.0'
+  'polkit'
+  'sudo'
+  'systemd-libs'
+  'vulkan-icd-loader'
+  'wayland'
+  'xorg-xwayland'
+)
+
+optdepends=(
+  'bash-completion: bash tab completion'
+  'less: pager for review output'
+  'libnotify: desktop notifications'
+  'xdg-utils: open links'
+)
+
+package() {
+  local root="$srcdir/pakajo-v$pkgver-$CARCH"
+
+  install -Dm755 "$root/pakajo" "${pkgdir}/usr/bin/pakajo"
+  install -Dm644 "$root/resources/pakajo.desktop" "${pkgdir}/usr/share/applications/pakajo.desktop"
+  install -Dm644 "$root/resources/com.pakajo.policy" "${pkgdir}/usr/share/polkit-1/actions/com.pakajo.policy"
+
+  "$pkgdir/usr/bin/pakajo" completions bash | install -Dm644 /dev/stdin \
+    "${pkgdir}/usr/share/bash-completion/completions/pakajo"
+  "$pkgdir/usr/bin/pakajo" completions zsh | install -Dm644 /dev/stdin \
+    "${pkgdir}/usr/share/zsh/site-functions/_pakajo"
+  "$pkgdir/usr/bin/pakajo" completions fish | install -Dm644 /dev/stdin \
+    "${pkgdir}/usr/share/fish/vendor_completions.d/pakajo.fish"
+}

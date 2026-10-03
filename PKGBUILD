@@ -2,13 +2,13 @@
 pkgname=pakajo
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='AUR helper and package manager front-end for Arch Linux, with a terminal CLI and a COSMIC GUI'
+pkgdesc='A fast, modern GUI package manager for Arch Linux'
 arch=('x86_64')
 url='https://github.com/ByteAtATime/pakajo'
 license=('GPL-3.0-only')
 _tag=v0.1.0
 source=("git+https://github.com/ByteAtATime/pakajo.git#tag=${_tag}")
-sha256sums=('SKIP')
+sha256sums=('dabc4e4e6d19a54a46d776580ce7f7e0d670ff08eab9393182f04d2aaa013776')
 
 pkgver() {
   cd "$srcdir/pakajo"
@@ -45,7 +45,7 @@ optdepends=(
 makedepends=(
   'git'
   'pkgconf'
-  'rust>=1.85'
+  'cargo'
 )
 
 build() {
