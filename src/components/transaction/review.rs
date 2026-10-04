@@ -68,6 +68,14 @@ fn muted_elem<'a>(
     tinted_elem(content, muted_color)
 }
 
+fn version_suffix(version: &str) -> String {
+    if version.is_empty() {
+        String::new()
+    } else {
+        format!("-{version}")
+    }
+}
+
 fn tinted_icon(
     handle: icon::Handle,
     tint: fn(&cosmic::Theme) -> Color,
@@ -654,9 +662,12 @@ fn part1_body<'a>(
                     .align_y(Vertical::Center)
                     .push(muted_elem(text("Replace ".to_string())))
                     .push(text(removable.clone()))
-                    .push(muted_elem(text(format!("-{removable_version} with "))))
+                    .push(muted_elem(text(format!(
+                        "{} with ",
+                        version_suffix(&removable_version)
+                    ))))
                     .push(text(incoming.clone()))
-                    .push(muted_elem(text(format!("-{incoming_version}"))))
+                    .push(muted_elem(text(version_suffix(&incoming_version))))
                     .into();
                 conflicts.push(toggle_card(
                     label,

@@ -230,26 +230,25 @@ fn escalation(exe: &str, tty: bool) -> (Command, &'static str) {
     (escalator.build_command(exe), name)
 }
 
-pub fn map_exit_code(kind: ChildKind, code: i32, escalator: &str) -> ChildOutcome {
+pub fn map_exit_code(kind: ChildKind, code: i32) -> ChildOutcome {
     match code {
         0 => ChildOutcome::Success,
         3 | 4 if matches!(kind, ChildKind::UpgradeRepo) => {
             ChildOutcome::Stopped { idle: code == 3 }
         }
-        126 => ChildOutcome::Dismissed,
-        127 => ChildOutcome::NotFound(format!("{escalator} not found")),
+        126 | 127 => ChildOutcome::Dismissed,
         130 => ChildOutcome::Cancelled,
         exit => ChildOutcome::Failed(format!("operation failed (exit {exit})")),
     }
 }
 
-fn map_outcome(kind: ChildKind, status: io::Result<ExitStatus>, escalator: &str) -> ChildOutcome {
+fn map_outcome(kind: ChildKind, status: io::Result<ExitStatus>) -> ChildOutcome {
     let status = match status {
         Err(error) => return ChildOutcome::Failed(error.to_string()),
         Ok(status) => status,
     };
     match status.code() {
-        Some(code) => map_exit_code(kind, code, escalator),
+        Some(code) => map_exit_code(kind, code),
         None => {
             use std::os::unix::process::ExitStatusExt as _;
             if status.signal() == Some(libc::SIGINT) {
@@ -337,8 +336,7 @@ fn run_privileged(
             return;
         }
     };
-    let Some((child, escalator, writer)) =
-        spawn_privileged_child(&argv, &exe.to_string_lossy(), tty, tx)
+    let Some((child, _, writer)) = spawn_privileged_child(&argv, &exe.to_string_lossy(), tty, tx)
     else {
         return;
     };
@@ -356,7 +354,7 @@ fn run_privileged(
     if let Some(parent) = parent {
         parent.clear(&target);
     }
-    send_item(tx, StreamItem::Done(map_outcome(kind, status, escalator)));
+    send_item(tx, StreamItem::Done(map_outcome(kind, status)));
 }
 
 impl PrivilegedOperation {
@@ -461,7 +459,7 @@ mod tests {
             ),
             (
                 Ok(ExitStatusExt::from_raw(127 << 8)),
-                ChildOutcome::NotFound("sudo not found".to_string()),
+                ChildOutcome::Dismissed,
             ),
             (
                 Ok(ExitStatusExt::from_raw(1 << 8)),
@@ -482,7 +480,7 @@ mod tests {
             ),
         ];
         for (status, expected) in cases {
-            let actual = map_outcome(ChildKind::Install, status, "sudo");
+            let actual = map_outcome(ChildKind::Install, status);
             assert_eq!(
                 format!("{actual:?}"),
                 format!("{expected:?}"),
@@ -492,48 +490,22 @@ mod tests {
     }
 
     #[test]
-    fn missing_escalator_names_selected_backend() {
-        let actual = map_outcome(
-            ChildKind::Install,
-            Ok(ExitStatusExt::from_raw(127 << 8)),
-            "pkexec",
-        );
-        assert_eq!(actual.reason(), "pkexec not found");
-    }
-
-    #[test]
     fn upgrade_repo_exit_codes_map_to_stopped() {
-        let idle = map_outcome(
-            ChildKind::UpgradeRepo,
-            Ok(ExitStatusExt::from_raw(3 << 8)),
-            "sudo",
-        );
+        let idle = map_outcome(ChildKind::UpgradeRepo, Ok(ExitStatusExt::from_raw(3 << 8)));
         assert!(matches!(idle, ChildOutcome::Stopped { idle: true }));
-        let declined = map_outcome(
-            ChildKind::UpgradeRepo,
-            Ok(ExitStatusExt::from_raw(4 << 8)),
-            "sudo",
-        );
+        let declined = map_outcome(ChildKind::UpgradeRepo, Ok(ExitStatusExt::from_raw(4 << 8)));
         assert!(matches!(declined, ChildOutcome::Stopped { idle: false }));
         assert!(matches!(
-            map_outcome(
-                ChildKind::UpgradeRepo,
-                Ok(ExitStatusExt::from_raw(0)),
-                "sudo"
-            ),
+            map_outcome(ChildKind::UpgradeRepo, Ok(ExitStatusExt::from_raw(0))),
             ChildOutcome::Success
         ));
         assert!(matches!(
-            map_outcome(
-                ChildKind::UpgradeRepo,
-                Ok(ExitStatusExt::from_raw(1 << 8)),
-                "sudo"
-            ),
+            map_outcome(ChildKind::UpgradeRepo, Ok(ExitStatusExt::from_raw(1 << 8))),
             ChildOutcome::Failed(_)
         ));
         for kind in [ChildKind::Install, ChildKind::Remove] {
             for code in [3, 4] {
-                let actual = map_outcome(kind, Ok(ExitStatusExt::from_raw(code << 8)), "sudo");
+                let actual = map_outcome(kind, Ok(ExitStatusExt::from_raw(code << 8)));
                 assert!(
                     matches!(actual, ChildOutcome::Failed(_)),
                     "kind {kind:?} code {code} must fail closed"

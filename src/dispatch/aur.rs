@@ -448,7 +448,7 @@ fn run_install_child<S: InstallSink + ?Sized>(
 fn check_install_outcome(targets: &[String], outcome: ChildOutcome) -> anyhow::Result<()> {
     match outcome {
         ChildOutcome::Success => Ok(()),
-        ChildOutcome::Cancelled => Err(Cancelled.into()),
+        ChildOutcome::Cancelled | ChildOutcome::Dismissed => Err(Cancelled.into()),
         outcome => Err(anyhow::anyhow!(
             "privileged install of [{}] failed: {}",
             targets.join(", "),
@@ -518,6 +518,9 @@ mod tests {
         let error = check_install_outcome(&targets, ChildOutcome::Cancelled)
             .expect_err("cancelled stays typed");
         assert!(error.downcast_ref::<Cancelled>().is_some());
+        let dismissed = check_install_outcome(&targets, ChildOutcome::Dismissed)
+            .expect_err("dismissed stays typed");
+        assert!(dismissed.downcast_ref::<Cancelled>().is_some());
         let failed = check_install_outcome(&targets, ChildOutcome::Failed("boom".to_string()))
             .expect_err("failure keeps reason");
         assert!(failed.downcast_ref::<Cancelled>().is_none());
