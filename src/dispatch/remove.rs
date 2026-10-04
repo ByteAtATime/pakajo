@@ -128,11 +128,9 @@ fn run_root_remove(request: RemoveRequest, tx: &mut futures::channel::mpsc::Send
         stream: request.json,
     };
     let outcome = match operation.execute() {
-        Ok(code) => crate::dispatch::exec::map_exit_code(
-            crate::dispatch::exec::ChildKind::Remove,
-            code,
-            "direct",
-        ),
+        Ok(code) => {
+            crate::dispatch::exec::map_exit_code(crate::dispatch::exec::ChildKind::Remove, code)
+        }
         Err(error) => ChildOutcome::Failed(format!("{error:#}")),
     };
     send_done(tx, outcome);

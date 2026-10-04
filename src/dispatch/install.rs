@@ -105,15 +105,15 @@ fn run_install_preview_with_resolver(
     let review = outcome.review.ok_or_else(|| {
         crate::dispatch::ReviewError::Other("install preview produced no review".to_string())
     })?;
-    let review = merge_plan_conflicts(review, plan.as_ref());
+    let review = merge_plan_conflicts(review, handle, plan.as_ref());
     Ok(InstallPreview { review })
 }
 
-fn merge_plan_conflicts(mut review: Review, plan: Option<&Plan>) -> Review {
+fn merge_plan_conflicts(mut review: Review, handle: &alpm::Alpm, plan: Option<&Plan>) -> Review {
     let Some(plan) = plan else {
         return review;
     };
-    for question in plan_conflicts_to_questions(&plan.conflicts) {
+    for question in plan_conflicts_to_questions(handle, plan, &plan.conflicts) {
         if !review
             .part1
             .iter()
@@ -307,7 +307,6 @@ fn run_root_install(request: InstallRequest, tx: &mut futures::channel::mpsc::Se
                 crate::dispatch::exec::map_exit_code(
                     crate::dispatch::exec::ChildKind::Install,
                     code,
-                    "direct",
                 )
             })
             .unwrap_or_else(|error| ChildOutcome::Failed(format!("{error:#}")));
@@ -367,21 +366,67 @@ fn peel_for_dispatch(
     })
 }
 
-fn plan_conflicts_to_questions(report: &ConflictReport) -> Vec<Question> {
+fn plan_conflicts_to_questions(
+    handle: &alpm::Alpm,
+    plan: &Plan,
+    report: &ConflictReport,
+) -> Vec<Question> {
     report
         .local
         .iter()
         .chain(report.inner.iter())
         .flat_map(|conflict| {
-            conflict.conflicting.iter().map(|entry| Question::Conflict {
-                incoming: conflict.pkg.clone(),
-                incoming_version: String::new(),
-                removable: entry.pkg.clone(),
-                removable_version: String::new(),
-                conflict_reason: None,
-            })
+            let incoming_version = resolved_version(handle, plan, &conflict.pkg);
+            conflict
+                .conflicting
+                .iter()
+                .map(move |entry| Question::Conflict {
+                    incoming: conflict.pkg.clone(),
+                    incoming_version: incoming_version.clone(),
+                    removable: entry.pkg.clone(),
+                    removable_version: local_version(handle, &entry.pkg),
+                    conflict_reason: entry.conflict.clone(),
+                })
         })
         .collect()
+}
+
+fn resolved_version(handle: &alpm::Alpm, plan: &Plan, name: &str) -> String {
+    plan_member_version(plan, name).unwrap_or_else(|| sync_version(handle, name))
+}
+
+fn plan_member_version(plan: &Plan, name: &str) -> Option<String> {
+    plan.bases
+        .iter()
+        .flat_map(|base| base.members())
+        .find(|member| member.name == name)
+        .map(|member| member.version.clone())
+        .or_else(|| {
+            plan.repo_installs
+                .iter()
+                .find(|install| install.name == name)
+                .map(|install| install.version.clone())
+        })
+}
+
+fn sync_version(handle: &alpm::Alpm, name: &str) -> String {
+    use alpm_utils::DbListExt;
+
+    handle
+        .syncdbs()
+        .pkg(name)
+        .ok()
+        .map(|pkg| pkg.version().to_string())
+        .unwrap_or_default()
+}
+
+fn local_version(handle: &alpm::Alpm, name: &str) -> String {
+    handle
+        .localdb()
+        .pkg(name)
+        .ok()
+        .map(|pkg| pkg.version().to_string())
+        .unwrap_or_default()
 }
 
 fn repo_resolvable(handle: &alpm::Alpm, target: &str) -> bool {
@@ -475,6 +520,8 @@ mod tests {
 
     #[test]
     fn merge_plan_conflicts_dedupes_while_preserving_order() {
+        let (_dir, handle) = engine_handle();
+        use crate::resolve::{Base, Member};
         let linux = Question::Conflict {
             incoming: "linux".to_string(),
             incoming_version: "1.0-1".to_string(),
@@ -490,6 +537,16 @@ mod tests {
             conflict_reason: None,
         };
         let plan = Plan {
+            bases: vec![Base::Aur {
+                base: "cava-git".to_string(),
+                build: true,
+                members: vec![Member {
+                    name: "cava-git".to_string(),
+                    version: "0.10.3-1".to_string(),
+                    make: false,
+                    target: true,
+                }],
+            }],
             conflicts: conflicting_report(),
             ..Default::default()
         };
@@ -498,28 +555,28 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            merge_plan_conflicts(review, Some(&plan)).part1,
+            merge_plan_conflicts(review, &handle, Some(&plan)).part1,
             [
                 linux.clone(),
                 nvidia_versioned.clone(),
                 Question::Conflict {
                     incoming: "cava-git".to_string(),
-                    incoming_version: String::new(),
+                    incoming_version: "0.10.3-1".to_string(),
                     removable: "cava".to_string(),
                     removable_version: String::new(),
                     conflict_reason: None,
                 },
                 Question::Conflict {
                     incoming: "cava-git".to_string(),
-                    incoming_version: String::new(),
+                    incoming_version: "0.10.3-1".to_string(),
                     removable: "cava-old".to_string(),
                     removable_version: String::new(),
-                    conflict_reason: None,
+                    conflict_reason: Some("cava=1.0".to_string()),
                 },
             ]
         );
         let empty = Review::default();
-        assert!(merge_plan_conflicts(empty, None).part1.is_empty());
+        assert!(merge_plan_conflicts(empty, &handle, None).part1.is_empty());
     }
 
     fn engine_handle() -> (tempfile::TempDir, alpm::Alpm) {
