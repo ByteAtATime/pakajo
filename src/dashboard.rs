@@ -111,16 +111,11 @@ pub fn compute_dashboard_snapshot(
     snapshot
 }
 
-pub fn gather_dashboard() -> anyhow::Result<(HashSet<String>, DashboardSnapshot)> {
-    let handle = match crate::pacman::handle() {
-        Ok(handle) => handle,
-        Err(e) => {
-            eprintln!("[pakajo] dashboard refresh failed: {e:#}");
-            return Err(e);
-        }
-    };
-    let foreign: HashSet<String> = crate::package::foreign_names(&handle).into_iter().collect();
+pub fn gather_dashboard(
+    handle: &alpm::Alpm,
+) -> anyhow::Result<(HashSet<String>, DashboardSnapshot)> {
+    let foreign: HashSet<String> = crate::package::foreign_names(handle).into_iter().collect();
     let now = crate::utils::unix_now();
-    let snapshot = compute_dashboard_snapshot(&handle, &foreign, now);
+    let snapshot = compute_dashboard_snapshot(handle, &foreign, now);
     Ok((foreign, snapshot))
 }

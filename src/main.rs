@@ -174,22 +174,8 @@ impl Application for PakajoApp {
             loading,
         };
         let task = app.updates.restore_cache();
-        let groups_task = Task::perform(
-            async {
-                handle()
-                    .map(|handle| Arc::new(pakajo::package::group_index(&handle)))
-                    .unwrap_or_else(|e| {
-                        eprintln!("[pakajo] failed to index package groups: {e:#}");
-                        Arc::new(Vec::new())
-                    })
-            },
-            |index| Message::Search(SearchMessage::GroupsLoaded(index)).into(),
-        );
-        let dashboard_task = app.dashboard.refresh();
-        (
-            app,
-            Task::batch([task, groups_task, dashboard_task, sync_task]),
-        )
+        let dashboard_task = app.dashboard.startup();
+        (app, Task::batch([task, dashboard_task, sync_task]))
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
@@ -226,6 +212,19 @@ impl Application for PakajoApp {
                 });
                 Task::none()
             }
+            Message::StartupReady {
+                seq,
+                group_index,
+                foreign,
+                snapshot,
+            } => Task::batch([
+                self.update(Message::Search(SearchMessage::GroupsLoaded(group_index))),
+                self.update(Message::Dashboard(DashboardMessage::SnapshotReady {
+                    seq,
+                    foreign,
+                    snapshot,
+                })),
+            ]),
             Message::DbLockReleased => {
                 eprintln!("[pakajo] db.lck released, refreshing installed state");
                 self.refresh_installed_state();
@@ -462,6 +461,12 @@ pub enum Message {
     OpenUrl(String),
     DbLockReleased,
     SearchFocus(bool),
+    StartupReady {
+        seq: u64,
+        group_index: Arc<Vec<(String, String)>>,
+        foreign: HashSet<String>,
+        snapshot: pakajo::dashboard::DashboardSnapshot,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

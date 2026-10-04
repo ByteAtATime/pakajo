@@ -23,7 +23,10 @@ impl DashboardState {
         self.seq = self.seq.wrapping_add(1);
         let seq = self.seq;
         blocking_task(
-            pakajo::dashboard::gather_dashboard,
+            || {
+                let handle = pakajo::pacman::handle()?;
+                pakajo::dashboard::gather_dashboard(&handle)
+            },
             "dashboard refresh cancelled",
             move |result| match result {
                 Ok((foreign, snapshot)) => {
@@ -35,6 +38,33 @@ impl DashboardState {
                     .into()
                 }
                 Err(error) => {
+                    crate::Message::Dashboard(DashboardMessage::LoadFailed { seq, error }).into()
+                }
+            },
+        )
+    }
+
+    pub fn startup(&mut self) -> Task<crate::Message> {
+        self.seq = self.seq.wrapping_add(1);
+        let seq = self.seq;
+        blocking_task(
+            || {
+                let handle = pakajo::pacman::handle()?;
+                let group_index = std::sync::Arc::new(pakajo::package::group_index(&handle));
+                let (foreign, snapshot) = pakajo::dashboard::gather_dashboard(&handle)?;
+                Ok((group_index, foreign, snapshot))
+            },
+            "startup refresh cancelled",
+            move |result| match result {
+                Ok((group_index, foreign, snapshot)) => crate::Message::StartupReady {
+                    seq,
+                    group_index,
+                    foreign,
+                    snapshot,
+                }
+                .into(),
+                Err(error) => {
+                    eprintln!("[pakajo] startup group/dashboard refresh failed: {error}");
                     crate::Message::Dashboard(DashboardMessage::LoadFailed { seq, error }).into()
                 }
             },
