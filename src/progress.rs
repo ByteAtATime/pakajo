@@ -374,6 +374,7 @@ pub enum BuildStatus {
     Building,
     Done,
     Failed,
+    Cancelled,
 }
 
 impl BuildStatus {
@@ -543,16 +544,16 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant)
 pub fn finish_aur(state: &mut AurState, outcome: &ChildOutcome, now: Instant) {
     match outcome {
         ChildOutcome::Success => (),
-        ChildOutcome::Cancelled
-        | ChildOutcome::Stopped { .. }
+        ChildOutcome::Cancelled => set_inflight_build(state, now, BuildStatus::Cancelled),
+        ChildOutcome::Stopped { .. }
         | ChildOutcome::Dismissed
         | ChildOutcome::NotFound(_)
-        | ChildOutcome::Failed(_) => fail_inflight_build(state, now),
+        | ChildOutcome::Failed(_) => set_inflight_build(state, now, BuildStatus::Failed),
     }
 }
 
-fn fail_inflight_build(state: &mut AurState, now: Instant) {
-    let failed = state
+fn set_inflight_build(state: &mut AurState, now: Instant, status: BuildStatus) {
+    let inflight = state
         .build_order
         .iter()
         .find(|name| {
@@ -562,10 +563,10 @@ fn fail_inflight_build(state: &mut AurState, now: Instant) {
                 .is_some_and(|e| e.status.in_flight())
         })
         .cloned();
-    if let Some(name) = failed
+    if let Some(name) = inflight
         && let Some(entry) = state.builds.get_mut(&name)
     {
-        entry.status = BuildStatus::Failed;
+        entry.status = status;
         entry.elapsed = Some(now.saturating_duration_since(entry.started));
     }
 }
@@ -1050,6 +1051,16 @@ mod tests {
         assert_eq!(build(&state, "pkg-a").status, BuildStatus::Fetching);
         assert!(build(&state, "pkg-a").elapsed.is_none());
         assert_eq!(state.build_ended, None);
+    }
+
+    #[test]
+    fn finish_aur_cancelled_marks_inflight_cancelled_not_failed() {
+        let now = Instant::now();
+        let mut state = AurState::default();
+        spawn_build(&mut state, "live-pkg", now);
+        finish_aur(&mut state, &ChildOutcome::Cancelled, now);
+        assert_eq!(build(&state, "live-pkg").status, BuildStatus::Cancelled);
+        assert!(build(&state, "live-pkg").elapsed.is_some());
     }
 
     #[test]

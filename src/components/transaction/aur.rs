@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use cosmic::iced::alignment::Vertical;
 use cosmic::widget::{Column, Row, space, text};
+use pakajo::dispatch::exec::ChildOutcome;
 use pakajo::download::TransferState;
 use pakajo::progress::{
     AurStage, BuildPackage, BuildStatus, InstallKind, ResolvedDep, ordered_aur_stages,
@@ -15,8 +16,8 @@ use super::failure::failure_card;
 use super::finalize::{finalize_log, finalize_section};
 use super::install::{install_section, install_view};
 use super::shared::{
-    ResolvedEntry, counter_suffix, download_view, mono_text, muted, percent, resolve_empty_view,
-    resolve_package_row, single_summary, summary_text,
+    ResolvedEntry, cancelled_card, cancelled_summary, counter_suffix, download_view, mono_text,
+    muted, percent, resolve_empty_view, resolve_package_row, single_summary, summary_text,
 };
 use super::state::{StageState, TransactionModel, TransactionStatus};
 use super::stepper::{Section, sections_view, toggle_button};
@@ -35,7 +36,7 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
     let mut sections = Vec::new();
     for (i, stage) in ordered_aur_stages().iter().enumerate() {
         let state = model.aur_stage_state(*stage);
-        if state != StageState::Failed {
+        if !matches!(state, StageState::Failed | StageState::Cancelled) {
             match *stage {
                 AurStage::Deps if !model.deps_section_visible() => continue,
                 AurStage::Build | AurStage::Install | AurStage::Finalize
@@ -61,6 +62,32 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
         .failure()
         .map(|failure| failure_card(&model.name, model.kind, failure));
     let cancel_eligible = model.cancel_eligible();
+    let cancelled = matches!(
+        model.status,
+        TransactionStatus::Done(ChildOutcome::Cancelled)
+    )
+    .then(|| {
+        let total = model.aur.build_order.len();
+        let progress = (total > 0).then(|| {
+            let completed = model
+                .aur
+                .build_order
+                .iter()
+                .filter(|name| {
+                    model
+                        .aur
+                        .builds
+                        .get(*name)
+                        .is_some_and(|entry| entry.status == BuildStatus::Done)
+                })
+                .count();
+            format!("{completed} of {total} package bases built")
+        });
+        cancelled_card(
+            &model.name,
+            cancelled_summary(model.aur.last_aur_stage.map(aur_stage_label), progress),
+        )
+    });
     sections_view(
         title,
         failure,
@@ -68,8 +95,18 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
         finished,
         model.is_sysupgrade(),
         cancel_eligible,
-        None,
+        cancelled,
     )
+}
+
+fn aur_stage_label(stage: AurStage) -> &'static str {
+    match stage {
+        AurStage::Resolve => "resolve",
+        AurStage::Deps => "dependencies",
+        AurStage::Build => "build",
+        AurStage::Install => "install",
+        AurStage::Finalize => "finalize",
+    }
 }
 
 fn resolve_section(model: &TransactionModel, state: StageState) -> Section<'_> {
@@ -198,7 +235,7 @@ pub(super) fn build_section(model: &TransactionModel, state: StageState) -> Sect
             section.content = Some(build_list_view(&ordered, &model.expanded_cards, model.now));
             section.summary = Some(build_summary(&ordered, elapsed));
         }
-        StageState::Failed if !ordered.is_empty() => {
+        StageState::Failed | StageState::Cancelled if !ordered.is_empty() => {
             section.content = Some(build_list_view(&ordered, &model.expanded_cards, model.now));
         }
         _ => {}
@@ -248,6 +285,7 @@ fn build_status_word(status: BuildStatus) -> &'static str {
         BuildStatus::Building => "building",
         BuildStatus::Done => "done",
         BuildStatus::Failed => "failed",
+        BuildStatus::Cancelled => "cancelled",
     }
 }
 
@@ -262,7 +300,7 @@ fn build_card(name: &str, entry: &BuildPackage, expanded: bool, now: Instant) ->
         BuildStatus::Fetching | BuildStatus::Building => {
             Some(now.saturating_duration_since(entry.started))
         }
-        BuildStatus::Done | BuildStatus::Failed => entry.elapsed,
+        BuildStatus::Done | BuildStatus::Failed | BuildStatus::Cancelled => entry.elapsed,
     } {
         header_row = header_row.push(elapsed_label(duration));
     }
@@ -335,7 +373,9 @@ fn deps_section(model: &TransactionModel, state: StageState) -> Section<'_> {
             section.content = Some(col.into());
         }
     }
-    if state == StageState::Failed && !model.aur.repo_deps.install.order.is_empty() {
+    if matches!(state, StageState::Failed | StageState::Cancelled)
+        && !model.aur.repo_deps.install.order.is_empty()
+    {
         section.content = Some(install_view(&model.aur.repo_deps.install, false));
     }
     section
@@ -347,7 +387,9 @@ fn aur_install_section(model: &TransactionModel, state: StageState) -> Section<'
     if state == StageState::Active {
         section = with_in_flight_download(section, download);
     }
-    if state == StageState::Failed && !model.aur.install.order.is_empty() {
+    if matches!(state, StageState::Failed | StageState::Cancelled)
+        && !model.aur.install.order.is_empty()
+    {
         section.content = Some(install_view(&model.aur.install, false));
     }
     section

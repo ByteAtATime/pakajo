@@ -1906,6 +1906,41 @@ mod tests {
     }
 
     #[test]
+    fn pane_without_transaction_swallows_review_loop_sentinel() {
+        let mut pane = TxPane {
+            transaction: None,
+            show: false,
+        };
+        let action = pane.forward(TransactionMessage::Streamed {
+            id: 999,
+            message: Box::new(TransactionMessage::Explored(Err(ReviewError::Other(
+                REVIEW_LOOP_ENDED.to_string(),
+            )))),
+        });
+        assert!(matches!(action, Action::None));
+        assert!(pane.transaction.is_none());
+    }
+
+    #[test]
+    fn cancel_between_phases_reaches_second_channel() {
+        use pakajo::dispatch::cancel::CancelTarget;
+        let mut transaction = new_transaction(InstallKind::Install);
+        transaction.model.status = TransactionStatus::Running;
+        let first = CancelHandle::default();
+        transaction.update(TransactionMessage::CancelChannel(first.clone()));
+        let stale = CancelTarget::Process(1_999_999_999);
+        first.register(stale.clone());
+        first.clear(&stale);
+        transaction.update(TransactionMessage::Cancel);
+        assert!(transaction.model.cancel_pending);
+        assert!(first.is_requested());
+        let second = CancelHandle::default();
+        transaction.update(TransactionMessage::CancelChannel(second.clone()));
+        assert!(second.is_requested());
+        assert!(transaction.model.cancel_channel.is_some());
+    }
+
+    #[test]
     fn cancel_during_checking_finishes_and_drops_review_loop() {
         let mut transaction = new_transaction(InstallKind::Install);
         let (review_loop, _) = ReviewLoop::spawn(ReviewPlan::Remove {

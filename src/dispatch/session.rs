@@ -204,6 +204,13 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_repo_skips_aur_phase_as_done() {
+        let targets = vec!["pipes.sh".to_string()];
+        let decision = after_repo(&repo_phase_from_child(&ChildOutcome::Cancelled), &targets);
+        assert!(matches!(decision, AfterRepo::Done(ChildOutcome::Cancelled)));
+    }
+
+    #[test]
     fn idle_without_aur_has_nothing_to_do() {
         assert!(matches!(after_repo(&idle(), &[]), AfterRepo::NothingToDo));
     }

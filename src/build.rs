@@ -5,6 +5,8 @@ use std::process::Stdio;
 
 use anyhow::Context as _;
 
+use crate::dispatch::cancel::{CancelHandle, CancelTarget};
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum BuildDecision {
     Proceed,
@@ -22,8 +24,11 @@ pub fn build_base(
     package: &str,
     no_check: bool,
     on_line: impl FnMut(String),
+    cancel: Option<&CancelHandle>,
+    tty: bool,
 ) -> anyhow::Result<BuiltBase> {
-    run_makepkg_streaming(dir, no_check, package, on_line)?;
+    let detached = should_detach(cancel, tty);
+    run_makepkg_streaming(dir, no_check, package, on_line, cancel, detached)?;
     let expected = expected_artifacts(dir, package)
         .with_context(|| format!("failed to enumerate artifacts for {package}"))?;
     let artifacts = collect_artifacts(dir, &expected)?;
@@ -142,18 +147,46 @@ fn resolved_version(expected: &[String], package: &str) -> Option<String> {
     fallback
 }
 
+fn should_detach(cancel: Option<&CancelHandle>, tty: bool) -> bool {
+    cancel.is_some() && !tty
+}
+
 pub fn run_makepkg_streaming(
     dir: &Path,
     no_check: bool,
     package: &str,
     mut on_line: impl FnMut(String),
+    cancel: Option<&CancelHandle>,
+    detached: bool,
 ) -> anyhow::Result<()> {
     let mut cmd = makepkg_command(dir, no_check);
-    let mut session = pty::PtySession::spawn(&mut cmd)?;
+    let mut session = pty::PtySession::spawn(&mut cmd, detached)?;
+    let target = CancelTarget::Group(session.child_id() as i32);
+    if detached && let Some(handle) = cancel {
+        handle.register(target.clone());
+    }
     while let Some(line) = session.next_line()? {
         on_line(line);
     }
     let status = session.wait()?;
+    if detached && let Some(handle) = cancel {
+        handle.clear(&target);
+    }
+    classify_makepkg_status(
+        package,
+        &status,
+        cancel.is_some_and(|handle| handle.is_requested()),
+    )
+}
+
+fn classify_makepkg_status(
+    package: &str,
+    status: &std::process::ExitStatus,
+    cancelled: bool,
+) -> anyhow::Result<()> {
+    if !status.success() && cancelled {
+        return Err(crate::dispatch::aur::Cancelled.into());
+    }
     if !status.success() {
         anyhow::bail!(
             "makepkg failed for {package} (exit {})",
@@ -178,6 +211,11 @@ fn makepkg_command(dir: &Path, no_check: bool) -> std::process::Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    fn exited(code: i32) -> std::process::ExitStatus {
+        ExitStatusExt::from_raw(code << 8)
+    }
 
     #[test]
     fn is_valid_pkgbase_table() {
@@ -237,5 +275,73 @@ mod tests {
             Some("1.0-1")
         );
         assert!(resolved_version(&["junk".to_string()], "foo").is_none());
+    }
+
+    #[test]
+    fn successful_build_ignores_late_cancel_request() {
+        classify_makepkg_status("yay", &exited(0), true).expect("late cancel keeps success");
+    }
+
+    #[test]
+    fn failed_build_reports_cancelled_only_when_requested() {
+        let error =
+            classify_makepkg_status("yay", &exited(1), true).expect_err("cancel wins on failure");
+        assert!(
+            error
+                .downcast_ref::<crate::dispatch::aur::Cancelled>()
+                .is_some()
+        );
+        let error =
+            classify_makepkg_status("yay", &exited(1), false).expect_err("failure surfaces");
+        assert!(
+            error
+                .downcast_ref::<crate::dispatch::aur::Cancelled>()
+                .is_none()
+        );
+        assert!(format!("{error:#}").contains("makepkg failed for yay"));
+    }
+
+    #[test]
+    fn detach_requires_handle_without_tty() {
+        let handle = CancelHandle::default();
+        assert!(should_detach(Some(&handle), false));
+        assert!(!should_detach(Some(&handle), true));
+        assert!(!should_detach(None, false));
+        assert!(!should_detach(None, true));
+    }
+
+    #[test]
+    fn tty_parent_shares_group_and_ignores_cancel() {
+        let handle = CancelHandle::default();
+        assert!(!should_detach(Some(&handle), true));
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("30");
+        let mut session = pty::PtySession::spawn(&mut cmd, false).expect("spawn shared sleep");
+        let pid = session.child_id() as i32;
+        let own = unsafe { libc::getpgrp() };
+        assert_eq!(unsafe { libc::getpgid(pid) }, own);
+        handle.cancel();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+        let _ = session.wait();
+    }
+
+    #[test]
+    fn headless_parent_detaches_for_group_cancel() {
+        let handle = CancelHandle::default();
+        assert!(should_detach(Some(&handle), false));
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("30");
+        let mut session = pty::PtySession::spawn(&mut cmd, true).expect("spawn grouped sleep");
+        let pid = session.child_id() as i32;
+        assert_eq!(unsafe { libc::getpgid(pid) }, pid);
+        handle.register(CancelTarget::Group(pid));
+        handle.cancel();
+        let status = session.wait().expect("wait cancelled sleep");
+        use std::os::unix::process::ExitStatusExt as _;
+        assert_eq!(status.signal(), Some(libc::SIGINT));
     }
 }

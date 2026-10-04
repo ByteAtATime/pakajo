@@ -101,6 +101,19 @@ impl PromptDecliner {
 
 pub type DispatchStream = futures::channel::mpsc::Receiver<StreamItem>;
 
+fn map_build_result(result: anyhow::Result<()>) -> ChildOutcome {
+    match result {
+        Ok(()) => ChildOutcome::Success,
+        Err(e)
+            if e.downcast_ref::<crate::dispatch::aur::Cancelled>()
+                .is_some() =>
+        {
+            ChildOutcome::Cancelled
+        }
+        Err(e) => ChildOutcome::Failed(format!("{e:#}")),
+    }
+}
+
 pub(crate) fn drain_declining(
     mut stream: DispatchStream,
     sink: &mut (impl InstallSink + ?Sized),
@@ -377,6 +390,8 @@ impl BuildOperation {
         let (tx, rx) = futures::channel::mpsc::channel(256);
         std::thread::spawn(move || {
             let mut tx = tx;
+            let handle = CancelHandle::default();
+            send_item(&mut tx, StreamItem::CancelChannel(handle.clone()));
             let mut sink = ChannelSink::new(tx.clone());
             let result = crate::dispatch::aur::install_aur(
                 crate::dispatch::aur::BuildParams {
@@ -389,14 +404,12 @@ impl BuildOperation {
                     approvals: approvals.as_deref(),
                     tty,
                     interactive: self.interactive,
+                    cancel: Some(handle),
                 },
                 &mut sink,
                 decider.as_ref(),
             );
-            let outcome = match result {
-                Ok(()) => ChildOutcome::Success,
-                Err(e) => ChildOutcome::Failed(format!("{e:#}")),
-            };
+            let outcome = map_build_result(result);
             send_item(&mut tx, StreamItem::Done(outcome));
         });
         rx
@@ -551,6 +564,19 @@ mod tests {
             .expect("read echo");
         child.wait().expect("wait cat");
         output
+    }
+
+    #[test]
+    fn build_result_maps_cancelled_error_to_cancelled_outcome() {
+        assert!(matches!(map_build_result(Ok(())), ChildOutcome::Success));
+        assert!(matches!(
+            map_build_result(Err(crate::dispatch::aur::Cancelled.into())),
+            ChildOutcome::Cancelled
+        ));
+        assert!(matches!(
+            map_build_result(Err(anyhow::anyhow!("makepkg failed"))),
+            ChildOutcome::Failed(_)
+        ));
     }
 
     #[test]

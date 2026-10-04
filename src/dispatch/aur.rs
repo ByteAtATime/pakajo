@@ -14,6 +14,19 @@ use crate::question::approvals::SealedApprovals;
 use crate::question::model::{Answer, QuestionKey};
 use crate::resolve::{Ask, Decisions, Member, Plan, RepoInstall};
 
+use crate::dispatch::cancel::CancelHandle;
+
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cancelled by user")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
 pub struct BuildParams<'a> {
     pub targets: &'a [String],
     pub files: &'a [String],
@@ -24,6 +37,14 @@ pub struct BuildParams<'a> {
     pub approvals: Option<&'a str>,
     pub tty: bool,
     pub interactive: bool,
+    pub cancel: Option<CancelHandle>,
+}
+
+fn cancelled_if_requested(params: &BuildParams<'_>) -> anyhow::Result<()> {
+    if params.cancel.as_ref().is_some_and(|h| h.is_requested()) {
+        return Err(Cancelled.into());
+    }
+    Ok(())
 }
 
 pub fn install_aur<S: InstallSink + ?Sized>(
@@ -38,16 +59,20 @@ pub fn install_aur<S: InstallSink + ?Sized>(
         params.tty,
         params.approvals,
     )?;
+    cancelled_if_requested(&params)?;
     reject_root_build(&plan)?;
     crate::resolve::check_plan_gates(&plan)?;
     confirm_conflicts(&plan, decider, params.tty)?;
     let decision = confirm_build(&plan, decider)?;
     let pkgbuilds = crate::pkgbuild::collect_for_review(&plan, sink)?;
     review_if_requested(decision, &pkgbuilds, sink, decider)?;
+    cancelled_if_requested(&params)?;
     let arch = alpm.architectures().first();
     install_repo_packages(&plan, &params, sink)?;
+    cancelled_if_requested(&params)?;
     reject_pkgbuild_bases(&plan)?;
     for (pkgbase, members) in plan.aur_builds() {
+        cancelled_if_requested(&params)?;
         install_aur_base(pkgbase, members, &params, arch, sink)?;
     }
     Ok(())
@@ -138,12 +163,19 @@ fn build_and_install_base<S: InstallSink + ?Sized>(
         package: info.name.clone(),
     });
     let package = info.name.clone();
-    let built = build_base(dir, &info.name, params.no_check, |line| {
-        sink.event(InstallEvent::BuildOutput {
-            package: package.clone(),
-            line,
-        });
-    })?;
+    let built = build_base(
+        dir,
+        &info.name,
+        params.no_check,
+        |line| {
+            sink.event(InstallEvent::BuildOutput {
+                package: package.clone(),
+                line,
+            });
+        },
+        params.cancel.as_ref(),
+        params.tty,
+    )?;
     sink.event(InstallEvent::BuildCompleted {
         package: info.name.clone(),
         artifacts: built.artifacts.clone(),
@@ -406,20 +438,95 @@ fn run_install_child<S: InstallSink + ?Sized>(
         interactive: params.interactive,
         approvals: Some(sealed),
     };
-    match crate::dispatch::exec::drain_declining(operation.dispatch(params.tty), sink) {
+    let outcome = crate::dispatch::exec::drain_declining(
+        operation.dispatch_with_cancel(params.tty, params.cancel.as_ref().cloned()),
+        sink,
+    );
+    check_install_outcome(targets, outcome)
+}
+
+fn check_install_outcome(targets: &[String], outcome: ChildOutcome) -> anyhow::Result<()> {
+    match outcome {
         ChildOutcome::Success => Ok(()),
-        outcome => anyhow::bail!(
+        ChildOutcome::Cancelled => Err(Cancelled.into()),
+        outcome => Err(anyhow::anyhow!(
             "privileged install of [{}] failed: {}",
             targets.join(", "),
             outcome.reason()
-        ),
+        )),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dispatch::cancel::CancelHandle;
+    use crate::dispatch::exec::ChildOutcome;
     use crate::question::model::Question;
+
+    struct ProceedDecider;
+
+    impl Decider for ProceedDecider {
+        fn confirm_build(&self, _plan: &Plan) -> crate::build::BuildDecision {
+            crate::build::BuildDecision::Proceed
+        }
+
+        fn confirm_conflicts(&self, _report: &crate::resolve::ConflictReport) -> bool {
+            true
+        }
+
+        fn review_pkgbuilds(&self, _pkgbuilds: &[PkgbuildInfo]) -> bool {
+            true
+        }
+    }
+
+    fn empty_params(cancel: Option<CancelHandle>) -> BuildParams<'static> {
+        BuildParams {
+            targets: &[],
+            files: &[],
+            no_check: false,
+            as_deps: false,
+            reinstall: false,
+            keep_cache: true,
+            approvals: None,
+            tty: false,
+            interactive: false,
+            cancel,
+        }
+    }
+
+    #[test]
+    fn empty_plan_without_cancel_succeeds() {
+        let mut sink = crate::events::DiscardSink;
+        install_aur(empty_params(None), &mut sink, &ProceedDecider).expect("empty plan succeeds");
+    }
+
+    #[test]
+    fn prerequested_cancel_aborts_before_any_build() {
+        let handle = CancelHandle::default();
+        handle.cancel();
+        let mut sink = crate::events::DiscardSink;
+        let error = install_aur(empty_params(Some(handle)), &mut sink, &ProceedDecider)
+            .expect_err("pre-requested cancel aborts");
+        assert!(error.downcast_ref::<Cancelled>().is_some());
+        assert_eq!(format!("{error}"), "cancelled by user");
+    }
+
+    #[test]
+    fn install_child_cancelled_passes_through_typed() {
+        let targets = vec!["yay".to_string()];
+        let error = check_install_outcome(&targets, ChildOutcome::Cancelled)
+            .expect_err("cancelled stays typed");
+        assert!(error.downcast_ref::<Cancelled>().is_some());
+        let failed = check_install_outcome(&targets, ChildOutcome::Failed("boom".to_string()))
+            .expect_err("failure keeps reason");
+        assert!(failed.downcast_ref::<Cancelled>().is_none());
+        assert!(
+            failed
+                .to_string()
+                .contains("privileged install of [yay] failed: boom")
+        );
+    }
 
     fn member(name: &str, target: bool) -> Member {
         Member {

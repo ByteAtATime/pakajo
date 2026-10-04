@@ -144,9 +144,17 @@ mod tests {
 
     #[test]
     fn cancel_reaches_process_group() {
-        use std::os::unix::process::CommandExt as _;
         let handle = CancelHandle::default();
-        let mut child = unsafe {
+        let mut child = grouped_sleep_child();
+        handle.register(CancelTarget::Group(child.id() as i32));
+        handle.cancel();
+        let status = wait_for_exit(&mut child, "grouped sleep");
+        assert_eq!(status.signal(), Some(libc::SIGINT));
+    }
+
+    fn grouped_sleep_child() -> std::process::Child {
+        use std::os::unix::process::CommandExt as _;
+        unsafe {
             Command::new("sleep")
                 .arg("30")
                 .stdin(Stdio::null())
@@ -160,10 +168,37 @@ mod tests {
                 })
                 .spawn()
                 .expect("spawn grouped sleep")
-        };
-        handle.register(CancelTarget::Group(child.id() as i32));
+        }
+    }
+
+    #[test]
+    fn cancel_reaches_group_and_process_targets_together() {
+        let handle = CancelHandle::default();
+        let mut grouped = grouped_sleep_child();
+        let mut plain = sleep_child();
+        handle.register(CancelTarget::Group(grouped.id() as i32));
+        handle.register(CancelTarget::Process(plain.id() as i32));
         handle.cancel();
-        let status = wait_for_exit(&mut child, "grouped sleep");
-        assert_eq!(status.signal(), Some(libc::SIGINT));
+        let grouped_status = wait_for_exit(&mut grouped, "grouped sleep");
+        let plain_status = wait_for_exit(&mut plain, "plain sleep");
+        assert_eq!(grouped_status.signal(), Some(libc::SIGINT));
+        assert_eq!(plain_status.signal(), Some(libc::SIGINT));
+    }
+
+    #[test]
+    fn cleared_process_target_survives_group_cancel() {
+        let handle = CancelHandle::default();
+        let mut grouped = grouped_sleep_child();
+        let mut plain = sleep_child();
+        let plain_target = CancelTarget::Process(plain.id() as i32);
+        handle.register(CancelTarget::Group(grouped.id() as i32));
+        handle.register(plain_target.clone());
+        handle.clear(&plain_target);
+        handle.cancel();
+        let grouped_status = wait_for_exit(&mut grouped, "grouped sleep");
+        assert_eq!(grouped_status.signal(), Some(libc::SIGINT));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(plain.try_wait().expect("poll sleep").is_none());
+        kill_child(&mut plain);
     }
 }

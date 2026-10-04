@@ -533,8 +533,20 @@ impl TransactionModel {
         self.kind == InstallKind::Upgrade
     }
 
-    fn aur_failed_at(&self, stage: AurStage) -> bool {
-        self.done_without_success() && self.aur.last_aur_stage == Some(stage)
+    fn aur_terminal_at(&self, stage: AurStage) -> Option<StageState> {
+        if self.aur.last_aur_stage != Some(stage) {
+            return None;
+        }
+        if matches!(
+            self.status,
+            TransactionStatus::Done(ChildOutcome::Cancelled)
+        ) {
+            return Some(StageState::Cancelled);
+        }
+        if self.done_without_success() {
+            return Some(StageState::Failed);
+        }
+        None
     }
 
     pub(crate) fn aur_stage_state(&self, stage: AurStage) -> StageState {
@@ -556,15 +568,15 @@ impl TransactionModel {
                     StageState::Pending
                 } else if self.aur.resolve_complete {
                     StageState::Done
-                } else if self.aur_failed_at(Resolve) {
-                    StageState::Failed
+                } else if let Some(terminal) = self.aur_terminal_at(Resolve) {
+                    terminal
                 } else {
                     StageState::Active
                 }
             }
             Deps => {
-                if self.aur_failed_at(Deps) {
-                    StageState::Failed
+                if let Some(terminal) = self.aur_terminal_at(Deps) {
+                    terminal
                 } else if succeeded || self.aur.phase == AurPhase::Artifacts {
                     StageState::Done
                 } else {
@@ -576,16 +588,16 @@ impl TransactionModel {
                     StageState::Pending
                 } else if self.aur_builds_done() {
                     StageState::Done
-                } else if self.aur_failed_at(Build) {
-                    StageState::Failed
+                } else if let Some(terminal) = self.aur_terminal_at(Build) {
+                    terminal
                 } else {
                     active_or_pending(self.aur.phase == AurPhase::Artifacts)
                 }
             }
             Install => {
                 let aur = &self.aur;
-                if self.aur_failed_at(Install) {
-                    StageState::Failed
+                if let Some(terminal) = self.aur_terminal_at(Install) {
+                    terminal
                 } else if succeeded {
                     StageState::Done
                 } else {
@@ -597,8 +609,8 @@ impl TransactionModel {
                 }
             }
             Finalize => {
-                if self.aur_failed_at(Finalize) {
-                    StageState::Failed
+                if let Some(terminal) = self.aur_terminal_at(Finalize) {
+                    terminal
                 } else if succeeded {
                     StageState::Done
                 } else {
@@ -1784,7 +1796,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_eligible_requires_running_and_channel() {
+    fn cancel_eligible_in_checking_and_running_with_channel() {
         let checking = fresh_model();
         assert!(checking.cancel_eligible());
         let mut model = fresh_model();
@@ -1794,6 +1806,23 @@ mod tests {
         assert!(model.cancel_eligible());
         model.finish(ChildOutcome::Cancelled);
         assert!(!model.cancel_eligible());
+    }
+
+    #[test]
+    fn cancelled_aur_build_stage_renders_cancelled() {
+        let mut model = aur_model();
+        model.apply_event(&resolving("yay"));
+        model.apply_event(&dep_resolved("yay", None));
+        model.apply_event(&resolution_complete(0));
+        model.apply_event(&cloning("yay"));
+        model.apply_event(&build_started("yay"));
+        model.finish(ChildOutcome::Cancelled);
+        assert_state(&model, AurStage::Build, StageState::Cancelled);
+        assert_state(&model, AurStage::Resolve, StageState::Done);
+        assert_eq!(
+            model.aur.builds.get("yay").expect("yay present").status,
+            BuildStatus::Cancelled
+        );
     }
 
     #[test]

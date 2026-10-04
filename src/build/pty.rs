@@ -15,7 +15,21 @@ pub(crate) struct PtySession {
 }
 
 impl PtySession {
-    pub(crate) fn spawn(cmd: &mut std::process::Command) -> anyhow::Result<Self> {
+    pub(crate) fn spawn(
+        cmd: &mut std::process::Command,
+        separate_group: bool,
+    ) -> anyhow::Result<Self> {
+        use std::os::unix::process::CommandExt as _;
+        if separate_group {
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::setpgid(0, 0) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         let win_size = crate::utils::terminal_winsize();
         let pty = nix::pty::openpty(&win_size, None).context("failed to open pseudoterminal")?;
         let slave_stdout = pty.slave.try_clone().context("failed to clone pty slave")?;
@@ -33,6 +47,10 @@ impl PtySession {
             child_gone: false,
             ready: VecDeque::new(),
         })
+    }
+
+    pub(crate) fn child_id(&self) -> u32 {
+        self.child.id()
     }
 
     pub(crate) fn next_line(&mut self) -> anyhow::Result<Option<String>> {
@@ -128,6 +146,57 @@ fn flush_pending(pending: &mut Vec<u8>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::ExitStatusExt as _;
+
+    fn test_command() -> std::process::Command {
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("30");
+        cmd
+    }
+
+    fn pgid_of(pid: u32) -> i32 {
+        unsafe { libc::getpgid(pid as i32) }
+    }
+
+    fn kill_group(pgid: i32) {
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+    }
+
+    #[test]
+    fn separate_group_spawns_own_process_group() {
+        let mut cmd = test_command();
+        let mut session = PtySession::spawn(&mut cmd, true).expect("spawn grouped sleep");
+        let pid = session.child_id() as i32;
+        assert_eq!(pgid_of(pid as u32), pid);
+        kill_group(pid);
+        let _ = session.wait();
+    }
+
+    #[test]
+    fn shared_group_inherits_parent_process_group() {
+        let mut cmd = test_command();
+        let mut session = PtySession::spawn(&mut cmd, false).expect("spawn shared sleep");
+        let own = pgid_of(unsafe { libc::getpid() } as u32);
+        assert_eq!(pgid_of(session.child_id()), own);
+        unsafe {
+            libc::kill(session.child_id() as i32, libc::SIGKILL);
+        }
+        let _ = session.wait();
+    }
+
+    #[test]
+    fn group_cancel_interrupts_session_child() {
+        use crate::dispatch::cancel::{CancelHandle, CancelTarget};
+        let mut cmd = test_command();
+        let mut session = PtySession::spawn(&mut cmd, true).expect("spawn cancellable sleep");
+        let handle = CancelHandle::default();
+        handle.register(CancelTarget::Group(session.child_id() as i32));
+        handle.cancel();
+        let status = session.wait().expect("wait cancelled sleep");
+        assert_eq!(status.signal(), Some(libc::SIGINT));
+    }
 
     #[test]
     fn drain_lines_multiple_lines_one_chunk() {
