@@ -32,9 +32,17 @@ pub fn cleanup_on_signal(handle: &alpm::Alpm) {
 }
 
 pub fn during_commit<T>(transaction: impl FnOnce() -> T) -> T {
+    let previous = std::env::current_dir().ok();
     COMMIT_IN_FLIGHT.store(true, Ordering::Relaxed);
     let result = transaction();
     COMMIT_IN_FLIGHT.store(false, Ordering::Relaxed);
+    if let Some(previous) = previous.filter(|previous| {
+        std::env::current_dir()
+            .map(|cwd| cwd != *previous)
+            .unwrap_or(true)
+    }) {
+        let _ = std::env::set_current_dir(previous);
+    }
     result
 }
 
