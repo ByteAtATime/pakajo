@@ -11,7 +11,7 @@ conflicts=('pakajo')
 options=('!strip' '!debug')
 
 source=("https://github.com/ByteAtATime/pakajo/releases/download/v$pkgver/pakajo-v$pkgver-$arch.tar.zst")
-sha256sums=('db3195a7e699c46e6a51facd4ce7d22b49a2a3bd779dde7d72fd884e9cfb88b3')
+sha256sums=('0cc210bea0bdb84bc4b078d1c1fbb20e9c76be65abf7fd1fa0e3ac4b43e8effb')
 
 depends=(
   'bash'

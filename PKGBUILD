@@ -8,7 +8,7 @@ url='https://github.com/ByteAtATime/pakajo'
 license=('GPL-3.0-only')
 _tag=v0.1.0
 source=("git+https://github.com/ByteAtATime/pakajo.git#tag=${_tag}")
-sha256sums=('dabc4e4e6d19a54a46d776580ce7f7e0d670ff08eab9393182f04d2aaa013776')
+sha256sums=('9c90cab84cfb62da3182ad98496b45d2c22c3334cd8dd592ae5ed30395b71bfc')
 
 pkgver() {
   cd "$srcdir/pakajo"
