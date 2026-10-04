@@ -700,6 +700,10 @@ impl Transaction {
                 Action::None
             }
             TransactionMessage::Cancel => {
+                if matches!(self.model.status, TransactionStatus::Checking) {
+                    self.review_loop.take();
+                    return Action::Finished;
+                }
                 if matches!(self.model.status, TransactionStatus::Running) {
                     self.model.cancel_pending = true;
                     if let Some(handle) = self.model.cancel_channel.as_ref() {
@@ -1902,18 +1906,40 @@ mod tests {
     }
 
     #[test]
+    fn cancel_during_checking_finishes_and_drops_review_loop() {
+        let mut transaction = new_transaction(InstallKind::Install);
+        let (review_loop, _) = ReviewLoop::spawn(ReviewPlan::Remove {
+            targets: vec![s("firefox")],
+            holds: Vec::new(),
+        });
+        transaction.review_loop = Some(review_loop);
+        let action = transaction.update(TransactionMessage::Cancel);
+        assert!(matches!(action, Action::Finished));
+        assert!(transaction.review_loop.is_none());
+        let mut pane = TxPane {
+            transaction: Some(new_transaction(InstallKind::Install)),
+            show: false,
+        };
+        let action = pane.forward(TransactionMessage::Cancel);
+        assert!(matches!(action, Action::Finished));
+        pane.finish();
+        assert!(pane.transaction.is_none());
+    }
+
+    #[test]
     fn cancel_arms_only_while_running_and_completes_cancelled() {
         let mut transaction = new_transaction(InstallKind::Install);
         assert!(matches!(
             transaction.update(TransactionMessage::Cancel),
-            Action::None
+            Action::Finished
         ));
-        assert!(!transaction.model.cancel_pending);
+        let mut transaction = new_transaction(InstallKind::Install);
         transaction.model.status = TransactionStatus::Running;
         assert!(matches!(
             transaction.update(TransactionMessage::Cancel),
             Action::None
         ));
+        assert!(transaction.is_active());
         assert!(transaction.model.cancel_pending);
         assert!(matches!(
             transaction.update(TransactionMessage::CancelChannel(CancelHandle::default())),

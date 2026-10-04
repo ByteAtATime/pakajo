@@ -262,7 +262,8 @@ impl TransactionModel {
     }
 
     pub(crate) fn cancel_eligible(&self) -> bool {
-        matches!(self.status, TransactionStatus::Running) && self.cancel_channel.is_some()
+        matches!(self.status, TransactionStatus::Checking)
+            || (matches!(self.status, TransactionStatus::Running) && self.cancel_channel.is_some())
     }
 
     pub(crate) fn end_failed(&mut self) -> bool {
@@ -1784,6 +1785,8 @@ mod tests {
 
     #[test]
     fn cancel_eligible_requires_running_and_channel() {
+        let checking = fresh_model();
+        assert!(checking.cancel_eligible());
         let mut model = fresh_model();
         model.status = TransactionStatus::Running;
         assert!(!model.cancel_eligible());
