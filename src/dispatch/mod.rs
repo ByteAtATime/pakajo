@@ -1,5 +1,6 @@
 pub mod approvals;
 pub(crate) mod aur;
+pub mod cancel;
 pub mod child;
 mod error;
 pub mod exec;

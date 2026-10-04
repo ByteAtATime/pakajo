@@ -79,12 +79,16 @@ pub(super) fn sections_view<'a>(
     sections: Vec<(Section<'a>, bool)>,
     finished: bool,
     is_sysupgrade: bool,
+    cancel_eligible: bool,
+    cancelled: Option<Element<'a>>,
 ) -> Element<'a> {
     let count = sections.len();
     let states: Vec<StageState> = sections.iter().map(|(s, _)| s.state).collect();
     let has_failure = failure.is_some();
-    let mut panels = Column::new().push_maybe(failure);
-    if has_failure {
+    let cancelled = cancelled.filter(|_| finished);
+    let has_cancelled = cancelled.is_some();
+    let mut panels = Column::new().push_maybe(failure).push_maybe(cancelled);
+    if has_failure || has_cancelled {
         panels = panels.push(space::vertical().height(24.0));
     }
     for (i, (section, expanded)) in sections.into_iter().enumerate() {
@@ -116,7 +120,21 @@ pub(super) fn sections_view<'a>(
         .push(centered(header))
         .push(divider::horizontal::default())
         .push(body)
+        .push_maybe(cancel_action(cancel_eligible))
         .into()
+}
+
+fn cancel_action(eligible: bool) -> Option<Element<'static>> {
+    eligible.then(|| {
+        centered(
+            container(
+                button::destructive("Cancel")
+                    .width(Length::Fill)
+                    .on_press(crate::Message::Transaction(TransactionMessage::Cancel)),
+            )
+            .padding([16.0, 20.0]),
+        )
+    })
 }
 
 fn centered<'a>(content: impl Into<Element<'a>>) -> Element<'a> {
@@ -158,11 +176,16 @@ pub(super) fn stage_row(
                 .into(),
             None => header,
         },
-        StageState::Failed => {
+        StageState::Failed | StageState::Cancelled => {
+            let word = if state == StageState::Cancelled {
+                "cancelled"
+            } else {
+                "failed"
+            };
             let col = Column::new()
                 .spacing(6)
                 .push(header)
-                .push(muted(text("failed")))
+                .push(muted(text(word)))
                 .push_maybe(content);
             col.into()
         }
@@ -306,7 +329,14 @@ fn stage_glyph(state: StageState) -> Element<'static> {
             StageState::Done => (icons::circle_check(), accent_color),
             StageState::Active => (icons::circle_dot(), accent_color),
             StageState::Pending => (icons::circle(), muted_color),
-            StageState::Failed => (icons::circle_x(), destructive_color),
+            StageState::Failed | StageState::Cancelled => (
+                icons::circle_x(),
+                if state == StageState::Cancelled {
+                    muted_color
+                } else {
+                    destructive_color
+                },
+            ),
         };
     container(
         cosmic::widget::icon(glyph)
@@ -333,10 +363,9 @@ fn header_row<'a>(
 ) -> Element<'a> {
     let label_widget = text::title4(label);
     let label_color_fn: fn(&cosmic::Theme) -> Color = match state {
-        StageState::Done => on_color,
+        StageState::Done | StageState::Failed => on_color,
         StageState::Active => accent_color,
-        StageState::Pending => muted_color,
-        StageState::Failed => on_color,
+        StageState::Pending | StageState::Cancelled => muted_color,
     };
 
     let mut row = Row::new()
@@ -354,7 +383,7 @@ fn header_row<'a>(
         StageState::Done => {
             row = row.push_maybe(summary).push_maybe(chevron);
         }
-        StageState::Pending | StageState::Failed => {}
+        StageState::Pending | StageState::Failed | StageState::Cancelled => {}
     }
     row.into()
 }

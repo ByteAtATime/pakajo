@@ -2,13 +2,13 @@ use std::borrow::Cow;
 
 use cosmic::iced::alignment::Vertical;
 use cosmic::iced::widget::{Stack, progress_bar};
-use cosmic::iced::{Background, Border, Color, Length};
+use cosmic::iced::{Background, Border, Color, Length, Shadow, Vector};
 use cosmic::widget::{Column, Row, container, space, text};
 use pakajo::download::{FileTransfer, TransferState};
 use pakajo::utils::{format_bytes, format_eta, humanize_size};
 
 use crate::Element;
-use crate::components::icons::circle_check;
+use crate::components::icons::{circle_check, triangle_alert};
 pub(crate) use crate::components::theme::{
     accent_color, destructive_color, mono_text, muted, muted_color, on_color, pill, success_color,
     thin_bar, tinted, warning_color,
@@ -282,6 +282,53 @@ pub(super) fn download_view(state: &TransferState) -> Element<'_> {
         return rich_view(state);
     }
     compact_view(state)
+}
+
+pub(super) fn cancelled_summary(stage: Option<&str>, progress: Option<String>) -> String {
+    match (stage, progress) {
+        (Some(stage), Some(progress)) => format!("Cancelled during {stage}, {progress}"),
+        (Some(stage), None) => format!("Cancelled during {stage}"),
+        (None, Some(progress)) => format!("Cancelled, {progress}"),
+        (None, None) => String::from("Cancelled"),
+    }
+}
+
+pub(super) fn cancelled_card(name: &str, summary: String) -> Element<'static> {
+    let icon = cosmic::widget::icon(triangle_alert())
+        .size(22)
+        .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
+            move |theme: &cosmic::Theme| cosmic::widget::svg::Style {
+                color: Some(warning_color(theme)),
+            },
+        )));
+    let body = Column::new()
+        .spacing(6)
+        .push(
+            Row::new()
+                .align_y(Vertical::Center)
+                .spacing(12)
+                .push(icon)
+                .push(text::title2(format!("Cancelled {name}"))),
+        )
+        .push(text(summary).width(Length::Fill));
+    container(body)
+        .padding(24.0)
+        .width(Length::Fill)
+        .style(|theme: &cosmic::Theme| {
+            let mut style = crate::components::theme::card_style(theme);
+            style.border.radius = theme.cosmic().corner_radii.radius_m.into();
+            style.border.color = Color {
+                a: 0.5,
+                ..warning_color(theme)
+            };
+            style.shadow = Shadow {
+                color: theme.cosmic().shade.into(),
+                offset: Vector::new(0.0, 4.0),
+                blur_radius: 16.0,
+            };
+            style
+        })
+        .into()
 }
 
 #[cfg(test)]

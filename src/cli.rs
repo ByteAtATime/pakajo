@@ -70,6 +70,9 @@ fn outcome_code(outcome: &ChildOutcome) -> i32 {
         return 0;
     }
     eprintln!("{}", outcome.reason());
+    if matches!(outcome, ChildOutcome::Cancelled) {
+        return 130;
+    }
     1
 }
 
@@ -328,10 +331,11 @@ fn exit_with_result(result: anyhow::Result<()>) -> ! {
 #[cfg(test)]
 mod tests {
     use super::{
-        INVALID_PIPED_SEAL, InstallTarget, SEAL_PAYLOAD_TOO_LARGE, classify_target,
+        INVALID_PIPED_SEAL, InstallTarget, SEAL_PAYLOAD_TOO_LARGE, classify_target, outcome_code,
         piped_seal_payload,
     };
     use crate::cli::args::{Cli, Command};
+    use crate::dispatch::exec::ChildOutcome;
     use crate::dispatch::seal::json_seal_missing;
     use clap::Parser as _;
     use std::io::Cursor;
@@ -521,5 +525,15 @@ mod tests {
             };
             assert_eq!(actual, *expected, "classify_target({input:?})");
         }
+    }
+
+    #[test]
+    fn cancelled_outcome_reports_reason_with_sigint_code() {
+        assert_eq!(outcome_code(&ChildOutcome::Success), 0);
+        assert_eq!(outcome_code(&ChildOutcome::Stopped { idle: true }), 0);
+        let cancelled = ChildOutcome::Cancelled;
+        assert_eq!(cancelled.reason(), "cancelled by user");
+        assert_eq!(outcome_code(&cancelled), 130);
+        assert_eq!(outcome_code(&ChildOutcome::Failed("boom".to_string())), 1);
     }
 }

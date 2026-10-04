@@ -394,6 +394,18 @@ impl PakajoApp {
                         self.tx.open();
                         Task::none()
                     }
+                    Action::Cancelled => {
+                        self.refresh_installed_state();
+                        self.tx.open();
+                        let refresh = Task::done(
+                            crate::Message::Updates(UpdatesMessage::RefreshUpdates).into(),
+                        );
+                        if self.tx.sysupgrade_running() {
+                            return refresh;
+                        }
+                        let dashboard = self.dashboard.refresh();
+                        Task::batch([dashboard, refresh])
+                    }
                 }
             }
         }

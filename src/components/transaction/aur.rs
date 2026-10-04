@@ -60,7 +60,16 @@ pub(super) fn view(model: &TransactionModel) -> Element<'_> {
     let failure = model
         .failure()
         .map(|failure| failure_card(&model.name, model.kind, failure));
-    sections_view(title, failure, sections, finished, model.is_sysupgrade())
+    let cancel_eligible = model.cancel_eligible();
+    sections_view(
+        title,
+        failure,
+        sections,
+        finished,
+        model.is_sysupgrade(),
+        cancel_eligible,
+        None,
+    )
 }
 
 fn resolve_section(model: &TransactionModel, state: StageState) -> Section<'_> {

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
+use pakajo::dispatch::cancel::CancelHandle;
 use pakajo::dispatch::exec::{AnswerWriter, ChildOutcome};
 use pakajo::download::TransferState;
 use pakajo::events::{InstallEvent, TransactionSummary};
@@ -49,6 +50,8 @@ pub(crate) struct TransactionModel {
     pub(super) pkgbuild_review: Option<PkgbuildModel>,
     pub(super) failure: Option<TransactionFailure>,
     pub(super) answer_channel: Option<AnswerWriter>,
+    pub(super) cancel_channel: Option<CancelHandle>,
+    pub(super) cancel_pending: bool,
     pub(super) pending_import_key: Option<Question>,
     pub(crate) pending_merge: Option<MergeView>,
     pub(super) merge_pressed: Option<MergeMessage>,
@@ -63,6 +66,7 @@ pub(crate) enum StageState {
     Active,
     Done,
     Failed,
+    Cancelled,
 }
 
 #[derive(Clone, Debug)]
@@ -128,6 +132,8 @@ impl TransactionModel {
             pkgbuild_review: None,
             failure: None,
             answer_channel: None,
+            cancel_channel: None,
+            cancel_pending: false,
             pending_import_key: None,
             pending_merge: None,
             merge_pressed: None,
@@ -251,6 +257,12 @@ impl TransactionModel {
         self.pending_merge = None;
         self.merge_pressed = None;
         self.answer_channel = None;
+        self.cancel_channel = None;
+        self.cancel_pending = false;
+    }
+
+    pub(crate) fn cancel_eligible(&self) -> bool {
+        matches!(self.status, TransactionStatus::Running) && self.cancel_channel.is_some()
     }
 
     pub(crate) fn end_failed(&mut self) -> bool {
@@ -348,6 +360,7 @@ impl TransactionModel {
                 TransactionStatus::Checking => StageState::Pending,
                 TransactionStatus::Running => StageState::Active,
                 TransactionStatus::Done(ChildOutcome::Success) => StageState::Done,
+                TransactionStatus::Done(ChildOutcome::Cancelled) => StageState::Cancelled,
                 TransactionStatus::Done(_) if self.build_owns_failure() => StageState::Done,
                 TransactionStatus::Done(_) => StageState::Failed,
             }
@@ -1767,5 +1780,37 @@ mod tests {
             model.toggle(i);
             assert!(!model.expanded.contains(&i));
         }
+    }
+
+    #[test]
+    fn cancel_eligible_requires_running_and_channel() {
+        let mut model = fresh_model();
+        model.status = TransactionStatus::Running;
+        assert!(!model.cancel_eligible());
+        model.cancel_channel = Some(CancelHandle::default());
+        assert!(model.cancel_eligible());
+        model.finish(ChildOutcome::Cancelled);
+        assert!(!model.cancel_eligible());
+    }
+
+    #[test]
+    fn cancelled_finish_marks_current_stage_cancelled() {
+        let mut model = fresh_model();
+        model.status = TransactionStatus::Running;
+        model.apply_event(&InstallEvent::TransactionSummary(TransactionSummary {
+            packages: Vec::new(),
+            total_download_size: 0,
+            total_installed_size: 0,
+            total_removed_size: 0,
+        }));
+        assert_eq!(model.current_idx, 1);
+        assert_eq!(model.stage_state(1), StageState::Active);
+        model.cancel_channel = Some(CancelHandle::default());
+        model.cancel_pending = true;
+        model.finish(ChildOutcome::Cancelled);
+        assert_eq!(model.stage_state(1), StageState::Cancelled);
+        assert_eq!(model.stage_state(0), StageState::Done);
+        assert!(!model.cancel_pending);
+        assert!(model.cancel_channel.is_none());
     }
 }

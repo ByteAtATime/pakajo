@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use futures::SinkExt as _;
 
 use crate::cli::privs::is_root;
+use crate::dispatch::cancel::{CancelHandle, CancelTarget};
 use crate::dispatch::operation::{BuildOperation, MARKER, PrivilegedOperation};
 use crate::dispatch::protocol::Decider;
 use crate::events::{InstallEvent, InstallSink, read_event_stream};
@@ -16,6 +17,7 @@ pub enum ChildOutcome {
     Dismissed,
     NotFound(String),
     Failed(String),
+    Cancelled,
 }
 
 impl ChildOutcome {
@@ -27,6 +29,7 @@ impl ChildOutcome {
             ChildOutcome::Dismissed => "privilege prompt dismissed",
             ChildOutcome::NotFound(message) => message.as_str(),
             ChildOutcome::Failed(message) => message.as_str(),
+            ChildOutcome::Cancelled => "cancelled by user",
         }
     }
 }
@@ -41,6 +44,7 @@ pub enum ChildKind {
 pub enum StreamItem {
     Event(InstallEvent),
     AnswerChannel(AnswerWriter),
+    CancelChannel(CancelHandle),
     Done(ChildOutcome),
 }
 
@@ -97,7 +101,7 @@ impl PromptDecliner {
 
 pub type DispatchStream = futures::channel::mpsc::Receiver<StreamItem>;
 
-pub fn drain_declining(
+pub(crate) fn drain_declining(
     mut stream: DispatchStream,
     sink: &mut (impl InstallSink + ?Sized),
 ) -> ChildOutcome {
@@ -110,6 +114,7 @@ pub fn drain_declining(
                 sink.event(event);
             }
             StreamItem::AnswerChannel(writer) => answers.channel(writer),
+            StreamItem::CancelChannel(_) => {}
             StreamItem::Done(outcome) => return outcome,
         }
     }
@@ -220,18 +225,26 @@ pub fn map_exit_code(kind: ChildKind, code: i32, escalator: &str) -> ChildOutcom
         }
         126 => ChildOutcome::Dismissed,
         127 => ChildOutcome::NotFound(format!("{escalator} not found")),
+        130 => ChildOutcome::Cancelled,
         exit => ChildOutcome::Failed(format!("operation failed (exit {exit})")),
     }
 }
 
 fn map_outcome(kind: ChildKind, status: io::Result<ExitStatus>, escalator: &str) -> ChildOutcome {
-    let code = match status {
+    let status = match status {
         Err(error) => return ChildOutcome::Failed(error.to_string()),
-        Ok(status) => status.code(),
+        Ok(status) => status,
     };
-    match code {
+    match status.code() {
         Some(code) => map_exit_code(kind, code, escalator),
-        None => ChildOutcome::Failed("install killed by signal".to_string()),
+        None => {
+            use std::os::unix::process::ExitStatusExt as _;
+            if status.signal() == Some(libc::SIGINT) {
+                ChildOutcome::Cancelled
+            } else {
+                ChildOutcome::Failed("install killed by signal".to_string())
+            }
+        }
     }
 }
 
@@ -281,6 +294,8 @@ fn run_privileged(
     operation: PrivilegedOperation,
     tty: bool,
     tx: &mut futures::channel::mpsc::Sender<StreamItem>,
+    handle: &CancelHandle,
+    parent: Option<&CancelHandle>,
 ) {
     let approvals_path = match &operation {
         PrivilegedOperation::Remove { approvals, .. } => approvals
@@ -317,17 +332,36 @@ fn run_privileged(
     if let Some(writer) = writer {
         send_item(tx, StreamItem::AnswerChannel(writer));
     }
+    let target = CancelTarget::Process(child.id() as i32);
+    handle.register(target.clone());
+    if let Some(parent) = parent {
+        parent.register(target.clone());
+    }
     let mut sink = ChannelSink::new(tx.clone());
     let status = stream_child(child, &mut sink);
+    handle.clear(&target);
+    if let Some(parent) = parent {
+        parent.clear(&target);
+    }
     send_item(tx, StreamItem::Done(map_outcome(kind, status, escalator)));
 }
 
 impl PrivilegedOperation {
     pub fn dispatch(self, tty: bool) -> DispatchStream {
+        self.dispatch_with_cancel(tty, None)
+    }
+
+    pub(crate) fn dispatch_with_cancel(
+        self,
+        tty: bool,
+        parent: Option<CancelHandle>,
+    ) -> DispatchStream {
         let (tx, rx) = futures::channel::mpsc::channel(256);
         std::thread::spawn(move || {
             let mut tx = tx;
-            run_privileged(self, tty, &mut tx);
+            let handle = CancelHandle::default();
+            send_item(&mut tx, StreamItem::CancelChannel(handle.clone()));
+            run_privileged(self, tty, &mut tx, &handle, parent.as_ref());
         });
         rx
     }
@@ -420,6 +454,11 @@ mod tests {
                 Ok(ExitStatusExt::from_raw(1 << 8)),
                 ChildOutcome::Failed("operation failed (exit 1)".to_string()),
             ),
+            (
+                Ok(ExitStatusExt::from_raw(130 << 8)),
+                ChildOutcome::Cancelled,
+            ),
+            (Ok(ExitStatusExt::from_raw(2)), ChildOutcome::Cancelled),
             (
                 Ok(ExitStatusExt::from_raw(9)),
                 ChildOutcome::Failed("install killed by signal".to_string()),

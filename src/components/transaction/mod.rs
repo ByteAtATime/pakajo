@@ -5,6 +5,7 @@ use cosmic::widget::{button, container, dialog, text};
 use futures::StreamExt as _;
 
 use pakajo::dispatch::ReviewError;
+use pakajo::dispatch::cancel::CancelHandle;
 use pakajo::dispatch::exec::{AnswerWriter, ChildOutcome, StreamItem};
 use pakajo::dispatch::revalidate::{
     RevalidationRun, ReviewLoop, ReviewOrigin, ReviewPlan, ReviewStep,
@@ -103,6 +104,8 @@ pub enum TransactionMessage {
     ApproveRemoval,
     CancelRemoval,
     AnswerChannel(AnswerWriter),
+    CancelChannel(CancelHandle),
+    Cancel,
     AnswerImportKey(bool),
     CopyFailureReport,
     Merge(MergeMessage),
@@ -116,6 +119,7 @@ pub(crate) enum Action {
     ViewClosed,
     InstallSucceeded,
     Failed,
+    Cancelled,
 }
 
 fn launch_install(id: u64, request: pakajo::dispatch::InstallRequest) -> Action {
@@ -222,6 +226,7 @@ fn stream_items(id: u64, mut rx: pakajo::dispatch::exec::DispatchStream) -> Task
                         TransactionMessage::InstallEvent(ev)
                     }
                     StreamItem::AnswerChannel(writer) => TransactionMessage::AnswerChannel(writer),
+                    StreamItem::CancelChannel(handle) => TransactionMessage::CancelChannel(handle),
                     StreamItem::Done(outcome) => TransactionMessage::InstallDone(outcome),
                 };
                 let wrapped = TransactionMessage::Streamed {
@@ -538,6 +543,10 @@ impl Transaction {
                         self.model.finish(outcome);
                         Action::None
                     }
+                    ChildOutcome::Cancelled => {
+                        self.model.finish(outcome);
+                        Action::Cancelled
+                    }
                 }
             }
             TransactionMessage::Explored(result) => match result {
@@ -681,6 +690,22 @@ impl Transaction {
             TransactionMessage::CancelRemoval => Action::Finished,
             TransactionMessage::AnswerChannel(writer) => {
                 self.model.set_answer_channel(writer);
+                Action::None
+            }
+            TransactionMessage::CancelChannel(handle) => {
+                if self.model.cancel_pending {
+                    handle.cancel();
+                }
+                self.model.cancel_channel = Some(handle);
+                Action::None
+            }
+            TransactionMessage::Cancel => {
+                if matches!(self.model.status, TransactionStatus::Running) {
+                    self.model.cancel_pending = true;
+                    if let Some(handle) = self.model.cancel_channel.as_ref() {
+                        handle.cancel();
+                    }
+                }
                 Action::None
             }
             TransactionMessage::AnswerImportKey(yes) => {
@@ -1874,5 +1899,32 @@ mod tests {
         let transaction = pane.transaction.as_ref().expect("transaction present");
         assert!(transaction.is_active());
         assert!(transaction.model.failure().is_none());
+    }
+
+    #[test]
+    fn cancel_arms_only_while_running_and_completes_cancelled() {
+        let mut transaction = new_transaction(InstallKind::Install);
+        assert!(matches!(
+            transaction.update(TransactionMessage::Cancel),
+            Action::None
+        ));
+        assert!(!transaction.model.cancel_pending);
+        transaction.model.status = TransactionStatus::Running;
+        assert!(matches!(
+            transaction.update(TransactionMessage::Cancel),
+            Action::None
+        ));
+        assert!(transaction.model.cancel_pending);
+        assert!(matches!(
+            transaction.update(TransactionMessage::CancelChannel(CancelHandle::default())),
+            Action::None
+        ));
+        assert!(transaction.model.cancel_channel.is_some());
+        assert!(matches!(
+            transaction.update(TransactionMessage::InstallDone(ChildOutcome::Cancelled)),
+            Action::Cancelled
+        ));
+        assert!(!transaction.model.cancel_pending);
+        assert!(transaction.model.cancel_channel.is_none());
     }
 }

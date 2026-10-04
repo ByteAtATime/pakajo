@@ -541,9 +541,17 @@ pub fn apply_aur_counters(state: &mut AurState, ev: &InstallEvent, now: Instant)
 }
 
 pub fn finish_aur(state: &mut AurState, outcome: &ChildOutcome, now: Instant) {
-    if matches!(outcome, ChildOutcome::Success) {
-        return;
+    match outcome {
+        ChildOutcome::Success => (),
+        ChildOutcome::Cancelled
+        | ChildOutcome::Stopped { .. }
+        | ChildOutcome::Dismissed
+        | ChildOutcome::NotFound(_)
+        | ChildOutcome::Failed(_) => fail_inflight_build(state, now),
     }
+}
+
+fn fail_inflight_build(state: &mut AurState, now: Instant) {
     let failed = state
         .build_order
         .iter()
