@@ -1,12 +1,13 @@
 use cosmic::iced::Length;
 use cosmic::iced::alignment::Vertical;
 use cosmic::iced::widget::progress_bar;
-use cosmic::widget::{Row, button, container, space, text};
+use cosmic::widget::{Row, button, container, icon, space, text};
 
 use pakajo::dispatch::exec::ChildOutcome;
 use pakajo::progress::InstallKind;
 
 use crate::Element;
+use crate::components::icons;
 use crate::components::theme;
 use crate::components::transaction::{Transaction, TransactionStatus};
 
@@ -47,6 +48,47 @@ fn tint(transaction: &Transaction) -> Tint {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Trailing {
+    Bar,
+    Check,
+    Alert,
+    Cross,
+}
+
+fn trailing(status: &TransactionStatus) -> Trailing {
+    match status {
+        TransactionStatus::Checking | TransactionStatus::Running => Trailing::Bar,
+        TransactionStatus::Done(ChildOutcome::Success) => Trailing::Check,
+        TransactionStatus::Done(ChildOutcome::Stopped { idle: true }) => Trailing::Check,
+        TransactionStatus::Done(ChildOutcome::Failed(_)) => Trailing::Cross,
+        TransactionStatus::Done(ChildOutcome::NotFound(_)) => Trailing::Cross,
+        TransactionStatus::Done(ChildOutcome::Stopped { idle: false }) => Trailing::Alert,
+        TransactionStatus::Done(ChildOutcome::Dismissed) => Trailing::Alert,
+        TransactionStatus::Done(ChildOutcome::Cancelled) => Trailing::Alert,
+    }
+}
+
+fn trailing_icon(trailing: Trailing, tint: Tint) -> Element<'static> {
+    let handle = match trailing {
+        Trailing::Bar => icons::circle_dot(),
+        Trailing::Check => icons::circle_check(),
+        Trailing::Alert => icons::triangle_alert(),
+        Trailing::Cross => icons::circle_x(),
+    };
+    container(
+        icon(handle)
+            .size(16)
+            .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(
+                move |theme: &cosmic::Theme| cosmic::widget::svg::Style {
+                    color: Some(tint(theme)),
+                },
+            ))),
+    )
+    .align_y(Vertical::Center)
+    .into()
+}
+
 pub(crate) fn footer(
     transaction: Option<&Transaction>,
     updates: Element<'static>,
@@ -63,12 +105,19 @@ pub(crate) fn footer(
     let progress = active.overall_progress();
     let label = text(summary(active.kind(), active.name(), active.status()));
     let tint = tint(active);
+    let end = match trailing(active.status()) {
+        Trailing::Bar => progress_bar(0.0..=100.0, progress)
+            .length(Length::Fixed(BAR_WIDTH))
+            .girth(6.0)
+            .into(),
+        kind => trailing_icon(kind, tint),
+    };
     Row::new()
         .align_y(Vertical::Center)
         .width(Length::Fill)
         .push(container(badge).padding([6.0, 12.0]))
         .push(
-            button::custom(cluster_row(label.into(), progress))
+            button::custom(cluster_row(label.into(), end))
                 .padding([6.0, 12.0])
                 .width(Length::Fill)
                 .class(cosmic::theme::Button::Custom {
@@ -82,7 +131,7 @@ pub(crate) fn footer(
         .into()
 }
 
-fn cluster_row(label: Element<'static>, bar: f32) -> Element<'static> {
+fn cluster_row(label: Element<'static>, end: Element<'static>) -> Element<'static> {
     Row::new()
         .align_y(Vertical::Center)
         .height(Length::Fixed(FOOTER_HEIGHT))
@@ -92,12 +141,70 @@ fn cluster_row(label: Element<'static>, bar: f32) -> Element<'static> {
                 .spacing(8)
                 .align_y(Vertical::Center)
                 .push(label)
-                .push(
-                    progress_bar(0.0..=100.0, bar)
-                        .length(Length::Fixed(BAR_WIDTH))
-                        .girth(6.0),
-                ),
+                .push(end),
         )
         .width(Length::Fill)
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Trailing;
+    use super::trailing;
+    use crate::components::transaction::TransactionStatus;
+    use pakajo::dispatch::exec::ChildOutcome;
+
+    #[test]
+    fn active_transactions_keep_progress_bar() {
+        assert_eq!(trailing(&TransactionStatus::Checking), Trailing::Bar);
+        assert_eq!(trailing(&TransactionStatus::Running), Trailing::Bar);
+    }
+
+    #[test]
+    fn successful_terminal_states_show_check() {
+        assert_eq!(
+            trailing(&TransactionStatus::Done(ChildOutcome::Success)),
+            Trailing::Check
+        );
+        assert_eq!(
+            trailing(&TransactionStatus::Done(ChildOutcome::Stopped {
+                idle: true
+            })),
+            Trailing::Check
+        );
+    }
+
+    #[test]
+    fn failed_terminal_states_show_cross() {
+        assert_eq!(
+            trailing(&TransactionStatus::Done(ChildOutcome::Failed(
+                String::from("boom")
+            ))),
+            Trailing::Cross
+        );
+        assert_eq!(
+            trailing(&TransactionStatus::Done(ChildOutcome::NotFound(
+                String::from("missing")
+            ))),
+            Trailing::Cross
+        );
+    }
+
+    #[test]
+    fn cancelled_terminal_states_show_alert() {
+        assert_eq!(
+            trailing(&TransactionStatus::Done(ChildOutcome::Cancelled)),
+            Trailing::Alert
+        );
+        assert_eq!(
+            trailing(&TransactionStatus::Done(ChildOutcome::Dismissed)),
+            Trailing::Alert
+        );
+        assert_eq!(
+            trailing(&TransactionStatus::Done(ChildOutcome::Stopped {
+                idle: false
+            })),
+            Trailing::Alert
+        );
+    }
 }
