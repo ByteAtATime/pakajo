@@ -97,7 +97,6 @@ use crate::components::theme::{card_style, muted};
 
 const MAX_CONTENT_WIDTH: f32 = 840.0;
 const BAND_CELL_WIDTH: f32 = 200.0;
-const TRAILING_COLUMN_WIDTH: f32 = 90.0;
 const OPTDEP_TOOLTIP_ROWS: usize = 8;
 const CARD_ROWS: usize = 5;
 
@@ -144,8 +143,7 @@ fn searchable_row(name: String, leading: Element<'static>, trailing: String) -> 
         .spacing(12.0)
         .push(container(leading).width(Length::Fill))
         .push(
-            container(muted(text::caption(trailing)))
-                .width(Length::Fixed(TRAILING_COLUMN_WIDTH))
+            container(muted(text::caption(trailing).wrapping(cosmic::iced::widget::text::Wrapping::None)))
                 .align_x(Alignment::End),
         );
     button::custom(inner)
@@ -245,11 +243,7 @@ fn optdep_popup(entry: &OptdepEntry) -> Element<'static> {
 
 fn optdep_row(entry: &OptdepEntry) -> Element<'static> {
     let count = entry.requesters.len();
-    let count_label = if count == 1 {
-        String::from("1 package")
-    } else {
-        format!("{count} packages")
-    };
+    let count_label = format!("Used by {count}");
     let pressed = searchable_row(
         entry.name.clone(),
         clipped_body(entry.name.clone()),
@@ -280,7 +274,7 @@ fn optdep_row(entry: &OptdepEntry) -> Element<'static> {
 
 fn optdep_card(top: &[OptdepEntry], pad: f32) -> Element<'static> {
     list_card(
-        String::from("Optional dependencies"),
+        String::from("Recommended packages"),
         String::from("No suggestions"),
         top.iter().map(optdep_row).collect(),
         pad,
