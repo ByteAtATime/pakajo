@@ -337,7 +337,7 @@ fn render_header<'a>(
         .spacing(8)
         .align_y(Alignment::Center)
         .push_maybe(pkg.upstream_url.as_ref().map(|url| {
-            button::standard("Upstream")
+            button::standard("Homepage")
                 .trailing_icon(icons::external_link())
                 .on_press(crate::Message::OpenUrl(url.clone()))
         }))
